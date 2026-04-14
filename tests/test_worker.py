@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -192,8 +193,39 @@ class TestWorkerStop:
     async def test_stop_sets_event(self, mock_client: AsyncMock) -> None:
         worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[])
         assert not worker._stop.is_set()
-        worker.stop()
+        await worker.stop()
         assert worker._stop.is_set()
+
+    @pytest.mark.asyncio
+    async def test_stop_drains_in_flight(self, mock_client: AsyncMock) -> None:
+        completed = asyncio.Event()
+
+        @activity.defn(name="slow-act")
+        async def slow_activity() -> str:
+            completed.set()
+            await asyncio.sleep(0.1)
+            return "done"
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[],
+            activities=[slow_activity],
+            max_concurrent_activity_tasks=5,
+        )
+        task = {
+            "task_id": "at-slow",
+            "activity_attempt_id": "aa-slow",
+            "activity_type": "slow-act",
+            "arguments": "[]",
+            "payload_codec": "json",
+        }
+        worker._track(worker._dispatch_activity_task(task))
+        await completed.wait()
+        assert len(worker._in_flight) == 1
+        await worker.stop()
+        assert len(worker._in_flight) == 0
+        mock_client.complete_activity_task.assert_called_once()
 
 
 class TestWorkerIdGeneration:
@@ -204,3 +236,123 @@ class TestWorkerIdGeneration:
     def test_custom_id(self, mock_client: AsyncMock) -> None:
         worker = Worker(mock_client, task_queue="q1", worker_id="custom-1")
         assert worker.worker_id == "custom-1"
+
+
+class TestConcurrencyLimits:
+    def test_default_concurrency(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q1")
+        assert worker._wf_semaphore._value == 10
+        assert worker._act_semaphore._value == 10
+
+    def test_custom_concurrency(self, mock_client: AsyncMock) -> None:
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            max_concurrent_workflow_tasks=3,
+            max_concurrent_activity_tasks=7,
+        )
+        assert worker._wf_semaphore._value == 3
+        assert worker._act_semaphore._value == 7
+
+    @pytest.mark.asyncio
+    async def test_concurrent_activity_dispatch(self, mock_client: AsyncMock) -> None:
+        running = 0
+        max_running = 0
+        gate = asyncio.Event()
+
+        @activity.defn(name="conc-act")
+        async def concurrent_activity() -> str:
+            nonlocal running, max_running
+            running += 1
+            max_running = max(max_running, running)
+            await gate.wait()
+            running -= 1
+            return "ok"
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[],
+            activities=[concurrent_activity],
+            max_concurrent_activity_tasks=5,
+        )
+
+        tasks = []
+        for i in range(3):
+            task = {
+                "task_id": f"at-{i}",
+                "activity_attempt_id": f"aa-{i}",
+                "activity_type": "conc-act",
+                "arguments": "[]",
+                "payload_codec": "json",
+            }
+            tasks.append(worker._track(worker._dispatch_activity_task(task)))
+
+        await asyncio.sleep(0.01)
+        assert max_running == 3
+        gate.set()
+        await asyncio.gather(*tasks)
+        assert mock_client.complete_activity_task.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_semaphore_limits_concurrency(self, mock_client: AsyncMock) -> None:
+        running = 0
+        max_running = 0
+        gate = asyncio.Event()
+
+        @activity.defn(name="limited-act")
+        async def limited_activity() -> str:
+            nonlocal running, max_running
+            running += 1
+            max_running = max(max_running, running)
+            await gate.wait()
+            running -= 1
+            return "ok"
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[],
+            activities=[limited_activity],
+            max_concurrent_activity_tasks=2,
+        )
+
+        tasks = []
+        for i in range(4):
+            task = {
+                "task_id": f"at-lim-{i}",
+                "activity_attempt_id": f"aa-lim-{i}",
+                "activity_type": "limited-act",
+                "arguments": "[]",
+                "payload_codec": "json",
+            }
+            tasks.append(worker._track(worker._dispatch_activity_task(task)))
+
+        await asyncio.sleep(0.01)
+        assert max_running == 2
+        gate.set()
+        await asyncio.gather(*tasks)
+        assert mock_client.complete_activity_task.call_count == 4
+
+
+class TestPollLoops:
+    @pytest.mark.asyncio
+    async def test_run_starts_both_loops(self, mock_client: AsyncMock) -> None:
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            poll_timeout=0.01,
+        )
+        run_task = asyncio.create_task(worker.run())
+        await asyncio.sleep(0.05)
+        await worker.stop()
+        run_task.cancel()
+        try:
+            await run_task
+        except asyncio.CancelledError:
+            pass
+        assert mock_client.register_worker.call_count == 1
+        assert mock_client.poll_workflow_task.call_count >= 1
+        assert mock_client.poll_activity_task.call_count >= 1

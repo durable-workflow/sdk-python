@@ -34,6 +34,9 @@ class Worker:
         activities: Iterable[Callable[..., Any]] = (),
         worker_id: str | None = None,
         poll_timeout: float = 5.0,
+        max_concurrent_workflow_tasks: int = 10,
+        max_concurrent_activity_tasks: int = 10,
+        shutdown_timeout: float = 30.0,
     ) -> None:
         self.client = client
         self.task_queue = task_queue
@@ -42,6 +45,10 @@ class Worker:
         self.worker_id = worker_id or f"py-worker-{uuid.uuid4().hex[:8]}"
         self._poll_timeout = poll_timeout
         self._stop = asyncio.Event()
+        self._wf_semaphore = asyncio.Semaphore(max_concurrent_workflow_tasks)
+        self._act_semaphore = asyncio.Semaphore(max_concurrent_activity_tasks)
+        self._shutdown_timeout = shutdown_timeout
+        self._in_flight: set[asyncio.Task[Any]] = set()
 
     async def _register(self) -> None:
         await self.client.register_worker(
@@ -216,67 +223,89 @@ class Worker:
         except Exception as e:
             log.warning("failed to complete activity task %s: %s", task_id, e)
 
-    async def _poll_and_run(self) -> None:
-        poll_timeout = self._poll_timeout
-        poll_activity_next = False
-        while not self._stop.is_set():
-            if poll_activity_next:
-                poll_activity_next = False
-                try:
-                    task = await self.client.poll_activity_task(
-                        worker_id=self.worker_id,
-                        task_queue=self.task_queue,
-                        timeout=poll_timeout,
-                    )
-                except Exception as e:
-                    log.warning("activity poll error: %s", e)
-                    await asyncio.sleep(1.0)
-                    continue
-                if task is not None:
-                    try:
-                        await self._run_activity_task(task)
-                    except Exception:
-                        log.exception("unhandled error in activity task execution")
-                continue
+    def _track(self, coro: Any) -> asyncio.Task[Any]:
+        task = asyncio.create_task(coro)
+        self._in_flight.add(task)
+        task.add_done_callback(self._in_flight.discard)
+        return task
 
+    async def _poll_workflow_tasks(self) -> None:
+        while not self._stop.is_set():
+            await self._wf_semaphore.acquire()
+            if self._stop.is_set():
+                self._wf_semaphore.release()
+                return
             try:
                 task = await self.client.poll_workflow_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
-                    timeout=poll_timeout,
+                    timeout=self._poll_timeout,
                 )
             except Exception as e:
+                self._wf_semaphore.release()
                 log.warning("workflow poll error: %s", e)
                 await asyncio.sleep(1.0)
-                task = None
-            if task is not None:
-                try:
-                    commands = await self._run_workflow_task(task)
-                    if commands and any(c.get("type") == "schedule_activity" for c in commands):
-                        poll_activity_next = True
-                except Exception:
-                    log.exception("unhandled error in workflow task execution")
                 continue
+            if task is None:
+                self._wf_semaphore.release()
+                continue
+            self._track(self._dispatch_workflow_task(task))
 
+    async def _dispatch_workflow_task(self, task: dict[str, Any]) -> None:
+        try:
+            await self._run_workflow_task(task)
+        except Exception:
+            log.exception("unhandled error in workflow task execution")
+        finally:
+            self._wf_semaphore.release()
+
+    async def _poll_activity_tasks(self) -> None:
+        while not self._stop.is_set():
+            await self._act_semaphore.acquire()
+            if self._stop.is_set():
+                self._act_semaphore.release()
+                return
             try:
                 task = await self.client.poll_activity_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
-                    timeout=poll_timeout,
+                    timeout=self._poll_timeout,
                 )
             except Exception as e:
+                self._act_semaphore.release()
                 log.warning("activity poll error: %s", e)
                 await asyncio.sleep(1.0)
                 continue
-            if task is not None:
-                try:
-                    await self._run_activity_task(task)
-                except Exception:
-                    log.exception("unhandled error in activity task execution")
+            if task is None:
+                self._act_semaphore.release()
+                continue
+            self._track(self._dispatch_activity_task(task))
+
+    async def _dispatch_activity_task(self, task: dict[str, Any]) -> None:
+        try:
+            await self._run_activity_task(task)
+        except Exception:
+            log.exception("unhandled error in activity task execution")
+        finally:
+            self._act_semaphore.release()
 
     async def run(self) -> None:
         await self._register()
-        await self._poll_and_run()
+        wf_loop = asyncio.create_task(self._poll_workflow_tasks())
+        act_loop = asyncio.create_task(self._poll_activity_tasks())
+        try:
+            await asyncio.gather(wf_loop, act_loop)
+        except asyncio.CancelledError:
+            pass
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         self._stop.set()
+        if self._in_flight:
+            log.info("draining %d in-flight task(s)…", len(self._in_flight))
+            done, pending = await asyncio.wait(
+                self._in_flight, timeout=self._shutdown_timeout
+            )
+            for t in pending:
+                t.cancel()
+            if pending:
+                log.warning("cancelled %d task(s) after shutdown timeout", len(pending))
