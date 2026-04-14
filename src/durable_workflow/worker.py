@@ -8,7 +8,9 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from . import serializer
+from .activity import ActivityContext, ActivityInfo, _set_context
 from .client import Client
+from .errors import ActivityCancelled, NonRetryableError
 from .workflow import replay
 
 log = logging.getLogger("durable_workflow.worker")
@@ -124,6 +126,7 @@ class Worker:
         task_id: str = task["task_id"]
         attempt_id: str = task.get("activity_attempt_id") or task.get("attempt_id", "")
         activity_type: str = task.get("activity_type", "")
+        attempt_number: int = task.get("attempt_number", 1)
         raw_args = task.get("arguments")
         args = serializer.decode(raw_args, codec=task.get("payload_codec")) or []
         if not isinstance(args, list):
@@ -142,8 +145,49 @@ class Worker:
                 log.warning("failed to report unknown activity type: %s", e)
             return
 
+        act_ctx = ActivityContext(
+            info=ActivityInfo(
+                task_id=task_id,
+                activity_type=activity_type,
+                activity_attempt_id=attempt_id,
+                attempt_number=attempt_number,
+                task_queue=self.task_queue,
+                worker_id=self.worker_id,
+            ),
+            client=self.client,
+        )
+        _set_context(act_ctx)
         try:
             result = fn(*args) if not asyncio.iscoroutinefunction(fn) else await fn(*args)
+        except ActivityCancelled:
+            log.info("activity %s cancelled via heartbeat", task_id)
+            try:
+                await self.client.fail_activity_task(
+                    task_id=task_id,
+                    activity_attempt_id=attempt_id,
+                    lease_owner=self.worker_id,
+                    message="activity cancelled",
+                    failure_type="ActivityCancelled",
+                    non_retryable=True,
+                )
+            except Exception as fe:
+                log.warning("failed to report activity cancellation: %s", fe)
+            return
+        except NonRetryableError as e:
+            log.exception("activity failed (non-retryable)")
+            try:
+                await self.client.fail_activity_task(
+                    task_id=task_id,
+                    activity_attempt_id=attempt_id,
+                    lease_owner=self.worker_id,
+                    message=str(e),
+                    failure_type=type(e).__name__,
+                    stack_trace=traceback.format_exc(),
+                    non_retryable=True,
+                )
+            except Exception as fe:
+                log.warning("failed to report activity failure: %s", fe)
+            return
         except Exception as e:
             log.exception("activity failed")
             try:
@@ -158,6 +202,8 @@ class Worker:
             except Exception as fe:
                 log.warning("failed to report activity failure: %s", fe)
             return
+        finally:
+            _set_context(None)
 
         log.info("completing activity task %s (%s) -> %r", task_id, activity_type, result)
         try:

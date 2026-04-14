@@ -78,6 +78,17 @@ class WorkflowCancelled(DurableWorkflowError):
         super().__init__(message)
 
 
+class ActivityCancelled(DurableWorkflowError):
+    def __init__(self, message: str = "activity was cancelled") -> None:
+        super().__init__(message)
+
+
+class NonRetryableError(DurableWorkflowError):
+    def __init__(self, message: str, *, cause: Exception | None = None) -> None:
+        super().__init__(message)
+        self.__cause__ = cause
+
+
 def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
     if status < 400:
         return
