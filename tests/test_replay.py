@@ -241,12 +241,14 @@ class TestContinueAsNew:
 
 
 class TestSideEffect:
-    def test_first_replay_records(self) -> None:
+    def test_first_replay_records_and_continues(self) -> None:
         outcome = replay(SideEffectWorkflow, [], [])
-        assert len(outcome.commands) == 1
-        cmd = outcome.commands[0]
-        assert isinstance(cmd, RecordSideEffect)
-        assert cmd.result == 42
+        assert len(outcome.commands) == 2
+        assert isinstance(outcome.commands[0], RecordSideEffect)
+        assert outcome.commands[0].result == 42
+        assert isinstance(outcome.commands[1], ScheduleActivity)
+        assert outcome.commands[1].activity_type == "use-val"
+        assert outcome.commands[1].arguments == [42]
 
     def test_replayed_side_effect_skips_fn(self) -> None:
         history = [{"event_type": "SideEffectRecorded", "details": {"result": "99"}}]
@@ -456,15 +458,17 @@ class TestChildWorkflow:
 
 
 class TestVersionMarker:
-    def test_first_replay_records_marker(self) -> None:
+    def test_first_replay_records_marker_and_continues(self) -> None:
         outcome = replay(VersionWorkflow, [], [])
-        assert len(outcome.commands) == 1
+        assert len(outcome.commands) == 2
         cmd = outcome.commands[0]
         assert isinstance(cmd, RecordVersionMarker)
         assert cmd.change_id == "change-1"
         assert cmd.version == 2
         assert cmd.min_supported == 1
         assert cmd.max_supported == 2
+        assert isinstance(outcome.commands[1], ScheduleActivity)
+        assert outcome.commands[1].activity_type == "new-path"
 
     def test_version_from_history(self) -> None:
         history = [
@@ -531,6 +535,93 @@ class TestSearchAttributeUpsert:
         assert sc["attributes"] == {"key": "val"}
 
 
+@workflow.defn(name="fan-out-wf")
+class FanOutWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        results = yield [
+            ctx.schedule_activity("fetch-a", []),
+            ctx.schedule_activity("fetch-b", []),
+        ]
+        return {"a": results[0], "b": results[1]}
+
+
+@workflow.defn(name="fan-out-timers-wf")
+class FanOutTimersWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield [ctx.start_timer(5), ctx.start_timer(10)]
+        result = yield ctx.schedule_activity("after-timers", [])
+        return result
+
+
+@workflow.defn(name="fan-out-then-sequential-wf")
+class FanOutThenSequentialWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        results = yield [
+            ctx.schedule_activity("a", []),
+            ctx.schedule_activity("b", []),
+        ]
+        final = yield ctx.schedule_activity("combine", results)
+        return final
+
+
+class TestFanOut:
+    def test_no_history_emits_batch(self) -> None:
+        outcome = replay(FanOutWorkflow, [], [])
+        assert len(outcome.commands) == 2
+        assert isinstance(outcome.commands[0], ScheduleActivity)
+        assert outcome.commands[0].activity_type == "fetch-a"
+        assert isinstance(outcome.commands[1], ScheduleActivity)
+        assert outcome.commands[1].activity_type == "fetch-b"
+
+    def test_all_completed(self) -> None:
+        history = [
+            {"event_type": "ActivityCompleted", "details": {"result": '"val-a"'}},
+            {"event_type": "ActivityCompleted", "details": {"result": '"val-b"'}},
+        ]
+        outcome = replay(FanOutWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == {"a": "val-a", "b": "val-b"}
+
+    def test_timers_no_history(self) -> None:
+        outcome = replay(FanOutTimersWorkflow, [], [])
+        assert len(outcome.commands) == 2
+        assert isinstance(outcome.commands[0], StartTimer)
+        assert isinstance(outcome.commands[1], StartTimer)
+
+    def test_timers_fired_then_activity(self) -> None:
+        history = [
+            {"event_type": "TimerFired", "details": {}},
+            {"event_type": "TimerFired", "details": {}},
+        ]
+        outcome = replay(FanOutTimersWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], ScheduleActivity)
+        assert outcome.commands[0].activity_type == "after-timers"
+
+    def test_fan_out_then_sequential(self) -> None:
+        history = [
+            {"event_type": "ActivityCompleted", "details": {"result": '"r1"'}},
+            {"event_type": "ActivityCompleted", "details": {"result": '"r2"'}},
+        ]
+        outcome = replay(FanOutThenSequentialWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], ScheduleActivity)
+        assert outcome.commands[0].activity_type == "combine"
+        assert outcome.commands[0].arguments == ["r1", "r2"]
+
+    def test_fan_out_then_sequential_full(self) -> None:
+        history = [
+            {"event_type": "ActivityCompleted", "details": {"result": '"r1"'}},
+            {"event_type": "ActivityCompleted", "details": {"result": '"r2"'}},
+            {"event_type": "ActivityCompleted", "details": {"result": '"combined"'}},
+        ]
+        outcome = replay(FanOutThenSequentialWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == "combined"
+
+
 class TestWorkflowRegistry:
     def test_registered(self) -> None:
         reg = workflow.registry()
@@ -542,3 +633,4 @@ class TestWorkflowRegistry:
         assert "child-wf" in reg
         assert "version-wf" in reg
         assert "search-attr-wf" in reg
+        assert "fan-out-wf" in reg

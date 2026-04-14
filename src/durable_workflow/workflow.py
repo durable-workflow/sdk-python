@@ -340,6 +340,16 @@ def replay(
             else:
                 cmd = gen.send(None) if first else gen.send(next_value)
                 first = False
+            if isinstance(cmd, list):
+                needed = len(cmd)
+                if result_cursor + needed <= len(resolved_results):
+                    vals = resolved_results[result_cursor:result_cursor + needed]
+                    result_cursor += needed
+                    next_value = vals
+                    continue
+                ctx.logger._set_replaying(False)
+                pending.extend(cmd)
+                return ReplayOutcome(commands=pending)
             if isinstance(cmd, ContinueAsNew):
                 return ReplayOutcome(commands=[cmd])
             if isinstance(cmd, RecordSideEffect):
@@ -349,7 +359,8 @@ def replay(
                     continue
                 ctx.logger._set_replaying(False)
                 pending.append(cmd)
-                return ReplayOutcome(commands=pending)
+                next_value = cmd.result
+                continue
             if isinstance(cmd, UpsertSearchAttributes):
                 if result_cursor < len(resolved_results):
                     next_value = resolved_results[result_cursor]
@@ -359,7 +370,17 @@ def replay(
                 pending.append(cmd)
                 next_value = None
                 continue
-            if isinstance(cmd, (ScheduleActivity, StartTimer, StartChildWorkflow, RecordVersionMarker)):
+            if isinstance(cmd, RecordVersionMarker):
+                if result_cursor < len(resolved_results):
+                    val = resolved_results[result_cursor]
+                    result_cursor += 1
+                    next_value = val
+                    continue
+                ctx.logger._set_replaying(False)
+                pending.append(cmd)
+                next_value = cmd.version
+                continue
+            if isinstance(cmd, (ScheduleActivity, StartTimer, StartChildWorkflow)):
                 if result_cursor < len(resolved_results):
                     val = resolved_results[result_cursor]
                     result_cursor += 1
