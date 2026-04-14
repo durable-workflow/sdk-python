@@ -196,7 +196,7 @@ class Client:
             workflow_id=data.get("workflow_id", workflow_id),
             run_id=data.get("run_id"),
             workflow_type=data.get("workflow_type", ""),
-            status=data.get("status") or data.get("run_status"),
+            status=data.get("status"),
             namespace=data.get("namespace"),
             task_queue=data.get("task_queue"),
         )
@@ -225,13 +225,13 @@ class Client:
         qs = "&".join(f"{k}={v}" for k, v in params.items())
         path = f"/workflows?{qs}" if qs else "/workflows"
         data = await self._request("GET", path)
-        items = data.get("data") or data.get("workflows") or []
+        items = data.get("workflows", [])
         executions = [
             WorkflowExecution(
                 workflow_id=item.get("workflow_id", ""),
                 run_id=item.get("run_id"),
                 workflow_type=item.get("workflow_type", ""),
-                status=item.get("status") or item.get("run_status"),
+                status=item.get("status"),
             )
             for item in items
         ]
@@ -314,24 +314,24 @@ class Client:
                 if run_id is None:
                     raise WorkflowFailed("no run_id available to fetch history")
                 history = await self.get_history(handle.workflow_id, run_id)
-                events = history.get("events") or history.get("history_events") or []
+                events = history.get("events", [])
                 for ev in reversed(events):
-                    etype = ev.get("event_type") or ev.get("type")
+                    etype = ev.get("event_type")
                     payload = ev.get("payload") or {}
                     if etype in ("WorkflowCompleted", "workflow_completed"):
-                        return serializer.decode(payload.get("result") or ev.get("result"))
+                        return serializer.decode(payload.get("result"))
                     if etype in ("WorkflowFailed", "workflow_failed"):
                         raise WorkflowFailed(
-                            payload.get("message") or ev.get("message", "workflow failed"),
-                            payload.get("exception_class") or ev.get("exception_class"),
+                            payload.get("message", "workflow failed"),
+                            payload.get("exception_class"),
                         )
                     if etype in ("WorkflowTerminated", "workflow_terminated"):
                         raise WorkflowTerminated(
-                            payload.get("reason") or ev.get("reason", "workflow was terminated")
+                            payload.get("reason", "workflow was terminated")
                         )
                     if etype in ("WorkflowCancelled", "workflow_cancelled", "WorkflowCanceled", "workflow_canceled"):
                         raise WorkflowCancelled(
-                            payload.get("reason") or ev.get("reason", "workflow was cancelled")
+                            payload.get("reason", "workflow was cancelled")
                         )
                 return None
             if asyncio.get_running_loop().time() > deadline:
@@ -437,7 +437,7 @@ class Client:
         body: dict[str, Any] = {
             "activity_attempt_id": activity_attempt_id,
             "lease_owner": lease_owner,
-            "result": serializer.encode(result),
+            "result": serializer.envelope(result),
         }
         return await self._request(
             "POST", f"/worker/activity-tasks/{task_id}/complete", worker=True, json=body

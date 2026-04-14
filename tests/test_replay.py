@@ -169,7 +169,8 @@ class TestCompleteWorkflowCommand:
         cmd = CompleteWorkflow(result={"key": "val"})
         server_cmd = cmd.to_server_command("q")
         assert server_cmd["type"] == "complete_workflow"
-        assert '"key"' in server_cmd["result"]
+        assert server_cmd["result"]["codec"] == "json"
+        assert '"key"' in server_cmd["result"]["blob"]
 
 
 @workflow.defn(name="continue-as-new-wf")
@@ -272,7 +273,8 @@ class TestSideEffect:
         cmd = RecordSideEffect(result={"key": "val"})
         sc = cmd.to_server_command("q")
         assert sc["type"] == "record_side_effect"
-        assert '"key"' in sc["result"]
+        assert sc["result"]["codec"] == "json"
+        assert '"key"' in sc["result"]["blob"]
 
 
 class TestWorkflowContext:

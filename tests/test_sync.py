@@ -98,7 +98,7 @@ class TestSyncClientList:
     def test_list(self) -> None:
         client = Client("http://localhost:8080")
         resp = _mock_response(200, {
-            "data": [{"workflow_id": "wf-1", "run_id": "r1", "workflow_type": "g", "status": "running"}],
+            "workflows": [{"workflow_id": "wf-1", "run_id": "r1", "workflow_type": "g", "status": "running"}],
         })
         with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
             result = client.list_workflows(workflow_type="g")

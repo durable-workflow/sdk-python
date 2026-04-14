@@ -1,30 +1,17 @@
 """Payload serialization for the Durable Workflow worker protocol.
 
-The server now exposes a language-neutral payload envelope (see issue #164 and
-``docs/configuration/worker-protocol.md`` in the docs repo). Every payload on
-the wire carries a ``payload_codec`` tag alongside its opaque blob. Python
-workers use the ``json`` codec: the blob is a raw UTF-8 JSON document and no
-PHP SerializableClosure / HMAC wrapping is involved.
-
-For back-compat with runs started against older servers, ``decode`` still
-tolerates the legacy ``json:``-prefixed form and the PHP-serialized
-SerializableClosure that embeds a ``json:`` blob.
+The server exposes a language-neutral payload envelope (see issue #164 and
+``docs/configuration/worker-protocol.md`` in the docs repo).  Every payload on
+the wire carries a ``payload_codec`` tag alongside its opaque blob.  Python
+workers use the ``json`` codec exclusively: the blob is a raw UTF-8 JSON
+document.
 """
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
-# The canonical codec name this SDK produces and consumes natively.
 JSON_CODEC = "json"
-
-# Legacy: older workers (pre-#164) used a ``json:`` prefix when embedding
-# their payloads inside a PHP SerializableClosure wrapper. We keep the ability
-# to read those so in-flight workflows started before the upgrade don't break.
-_LEGACY_JSON_PREFIX = "json:"
-_PHP_LEGACY_JSON_RE = re.compile(r's:\d+:"(json:.*?)";', re.DOTALL)
-_PHP_DATA_RE = re.compile(r's:4:"data";s:(\d+):"')
 
 
 def encode(value: Any) -> str:
@@ -32,60 +19,29 @@ def encode(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
+def envelope(value: Any) -> dict[str, str]:
+    """Wrap a value in a ``{codec, blob}`` payload envelope."""
+    return {"codec": JSON_CODEC, "blob": encode(value)}
+
+
 def decode(blob: str | None, codec: str | None = None) -> Any:
     """Decode a payload blob into a Python value.
 
-    Args:
-        blob:  the opaque bytes as received from the server.
-        codec: the declared ``payload_codec`` from the response, if known.
-               When ``codec == "json"`` the blob is parsed directly.
-               When ``codec`` is a legacy PHP codec (``workflow-serializer-y``
-               or similar), no decode is attempted — the caller must surface
-               a clear error.
+    Raises ``ValueError`` when *codec* names a non-JSON codec or when *blob*
+    is not valid JSON.
     """
     if blob is None or blob == "":
         return None
 
-    # Always try JSON first: the server may tag payloads with its internal
-    # codec name even when the blob is plain JSON (e.g. activity arguments
-    # round-tripped through a workflow run whose payload_codec was set by
-    # the server's default serializer config).
-    try:
-        return json.loads(blob)
-    except (json.JSONDecodeError, TypeError):
-        pass
-
-    # Legacy shapes — kept so pre-#164 runs still decode.
-    if blob.startswith(_LEGACY_JSON_PREFIX):
-        return json.loads(blob[len(_LEGACY_JSON_PREFIX):])
-
-    if blob.startswith("O:") and "json:" in blob:
-        m = _PHP_LEGACY_JSON_RE.search(blob)
-        if m:
-            inner = m.group(1)
-            return json.loads(inner[len(_LEGACY_JSON_PREFIX):])
-
-    # Y-codec: PHP SerializableClosure wrapping a "data" field that contains
-    # the JSON value directly (without "json:" prefix).
-    if blob.startswith("O:") and '"data"' in blob:
-        m = _PHP_DATA_RE.search(blob)
-        if m:
-            length = int(m.group(1))
-            start = m.end()
-            raw = blob[start:start + length]
-            try:
-                return json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-    # PHP-serialized payload with no embedded JSON — this worker cannot decode it.
-    if codec and codec != JSON_CODEC:
+    if codec is not None and codec != JSON_CODEC:
         raise ValueError(
-            f"Cannot decode payload with codec {codec!r}: this SDK only supports "
-            f"the {JSON_CODEC!r} codec. Ensure the workflow was started with "
-            f"input as a plain JSON array or with an explicit "
+            f"Cannot decode payload with codec {codec!r}: this SDK only "
+            f"supports the {JSON_CODEC!r} codec. Ensure the workflow was "
+            f"started with a JSON input or an explicit "
             f'{{"codec": "json", "blob": "..."}} envelope.'
         )
 
-    # Last-resort: return the raw string so the caller can flag it.
-    return blob
+    try:
+        return json.loads(blob)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(f"Payload is not valid JSON: {exc}") from exc

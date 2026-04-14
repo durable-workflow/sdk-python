@@ -40,7 +40,7 @@ class ScheduleActivity:
         return {
             "type": "schedule_activity",
             "activity_type": self.activity_type,
-            "arguments": serializer.encode(self.arguments),
+            "arguments": serializer.envelope(self.arguments),
             "queue": self.queue or task_queue,
         }
 
@@ -63,7 +63,7 @@ class CompleteWorkflow:
     def to_server_command(self, task_queue: str) -> dict[str, Any]:
         return {
             "type": "complete_workflow",
-            "result": serializer.encode(self.result),
+            "result": serializer.envelope(self.result),
         }
 
 
@@ -95,7 +95,7 @@ class ContinueAsNew:
         cmd: dict[str, Any] = {"type": "continue_as_new"}
         if self.workflow_type is not None:
             cmd["workflow_type"] = self.workflow_type
-        cmd["arguments"] = serializer.encode(self.arguments)
+        cmd["arguments"] = serializer.envelope(self.arguments)
         cmd["task_queue"] = self.task_queue or task_queue
         return cmd
 
@@ -107,7 +107,7 @@ class RecordSideEffect:
     def to_server_command(self, task_queue: str) -> dict[str, Any]:
         return {
             "type": "record_side_effect",
-            "result": serializer.encode(self.result),
+            "result": serializer.envelope(self.result),
         }
 
 
@@ -122,7 +122,7 @@ class StartChildWorkflow:
         cmd: dict[str, Any] = {
             "type": "start_child_workflow",
             "workflow_type": self.workflow_type,
-            "arguments": serializer.encode(self.arguments),
+            "arguments": serializer.envelope(self.arguments),
         }
         if self.task_queue is not None:
             cmd["queue"] = self.task_queue
@@ -284,9 +284,9 @@ def replay(
 
     workflow_start_time: datetime | None = None
     for ev in events:
-        etype = ev.get("event_type") or ev.get("type")
+        etype = ev.get("event_type")
         if etype in ("WorkflowStarted", "workflow_started"):
-            ts = (ev.get("payload") or {}).get("timestamp") or ev.get("timestamp")
+            ts = (ev.get("payload") or {}).get("timestamp")
             if ts:
                 with contextlib.suppress(ValueError, TypeError):
                     workflow_start_time = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
@@ -297,25 +297,23 @@ def replay(
 
     resolved_results: list[Any] = []
     for ev in events:
-        etype = ev.get("event_type") or ev.get("type")
+        etype = ev.get("event_type")
         payload = ev.get("payload") or {}
         if etype in ("ActivityCompleted", "activity_completed"):
-            raw = payload.get("result") or ev.get("result")
-            resolved_results.append(serializer.decode(raw))
+            resolved_results.append(serializer.decode(payload.get("result")))
         elif etype in ("TimerFired", "timer_fired"):
             resolved_results.append(None)
         elif etype in (
             "SideEffectRecorded", "side_effect_recorded",
             "ChildRunCompleted", "child_run_completed",
         ):
-            raw = payload.get("result") or ev.get("result")
-            resolved_results.append(serializer.decode(raw))
+            resolved_results.append(serializer.decode(payload.get("result")))
         elif etype in ("ChildRunFailed", "child_run_failed"):
-            msg = payload.get("message") or ev.get("message", "child workflow failed")
-            resolved_results.append(ChildWorkflowFailed(msg))
+            resolved_results.append(ChildWorkflowFailed(
+                payload.get("message", "child workflow failed")
+            ))
         elif etype in ("VersionMarkerRecorded", "version_marker_recorded"):
-            version = payload.get("version") or ev.get("version", 0)
-            resolved_results.append(version)
+            resolved_results.append(payload.get("version", 0))
         elif etype in ("SearchAttributesUpserted", "search_attributes_upserted"):
             resolved_results.append(None)
 

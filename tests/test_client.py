@@ -179,7 +179,7 @@ class TestListWorkflows:
     @pytest.mark.asyncio
     async def test_list(self, client: Client) -> None:
         resp = _mock_response(200, {
-            "data": [
+            "workflows": [
                 {"workflow_id": "wf-1", "run_id": "r1", "workflow_type": "greeter", "status": "running"},
                 {"workflow_id": "wf-2", "run_id": "r2", "workflow_type": "greeter", "status": "completed"},
             ],
