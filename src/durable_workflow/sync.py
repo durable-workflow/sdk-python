@@ -5,7 +5,18 @@ import asyncio
 from typing import Any
 
 from .client import Client as AsyncClient
-from .client import WorkflowExecution, WorkflowHandle, WorkflowList
+from .client import (
+    ScheduleAction,
+    ScheduleBackfillResult,
+    ScheduleDescription,
+    ScheduleHandle,
+    ScheduleList,
+    ScheduleSpec,
+    ScheduleTriggerResult,
+    WorkflowExecution,
+    WorkflowHandle,
+    WorkflowList,
+)
 
 
 def _run(coro: Any) -> Any:
@@ -63,6 +74,59 @@ class SyncWorkflowHandle:
             wait_timeout_seconds=wait_timeout_seconds,
             request_id=request_id,
         ))
+
+
+class SyncScheduleHandle:
+    def __init__(self, async_handle: ScheduleHandle) -> None:
+        self._handle = async_handle
+        self.schedule_id = async_handle.schedule_id
+
+    def describe(self) -> ScheduleDescription:
+        result: ScheduleDescription = _run(self._handle.describe())
+        return result
+
+    def update(
+        self,
+        *,
+        spec: ScheduleSpec | None = None,
+        action: ScheduleAction | None = None,
+        overlap_policy: str | None = None,
+        jitter_seconds: int | None = None,
+        max_runs: int | None = None,
+        memo: dict[str, Any] | None = None,
+        search_attributes: dict[str, Any] | None = None,
+        note: str | None = None,
+    ) -> None:
+        _run(self._handle.update(
+            spec=spec, action=action, overlap_policy=overlap_policy,
+            jitter_seconds=jitter_seconds, max_runs=max_runs,
+            memo=memo, search_attributes=search_attributes, note=note,
+        ))
+
+    def pause(self, *, note: str | None = None) -> None:
+        _run(self._handle.pause(note=note))
+
+    def resume(self, *, note: str | None = None) -> None:
+        _run(self._handle.resume(note=note))
+
+    def trigger(self, *, overlap_policy: str | None = None) -> ScheduleTriggerResult:
+        result: ScheduleTriggerResult = _run(self._handle.trigger(overlap_policy=overlap_policy))
+        return result
+
+    def delete(self) -> None:
+        _run(self._handle.delete())
+
+    def backfill(
+        self,
+        *,
+        start_time: str,
+        end_time: str,
+        overlap_policy: str | None = None,
+    ) -> ScheduleBackfillResult:
+        result: ScheduleBackfillResult = _run(self._handle.backfill(
+            start_time=start_time, end_time=end_time, overlap_policy=overlap_policy,
+        ))
+        return result
 
 
 class Client:
@@ -186,3 +250,88 @@ class Client:
         return _run(self._async.get_result(
             handle._handle, poll_interval=poll_interval, timeout=timeout
         ))
+
+    # ── Schedules ─────────────────────────────────────────────────────
+    def get_schedule_handle(self, schedule_id: str) -> SyncScheduleHandle:
+        return SyncScheduleHandle(self._async.get_schedule_handle(schedule_id))
+
+    def create_schedule(
+        self,
+        *,
+        schedule_id: str | None = None,
+        spec: ScheduleSpec,
+        action: ScheduleAction,
+        overlap_policy: str | None = None,
+        jitter_seconds: int | None = None,
+        max_runs: int | None = None,
+        memo: dict[str, Any] | None = None,
+        search_attributes: dict[str, Any] | None = None,
+        paused: bool = False,
+        note: str | None = None,
+    ) -> SyncScheduleHandle:
+        handle = _run(self._async.create_schedule(
+            schedule_id=schedule_id, spec=spec, action=action,
+            overlap_policy=overlap_policy, jitter_seconds=jitter_seconds,
+            max_runs=max_runs, memo=memo, search_attributes=search_attributes,
+            paused=paused, note=note,
+        ))
+        return SyncScheduleHandle(handle)
+
+    def list_schedules(self) -> ScheduleList:
+        result: ScheduleList = _run(self._async.list_schedules())
+        return result
+
+    def describe_schedule(self, schedule_id: str) -> ScheduleDescription:
+        result: ScheduleDescription = _run(self._async.describe_schedule(schedule_id))
+        return result
+
+    def update_schedule(
+        self,
+        schedule_id: str,
+        *,
+        spec: ScheduleSpec | None = None,
+        action: ScheduleAction | None = None,
+        overlap_policy: str | None = None,
+        jitter_seconds: int | None = None,
+        max_runs: int | None = None,
+        memo: dict[str, Any] | None = None,
+        search_attributes: dict[str, Any] | None = None,
+        note: str | None = None,
+    ) -> None:
+        _run(self._async.update_schedule(
+            schedule_id, spec=spec, action=action,
+            overlap_policy=overlap_policy, jitter_seconds=jitter_seconds,
+            max_runs=max_runs, memo=memo, search_attributes=search_attributes,
+            note=note,
+        ))
+
+    def pause_schedule(self, schedule_id: str, *, note: str | None = None) -> None:
+        _run(self._async.pause_schedule(schedule_id, note=note))
+
+    def resume_schedule(self, schedule_id: str, *, note: str | None = None) -> None:
+        _run(self._async.resume_schedule(schedule_id, note=note))
+
+    def trigger_schedule(
+        self, schedule_id: str, *, overlap_policy: str | None = None
+    ) -> ScheduleTriggerResult:
+        result: ScheduleTriggerResult = _run(
+            self._async.trigger_schedule(schedule_id, overlap_policy=overlap_policy)
+        )
+        return result
+
+    def delete_schedule(self, schedule_id: str) -> None:
+        _run(self._async.delete_schedule(schedule_id))
+
+    def backfill_schedule(
+        self,
+        schedule_id: str,
+        *,
+        start_time: str,
+        end_time: str,
+        overlap_policy: str | None = None,
+    ) -> ScheduleBackfillResult:
+        result: ScheduleBackfillResult = _run(self._async.backfill_schedule(
+            schedule_id, start_time=start_time, end_time=end_time,
+            overlap_policy=overlap_policy,
+        ))
+        return result

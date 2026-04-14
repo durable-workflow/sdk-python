@@ -54,6 +54,18 @@ class Unauthorized(DurableWorkflowError):
         super().__init__(message)
 
 
+class ScheduleNotFound(DurableWorkflowError):
+    def __init__(self, schedule_id: str) -> None:
+        super().__init__(f"schedule not found: {schedule_id}")
+        self.schedule_id = schedule_id
+
+
+class ScheduleAlreadyExists(DurableWorkflowError):
+    def __init__(self, schedule_id: str) -> None:
+        super().__init__(f"schedule already exists: {schedule_id}")
+        self.schedule_id = schedule_id
+
+
 class QueryFailed(DurableWorkflowError):
     pass
 
@@ -102,6 +114,8 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
     if status == 404:
         if reason == "query_not_found":
             raise QueryFailed(message or "query not found")
+        if reason == "schedule_not_found":
+            raise ScheduleNotFound(context)
         if reason in ("instance_not_found", "workflow_not_found") or "workflow" in context.lower():
             raise WorkflowNotFound(context)
         if reason == "namespace_not_found":
@@ -109,6 +123,8 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
         raise ServerError(status, body)
 
     if status == 409:
+        if reason == "schedule_already_exists":
+            raise ScheduleAlreadyExists(context)
         if reason == "duplicate_not_allowed":
             raise WorkflowAlreadyStarted(context)
         if reason == "query_rejected":

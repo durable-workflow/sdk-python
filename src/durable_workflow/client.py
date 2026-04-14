@@ -37,6 +37,92 @@ class WorkflowList:
     next_page_token: str | None = None
 
 
+@dataclass
+class ScheduleSpec:
+    cron_expressions: list[str] | None = None
+    intervals: list[dict[str, str]] | None = None
+    timezone: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.cron_expressions is not None:
+            d["cron_expressions"] = self.cron_expressions
+        if self.intervals is not None:
+            d["intervals"] = self.intervals
+        if self.timezone is not None:
+            d["timezone"] = self.timezone
+        return d
+
+
+@dataclass
+class ScheduleAction:
+    workflow_type: str
+    task_queue: str | None = None
+    input: list[Any] | None = None
+    execution_timeout_seconds: int | None = None
+    run_timeout_seconds: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"workflow_type": self.workflow_type}
+        if self.task_queue is not None:
+            d["task_queue"] = self.task_queue
+        if self.input is not None:
+            d["input"] = self.input
+        if self.execution_timeout_seconds is not None:
+            d["execution_timeout_seconds"] = self.execution_timeout_seconds
+        if self.run_timeout_seconds is not None:
+            d["run_timeout_seconds"] = self.run_timeout_seconds
+        return d
+
+
+@dataclass
+class ScheduleDescription:
+    schedule_id: str
+    status: str | None = None
+    spec: dict[str, Any] | None = None
+    action: dict[str, Any] | None = None
+    overlap_policy: str | None = None
+    note: str | None = None
+    memo: dict[str, Any] | None = None
+    search_attributes: dict[str, Any] | None = None
+    jitter_seconds: int | None = None
+    max_runs: int | None = None
+    remaining_actions: int | None = None
+    fires_count: int = 0
+    failures_count: int = 0
+    next_fire_at: str | None = None
+    last_fired_at: str | None = None
+    latest_workflow_instance_id: str | None = None
+    paused_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    info: dict[str, Any] | None = None
+
+
+@dataclass
+class ScheduleList:
+    schedules: list[ScheduleDescription]
+    next_page_token: str | None = None
+
+
+@dataclass
+class ScheduleTriggerResult:
+    schedule_id: str
+    outcome: str
+    workflow_id: str | None = None
+    run_id: str | None = None
+    reason: str | None = None
+    buffer_depth: int | None = None
+
+
+@dataclass
+class ScheduleBackfillResult:
+    schedule_id: str
+    outcome: str
+    fires_attempted: int = 0
+    results: list[dict[str, Any]] | None = None
+
+
 class WorkflowHandle:
     def __init__(self, client: Client, workflow_id: str, run_id: str | None = None, workflow_type: str = "") -> None:
         self._client = client
@@ -78,6 +164,62 @@ class WorkflowHandle:
             wait_for=wait_for,
             wait_timeout_seconds=wait_timeout_seconds,
             request_id=request_id,
+        )
+
+
+class ScheduleHandle:
+    def __init__(self, client: Client, schedule_id: str) -> None:
+        self._client = client
+        self.schedule_id = schedule_id
+
+    async def describe(self) -> ScheduleDescription:
+        return await self._client.describe_schedule(self.schedule_id)
+
+    async def update(
+        self,
+        *,
+        spec: ScheduleSpec | None = None,
+        action: ScheduleAction | None = None,
+        overlap_policy: str | None = None,
+        jitter_seconds: int | None = None,
+        max_runs: int | None = None,
+        memo: dict[str, Any] | None = None,
+        search_attributes: dict[str, Any] | None = None,
+        note: str | None = None,
+    ) -> None:
+        await self._client.update_schedule(
+            self.schedule_id,
+            spec=spec,
+            action=action,
+            overlap_policy=overlap_policy,
+            jitter_seconds=jitter_seconds,
+            max_runs=max_runs,
+            memo=memo,
+            search_attributes=search_attributes,
+            note=note,
+        )
+
+    async def pause(self, *, note: str | None = None) -> None:
+        await self._client.pause_schedule(self.schedule_id, note=note)
+
+    async def resume(self, *, note: str | None = None) -> None:
+        await self._client.resume_schedule(self.schedule_id, note=note)
+
+    async def trigger(self, *, overlap_policy: str | None = None) -> ScheduleTriggerResult:
+        return await self._client.trigger_schedule(self.schedule_id, overlap_policy=overlap_policy)
+
+    async def delete(self) -> None:
+        await self._client.delete_schedule(self.schedule_id)
+
+    async def backfill(
+        self,
+        *,
+        start_time: str,
+        end_time: str,
+        overlap_policy: str | None = None,
+    ) -> ScheduleBackfillResult:
+        return await self._client.backfill_schedule(
+            self.schedule_id, start_time=start_time, end_time=end_time, overlap_policy=overlap_policy,
         )
 
 
@@ -355,6 +497,184 @@ class Client:
                     f"workflow {handle.workflow_id} not terminal after {timeout}s (status={status})"
                 )
             await asyncio.sleep(poll_interval)
+
+    # ── Schedules ─────────────────────────────────────────────────────
+    def get_schedule_handle(self, schedule_id: str) -> ScheduleHandle:
+        return ScheduleHandle(self, schedule_id=schedule_id)
+
+    async def create_schedule(
+        self,
+        *,
+        schedule_id: str | None = None,
+        spec: ScheduleSpec,
+        action: ScheduleAction,
+        overlap_policy: str | None = None,
+        jitter_seconds: int | None = None,
+        max_runs: int | None = None,
+        memo: dict[str, Any] | None = None,
+        search_attributes: dict[str, Any] | None = None,
+        paused: bool = False,
+        note: str | None = None,
+    ) -> ScheduleHandle:
+        body: dict[str, Any] = {
+            "spec": spec.to_dict(),
+            "action": action.to_dict(),
+        }
+        if schedule_id is not None:
+            body["schedule_id"] = schedule_id
+        if overlap_policy is not None:
+            body["overlap_policy"] = overlap_policy
+        if jitter_seconds is not None:
+            body["jitter_seconds"] = jitter_seconds
+        if max_runs is not None:
+            body["max_runs"] = max_runs
+        if memo is not None:
+            body["memo"] = memo
+        if search_attributes is not None:
+            body["search_attributes"] = search_attributes
+        if paused:
+            body["paused"] = True
+        if note is not None:
+            body["note"] = note
+        data = await self._request("POST", "/schedules", json=body)
+        sid = data.get("schedule_id", schedule_id or "")
+        return ScheduleHandle(self, schedule_id=sid)
+
+    async def list_schedules(self) -> ScheduleList:
+        data = await self._request("GET", "/schedules")
+        items = data.get("schedules", [])
+        schedules = [
+            ScheduleDescription(
+                schedule_id=item.get("schedule_id", ""),
+                status=item.get("status"),
+                spec=item.get("spec"),
+                action=item.get("action"),
+                overlap_policy=item.get("overlap_policy"),
+                note=item.get("note"),
+                fires_count=item.get("fires_count", 0),
+                next_fire_at=item.get("next_fire_at"),
+                last_fired_at=item.get("last_fired_at"),
+            )
+            for item in items
+        ]
+        return ScheduleList(
+            schedules=schedules,
+            next_page_token=data.get("next_page_token"),
+        )
+
+    async def describe_schedule(self, schedule_id: str) -> ScheduleDescription:
+        data = await self._request("GET", f"/schedules/{schedule_id}", context=schedule_id)
+        return ScheduleDescription(
+            schedule_id=data.get("schedule_id", schedule_id),
+            status=data.get("status"),
+            spec=data.get("spec"),
+            action=data.get("action"),
+            overlap_policy=data.get("overlap_policy"),
+            note=data.get("note"),
+            memo=data.get("memo"),
+            search_attributes=data.get("search_attributes"),
+            jitter_seconds=data.get("jitter_seconds"),
+            max_runs=data.get("max_runs"),
+            remaining_actions=data.get("remaining_actions"),
+            fires_count=data.get("fires_count", 0),
+            failures_count=data.get("failures_count", 0),
+            next_fire_at=data.get("next_fire_at"),
+            last_fired_at=data.get("last_fired_at"),
+            latest_workflow_instance_id=data.get("latest_workflow_instance_id"),
+            paused_at=data.get("paused_at"),
+            created_at=data.get("created_at"),
+            updated_at=data.get("updated_at"),
+            info=data.get("info"),
+        )
+
+    async def update_schedule(
+        self,
+        schedule_id: str,
+        *,
+        spec: ScheduleSpec | None = None,
+        action: ScheduleAction | None = None,
+        overlap_policy: str | None = None,
+        jitter_seconds: int | None = None,
+        max_runs: int | None = None,
+        memo: dict[str, Any] | None = None,
+        search_attributes: dict[str, Any] | None = None,
+        note: str | None = None,
+    ) -> None:
+        body: dict[str, Any] = {}
+        if spec is not None:
+            body["spec"] = spec.to_dict()
+        if action is not None:
+            body["action"] = action.to_dict()
+        if overlap_policy is not None:
+            body["overlap_policy"] = overlap_policy
+        if jitter_seconds is not None:
+            body["jitter_seconds"] = jitter_seconds
+        if max_runs is not None:
+            body["max_runs"] = max_runs
+        if memo is not None:
+            body["memo"] = memo
+        if search_attributes is not None:
+            body["search_attributes"] = search_attributes
+        if note is not None:
+            body["note"] = note
+        await self._request("PUT", f"/schedules/{schedule_id}", json=body, context=schedule_id)
+
+    async def pause_schedule(self, schedule_id: str, *, note: str | None = None) -> None:
+        body: dict[str, Any] = {}
+        if note is not None:
+            body["note"] = note
+        await self._request("POST", f"/schedules/{schedule_id}/pause", json=body, context=schedule_id)
+
+    async def resume_schedule(self, schedule_id: str, *, note: str | None = None) -> None:
+        body: dict[str, Any] = {}
+        if note is not None:
+            body["note"] = note
+        await self._request("POST", f"/schedules/{schedule_id}/resume", json=body, context=schedule_id)
+
+    async def trigger_schedule(
+        self, schedule_id: str, *, overlap_policy: str | None = None
+    ) -> ScheduleTriggerResult:
+        body: dict[str, Any] = {}
+        if overlap_policy is not None:
+            body["overlap_policy"] = overlap_policy
+        data = await self._request(
+            "POST", f"/schedules/{schedule_id}/trigger", json=body, context=schedule_id,
+        )
+        return ScheduleTriggerResult(
+            schedule_id=data.get("schedule_id", schedule_id),
+            outcome=data.get("outcome", ""),
+            workflow_id=data.get("workflow_id"),
+            run_id=data.get("run_id"),
+            reason=data.get("reason"),
+            buffer_depth=data.get("buffer_depth"),
+        )
+
+    async def delete_schedule(self, schedule_id: str) -> None:
+        await self._request("DELETE", f"/schedules/{schedule_id}", context=schedule_id)
+
+    async def backfill_schedule(
+        self,
+        schedule_id: str,
+        *,
+        start_time: str,
+        end_time: str,
+        overlap_policy: str | None = None,
+    ) -> ScheduleBackfillResult:
+        body: dict[str, Any] = {
+            "start_time": start_time,
+            "end_time": end_time,
+        }
+        if overlap_policy is not None:
+            body["overlap_policy"] = overlap_policy
+        data = await self._request(
+            "POST", f"/schedules/{schedule_id}/backfill", json=body, context=schedule_id,
+        )
+        return ScheduleBackfillResult(
+            schedule_id=data.get("schedule_id", schedule_id),
+            outcome=data.get("outcome", ""),
+            fires_attempted=data.get("fires_attempted", 0),
+            results=data.get("results"),
+        )
 
     # ── Worker protocol ────────────────────────────────────────────────
     async def register_worker(
