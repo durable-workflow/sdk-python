@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import traceback
 import uuid
@@ -295,10 +296,8 @@ class Worker:
         await self._register()
         wf_loop = asyncio.create_task(self._poll_workflow_tasks())
         act_loop = asyncio.create_task(self._poll_activity_tasks())
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(wf_loop, act_loop)
-        except asyncio.CancelledError:
-            pass
 
     async def stop(self) -> None:
         self._stop.set()

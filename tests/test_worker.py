@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from unittest.mock import AsyncMock
 
 import pytest
@@ -384,10 +385,8 @@ class TestPollLoops:
         await asyncio.sleep(0.05)
         await worker.stop()
         run_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await run_task
-        except asyncio.CancelledError:
-            pass
         assert mock_client.register_worker.call_count == 1
         assert mock_client.poll_workflow_task.call_count >= 1
         assert mock_client.poll_activity_task.call_count >= 1

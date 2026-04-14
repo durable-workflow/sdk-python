@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]'
+      - run: ruff check src/ tests/
+      - run: mypy src/durable_workflow/
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e '.[dev]'
+      - run: pytest tests/ -m "not integration" -q
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sdk-python
+      - uses: actions/checkout@v4
+        with:
+          repository: durable-workflow/server
+          path: server
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]'
+        working-directory: sdk-python
+      - name: Start server stack
+        working-directory: sdk-python
+        run: |
+          docker compose -f docker-compose.test.yml up -d --wait --timeout 120
+      - name: Run integration tests
+        working-directory: sdk-python
+        env:
+          DURABLE_WORKFLOW_SERVER_URL: http://localhost:8080
+          DURABLE_WORKFLOW_AUTH_TOKEN: test-token
+        run: pytest tests/integration/ -v
+      - name: Teardown
+        if: always()
+        working-directory: sdk-python
+        run: docker compose -f docker-compose.test.yml down -v
