@@ -348,6 +348,10 @@ class TestConcurrencyLimits:
             max_concurrent_activity_tasks=2,
         )
 
+        async def _acquire_and_dispatch(t: dict[str, object]) -> None:
+            await worker._act_semaphore.acquire()
+            await worker._dispatch_activity_task(t)
+
         tasks = []
         for i in range(4):
             task = {
@@ -357,7 +361,7 @@ class TestConcurrencyLimits:
                 "arguments": "[]",
                 "payload_codec": "json",
             }
-            tasks.append(worker._track(worker._dispatch_activity_task(task)))
+            tasks.append(worker._track(_acquire_and_dispatch(task)))
 
         await asyncio.sleep(0.01)
         assert max_running == 2

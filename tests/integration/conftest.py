@@ -21,4 +21,4 @@ def server_url() -> str:
 
 @pytest.fixture(scope="session")
 def server_token() -> str:
-    return os.environ.get("DURABLE_WORKFLOW_AUTH_TOKEN", "dev-token-123")
+    return os.environ.get("DURABLE_WORKFLOW_AUTH_TOKEN", "test-token")

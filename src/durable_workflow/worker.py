@@ -33,7 +33,7 @@ class Worker:
         workflows: Iterable[type] = (),
         activities: Iterable[Callable[..., Any]] = (),
         worker_id: str | None = None,
-        poll_timeout: float = 5.0,
+        poll_timeout: float = 35.0,
         max_concurrent_workflow_tasks: int = 10,
         max_concurrent_activity_tasks: int = 10,
         shutdown_timeout: float = 30.0,
@@ -248,6 +248,7 @@ class Worker:
                 continue
             if task is None:
                 self._wf_semaphore.release()
+                await asyncio.sleep(0)
                 continue
             self._track(self._dispatch_workflow_task(task))
 
@@ -278,6 +279,7 @@ class Worker:
                 continue
             if task is None:
                 self._act_semaphore.release()
+                await asyncio.sleep(0)
                 continue
             self._track(self._dispatch_activity_task(task))
 

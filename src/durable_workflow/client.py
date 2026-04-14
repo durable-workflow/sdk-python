@@ -107,7 +107,7 @@ class Client:
         await self.aclose()
 
     def _headers(self, *, worker: bool = False) -> dict[str, str]:
-        h: dict[str, str] = {"Content-Type": "application/json"}
+        h: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
         if self.token:
             h["Authorization"] = f"Bearer {self.token}"
         h["X-Namespace"] = self.namespace
