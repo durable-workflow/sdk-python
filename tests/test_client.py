@@ -142,7 +142,8 @@ class TestSignalWorkflow:
             call_args = mock.call_args
             assert "/signal/my-signal" in call_args[0][1]
             body = call_args.kwargs.get("json") or call_args[1].get("json")
-            assert body["input"] == ["data"]
+            assert body["input"]["codec"] == "json"
+            assert json.loads(body["input"]["blob"]) == ["data"]
 
 
 class TestCancelWorkflow:
@@ -302,7 +303,8 @@ class TestUpdateWorkflow:
             call_args = mock.call_args
             assert "/update/my-update" in call_args[0][1]
             body = call_args.kwargs.get("json") or call_args[1].get("json")
-            assert body["input"] == ["data"]
+            assert body["input"]["codec"] == "json"
+            assert json.loads(body["input"]["blob"]) == ["data"]
             assert body["wait_for"] == "completed"
             assert body["wait_timeout_seconds"] == 10
 

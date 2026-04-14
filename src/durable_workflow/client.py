@@ -266,7 +266,7 @@ class Client:
     ) -> None:
         body: dict[str, Any] = {}
         if args:
-            body["input"] = args
+            body["input"] = serializer.envelope(args)
         await self._request("POST", f"/workflows/{workflow_id}/signal/{signal_name}", json=body, context=workflow_id)
 
     async def query_workflow(
@@ -274,7 +274,7 @@ class Client:
     ) -> Any:
         body: dict[str, Any] = {}
         if args:
-            body["input"] = args
+            body["input"] = serializer.envelope(args)
         return await self._request(
             "POST", f"/workflows/{workflow_id}/query/{query_name}", json=body, context=workflow_id
         )
@@ -303,7 +303,7 @@ class Client:
     ) -> Any:
         body: dict[str, Any] = {}
         if args:
-            body["input"] = args
+            body["input"] = serializer.envelope(args)
         if wait_for is not None:
             body["wait_for"] = wait_for
         if wait_timeout_seconds is not None:
