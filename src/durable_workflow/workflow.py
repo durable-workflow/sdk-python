@@ -331,10 +331,15 @@ def replay(
     next_value: Any = None
     first = True
     pending: list[Command] = []
+    advanced_cmd: Any = None
     try:
         while True:
-            cmd = gen.send(None) if first else gen.send(next_value)
-            first = False
+            if advanced_cmd is not None:
+                cmd = advanced_cmd
+                advanced_cmd = None
+            else:
+                cmd = gen.send(None) if first else gen.send(next_value)
+                first = False
             if isinstance(cmd, ContinueAsNew):
                 return ReplayOutcome(commands=[cmd])
             if isinstance(cmd, RecordSideEffect):
@@ -360,7 +365,7 @@ def replay(
                     result_cursor += 1
                     if isinstance(val, ChildWorkflowFailed):
                         try:
-                            cmd = gen.throw(val)
+                            advanced_cmd = gen.throw(val)
                             continue
                         except StopIteration as stop:
                             if isinstance(stop.value, ContinueAsNew):

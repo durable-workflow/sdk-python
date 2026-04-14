@@ -366,6 +366,16 @@ class ChildWorkflowFailedWf:
             return "handled"
 
 
+@workflow.defn(name="child-wf-failed-fallback")
+class ChildWorkflowFailedFallbackWf:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.start_child_workflow("sub-workflow", [])
+        except ChildWorkflowFailed:
+            result = yield ctx.schedule_activity("fallback", [])
+            return {"fallback": result}
+
+
 @workflow.defn(name="version-wf")
 class VersionWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -410,6 +420,25 @@ class TestChildWorkflow:
         cmd = outcome.commands[0]
         assert isinstance(cmd, CompleteWorkflow)
         assert cmd.result == "handled"
+
+    def test_child_failed_then_fallback_yields_command(self) -> None:
+        history = [{"event_type": "ChildRunFailed", "details": {"message": "child failed"}}]
+        outcome = replay(ChildWorkflowFailedFallbackWf, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, ScheduleActivity)
+        assert cmd.activity_type == "fallback"
+
+    def test_child_failed_then_fallback_completes(self) -> None:
+        history = [
+            {"event_type": "ChildRunFailed", "details": {"message": "child failed"}},
+            {"event_type": "ActivityCompleted", "details": {"result": '"ok"'}},
+        ]
+        outcome = replay(ChildWorkflowFailedFallbackWf, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {"fallback": "ok"}
 
     def test_server_command_shape(self) -> None:
         cmd = StartChildWorkflow(workflow_type="sub", arguments=[1], task_queue="q2", parent_close_policy="terminate")
