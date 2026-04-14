@@ -1,4 +1,4 @@
-from . import activity, workflow
+from . import activity, sync, workflow
 from .client import Client, WorkflowExecution, WorkflowHandle, WorkflowList
 from .errors import (
     DurableWorkflowError,
@@ -15,15 +15,18 @@ from .errors import (
     WorkflowTerminated,
 )
 from .worker import Worker
+from .workflow import ContinueAsNew
 
 __all__ = [
     "Client",
+    "ContinueAsNew",
     "Worker",
     "WorkflowExecution",
     "WorkflowHandle",
     "WorkflowList",
     "workflow",
     "activity",
+    "sync",
     "DurableWorkflowError",
     "InvalidArgument",
     "NamespaceNotFound",

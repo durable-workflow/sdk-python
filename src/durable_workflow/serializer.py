@@ -24,6 +24,7 @@ JSON_CODEC = "json"
 # to read those so in-flight workflows started before the upgrade don't break.
 _LEGACY_JSON_PREFIX = "json:"
 _PHP_LEGACY_JSON_RE = re.compile(r's:\d+:"(json:.*?)";', re.DOTALL)
+_PHP_DATA_RE = re.compile(r's:4:"data";s:(\d+):"')
 
 
 def encode(value: Any) -> str:
@@ -45,12 +46,14 @@ def decode(blob: str | None, codec: str | None = None) -> Any:
     if blob is None or blob == "":
         return None
 
-    if codec in (None, JSON_CODEC):
-        # Prefer strict JSON parsing when the codec is declared or unknown.
-        try:
-            return json.loads(blob)
-        except (json.JSONDecodeError, TypeError):
-            pass
+    # Always try JSON first: the server may tag payloads with its internal
+    # codec name even when the blob is plain JSON (e.g. activity arguments
+    # round-tripped through a workflow run whose payload_codec was set by
+    # the server's default serializer config).
+    try:
+        return json.loads(blob)
+    except (json.JSONDecodeError, TypeError):
+        pass
 
     # Legacy shapes — kept so pre-#164 runs still decode.
     if blob.startswith(_LEGACY_JSON_PREFIX):
@@ -61,6 +64,19 @@ def decode(blob: str | None, codec: str | None = None) -> Any:
         if m:
             inner = m.group(1)
             return json.loads(inner[len(_LEGACY_JSON_PREFIX):])
+
+    # Y-codec: PHP SerializableClosure wrapping a "data" field that contains
+    # the JSON value directly (without "json:" prefix).
+    if blob.startswith("O:") and '"data"' in blob:
+        m = _PHP_DATA_RE.search(blob)
+        if m:
+            length = int(m.group(1))
+            start = m.end()
+            raw = blob[start:start + length]
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                pass
 
     # PHP-serialized payload with no embedded JSON — this worker cannot decode it.
     if codec and codec != JSON_CODEC:

@@ -1,11 +1,5 @@
 """End-to-end demo: start a Python-authored workflow with one activity.
 
-Known limitation (as of 2026-04-14): the server PHP-serializes workflow
-*start inputs*. Non-PHP SDKs can't read them back. This demo therefore uses
-a workflow with no start input — the activity arguments and workflow result
-both round-trip through the Python SDK's JSON codec without the server
-re-wrapping them.
-
 Usage (from inside the server's docker network):
 
     SERVER_URL=http://server:8080 \
@@ -37,43 +31,51 @@ class GreeterWorkflow:
 
 async def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    log = logging.getLogger("greeter")
     url = os.environ.get("SERVER_URL", "http://server:8080")
     token = os.environ.get("WORKFLOW_TOKEN", "dev-token-123")
     task_queue = "python-workers"
     wf_id = f"greet-{uuid.uuid4().hex[:6]}"
 
     async with Client(url, token=token, namespace="default") as client:
-        worker = Worker(
-            client,
-            task_queue=task_queue,
-            workflows=[GreeterWorkflow],
-            activities=[greet],
-        )
         handle = await client.start_workflow(
             workflow_type="greeter",
             task_queue=task_queue,
             workflow_id=wf_id,
             input=[],
         )
-        print(f"started {handle.workflow_id} run={handle.run_id}", flush=True)
+        log.info("started %s run=%s", handle.workflow_id, handle.run_id)
 
+        worker = Worker(
+            client,
+            task_queue=task_queue,
+            workflows=[GreeterWorkflow],
+            activities=[greet],
+            poll_timeout=5.0,
+        )
+
+        log.info("running worker for 30s...")
         worker_task = asyncio.create_task(worker.run())
-
+        await asyncio.sleep(30.0)
+        worker.stop()
+        worker_task.cancel()
         try:
-            result = await client.get_result(handle, timeout=180.0)
+            await worker_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    log.info("worker stopped, checking result...")
+    async with Client(url, token=token, namespace="default") as client2:
+        handle2 = client2.get_workflow_handle(handle.workflow_id, run_id=handle.run_id)
+        try:
+            result = await handle2.result(timeout=10.0, poll_interval=1.0)
+            log.info("RESULT: %r", result)
             print(f"RESULT: {result!r}", flush=True)
-            rc = 0
+            return 0
         except Exception as e:
+            log.error("FAILED: %s", e)
             print(f"FAILED: {e}", flush=True)
-            rc = 1
-        finally:
-            worker.stop()
-            worker_task.cancel()
-            try:
-                await worker_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        return rc
+            return 1
 
 
 if __name__ == "__main__":

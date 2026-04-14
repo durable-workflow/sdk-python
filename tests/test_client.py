@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from durable_workflow.client import Client, WorkflowHandle, WorkflowExecution, CONTROL_PLANE_VERSION, PROTOCOL_VERSION
+from durable_workflow.client import CONTROL_PLANE_VERSION, PROTOCOL_VERSION, Client, WorkflowExecution, WorkflowHandle
 from durable_workflow.errors import (
     InvalidArgument,
     ServerError,
@@ -77,11 +77,13 @@ class TestStartWorkflow:
     @pytest.mark.asyncio
     async def test_duplicate_raises(self, client: Client) -> None:
         resp = _mock_response(409, {"reason": "duplicate_not_allowed", "message": "dup"})
-        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
-            with pytest.raises(WorkflowAlreadyStarted):
-                await client.start_workflow(
-                    workflow_type="greeter", task_queue="q1", workflow_id="wf-1"
-                )
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(WorkflowAlreadyStarted),
+        ):
+            await client.start_workflow(
+                workflow_type="greeter", task_queue="q1", workflow_id="wf-1"
+            )
 
 
 class TestDescribeWorkflow:
@@ -101,9 +103,11 @@ class TestDescribeWorkflow:
     @pytest.mark.asyncio
     async def test_not_found(self, client: Client) -> None:
         resp = _mock_response(404, {"reason": "workflow_not_found", "message": "not found"})
-        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
-            with pytest.raises(WorkflowNotFound):
-                await client.describe_workflow("wf-missing")
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(WorkflowNotFound),
+        ):
+            await client.describe_workflow("wf-missing")
 
 
 class TestSignalWorkflow:
@@ -170,9 +174,11 @@ class TestErrorMapping:
     @pytest.mark.asyncio
     async def test_401_unauthorized(self, client: Client) -> None:
         resp = _mock_response(401, {"message": "invalid token"})
-        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
-            with pytest.raises(Unauthorized):
-                await client.describe_workflow("wf-1")
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(Unauthorized),
+        ):
+            await client.describe_workflow("wf-1")
 
     @pytest.mark.asyncio
     async def test_422_invalid_argument(self, client: Client) -> None:
@@ -234,7 +240,7 @@ class TestHeartbeatActivityTask:
     @pytest.mark.asyncio
     async def test_heartbeat(self, client: Client) -> None:
         resp = _mock_response(200, {"task_id": "t1", "cancel_requested": False})
-        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
             result = await client.heartbeat_activity_task(
                 task_id="t1",
                 activity_attempt_id="a1",

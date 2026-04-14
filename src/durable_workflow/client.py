@@ -123,6 +123,11 @@ class Client:
             return None
         return resp.json()
 
+    def get_workflow_handle(
+        self, workflow_id: str, *, run_id: str | None = None, workflow_type: str = ""
+    ) -> WorkflowHandle:
+        return WorkflowHandle(self, workflow_id=workflow_id, run_id=run_id, workflow_type=workflow_type)
+
     # ── Health ─────────────────────────────────────────────────────────
     async def health(self) -> dict[str, Any]:
         resp = await self._http.get("/api/health")
@@ -144,11 +149,12 @@ class Client:
         memo: dict[str, Any] | None = None,
         search_attributes: dict[str, Any] | None = None,
     ) -> WorkflowHandle:
+        encoded_input = serializer.encode(input if input is not None else [])
         body: dict[str, Any] = {
             "workflow_id": workflow_id,
             "workflow_type": workflow_type,
             "task_queue": task_queue,
-            "input": input or [],
+            "input": {"codec": "json", "blob": encoded_input},
             "execution_timeout_seconds": execution_timeout_seconds,
             "run_timeout_seconds": run_timeout_seconds,
         }
@@ -258,7 +264,7 @@ class Client:
         poll_interval: float = 0.5,
         timeout: float = 30.0,
     ) -> Any:
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         while True:
             desc = await self.describe_workflow(handle.workflow_id)
             status = desc.status
@@ -270,7 +276,7 @@ class Client:
                 events = history.get("events") or history.get("history_events") or []
                 for ev in reversed(events):
                     etype = ev.get("event_type") or ev.get("type")
-                    details = ev.get("details") or {}
+                    details = ev.get("details") or ev.get("payload") or {}
                     if etype in ("WorkflowCompleted", "workflow_completed"):
                         return serializer.decode(details.get("result") or ev.get("result"))
                     if etype in ("WorkflowFailed", "workflow_failed"):
@@ -287,7 +293,7 @@ class Client:
                             details.get("reason") or ev.get("reason", "workflow was cancelled")
                         )
                 return None
-            if asyncio.get_event_loop().time() > deadline:
+            if asyncio.get_running_loop().time() > deadline:
                 raise TimeoutError(
                     f"workflow {handle.workflow_id} not terminal after {timeout}s (status={status})"
                 )
@@ -318,9 +324,12 @@ class Client:
         self, *, worker_id: str, task_queue: str, timeout: float = 35.0
     ) -> Any:
         body: dict[str, Any] = {"worker_id": worker_id, "task_queue": task_queue}
-        data = await self._request(
-            "POST", "/worker/workflow-tasks/poll", worker=True, json=body, timeout=timeout
-        )
+        try:
+            data = await self._request(
+                "POST", "/worker/workflow-tasks/poll", worker=True, json=body, timeout=timeout
+            )
+        except httpx.TimeoutException:
+            return None
         return (data or {}).get("task")
 
     async def complete_workflow_task(
@@ -368,9 +377,12 @@ class Client:
         self, *, worker_id: str, task_queue: str, timeout: float = 35.0
     ) -> Any:
         body: dict[str, Any] = {"worker_id": worker_id, "task_queue": task_queue}
-        data = await self._request(
-            "POST", "/worker/activity-tasks/poll", worker=True, json=body, timeout=timeout
-        )
+        try:
+            data = await self._request(
+                "POST", "/worker/activity-tasks/poll", worker=True, json=body, timeout=timeout
+            )
+        except httpx.TimeoutException:
+            return None
         return (data or {}).get("task")
 
     async def complete_activity_task(
