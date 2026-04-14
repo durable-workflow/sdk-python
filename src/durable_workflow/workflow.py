@@ -345,6 +345,18 @@ def replay(
                 if result_cursor + needed <= len(resolved_results):
                     vals = resolved_results[result_cursor:result_cursor + needed]
                     result_cursor += needed
+                    failed = next(
+                        (v for v in vals if isinstance(v, ChildWorkflowFailed)),
+                        None,
+                    )
+                    if failed is not None:
+                        try:
+                            advanced_cmd = gen.throw(failed)
+                            continue
+                        except StopIteration as stop:
+                            if isinstance(stop.value, ContinueAsNew):
+                                return ReplayOutcome(commands=[stop.value])
+                            return ReplayOutcome(commands=[CompleteWorkflow(result=stop.value)])
                     next_value = vals
                     continue
                 ctx.logger._set_replaying(False)

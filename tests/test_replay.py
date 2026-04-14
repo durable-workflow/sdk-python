@@ -622,6 +622,185 @@ class TestFanOut:
         assert outcome.commands[0].result == "combined"
 
 
+@workflow.defn(name="fan-out-child-fail-wf")
+class FanOutChildFailWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            results = yield [
+                ctx.start_child_workflow("ok-child", []),
+                ctx.start_child_workflow("bad-child", []),
+            ]
+            return {"results": results}
+        except ChildWorkflowFailed:
+            return "caught-batch-failure"
+
+
+@workflow.defn(name="fan-out-child-fail-fallback-wf")
+class FanOutChildFailFallbackWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield [
+                ctx.start_child_workflow("a", []),
+                ctx.start_child_workflow("b", []),
+            ]
+        except ChildWorkflowFailed:
+            result = yield ctx.schedule_activity("fallback", [])
+            return {"fallback": result}
+
+
+@workflow.defn(name="fan-out-child-fail-unhandled-wf")
+class FanOutChildFailUnhandledWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        results = yield [
+            ctx.start_child_workflow("ok-child", []),
+            ctx.start_child_workflow("bad-child", []),
+        ]
+        return results
+
+
+class TestFanOutChildFailure:
+    def test_batch_child_failure_throws(self) -> None:
+        history = [
+            {"event_type": "ChildRunCompleted", "payload": {"result": '"ok"'}},
+            {"event_type": "ChildRunFailed", "payload": {"message": "child crashed"}},
+        ]
+        outcome = replay(FanOutChildFailWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == "caught-batch-failure"
+
+    def test_batch_child_failure_first_position(self) -> None:
+        history = [
+            {"event_type": "ChildRunFailed", "payload": {"message": "first failed"}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": '"ok"'}},
+        ]
+        outcome = replay(FanOutChildFailWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == "caught-batch-failure"
+
+    def test_batch_child_failure_fallback_yields(self) -> None:
+        history = [
+            {"event_type": "ChildRunCompleted", "payload": {"result": '"ok"'}},
+            {"event_type": "ChildRunFailed", "payload": {"message": "oops"}},
+        ]
+        outcome = replay(FanOutChildFailFallbackWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], ScheduleActivity)
+        assert outcome.commands[0].activity_type == "fallback"
+
+    def test_batch_child_failure_fallback_completes(self) -> None:
+        history = [
+            {"event_type": "ChildRunCompleted", "payload": {"result": '"ok"'}},
+            {"event_type": "ChildRunFailed", "payload": {"message": "oops"}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"recovered"'}},
+        ]
+        outcome = replay(FanOutChildFailFallbackWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {"fallback": "recovered"}
+
+    def test_batch_child_failure_unhandled_produces_fail(self) -> None:
+        history = [
+            {"event_type": "ChildRunCompleted", "payload": {"result": '"ok"'}},
+            {"event_type": "ChildRunFailed", "payload": {"message": "child crashed"}},
+        ]
+        outcome = replay(FanOutChildFailUnhandledWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, FailWorkflow)
+        assert "child crashed" in cmd.message
+
+    def test_batch_all_succeed_no_throw(self) -> None:
+        history = [
+            {"event_type": "ChildRunCompleted", "payload": {"result": '"r1"'}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": '"r2"'}},
+        ]
+        outcome = replay(FanOutChildFailWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {"results": ["r1", "r2"]}
+
+
+@workflow.defn(name="nontrivial-wf")
+class NontrivialWorkflow:
+    """Fan-out activities, timer, child workflow, and sequential combine."""
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        results = yield [
+            ctx.schedule_activity("fetch-a", []),
+            ctx.schedule_activity("fetch-b", []),
+        ]
+        yield ctx.start_timer(30)
+        child_result = yield ctx.start_child_workflow("sub-process", results)
+        final = yield ctx.schedule_activity("finalize", [child_result])
+        return {"fan_out": results, "child": child_result, "final": final}
+
+
+class TestNontrivialWorkflow:
+    def test_first_replay_fans_out(self) -> None:
+        outcome = replay(NontrivialWorkflow, [], [])
+        assert len(outcome.commands) == 2
+        assert all(isinstance(c, ScheduleActivity) for c in outcome.commands)
+
+    def test_after_fan_out_starts_timer(self) -> None:
+        history = [
+            {"event_type": "ActivityCompleted", "payload": {"result": '"a"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"b"'}},
+        ]
+        outcome = replay(NontrivialWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], StartTimer)
+
+    def test_after_timer_starts_child(self) -> None:
+        history = [
+            {"event_type": "ActivityCompleted", "payload": {"result": '"a"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"b"'}},
+            {"event_type": "TimerFired", "payload": {}},
+        ]
+        outcome = replay(NontrivialWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, StartChildWorkflow)
+        assert cmd.workflow_type == "sub-process"
+        assert cmd.arguments == ["a", "b"]
+
+    def test_after_child_schedules_finalize(self) -> None:
+        history = [
+            {"event_type": "ActivityCompleted", "payload": {"result": '"a"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"b"'}},
+            {"event_type": "TimerFired", "payload": {}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": '"processed"'}},
+        ]
+        outcome = replay(NontrivialWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, ScheduleActivity)
+        assert cmd.activity_type == "finalize"
+        assert cmd.arguments == ["processed"]
+
+    def test_full_replay_completes(self) -> None:
+        history = [
+            {"event_type": "ActivityCompleted", "payload": {"result": '"a"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"b"'}},
+            {"event_type": "TimerFired", "payload": {}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": '"processed"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"done"'}},
+        ]
+        outcome = replay(NontrivialWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {
+            "fan_out": ["a", "b"],
+            "child": "processed",
+            "final": "done",
+        }
+
+
 class TestWorkflowRegistry:
     def test_registered(self) -> None:
         reg = workflow.registry()
