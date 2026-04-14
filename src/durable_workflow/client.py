@@ -8,8 +8,6 @@ import httpx
 
 from . import serializer
 from .errors import (
-    ServerError,
-    UpdateRejected,
     WorkflowCancelled,
     WorkflowFailed,
     WorkflowTerminated,
@@ -296,14 +294,9 @@ class Client:
             body["wait_timeout_seconds"] = wait_timeout_seconds
         if request_id is not None:
             body["request_id"] = request_id
-        try:
-            return await self._request(
-                "POST", f"/workflows/{workflow_id}/update/{update_name}", json=body, context=workflow_id
-            )
-        except ServerError as e:
-            if isinstance(e.body, dict) and e.body.get("reason") == "update_rejected":
-                raise UpdateRejected(e.body.get("message", "update rejected")) from e
-            raise
+        return await self._request(
+            "POST", f"/workflows/{workflow_id}/update/{update_name}", json=body, context=workflow_id
+        )
 
     async def get_result(
         self,
@@ -324,21 +317,21 @@ class Client:
                 events = history.get("events") or history.get("history_events") or []
                 for ev in reversed(events):
                     etype = ev.get("event_type") or ev.get("type")
-                    details = ev.get("details") or ev.get("payload") or {}
+                    payload = ev.get("payload") or {}
                     if etype in ("WorkflowCompleted", "workflow_completed"):
-                        return serializer.decode(details.get("result") or ev.get("result"))
+                        return serializer.decode(payload.get("result") or ev.get("result"))
                     if etype in ("WorkflowFailed", "workflow_failed"):
                         raise WorkflowFailed(
-                            details.get("message") or ev.get("message", "workflow failed"),
-                            details.get("exception_class") or ev.get("exception_class"),
+                            payload.get("message") or ev.get("message", "workflow failed"),
+                            payload.get("exception_class") or ev.get("exception_class"),
                         )
                     if etype in ("WorkflowTerminated", "workflow_terminated"):
                         raise WorkflowTerminated(
-                            details.get("reason") or ev.get("reason", "workflow was terminated")
+                            payload.get("reason") or ev.get("reason", "workflow was terminated")
                         )
                     if etype in ("WorkflowCancelled", "workflow_cancelled", "WorkflowCanceled", "workflow_canceled"):
                         raise WorkflowCancelled(
-                            details.get("reason") or ev.get("reason", "workflow was cancelled")
+                            payload.get("reason") or ev.get("reason", "workflow was cancelled")
                         )
                 return None
             if asyncio.get_running_loop().time() > deadline:

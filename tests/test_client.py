@@ -9,6 +9,7 @@ import pytest
 from durable_workflow.client import CONTROL_PLANE_VERSION, PROTOCOL_VERSION, Client, WorkflowExecution, WorkflowHandle
 from durable_workflow.errors import (
     InvalidArgument,
+    QueryFailed,
     ServerError,
     Unauthorized,
     UpdateRejected,
@@ -154,6 +155,24 @@ class TestQueryWorkflow:
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
             result = await client.query_workflow("wf-1", "status")
             assert result == {"result": "active"}
+
+    @pytest.mark.asyncio
+    async def test_query_not_found(self, client: Client) -> None:
+        resp = _mock_response(404, {"reason": "query_not_found", "message": "query [status] not declared"})
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(QueryFailed),
+        ):
+            await client.query_workflow("wf-1", "status")
+
+    @pytest.mark.asyncio
+    async def test_query_rejected(self, client: Client) -> None:
+        resp = _mock_response(409, {"reason": "query_rejected", "message": "workflow unavailable"})
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(QueryFailed),
+        ):
+            await client.query_workflow("wf-1", "status")
 
 
 class TestListWorkflows:

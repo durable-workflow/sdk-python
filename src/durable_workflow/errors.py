@@ -100,7 +100,9 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
         raise Unauthorized(message or "unauthorized")
 
     if status == 404:
-        if "workflow" in context.lower() or reason == "workflow_not_found":
+        if reason == "query_not_found":
+            raise QueryFailed(message or "query not found")
+        if reason in ("instance_not_found", "workflow_not_found") or "workflow" in context.lower():
             raise WorkflowNotFound(context)
         if reason == "namespace_not_found":
             raise NamespaceNotFound(message)
@@ -109,6 +111,10 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
     if status == 409:
         if reason == "duplicate_not_allowed":
             raise WorkflowAlreadyStarted(context)
+        if reason == "query_rejected":
+            raise QueryFailed(message or "query rejected")
+        if reason == "update_rejected":
+            raise UpdateRejected(message or "update rejected")
         raise ServerError(status, body)
 
     if status == 422:

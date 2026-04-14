@@ -286,7 +286,7 @@ def replay(
     for ev in events:
         etype = ev.get("event_type") or ev.get("type")
         if etype in ("WorkflowStarted", "workflow_started"):
-            ts = (ev.get("details") or ev.get("payload") or {}).get("timestamp") or ev.get("timestamp")
+            ts = (ev.get("payload") or {}).get("timestamp") or ev.get("timestamp")
             if ts:
                 with contextlib.suppress(ValueError, TypeError):
                     workflow_start_time = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
@@ -298,9 +298,9 @@ def replay(
     resolved_results: list[Any] = []
     for ev in events:
         etype = ev.get("event_type") or ev.get("type")
-        details = ev.get("details") or ev.get("payload") or {}
+        payload = ev.get("payload") or {}
         if etype in ("ActivityCompleted", "activity_completed"):
-            raw = details.get("result") or ev.get("result")
+            raw = payload.get("result") or ev.get("result")
             resolved_results.append(serializer.decode(raw))
         elif etype in ("TimerFired", "timer_fired"):
             resolved_results.append(None)
@@ -308,13 +308,13 @@ def replay(
             "SideEffectRecorded", "side_effect_recorded",
             "ChildRunCompleted", "child_run_completed",
         ):
-            raw = details.get("result") or ev.get("result")
+            raw = payload.get("result") or ev.get("result")
             resolved_results.append(serializer.decode(raw))
         elif etype in ("ChildRunFailed", "child_run_failed"):
-            msg = details.get("message") or ev.get("message", "child workflow failed")
+            msg = payload.get("message") or ev.get("message", "child workflow failed")
             resolved_results.append(ChildWorkflowFailed(msg))
         elif etype in ("VersionMarkerRecorded", "version_marker_recorded"):
-            version = details.get("version") or ev.get("version", 0)
+            version = payload.get("version") or ev.get("version", 0)
             resolved_results.append(version)
         elif etype in ("SearchAttributesUpserted", "search_attributes_upserted"):
             resolved_results.append(None)

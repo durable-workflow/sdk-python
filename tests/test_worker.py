@@ -85,7 +85,7 @@ class TestWorkflowTaskExecution:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 1,
             "history_events": [
-                {"event_type": "ActivityCompleted", "details": {"result": '"done"'}},
+                {"event_type": "ActivityCompleted", "payload": {"result": '"done"'}},
             ],
             "arguments": '["hello"]',
             "payload_codec": "json",

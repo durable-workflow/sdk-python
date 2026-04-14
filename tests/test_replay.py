@@ -72,7 +72,7 @@ class TestOneActivity:
         assert cmd.arguments == ["world"]
 
     def test_completed_activity_triggers_completion(self) -> None:
-        history = [{"event_type": "ActivityCompleted", "details": {"result": '"hello, world"'}}]
+        history = [{"event_type": "ActivityCompleted", "payload": {"result": '"hello, world"'}}]
         outcome = replay(OneActivity, history, ["world"])
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -96,7 +96,7 @@ class TestTwoActivities:
         assert outcome.commands[0].activity_type == "step1"
 
     def test_one_completed_schedules_next(self) -> None:
-        history = [{"event_type": "ActivityCompleted", "details": {"result": '"val1"'}}]
+        history = [{"event_type": "ActivityCompleted", "payload": {"result": '"val1"'}}]
         outcome = replay(TwoActivities, history, [])
         assert len(outcome.commands) == 1
         assert isinstance(outcome.commands[0], ScheduleActivity)
@@ -105,8 +105,8 @@ class TestTwoActivities:
 
     def test_both_completed(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "details": {"result": '"val1"'}},
-            {"event_type": "ActivityCompleted", "details": {"result": '"val2"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"val1"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"val2"'}},
         ]
         outcome = replay(TwoActivities, history, [])
         assert len(outcome.commands) == 1
@@ -123,7 +123,7 @@ class TestTimerWorkflow:
         assert cmd.delay_seconds == 5
 
     def test_timer_fired_schedules_activity(self) -> None:
-        history = [{"event_type": "TimerFired", "details": {}}]
+        history = [{"event_type": "TimerFired", "payload": {}}]
         outcome = replay(TimerWorkflow, history, [])
         assert len(outcome.commands) == 1
         assert isinstance(outcome.commands[0], ScheduleActivity)
@@ -131,8 +131,8 @@ class TestTimerWorkflow:
 
     def test_timer_and_activity_completed(self) -> None:
         history = [
-            {"event_type": "TimerFired", "details": {}},
-            {"event_type": "ActivityCompleted", "details": {"result": '"hi"'}},
+            {"event_type": "TimerFired", "payload": {}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"hi"'}},
         ]
         outcome = replay(TimerWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -148,7 +148,7 @@ class TestTimerWorkflow:
 
 class TestFailingWorkflow:
     def test_exception_produces_fail_command(self) -> None:
-        history = [{"event_type": "ActivityCompleted", "details": {"result": '"ok"'}}]
+        history = [{"event_type": "ActivityCompleted", "payload": {"result": '"ok"'}}]
         outcome = replay(FailingWorkflow, history, [])
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -157,7 +157,7 @@ class TestFailingWorkflow:
         assert cmd.exception_type == "ValueError"
 
     def test_fail_server_command_shape(self) -> None:
-        history = [{"event_type": "ActivityCompleted", "details": {"result": '"ok"'}}]
+        history = [{"event_type": "ActivityCompleted", "payload": {"result": '"ok"'}}]
         outcome = replay(FailingWorkflow, history, [])
         server_cmd = outcome.commands[0].to_server_command("q")
         assert server_cmd["type"] == "fail_workflow"
@@ -219,7 +219,7 @@ class TestContinueAsNew:
         assert outcome.commands[0].result == "done"
 
     def test_generator_return_continue(self) -> None:
-        history = [{"event_type": "ActivityCompleted", "details": {"result": '"ok"'}}]
+        history = [{"event_type": "ActivityCompleted", "payload": {"result": '"ok"'}}]
         outcome = replay(ContinueAsNewYieldWorkflow, history, [5])
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -251,7 +251,7 @@ class TestSideEffect:
         assert outcome.commands[1].arguments == [42]
 
     def test_replayed_side_effect_skips_fn(self) -> None:
-        history = [{"event_type": "SideEffectRecorded", "details": {"result": "99"}}]
+        history = [{"event_type": "SideEffectRecorded", "payload": {"result": "99"}}]
         outcome = replay(SideEffectWorkflow, history, [])
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -260,8 +260,8 @@ class TestSideEffect:
 
     def test_full_replay(self) -> None:
         history = [
-            {"event_type": "SideEffectRecorded", "details": {"result": "42"}},
-            {"event_type": "ActivityCompleted", "details": {"result": '"final"'}},
+            {"event_type": "SideEffectRecorded", "payload": {"result": "42"}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"final"'}},
         ]
         outcome = replay(SideEffectWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -344,7 +344,7 @@ class TestReplayWithRunId:
 
     def test_timestamp_from_history(self) -> None:
         history = [
-            {"event_type": "WorkflowStarted", "details": {"timestamp": "2026-06-01T12:00:00Z"}},
+            {"event_type": "WorkflowStarted", "payload": {"timestamp": "2026-06-01T12:00:00Z"}},
         ]
         outcome = replay(ContextWorkflow, history, [], run_id="r1")
         cmd = outcome.commands[0]
@@ -408,7 +408,7 @@ class TestChildWorkflow:
         assert cmd.arguments == ["alice"]
 
     def test_child_completed(self) -> None:
-        history = [{"event_type": "ChildRunCompleted", "details": {"result": '"sub-result"'}}]
+        history = [{"event_type": "ChildRunCompleted", "payload": {"result": '"sub-result"'}}]
         outcome = replay(ChildWorkflow, history, ["alice"])
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -416,7 +416,7 @@ class TestChildWorkflow:
         assert cmd.result == {"child_result": "sub-result"}
 
     def test_child_failed_caught(self) -> None:
-        history = [{"event_type": "ChildRunFailed", "details": {"message": "child failed"}}]
+        history = [{"event_type": "ChildRunFailed", "payload": {"message": "child failed"}}]
         outcome = replay(ChildWorkflowFailedWf, history, [])
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -424,7 +424,7 @@ class TestChildWorkflow:
         assert cmd.result == "handled"
 
     def test_child_failed_then_fallback_yields_command(self) -> None:
-        history = [{"event_type": "ChildRunFailed", "details": {"message": "child failed"}}]
+        history = [{"event_type": "ChildRunFailed", "payload": {"message": "child failed"}}]
         outcome = replay(ChildWorkflowFailedFallbackWf, history, [])
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -433,8 +433,8 @@ class TestChildWorkflow:
 
     def test_child_failed_then_fallback_completes(self) -> None:
         history = [
-            {"event_type": "ChildRunFailed", "details": {"message": "child failed"}},
-            {"event_type": "ActivityCompleted", "details": {"result": '"ok"'}},
+            {"event_type": "ChildRunFailed", "payload": {"message": "child failed"}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"ok"'}},
         ]
         outcome = replay(ChildWorkflowFailedFallbackWf, history, [])
         assert len(outcome.commands) == 1
@@ -472,7 +472,7 @@ class TestVersionMarker:
 
     def test_version_from_history(self) -> None:
         history = [
-            {"event_type": "VersionMarkerRecorded", "details": {"version": 2}},
+            {"event_type": "VersionMarkerRecorded", "payload": {"version": 2}},
         ]
         outcome = replay(VersionWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -482,7 +482,7 @@ class TestVersionMarker:
 
     def test_old_version_from_history(self) -> None:
         history = [
-            {"event_type": "VersionMarkerRecorded", "details": {"version": 1}},
+            {"event_type": "VersionMarkerRecorded", "payload": {"version": 1}},
         ]
         outcome = replay(VersionWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -492,8 +492,8 @@ class TestVersionMarker:
 
     def test_full_replay(self) -> None:
         history = [
-            {"event_type": "VersionMarkerRecorded", "details": {"version": 2}},
-            {"event_type": "ActivityCompleted", "details": {"result": '"done"'}},
+            {"event_type": "VersionMarkerRecorded", "payload": {"version": 2}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"done"'}},
         ]
         outcome = replay(VersionWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -518,8 +518,8 @@ class TestSearchAttributeUpsert:
 
     def test_with_upsert_in_history(self) -> None:
         history = [
-            {"event_type": "SearchAttributesUpserted", "details": {}},
-            {"event_type": "ActivityCompleted", "details": {"result": '"result"'}},
+            {"event_type": "SearchAttributesUpserted", "payload": {}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"result"'}},
         ]
         outcome = replay(SearchAttrWorkflow, history, [])
         assert len(outcome.commands) == 2
@@ -575,8 +575,8 @@ class TestFanOut:
 
     def test_all_completed(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "details": {"result": '"val-a"'}},
-            {"event_type": "ActivityCompleted", "details": {"result": '"val-b"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"val-a"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"val-b"'}},
         ]
         outcome = replay(FanOutWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -591,8 +591,8 @@ class TestFanOut:
 
     def test_timers_fired_then_activity(self) -> None:
         history = [
-            {"event_type": "TimerFired", "details": {}},
-            {"event_type": "TimerFired", "details": {}},
+            {"event_type": "TimerFired", "payload": {}},
+            {"event_type": "TimerFired", "payload": {}},
         ]
         outcome = replay(FanOutTimersWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -601,8 +601,8 @@ class TestFanOut:
 
     def test_fan_out_then_sequential(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "details": {"result": '"r1"'}},
-            {"event_type": "ActivityCompleted", "details": {"result": '"r2"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"r1"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"r2"'}},
         ]
         outcome = replay(FanOutThenSequentialWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -612,9 +612,9 @@ class TestFanOut:
 
     def test_fan_out_then_sequential_full(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "details": {"result": '"r1"'}},
-            {"event_type": "ActivityCompleted", "details": {"result": '"r2"'}},
-            {"event_type": "ActivityCompleted", "details": {"result": '"combined"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"r1"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"r2"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": '"combined"'}},
         ]
         outcome = replay(FanOutThenSequentialWorkflow, history, [])
         assert len(outcome.commands) == 1

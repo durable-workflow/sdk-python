@@ -5,8 +5,10 @@ import pytest
 from durable_workflow.errors import (
     InvalidArgument,
     NamespaceNotFound,
+    QueryFailed,
     ServerError,
     Unauthorized,
+    UpdateRejected,
     WorkflowAlreadyStarted,
     WorkflowNotFound,
     _raise_for_status,
@@ -25,6 +27,14 @@ class TestRaiseForStatus:
         with pytest.raises(WorkflowNotFound):
             _raise_for_status(404, {"reason": "workflow_not_found"}, context="wf-1")
 
+    def test_404_instance_not_found(self) -> None:
+        with pytest.raises(WorkflowNotFound):
+            _raise_for_status(404, {"reason": "instance_not_found"}, context="wf-1")
+
+    def test_404_query_not_found(self) -> None:
+        with pytest.raises(QueryFailed):
+            _raise_for_status(404, {"reason": "query_not_found", "message": "query [status] not declared"})
+
     def test_404_namespace(self) -> None:
         with pytest.raises(NamespaceNotFound):
             _raise_for_status(404, {"reason": "namespace_not_found", "message": "ns missing"})
@@ -36,6 +46,14 @@ class TestRaiseForStatus:
     def test_409_duplicate(self) -> None:
         with pytest.raises(WorkflowAlreadyStarted):
             _raise_for_status(409, {"reason": "duplicate_not_allowed"}, context="wf-1")
+
+    def test_409_query_rejected(self) -> None:
+        with pytest.raises(QueryFailed):
+            _raise_for_status(409, {"reason": "query_rejected", "message": "workflow unavailable"})
+
+    def test_409_update_rejected(self) -> None:
+        with pytest.raises(UpdateRejected):
+            _raise_for_status(409, {"reason": "update_rejected", "message": "rejected by handler"})
 
     def test_409_generic(self) -> None:
         with pytest.raises(ServerError):
