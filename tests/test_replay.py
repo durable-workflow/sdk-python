@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from durable_workflow import workflow
+from durable_workflow.errors import ChildWorkflowFailed
 from durable_workflow.workflow import (
     CompleteWorkflow,
     ContinueAsNew,
     FailWorkflow,
     RecordSideEffect,
+    RecordVersionMarker,
     ScheduleActivity,
+    StartChildWorkflow,
     StartTimer,
+    UpsertSearchAttributes,
     WorkflowContext,
     replay,
 )
@@ -346,6 +350,158 @@ class TestReplayWithRunId:
         assert "2026-06-01" in cmd.result["time"]
 
 
+@workflow.defn(name="child-wf")
+class ChildWorkflow:
+    def run(self, ctx: WorkflowContext, name: str):  # type: ignore[no-untyped-def]
+        result = yield ctx.start_child_workflow("sub-workflow", [name])
+        return {"child_result": result}
+
+
+@workflow.defn(name="child-wf-failed")
+class ChildWorkflowFailedWf:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.start_child_workflow("sub-workflow", [])
+        except ChildWorkflowFailed:
+            return "handled"
+
+
+@workflow.defn(name="version-wf")
+class VersionWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        version = yield ctx.get_version("change-1", 1, 2)
+        if version >= 2:
+            result = yield ctx.schedule_activity("new-path", [])
+        else:
+            result = yield ctx.schedule_activity("old-path", [])
+        return result
+
+
+@workflow.defn(name="search-attr-wf")
+class SearchAttrWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.upsert_search_attributes({"status": "processing"})
+        result = yield ctx.schedule_activity("work", [])
+        yield ctx.upsert_search_attributes({"status": "done"})
+        return result
+
+
+class TestChildWorkflow:
+    def test_first_replay_starts_child(self) -> None:
+        outcome = replay(ChildWorkflow, [], ["alice"])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, StartChildWorkflow)
+        assert cmd.workflow_type == "sub-workflow"
+        assert cmd.arguments == ["alice"]
+
+    def test_child_completed(self) -> None:
+        history = [{"event_type": "ChildRunCompleted", "details": {"result": '"sub-result"'}}]
+        outcome = replay(ChildWorkflow, history, ["alice"])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {"child_result": "sub-result"}
+
+    def test_child_failed_caught(self) -> None:
+        history = [{"event_type": "ChildRunFailed", "details": {"message": "child failed"}}]
+        outcome = replay(ChildWorkflowFailedWf, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == "handled"
+
+    def test_server_command_shape(self) -> None:
+        cmd = StartChildWorkflow(workflow_type="sub", arguments=[1], task_queue="q2", parent_close_policy="terminate")
+        sc = cmd.to_server_command("default-q")
+        assert sc["type"] == "start_child_workflow"
+        assert sc["workflow_type"] == "sub"
+        assert sc["queue"] == "q2"
+        assert sc["parent_close_policy"] == "terminate"
+
+    def test_server_command_defaults(self) -> None:
+        cmd = StartChildWorkflow(workflow_type="sub", arguments=[])
+        sc = cmd.to_server_command("default-q")
+        assert sc["queue"] == "default-q"
+        assert "parent_close_policy" not in sc
+
+
+class TestVersionMarker:
+    def test_first_replay_records_marker(self) -> None:
+        outcome = replay(VersionWorkflow, [], [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, RecordVersionMarker)
+        assert cmd.change_id == "change-1"
+        assert cmd.version == 2
+        assert cmd.min_supported == 1
+        assert cmd.max_supported == 2
+
+    def test_version_from_history(self) -> None:
+        history = [
+            {"event_type": "VersionMarkerRecorded", "details": {"version": 2}},
+        ]
+        outcome = replay(VersionWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, ScheduleActivity)
+        assert cmd.activity_type == "new-path"
+
+    def test_old_version_from_history(self) -> None:
+        history = [
+            {"event_type": "VersionMarkerRecorded", "details": {"version": 1}},
+        ]
+        outcome = replay(VersionWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, ScheduleActivity)
+        assert cmd.activity_type == "old-path"
+
+    def test_full_replay(self) -> None:
+        history = [
+            {"event_type": "VersionMarkerRecorded", "details": {"version": 2}},
+            {"event_type": "ActivityCompleted", "details": {"result": '"done"'}},
+        ]
+        outcome = replay(VersionWorkflow, history, [])
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == "done"
+
+    def test_server_command_shape(self) -> None:
+        cmd = RecordVersionMarker(change_id="c1", version=3, min_supported=1, max_supported=3)
+        sc = cmd.to_server_command("q")
+        assert sc["type"] == "record_version_marker"
+        assert sc["change_id"] == "c1"
+        assert sc["version"] == 3
+
+
+class TestSearchAttributeUpsert:
+    def test_first_replay_upserts_then_schedules(self) -> None:
+        outcome = replay(SearchAttrWorkflow, [], [])
+        assert len(outcome.commands) == 2
+        assert isinstance(outcome.commands[0], UpsertSearchAttributes)
+        assert outcome.commands[0].attributes == {"status": "processing"}
+        assert isinstance(outcome.commands[1], ScheduleActivity)
+
+    def test_with_upsert_in_history(self) -> None:
+        history = [
+            {"event_type": "SearchAttributesUpserted", "details": {}},
+            {"event_type": "ActivityCompleted", "details": {"result": '"result"'}},
+        ]
+        outcome = replay(SearchAttrWorkflow, history, [])
+        assert len(outcome.commands) == 2
+        assert isinstance(outcome.commands[0], UpsertSearchAttributes)
+        assert outcome.commands[0].attributes == {"status": "done"}
+        assert isinstance(outcome.commands[1], CompleteWorkflow)
+        assert outcome.commands[1].result == "result"
+
+    def test_server_command_shape(self) -> None:
+        cmd = UpsertSearchAttributes(attributes={"key": "val"})
+        sc = cmd.to_server_command("q")
+        assert sc["type"] == "upsert_search_attributes"
+        assert sc["attributes"] == {"key": "val"}
+
+
 class TestWorkflowRegistry:
     def test_registered(self) -> None:
         reg = workflow.registry()
@@ -354,3 +510,6 @@ class TestWorkflowRegistry:
         assert "timer-workflow" in reg
         assert "continue-as-new-wf" in reg
         assert "side-effect-wf" in reg
+        assert "child-wf" in reg
+        assert "version-wf" in reg
+        assert "search-attr-wf" in reg

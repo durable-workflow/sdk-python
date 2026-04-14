@@ -11,6 +11,7 @@ from durable_workflow.errors import (
     InvalidArgument,
     ServerError,
     Unauthorized,
+    UpdateRejected,
     WorkflowAlreadyStarted,
     WorkflowNotFound,
 )
@@ -72,7 +73,9 @@ class TestStartWorkflow:
             call_args = mock.call_args
             body = call_args.kwargs.get("json") or call_args[1].get("json")
             assert body["workflow_type"] == "greeter"
-            assert body["input"] == ["hello"]
+            assert body["input"]["codec"] == "json"
+            import json as _json
+            assert _json.loads(body["input"]["blob"]) == ["hello"]
 
     @pytest.mark.asyncio
     async def test_duplicate_raises(self, client: Client) -> None:
@@ -247,6 +250,48 @@ class TestHeartbeatActivityTask:
                 lease_owner="w1",
             )
             assert result["cancel_requested"] is False
+
+
+class TestUpdateWorkflow:
+    @pytest.mark.asyncio
+    async def test_update(self, client: Client) -> None:
+        resp = _mock_response(200, {"outcome": "completed", "result": "updated"})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.update_workflow(
+                "wf-1", "my-update", args=["data"], wait_for="completed", wait_timeout_seconds=10
+            )
+            assert result["outcome"] == "completed"
+            call_args = mock.call_args
+            assert "/update/my-update" in call_args[0][1]
+            body = call_args.kwargs.get("json") or call_args[1].get("json")
+            assert body["input"] == ["data"]
+            assert body["wait_for"] == "completed"
+            assert body["wait_timeout_seconds"] == 10
+
+    @pytest.mark.asyncio
+    async def test_update_rejected(self, client: Client) -> None:
+        resp = _mock_response(409, {"reason": "update_rejected", "message": "rejected"})
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(UpdateRejected),
+        ):
+            await client.update_workflow("wf-1", "my-update")
+
+    @pytest.mark.asyncio
+    async def test_update_no_args(self, client: Client) -> None:
+        resp = _mock_response(200, {"outcome": "accepted"})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.update_workflow("wf-1", "my-update")
+            body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
+            assert "input" not in body
+
+    @pytest.mark.asyncio
+    async def test_update_with_request_id(self, client: Client) -> None:
+        resp = _mock_response(200, {"outcome": "accepted"})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.update_workflow("wf-1", "my-update", request_id="req-123")
+            body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
+            assert body["request_id"] == "req-123"
 
 
 class TestRegisterWorker:

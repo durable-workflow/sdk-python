@@ -8,6 +8,8 @@ import httpx
 
 from . import serializer
 from .errors import (
+    ServerError,
+    UpdateRejected,
     WorkflowCancelled,
     WorkflowFailed,
     WorkflowTerminated,
@@ -58,6 +60,24 @@ class WorkflowHandle:
 
     async def terminate(self, *, reason: str | None = None) -> None:
         await self._client.terminate_workflow(self.workflow_id, reason=reason)
+
+    async def update(
+        self,
+        update_name: str,
+        args: list[Any] | None = None,
+        *,
+        wait_for: str | None = None,
+        wait_timeout_seconds: int | None = None,
+        request_id: str | None = None,
+    ) -> Any:
+        return await self._client.update_workflow(
+            self.workflow_id,
+            update_name,
+            args=args,
+            wait_for=wait_for,
+            wait_timeout_seconds=wait_timeout_seconds,
+            request_id=request_id,
+        )
 
 
 class Client:
@@ -256,6 +276,34 @@ class Client:
         if reason is not None:
             body["reason"] = reason
         await self._request("POST", f"/workflows/{workflow_id}/terminate", json=body, context=workflow_id)
+
+    async def update_workflow(
+        self,
+        workflow_id: str,
+        update_name: str,
+        *,
+        args: list[Any] | None = None,
+        wait_for: str | None = None,
+        wait_timeout_seconds: int | None = None,
+        request_id: str | None = None,
+    ) -> Any:
+        body: dict[str, Any] = {}
+        if args:
+            body["input"] = args
+        if wait_for is not None:
+            body["wait_for"] = wait_for
+        if wait_timeout_seconds is not None:
+            body["wait_timeout_seconds"] = wait_timeout_seconds
+        if request_id is not None:
+            body["request_id"] = request_id
+        try:
+            return await self._request(
+                "POST", f"/workflows/{workflow_id}/update/{update_name}", json=body, context=workflow_id
+            )
+        except ServerError as e:
+            if isinstance(e.body, dict) and e.body.get("reason") == "update_rejected":
+                raise UpdateRejected(e.body.get("message", "update rejected")) from e
+            raise
 
     async def get_result(
         self,

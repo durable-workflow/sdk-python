@@ -48,6 +48,22 @@ class SyncWorkflowHandle:
     def terminate(self, *, reason: str | None = None) -> None:
         _run(self._handle.terminate(reason=reason))
 
+    def update(
+        self,
+        update_name: str,
+        args: list[Any] | None = None,
+        *,
+        wait_for: str | None = None,
+        wait_timeout_seconds: int | None = None,
+        request_id: str | None = None,
+    ) -> Any:
+        return _run(self._handle.update(
+            update_name, args=args,
+            wait_for=wait_for,
+            wait_timeout_seconds=wait_timeout_seconds,
+            request_id=request_id,
+        ))
+
 
 class Client:
     """Blocking wrapper around the async Client. Each call opens and closes its own event loop."""
@@ -141,6 +157,24 @@ class Client:
 
     def terminate_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
         _run(self._async.terminate_workflow(workflow_id, reason=reason))
+
+    def update_workflow(
+        self,
+        workflow_id: str,
+        update_name: str,
+        *,
+        args: list[Any] | None = None,
+        wait_for: str | None = None,
+        wait_timeout_seconds: int | None = None,
+        request_id: str | None = None,
+    ) -> Any:
+        return _run(self._async.update_workflow(
+            workflow_id, update_name,
+            args=args,
+            wait_for=wait_for,
+            wait_timeout_seconds=wait_timeout_seconds,
+            request_id=request_id,
+        ))
 
     def get_result(
         self,

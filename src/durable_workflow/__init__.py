@@ -1,6 +1,7 @@
 from . import activity, sync, workflow
 from .client import Client, WorkflowExecution, WorkflowHandle, WorkflowList
 from .errors import (
+    ChildWorkflowFailed,
     DurableWorkflowError,
     InvalidArgument,
     NamespaceNotFound,
@@ -15,11 +16,13 @@ from .errors import (
     WorkflowTerminated,
 )
 from .worker import Worker
-from .workflow import ContinueAsNew
+from .workflow import ContinueAsNew, StartChildWorkflow
 
 __all__ = [
+    "ChildWorkflowFailed",
     "Client",
     "ContinueAsNew",
+    "StartChildWorkflow",
     "Worker",
     "WorkflowExecution",
     "WorkflowHandle",

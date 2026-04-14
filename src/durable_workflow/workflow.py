@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import serializer
+from .errors import ChildWorkflowFailed
 
 _REGISTRY: dict[str, type] = {}
 
@@ -110,7 +111,61 @@ class RecordSideEffect:
         }
 
 
-Command = ScheduleActivity | StartTimer | CompleteWorkflow | FailWorkflow | ContinueAsNew | RecordSideEffect
+@dataclass
+class StartChildWorkflow:
+    workflow_type: str
+    arguments: list[Any] = field(default_factory=list)
+    task_queue: str | None = None
+    parent_close_policy: str | None = None
+
+    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+        cmd: dict[str, Any] = {
+            "type": "start_child_workflow",
+            "workflow_type": self.workflow_type,
+            "arguments": serializer.encode(self.arguments),
+        }
+        if self.task_queue is not None:
+            cmd["queue"] = self.task_queue
+        else:
+            cmd["queue"] = task_queue
+        if self.parent_close_policy is not None:
+            cmd["parent_close_policy"] = self.parent_close_policy
+        return cmd
+
+
+@dataclass
+class RecordVersionMarker:
+    change_id: str
+    version: int
+    min_supported: int
+    max_supported: int
+
+    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+        return {
+            "type": "record_version_marker",
+            "change_id": self.change_id,
+            "version": self.version,
+            "min_supported": self.min_supported,
+            "max_supported": self.max_supported,
+        }
+
+
+@dataclass
+class UpsertSearchAttributes:
+    attributes: dict[str, Any]
+
+    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+        return {
+            "type": "upsert_search_attributes",
+            "attributes": self.attributes,
+        }
+
+
+Command = (
+    ScheduleActivity | StartTimer | CompleteWorkflow | FailWorkflow
+    | ContinueAsNew | RecordSideEffect | StartChildWorkflow
+    | RecordVersionMarker | UpsertSearchAttributes
+)
 
 
 # ── Context passed to the workflow's run() ───────────────────────────
@@ -164,6 +219,34 @@ class WorkflowContext:
     def side_effect(self, fn: Callable[[], Any]) -> RecordSideEffect:
         result = fn()
         return RecordSideEffect(result=result)
+
+    def start_child_workflow(
+        self,
+        workflow_type: str,
+        arguments: list[Any] | None = None,
+        *,
+        task_queue: str | None = None,
+        parent_close_policy: str | None = None,
+    ) -> StartChildWorkflow:
+        return StartChildWorkflow(
+            workflow_type=workflow_type,
+            arguments=list(arguments) if arguments is not None else [],
+            task_queue=task_queue,
+            parent_close_policy=parent_close_policy,
+        )
+
+    def get_version(
+        self, change_id: str, min_supported: int, max_supported: int
+    ) -> RecordVersionMarker:
+        return RecordVersionMarker(
+            change_id=change_id,
+            version=max_supported,
+            min_supported=min_supported,
+            max_supported=max_supported,
+        )
+
+    def upsert_search_attributes(self, attributes: dict[str, Any]) -> UpsertSearchAttributes:
+        return UpsertSearchAttributes(attributes=dict(attributes))
 
     def continue_as_new(
         self,
@@ -221,9 +304,20 @@ def replay(
             resolved_results.append(serializer.decode(raw))
         elif etype in ("TimerFired", "timer_fired"):
             resolved_results.append(None)
-        elif etype in ("SideEffectRecorded", "side_effect_recorded"):
+        elif etype in (
+            "SideEffectRecorded", "side_effect_recorded",
+            "ChildRunCompleted", "child_run_completed",
+        ):
             raw = details.get("result") or ev.get("result")
             resolved_results.append(serializer.decode(raw))
+        elif etype in ("ChildRunFailed", "child_run_failed"):
+            msg = details.get("message") or ev.get("message", "child workflow failed")
+            resolved_results.append(ChildWorkflowFailed(msg))
+        elif etype in ("VersionMarkerRecorded", "version_marker_recorded"):
+            version = details.get("version") or ev.get("version", 0)
+            resolved_results.append(version)
+        elif etype in ("SearchAttributesUpserted", "search_attributes_upserted"):
+            resolved_results.append(None)
 
     gen = instance.run(ctx, *start_input)
     if not hasattr(gen, "__next__"):
@@ -251,10 +345,28 @@ def replay(
                 ctx.logger._set_replaying(False)
                 pending.append(cmd)
                 return ReplayOutcome(commands=pending)
-            if isinstance(cmd, (ScheduleActivity, StartTimer)):
+            if isinstance(cmd, UpsertSearchAttributes):
                 if result_cursor < len(resolved_results):
                     next_value = resolved_results[result_cursor]
                     result_cursor += 1
+                    continue
+                ctx.logger._set_replaying(False)
+                pending.append(cmd)
+                next_value = None
+                continue
+            if isinstance(cmd, (ScheduleActivity, StartTimer, StartChildWorkflow, RecordVersionMarker)):
+                if result_cursor < len(resolved_results):
+                    val = resolved_results[result_cursor]
+                    result_cursor += 1
+                    if isinstance(val, ChildWorkflowFailed):
+                        try:
+                            cmd = gen.throw(val)
+                            continue
+                        except StopIteration as stop:
+                            if isinstance(stop.value, ContinueAsNew):
+                                return ReplayOutcome(commands=[stop.value])
+                            return ReplayOutcome(commands=[CompleteWorkflow(result=stop.value)])
+                    next_value = val
                     continue
                 ctx.logger._set_replaying(False)
                 pending.append(cmd)
@@ -262,8 +374,8 @@ def replay(
             raise TypeError(f"workflow yielded unsupported command: {cmd!r}")
     except StopIteration as stop:
         if isinstance(stop.value, ContinueAsNew):
-            return ReplayOutcome(commands=[stop.value])
-        return ReplayOutcome(commands=[CompleteWorkflow(result=stop.value)])
+            return ReplayOutcome(commands=pending + [stop.value])
+        return ReplayOutcome(commands=pending + [CompleteWorkflow(result=stop.value)])
     except Exception as exc:
         return ReplayOutcome(commands=[FailWorkflow(
             message=str(exc),

@@ -62,6 +62,12 @@ class UpdateRejected(DurableWorkflowError):
     pass
 
 
+class ChildWorkflowFailed(DurableWorkflowError):
+    def __init__(self, message: str, exception_class: str | None = None) -> None:
+        super().__init__(message)
+        self.exception_class = exception_class
+
+
 class WorkflowTerminated(DurableWorkflowError):
     def __init__(self, message: str = "workflow was terminated") -> None:
         super().__init__(message)

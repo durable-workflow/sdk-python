@@ -105,6 +105,30 @@ class TestSyncClientList:
             assert len(result.executions) == 1
 
 
+class TestSyncClientUpdate:
+    def test_update(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(200, {"outcome": "completed", "result": "updated"})
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
+            result = client.update_workflow("wf-1", "my-update", args=["data"], wait_for="completed")
+            assert result["outcome"] == "completed"
+
+
+class TestSyncHandleUpdate:
+    def test_handle_update(self) -> None:
+        client = Client("http://localhost:8080")
+        resp_start = _mock_response(200, {"workflow_id": "wf-1", "run_id": "r1", "workflow_type": "g"})
+        resp_update = _mock_response(200, {"outcome": "completed"})
+        mock = patch.object(
+            client._async._http, "request",
+            new_callable=AsyncMock, side_effect=[resp_start, resp_update],
+        )
+        with mock:
+            handle = client.start_workflow(workflow_type="g", task_queue="q1", workflow_id="wf-1")
+            result = handle.update("my-update", ["data"])
+            assert result["outcome"] == "completed"
+
+
 class TestSyncClientContextManager:
     def test_context_manager(self) -> None:
         with Client("http://localhost:8080") as client:

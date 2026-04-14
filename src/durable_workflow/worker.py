@@ -9,7 +9,6 @@ from typing import Any
 
 from . import serializer
 from .client import Client
-from .errors import ServerError
 from .workflow import replay
 
 log = logging.getLogger("durable_workflow.worker")
