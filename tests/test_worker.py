@@ -188,6 +188,37 @@ class TestActivityTaskExecution:
         assert call_kwargs["failure_type"] == "RuntimeError"
 
 
+class TestEnvelopeArguments:
+    @pytest.mark.asyncio
+    async def test_activity_with_envelope_arguments(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[echo_activity])
+        task = {
+            "task_id": "at-env",
+            "activity_attempt_id": "aa-env",
+            "activity_type": "test-act",
+            "arguments": {"codec": "json", "blob": '["hello"]'},
+            "payload_codec": "json",
+        }
+        await worker._run_activity_task(task)
+        mock_client.complete_activity_task.assert_called_once()
+        call_kwargs = mock_client.complete_activity_task.call_args.kwargs
+        assert call_kwargs["result"] == "result-hello"
+
+    @pytest.mark.asyncio
+    async def test_workflow_with_envelope_arguments(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        task = {
+            "task_id": "t-env",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": {"codec": "json", "blob": '["hello"]'},
+            "payload_codec": "json",
+        }
+        await worker._run_workflow_task(task)
+        mock_client.complete_workflow_task.assert_called_once()
+
+
 class TestWorkerStop:
     @pytest.mark.asyncio
     async def test_stop_sets_event(self, mock_client: AsyncMock) -> None:

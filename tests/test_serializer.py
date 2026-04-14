@@ -43,6 +43,27 @@ class TestDecode:
             serializer.decode("not-json", codec="json")
 
 
+class TestDecodeEnvelope:
+    def test_unwraps_codec_blob_dict(self) -> None:
+        assert serializer.decode_envelope({"codec": "json", "blob": '["a",1]'}) == ["a", 1]
+
+    def test_falls_back_to_raw_string(self) -> None:
+        assert serializer.decode_envelope('["a",1]') == ["a", 1]
+
+    def test_falls_back_with_codec(self) -> None:
+        assert serializer.decode_envelope('"hello"', codec="json") == "hello"
+
+    def test_rejects_non_json_envelope(self) -> None:
+        with pytest.raises(ValueError, match="only supports the 'json' codec"):
+            serializer.decode_envelope({"codec": "workflow-serializer-y", "blob": "data"})
+
+    def test_none_passthrough(self) -> None:
+        assert serializer.decode_envelope(None) is None
+
+    def test_empty_string_passthrough(self) -> None:
+        assert serializer.decode_envelope("") is None
+
+
 class TestEnvelope:
     def test_structure(self) -> None:
         env = serializer.envelope(["a", 1])

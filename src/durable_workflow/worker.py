@@ -72,7 +72,7 @@ class Worker:
         codec = task.get("payload_codec")
         raw_args = task.get("arguments")
         try:
-            decoded = serializer.decode(raw_args, codec=codec)
+            decoded = serializer.decode_envelope(raw_args, codec=codec)
             if decoded is not None:
                 start_input = decoded if isinstance(decoded, list) else [decoded]
         except ValueError as e:
@@ -135,7 +135,7 @@ class Worker:
         activity_type: str = task.get("activity_type", "")
         attempt_number: int = task.get("attempt_number", 1)
         raw_args = task.get("arguments")
-        args = serializer.decode(raw_args, codec=task.get("payload_codec")) or []
+        args = serializer.decode_envelope(raw_args, codec=task.get("payload_codec")) or []
         if not isinstance(args, list):
             args = [args]
 

@@ -24,6 +24,13 @@ def envelope(value: Any) -> dict[str, str]:
     return {"codec": JSON_CODEC, "blob": encode(value)}
 
 
+def decode_envelope(value: Any, codec: str | None = None) -> Any:
+    """Decode a value that may be a ``{codec, blob}`` envelope or a raw blob."""
+    if isinstance(value, dict) and "codec" in value and "blob" in value:
+        return decode(value["blob"], codec=value["codec"])
+    return decode(value, codec=codec)
+
+
 def decode(blob: str | None, codec: str | None = None) -> Any:
     """Decode a payload blob into a Python value.
 

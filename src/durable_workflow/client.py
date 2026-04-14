@@ -26,6 +26,9 @@ class WorkflowExecution:
     status: str | None = None
     namespace: str | None = None
     task_queue: str | None = None
+    input: Any = None
+    output: Any = None
+    payload_codec: str | None = None
 
 
 @dataclass
@@ -192,6 +195,16 @@ class Client:
 
     async def describe_workflow(self, workflow_id: str) -> WorkflowExecution:
         data = await self._request("GET", f"/workflows/{workflow_id}", context=workflow_id)
+        input_val = None
+        output_val = None
+        if data.get("input_envelope"):
+            input_val = serializer.decode_envelope(data["input_envelope"])
+        elif data.get("input") is not None:
+            input_val = data["input"]
+        if data.get("output_envelope"):
+            output_val = serializer.decode_envelope(data["output_envelope"])
+        elif data.get("output") is not None:
+            output_val = data["output"]
         return WorkflowExecution(
             workflow_id=data.get("workflow_id", workflow_id),
             run_id=data.get("run_id"),
@@ -199,6 +212,9 @@ class Client:
             status=data.get("status"),
             namespace=data.get("namespace"),
             task_queue=data.get("task_queue"),
+            input=input_val,
+            output=output_val,
+            payload_codec=data.get("payload_codec"),
         )
 
     async def list_workflows(
