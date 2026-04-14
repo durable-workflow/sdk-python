@@ -7,25 +7,61 @@ from typing import Any
 import httpx
 
 from . import serializer
-from .errors import ServerError, WorkflowFailed
+from .errors import (
+    WorkflowCancelled,
+    WorkflowFailed,
+    WorkflowTerminated,
+    _raise_for_status,
+)
 
 PROTOCOL_VERSION = "1.0"
 CONTROL_PLANE_VERSION = "2"
 
 
 @dataclass
-class WorkflowHandle:
+class WorkflowExecution:
     workflow_id: str
     run_id: str | None
     workflow_type: str
+    status: str | None = None
+    namespace: str | None = None
+    task_queue: str | None = None
+
+
+@dataclass
+class WorkflowList:
+    executions: list[WorkflowExecution]
+    next_page_token: str | None = None
+
+
+class WorkflowHandle:
+    def __init__(self, client: Client, workflow_id: str, run_id: str | None = None, workflow_type: str = "") -> None:
+        self._client = client
+        self.workflow_id = workflow_id
+        self.run_id = run_id
+        self.workflow_type = workflow_type
+
+    async def result(self, *, poll_interval: float = 0.5, timeout: float = 30.0) -> Any:
+        return await self._client.get_result(self, poll_interval=poll_interval, timeout=timeout)
+
+    async def describe(self) -> WorkflowExecution:
+        return await self._client.describe_workflow(self.workflow_id)
+
+    async def signal(self, signal_name: str, args: list[Any] | None = None) -> None:
+        await self._client.signal_workflow(self.workflow_id, signal_name, args=args)
+
+    async def query(self, query_name: str, args: list[Any] | None = None) -> Any:
+        return await self._client.query_workflow(self.workflow_id, query_name, args=args)
+
+    async def cancel(self, *, reason: str | None = None) -> None:
+        await self._client.cancel_workflow(self.workflow_id, reason=reason)
+
+    async def terminate(self, *, reason: str | None = None) -> None:
+        await self._client.terminate_workflow(self.workflow_id, reason=reason)
 
 
 class Client:
-    """HTTP client for the Durable Workflow server.
-
-    Wraps the worker and control-plane endpoints. Methods map 1:1 to the
-    server's REST routes; parameters are JSON-serializable primitives.
-    """
+    """HTTP client for the Durable Workflow server."""
 
     def __init__(
         self,
@@ -34,7 +70,7 @@ class Client:
         token: str | None = None,
         namespace: str = "default",
         timeout: float = 60.0,
-    ):
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.namespace = namespace
@@ -43,10 +79,10 @@ class Client:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Client:
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc: Any) -> None:
         await self.aclose()
 
     def _headers(self, *, worker: bool = False) -> dict[str, str]:
@@ -61,7 +97,14 @@ class Client:
         return h
 
     async def _request(
-        self, method: str, path: str, *, worker: bool = False, json: Any = None, timeout: float | None = None,
+        self,
+        method: str,
+        path: str,
+        *,
+        worker: bool = False,
+        json: Any = None,
+        timeout: float | None = None,
+        context: str = "",
     ) -> Any:
         resp = await self._http.request(
             method,
@@ -75,16 +118,17 @@ class Client:
                 body = resp.json()
             except ValueError:
                 body = resp.text
-            raise ServerError(resp.status_code, body)
+            _raise_for_status(resp.status_code, body, context=context)
         if resp.status_code == 204 or not resp.content:
             return None
         return resp.json()
 
     # ── Health ─────────────────────────────────────────────────────────
-    async def health(self) -> dict:
+    async def health(self) -> dict[str, Any]:
         resp = await self._http.get("/api/health")
         resp.raise_for_status()
-        return resp.json()
+        result: dict[str, Any] = resp.json()
+        return result
 
     # ── Workflows ──────────────────────────────────────────────────────
     async def start_workflow(
@@ -93,11 +137,14 @@ class Client:
         workflow_type: str,
         task_queue: str,
         workflow_id: str,
-        input: list | None = None,
+        input: list[Any] | None = None,
         execution_timeout_seconds: int = 3600,
         run_timeout_seconds: int = 600,
+        duplicate_policy: str | None = None,
+        memo: dict[str, Any] | None = None,
+        search_attributes: dict[str, Any] | None = None,
     ) -> WorkflowHandle:
-        body = {
+        body: dict[str, Any] = {
             "workflow_id": workflow_id,
             "workflow_type": workflow_type,
             "task_queue": task_queue,
@@ -105,20 +152,104 @@ class Client:
             "execution_timeout_seconds": execution_timeout_seconds,
             "run_timeout_seconds": run_timeout_seconds,
         }
-        data = await self._request("POST", "/workflows", json=body)
+        if duplicate_policy is not None:
+            body["duplicate_policy"] = duplicate_policy
+        if memo is not None:
+            body["memo"] = memo
+        if search_attributes is not None:
+            body["search_attributes"] = search_attributes
+        data = await self._request("POST", "/workflows", json=body, context=workflow_id)
         return WorkflowHandle(
+            self,
             workflow_id=data["workflow_id"],
             run_id=data.get("run_id"),
             workflow_type=data["workflow_type"],
         )
 
-    async def describe_workflow(self, workflow_id: str) -> dict:
-        return await self._request("GET", f"/workflows/{workflow_id}")
-
-    async def get_history(self, workflow_id: str, run_id: str) -> dict:
-        return await self._request(
-            "GET", f"/workflows/{workflow_id}/runs/{run_id}/history"
+    async def describe_workflow(self, workflow_id: str) -> WorkflowExecution:
+        data = await self._request("GET", f"/workflows/{workflow_id}", context=workflow_id)
+        return WorkflowExecution(
+            workflow_id=data.get("workflow_id", workflow_id),
+            run_id=data.get("run_id"),
+            workflow_type=data.get("workflow_type", ""),
+            status=data.get("status") or data.get("run_status"),
+            namespace=data.get("namespace"),
+            task_queue=data.get("task_queue"),
         )
+
+    async def list_workflows(
+        self,
+        *,
+        workflow_type: str | None = None,
+        status: str | None = None,
+        query: str | None = None,
+        page_size: int | None = None,
+        next_page_token: str | None = None,
+    ) -> WorkflowList:
+        params: dict[str, str] = {}
+        if workflow_type is not None:
+            params["workflow_type"] = workflow_type
+        if status is not None:
+            params["status"] = status
+        if query is not None:
+            params["query"] = query
+        if page_size is not None:
+            params["page_size"] = str(page_size)
+        if next_page_token is not None:
+            params["next_page_token"] = next_page_token
+
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        path = f"/workflows?{qs}" if qs else "/workflows"
+        data = await self._request("GET", path)
+        items = data.get("data") or data.get("workflows") or []
+        executions = [
+            WorkflowExecution(
+                workflow_id=item.get("workflow_id", ""),
+                run_id=item.get("run_id"),
+                workflow_type=item.get("workflow_type", ""),
+                status=item.get("status") or item.get("run_status"),
+            )
+            for item in items
+        ]
+        return WorkflowList(
+            executions=executions,
+            next_page_token=data.get("next_page_token"),
+        )
+
+    async def get_history(self, workflow_id: str, run_id: str) -> Any:
+        return await self._request(
+            "GET", f"/workflows/{workflow_id}/runs/{run_id}/history", context=workflow_id
+        )
+
+    async def signal_workflow(
+        self, workflow_id: str, signal_name: str, *, args: list[Any] | None = None
+    ) -> None:
+        body: dict[str, Any] = {}
+        if args:
+            body["input"] = args
+        await self._request("POST", f"/workflows/{workflow_id}/signal/{signal_name}", json=body, context=workflow_id)
+
+    async def query_workflow(
+        self, workflow_id: str, query_name: str, *, args: list[Any] | None = None
+    ) -> Any:
+        body: dict[str, Any] = {}
+        if args:
+            body["input"] = args
+        return await self._request(
+            "POST", f"/workflows/{workflow_id}/query/{query_name}", json=body, context=workflow_id
+        )
+
+    async def cancel_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
+        body: dict[str, Any] = {}
+        if reason is not None:
+            body["reason"] = reason
+        await self._request("POST", f"/workflows/{workflow_id}/cancel", json=body, context=workflow_id)
+
+    async def terminate_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
+        body: dict[str, Any] = {}
+        if reason is not None:
+            body["reason"] = reason
+        await self._request("POST", f"/workflows/{workflow_id}/terminate", json=body, context=workflow_id)
 
     async def get_result(
         self,
@@ -129,26 +260,31 @@ class Client:
     ) -> Any:
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            data = await self.describe_workflow(handle.workflow_id)
-            status = data.get("status") or data.get("run_status")
-            if status in ("completed", "failed", "terminated", "canceled"):
-                # Pull the terminal result from the history (server stores the
-                # completion command on the last WorkflowCompleted event).
-                run_id = handle.run_id or data.get("run_id")
+            desc = await self.describe_workflow(handle.workflow_id)
+            status = desc.status
+            if status in ("completed", "failed", "terminated", "canceled", "cancelled"):
+                run_id = handle.run_id or desc.run_id
+                if run_id is None:
+                    raise WorkflowFailed("no run_id available to fetch history")
                 history = await self.get_history(handle.workflow_id, run_id)
                 events = history.get("events") or history.get("history_events") or []
                 for ev in reversed(events):
                     etype = ev.get("event_type") or ev.get("type")
                     details = ev.get("details") or {}
                     if etype in ("WorkflowCompleted", "workflow_completed"):
-                        return serializer.decode(
-                            details.get("result")
-                            or ev.get("result")
-                        )
+                        return serializer.decode(details.get("result") or ev.get("result"))
                     if etype in ("WorkflowFailed", "workflow_failed"):
                         raise WorkflowFailed(
                             details.get("message") or ev.get("message", "workflow failed"),
                             details.get("exception_class") or ev.get("exception_class"),
+                        )
+                    if etype in ("WorkflowTerminated", "workflow_terminated"):
+                        raise WorkflowTerminated(
+                            details.get("reason") or ev.get("reason", "workflow was terminated")
+                        )
+                    if etype in ("WorkflowCancelled", "workflow_cancelled", "WorkflowCanceled", "workflow_canceled"):
+                        raise WorkflowCancelled(
+                            details.get("reason") or ev.get("reason", "workflow was cancelled")
                         )
                 return None
             if asyncio.get_event_loop().time() > deadline:
@@ -167,8 +303,8 @@ class Client:
         supported_activity_types: list[str] | None = None,
         runtime: str = "python",
         sdk_version: str = "durable-workflow-python/0.1.0",
-    ) -> dict:
-        body = {
+    ) -> Any:
+        body: dict[str, Any] = {
             "worker_id": worker_id,
             "task_queue": task_queue,
             "runtime": runtime,
@@ -180,8 +316,8 @@ class Client:
 
     async def poll_workflow_task(
         self, *, worker_id: str, task_queue: str, timeout: float = 35.0
-    ) -> dict | None:
-        body = {"worker_id": worker_id, "task_queue": task_queue}
+    ) -> Any:
+        body: dict[str, Any] = {"worker_id": worker_id, "task_queue": task_queue}
         data = await self._request(
             "POST", "/worker/workflow-tasks/poll", worker=True, json=body, timeout=timeout
         )
@@ -193,9 +329,9 @@ class Client:
         task_id: str,
         lease_owner: str,
         workflow_task_attempt: int,
-        commands: list[dict],
-    ) -> dict:
-        body = {
+        commands: list[dict[str, Any]],
+    ) -> Any:
+        body: dict[str, Any] = {
             "lease_owner": lease_owner,
             "workflow_task_attempt": workflow_task_attempt,
             "commands": commands,
@@ -205,12 +341,24 @@ class Client:
         )
 
     async def fail_workflow_task(
-        self, *, task_id: str, lease_owner: str, workflow_task_attempt: int, message: str
-    ) -> dict:
-        body = {
+        self,
+        *,
+        task_id: str,
+        lease_owner: str,
+        workflow_task_attempt: int,
+        message: str,
+        failure_type: str | None = None,
+        stack_trace: str | None = None,
+    ) -> Any:
+        failure: dict[str, Any] = {"message": message}
+        if failure_type is not None:
+            failure["type"] = failure_type
+        if stack_trace is not None:
+            failure["stack_trace"] = stack_trace
+        body: dict[str, Any] = {
             "lease_owner": lease_owner,
             "workflow_task_attempt": workflow_task_attempt,
-            "message": message,
+            "failure": failure,
         }
         return await self._request(
             "POST", f"/worker/workflow-tasks/{task_id}/fail", worker=True, json=body
@@ -218,8 +366,8 @@ class Client:
 
     async def poll_activity_task(
         self, *, worker_id: str, task_queue: str, timeout: float = 35.0
-    ) -> dict | None:
-        body = {"worker_id": worker_id, "task_queue": task_queue}
+    ) -> Any:
+        body: dict[str, Any] = {"worker_id": worker_id, "task_queue": task_queue}
         data = await self._request(
             "POST", "/worker/activity-tasks/poll", worker=True, json=body, timeout=timeout
         )
@@ -232,8 +380,8 @@ class Client:
         activity_attempt_id: str,
         lease_owner: str,
         result: Any,
-    ) -> dict:
-        body = {
+    ) -> Any:
+        body: dict[str, Any] = {
             "activity_attempt_id": activity_attempt_id,
             "lease_owner": lease_owner,
             "result": serializer.encode(result),
@@ -249,12 +397,40 @@ class Client:
         activity_attempt_id: str,
         lease_owner: str,
         message: str,
-    ) -> dict:
-        body = {
+        failure_type: str | None = None,
+        stack_trace: str | None = None,
+        non_retryable: bool = False,
+    ) -> Any:
+        failure: dict[str, Any] = {"message": message}
+        if failure_type is not None:
+            failure["type"] = failure_type
+        if stack_trace is not None:
+            failure["stack_trace"] = stack_trace
+        if non_retryable:
+            failure["non_retryable"] = True
+        body: dict[str, Any] = {
             "activity_attempt_id": activity_attempt_id,
             "lease_owner": lease_owner,
-            "message": message,
+            "failure": failure,
         }
         return await self._request(
             "POST", f"/worker/activity-tasks/{task_id}/fail", worker=True, json=body
+        )
+
+    async def heartbeat_activity_task(
+        self,
+        *,
+        task_id: str,
+        activity_attempt_id: str,
+        lease_owner: str,
+        details: dict[str, Any] | None = None,
+    ) -> Any:
+        body: dict[str, Any] = {
+            "activity_attempt_id": activity_attempt_id,
+            "lease_owner": lease_owner,
+        }
+        if details is not None:
+            body["details"] = details
+        return await self._request(
+            "POST", f"/worker/activity-tasks/{task_id}/heartbeat", worker=True, json=body
         )

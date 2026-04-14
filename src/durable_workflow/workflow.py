@@ -1,34 +1,17 @@
-"""Workflow decorator and replay context.
-
-This MVP supports deterministic workflows with a generator-based style:
-
-    @workflow.defn(name="greeter")
-    class Greeter:
-        def run(self, ctx, name):
-            result = yield ctx.schedule_activity("greet", [name])
-            return result
-
-The ``run`` method is a generator that yields ``Command`` objects describing
-what to do next. The worker replays the workflow against the history each time
-a task is received. On first yield past the history cursor, the returned
-command is emitted to the server. When the server later records the outcome
-(e.g. ActivityCompleted), the next replay re-runs the generator and ``yield``
-returns the recorded result.
-"""
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from . import serializer
-
 
 _REGISTRY: dict[str, type] = {}
 
 
-def defn(*, name: str):
+def defn(*, name: str):  # type: ignore[no-untyped-def]
     def wrap(cls: type) -> type:
-        cls.__workflow_name__ = name
+        cls.__workflow_name__ = name  # type: ignore[attr-defined]
         _REGISTRY[name] = cls
         return cls
 
@@ -43,10 +26,10 @@ def registry() -> dict[str, type]:
 @dataclass
 class ScheduleActivity:
     activity_type: str
-    arguments: list
+    arguments: list[Any]
     queue: str | None = None
 
-    def to_server_command(self, task_queue: str) -> dict:
+    def to_server_command(self, task_queue: str) -> dict[str, Any]:
         return {
             "type": "schedule_activity",
             "activity_type": self.activity_type,
@@ -56,66 +39,105 @@ class ScheduleActivity:
 
 
 @dataclass
+class StartTimer:
+    delay_seconds: int
+
+    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+        return {
+            "type": "start_timer",
+            "delay_seconds": self.delay_seconds,
+        }
+
+
+@dataclass
 class CompleteWorkflow:
     result: Any
 
-    def to_server_command(self, task_queue: str) -> dict:
+    def to_server_command(self, task_queue: str) -> dict[str, Any]:
         return {
             "type": "complete_workflow",
             "result": serializer.encode(self.result),
         }
 
 
+@dataclass
+class FailWorkflow:
+    message: str
+    exception_type: str | None = None
+    non_retryable: bool = False
+
+    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+        cmd: dict[str, Any] = {
+            "type": "fail_workflow",
+            "message": self.message,
+        }
+        if self.exception_type is not None:
+            cmd["exception_type"] = self.exception_type
+        if self.non_retryable:
+            cmd["non_retryable"] = True
+        return cmd
+
+
+Command = ScheduleActivity | StartTimer | CompleteWorkflow | FailWorkflow
+
+
 # ── Context passed to the workflow's run() ───────────────────────────
 class WorkflowContext:
-    """Yield helpers. The worker drives the generator; the context simply
-    constructs well-formed command objects."""
-
-    def schedule_activity(self, activity_type: str, arguments: list, *, queue: str | None = None) -> ScheduleActivity:
+    def schedule_activity(
+        self, activity_type: str, arguments: list[Any], *, queue: str | None = None
+    ) -> ScheduleActivity:
         return ScheduleActivity(activity_type=activity_type, arguments=list(arguments), queue=queue)
+
+    def start_timer(self, seconds: int) -> StartTimer:
+        return StartTimer(delay_seconds=seconds)
 
 
 # ── Replay ───────────────────────────────────────────────────────────
 @dataclass
 class ReplayOutcome:
-    commands: list  # list[ScheduleActivity | CompleteWorkflow]
+    commands: list[Command]
 
 
-def replay(workflow_cls: type, history_events: Iterable[dict], start_input: list) -> ReplayOutcome:
-    """Run the workflow generator against history.
-
-    Returns the next command(s) to emit. For MVP we only support a single
-    outstanding activity at a time; when we hit an unresolved yield, we return
-    that command. If ``run`` returns, we emit ``complete_workflow``.
-    """
+def replay(workflow_cls: type, history_events: Iterable[dict[str, Any]], start_input: list[Any]) -> ReplayOutcome:
     instance = workflow_cls()
     ctx = WorkflowContext()
 
     events = list(history_events)
-    activity_results: list[Any] = []
+
+    resolved_results: list[Any] = []
     for ev in events:
         etype = ev.get("event_type") or ev.get("type")
+        details = ev.get("details") or {}
         if etype in ("ActivityCompleted", "activity_completed"):
-            details = ev.get("details") or {}
             raw = details.get("result") or ev.get("result")
-            activity_results.append(serializer.decode(raw))
+            resolved_results.append(serializer.decode(raw))
+        elif etype in ("TimerFired", "timer_fired"):
+            resolved_results.append(None)
 
     gen = instance.run(ctx, *start_input)
     if not hasattr(gen, "__next__"):
-        # Non-generator workflow — treat the return value as the completion.
         return ReplayOutcome(commands=[CompleteWorkflow(result=gen)])
 
+    result_cursor = 0
     next_value: Any = None
     first = True
+    pending: list[Command] = []
     try:
         while True:
             cmd = gen.send(None) if first else gen.send(next_value)
             first = False
-            if isinstance(cmd, ScheduleActivity):
-                if activity_results:
-                    next_value = activity_results.pop(0)
+            if isinstance(cmd, (ScheduleActivity, StartTimer)):
+                if result_cursor < len(resolved_results):
+                    next_value = resolved_results[result_cursor]
+                    result_cursor += 1
                     continue
-                return ReplayOutcome(commands=[cmd])
+                pending.append(cmd)
+                return ReplayOutcome(commands=pending)
             raise TypeError(f"workflow yielded unsupported command: {cmd!r}")
     except StopIteration as stop:
         return ReplayOutcome(commands=[CompleteWorkflow(result=stop.value)])
+    except Exception as exc:
+        return ReplayOutcome(commands=[FailWorkflow(
+            message=str(exc),
+            exception_type=type(exc).__name__,
+        )])

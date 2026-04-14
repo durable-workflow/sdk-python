@@ -1,10 +1,11 @@
-"""Worker: registers with the server and runs the workflow/activity poll loops."""
 from __future__ import annotations
 
 import asyncio
 import logging
+import traceback
 import uuid
-from typing import Callable, Iterable, Optional
+from collections.abc import Callable, Iterable
+from typing import Any
 
 from . import serializer
 from .client import Client
@@ -14,7 +15,7 @@ from .workflow import replay
 log = logging.getLogger("durable_workflow.worker")
 
 
-def _activity_name(fn: Callable) -> str:
+def _activity_name(fn: Callable[..., Any]) -> str:
     return getattr(fn, "__activity_name__", fn.__name__)
 
 
@@ -29,9 +30,9 @@ class Worker:
         *,
         task_queue: str,
         workflows: Iterable[type] = (),
-        activities: Iterable[Callable] = (),
-        worker_id: Optional[str] = None,
-    ):
+        activities: Iterable[Callable[..., Any]] = (),
+        worker_id: str | None = None,
+    ) -> None:
         self.client = client
         self.task_queue = task_queue
         self.workflows = {_workflow_name(w): w for w in workflows}
@@ -48,20 +49,16 @@ class Worker:
         )
         log.info("worker %s registered on %s", self.worker_id, self.task_queue)
 
-    async def _run_workflow_task(self, task: dict) -> None:
+    async def _run_workflow_task(self, task: dict[str, Any]) -> None:
         import json as _json
+
         log.debug("workflow task payload: %s", _json.dumps(task, default=str)[:2000])
-        task_id = task["task_id"]
-        attempt = task.get("workflow_task_attempt", 1)
-        wf_type = task.get("workflow_type")
+        task_id: str = task["task_id"]
+        attempt: int = task.get("workflow_task_attempt", 1)
+        wf_type: str = task.get("workflow_type", "")
         history = task.get("history_events", [])
 
-        # Recover the start input using the declared ``payload_codec`` on the
-        # poll response. For runs started against a post-#164 server with
-        # ``codec=json`` (or a plain JSON input array) this is a direct JSON
-        # decode. Legacy PHP-codec runs fall back to the best-effort decoder
-        # in ``serializer.decode``.
-        start_input: list = []
+        start_input: list[Any] = []
         codec = task.get("payload_codec")
         raw_args = task.get("arguments")
         try:
@@ -91,12 +88,18 @@ class Worker:
                 lease_owner=self.worker_id,
                 workflow_task_attempt=attempt,
                 message=f"replay failed: {e}",
+                failure_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
             )
             return
 
         commands = [c.to_server_command(self.task_queue) for c in outcome.commands]
-        log.info("completing workflow task %s with %d command(s): %s",
-                 task_id, len(commands), [c['type'] for c in commands])
+        log.info(
+            "completing workflow task %s with %d command(s): %s",
+            task_id,
+            len(commands),
+            [c["type"] for c in commands],
+        )
         await self.client.complete_workflow_task(
             task_id=task_id,
             lease_owner=self.worker_id,
@@ -104,10 +107,10 @@ class Worker:
             commands=commands,
         )
 
-    async def _run_activity_task(self, task: dict) -> None:
-        task_id = task["task_id"]
-        attempt_id = task.get("activity_attempt_id") or task.get("attempt_id")
-        activity_type = task.get("activity_type")
+    async def _run_activity_task(self, task: dict[str, Any]) -> None:
+        task_id: str = task["task_id"]
+        attempt_id: str = task.get("activity_attempt_id") or task.get("attempt_id", "")
+        activity_type: str = task.get("activity_type", "")
         raw_args = task.get("arguments")
         args = serializer.decode(raw_args, codec=task.get("payload_codec")) or []
         if not isinstance(args, list):
@@ -132,6 +135,8 @@ class Worker:
                 activity_attempt_id=attempt_id,
                 lease_owner=self.worker_id,
                 message=str(e),
+                failure_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
             )
             return
 
