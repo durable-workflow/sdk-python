@@ -30,6 +30,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: marks tests that require a running server (deselect with '-m \"not integration\"')",
+]
 
 [tool.mypy]
 python_version = "3.10"
