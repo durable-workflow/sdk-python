@@ -2,12 +2,18 @@
 
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
-Status: **MVP / experimental**. Supports starting workflows, registering a worker, polling workflow + activity tasks, and completing them with `schedule_activity` and `complete_workflow` commands. Signals/queries/updates/timers/child workflows are not yet implemented.
+Status: **Alpha**. Supports starting workflows, registering workers, polling workflow + activity tasks, schedules, signals, and completing workflows. Queries, updates, timers, and child workflows are planned.
 
 ## Install
 
+```bash
+pip install durable-workflow
 ```
-pip install -e .
+
+Or for development:
+
+```bash
+pip install -e '.[dev]'
 ```
 
 ## Quickstart
@@ -40,11 +46,54 @@ async def main():
         input=["world"],
     )
     await worker.run_until(workflow_id="greet-1")
-    print(await client.get_result(handle))
+    result = await client.get_result(handle)
+    print(result)  # "hello, world"
 ```
 
-## Protocol
+## Features
 
-The SDK implements [the server's HTTP protocol](https://github.com/durable-workflow/server#getting-started-end-to-end-workflow) directly using `httpx`. No gRPC, no protobuf, no PHP.
+- **Async-first**: Built on `httpx` and `asyncio`
+- **Type-safe**: Full type hints, passes `mypy --strict`
+- **Polyglot**: Works alongside PHP workers on the same task queue
+- **HTTP/JSON protocol**: No gRPC, no protobuf dependencies
+- **Codec envelopes**: Proper `{codec: "json", blob: "..."}` serialization for cross-language workflows
 
-Known caveats (tracked upstream): the server currently PHP-`serialize()`s workflow start inputs and activity arguments. See [issues].
+## Documentation
+
+Full documentation is available at [durable-workflow.github.io/docs/2.0/sdks/python/](https://durable-workflow.github.io/docs/2.0/sdks/python/):
+
+- [Quickstart](https://durable-workflow.github.io/docs/2.0/sdks/python/quickstart)
+- [Client API](https://durable-workflow.github.io/docs/2.0/sdks/python/client)
+- [Workflow Authoring](https://durable-workflow.github.io/docs/2.0/sdks/python/workflows)
+- [Activity Authoring](https://durable-workflow.github.io/docs/2.0/sdks/python/activities)
+- [Worker Configuration](https://durable-workflow.github.io/docs/2.0/sdks/python/workers)
+- [Error Handling](https://durable-workflow.github.io/docs/2.0/sdks/python/errors)
+- [Schedules (Cron)](https://durable-workflow.github.io/docs/2.0/sdks/python/schedules)
+
+## Requirements
+
+- Python ≥ 3.10
+- A running [Durable Workflow server](https://github.com/durable-workflow/server)
+
+## Development
+
+```bash
+# Install dev dependencies
+pip install -e '.[dev]'
+
+# Run tests
+pytest
+
+# Run integration tests (requires Docker)
+pytest -m integration
+
+# Type check
+mypy src/durable_workflow/
+
+# Lint
+ruff check src/ tests/
+```
+
+## License
+
+MIT
