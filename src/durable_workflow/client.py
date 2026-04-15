@@ -13,6 +13,7 @@ from .errors import (
     WorkflowTerminated,
     _raise_for_status,
 )
+from .retry_policy import RetryPolicy
 
 PROTOCOL_VERSION = "1.0"
 CONTROL_PLANE_VERSION = "2"
@@ -233,10 +234,12 @@ class Client:
         token: str | None = None,
         namespace: str = "default",
         timeout: float = 60.0,
+        retry_policy: RetryPolicy | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.namespace = namespace
+        self.retry_policy = retry_policy or RetryPolicy()
         self._http = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
 
     async def aclose(self) -> None:
@@ -269,19 +272,29 @@ class Client:
         timeout: float | None = None,
         context: str = "",
     ) -> Any:
-        resp = await self._http.request(
-            method,
-            f"/api{path}",
-            headers=self._headers(worker=worker),
-            json=json,
-            timeout=timeout,
-        )
-        if resp.status_code >= 400:
+        async def _do_request() -> httpx.Response:
+            resp = await self._http.request(
+                method,
+                f"/api{path}",
+                headers=self._headers(worker=worker),
+                json=json,
+                timeout=timeout,
+            )
+            # Raise HTTPStatusError for 4xx/5xx so retry policy can catch it
+            resp.raise_for_status()
+            return resp
+
+        try:
+            resp = await self.retry_policy.execute(_do_request)
+        except httpx.HTTPStatusError as exc:
+            # Convert to our custom exception types
             try:
-                body = resp.json()
+                body = exc.response.json()
             except ValueError:
-                body = resp.text
-            _raise_for_status(resp.status_code, body, context=context)
+                body = exc.response.text
+            _raise_for_status(exc.response.status_code, body, context=context)
+            raise  # unreachable, but keeps type checker happy
+
         if resp.status_code == 204 or not resp.content:
             return None
         return resp.json()
@@ -293,9 +306,8 @@ class Client:
 
     # ── Health ─────────────────────────────────────────────────────────
     async def health(self) -> dict[str, Any]:
-        resp = await self._http.get("/api/health")
-        resp.raise_for_status()
-        result: dict[str, Any] = resp.json()
+        result = await self._request("GET", "/health")
+        assert isinstance(result, dict)
         return result
 
     # ── Workflows ──────────────────────────────────────────────────────
