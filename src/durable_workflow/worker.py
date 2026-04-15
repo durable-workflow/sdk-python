@@ -69,6 +69,23 @@ class Worker:
         wf_type: str = task.get("workflow_type", "")
         history = task.get("history_events", [])
 
+        # Paginate history if needed
+        next_page_token = task.get("next_history_page_token")
+        while next_page_token:
+            try:
+                page_data = await self.client.workflow_task_history(
+                    task_id=task_id,
+                    page_token=next_page_token,
+                    lease_owner=self.worker_id,
+                    workflow_task_attempt=attempt,
+                )
+                if page_data and page_data.get("history_events"):
+                    history.extend(page_data["history_events"])
+                next_page_token = page_data.get("next_history_page_token") if page_data else None
+            except Exception as e:
+                log.warning("failed to fetch history page for task %s: %s", task_id, e)
+                break
+
         start_input: list[Any] = []
         codec = task.get("payload_codec")
         raw_args = task.get("arguments")

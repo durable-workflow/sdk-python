@@ -477,7 +477,7 @@ class Client:
                     etype = ev.get("event_type")
                     payload = ev.get("payload") or {}
                     if etype in ("WorkflowCompleted", "workflow_completed"):
-                        return serializer.decode(payload.get("result"))
+                        return serializer.decode(payload.get("output") or payload.get("result"))
                     if etype in ("WorkflowFailed", "workflow_failed"):
                         raise WorkflowFailed(
                             payload.get("message", "workflow failed"),
@@ -748,6 +748,23 @@ class Client:
         }
         return await self._request(
             "POST", f"/worker/workflow-tasks/{task_id}/fail", worker=True, json=body
+        )
+
+    async def workflow_task_history(
+        self,
+        *,
+        task_id: str,
+        page_token: str,
+        lease_owner: str,
+        workflow_task_attempt: int,
+    ) -> Any:
+        body: dict[str, Any] = {
+            "page_token": page_token,
+            "lease_owner": lease_owner,
+            "workflow_task_attempt": workflow_task_attempt,
+        }
+        return await self._request(
+            "POST", f"/worker/workflow-tasks/{task_id}/history", worker=True, json=body
         )
 
     async def poll_activity_task(
