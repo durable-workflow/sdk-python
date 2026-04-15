@@ -2,7 +2,7 @@
 
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
-Status: **Alpha**. Supports starting workflows, registering workers, polling workflow + activity tasks, schedules, signals, and completing workflows. Queries, updates, timers, and child workflows are planned.
+Status: **Alpha**. Core features implemented: workflows, activities, schedules, signals, queries, updates, timers, child workflows, continue-as-new, side effects, and version markers. Full language-neutral protocol support for cross-PHP/Python orchestration.
 
 ## Install
 
