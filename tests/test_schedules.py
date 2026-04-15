@@ -71,7 +71,7 @@ class TestScheduleAction:
         d = action.to_dict()
         assert d["workflow_type"] == "greeter"
         assert d["task_queue"] == "q1"
-        assert d["input"] == ["hello"]
+        assert d["input"] == {"codec": "json", "blob": '["hello"]'}
         assert d["execution_timeout_seconds"] == 3600
         assert d["run_timeout_seconds"] == 600
 
@@ -96,6 +96,20 @@ class TestCreateSchedule:
             assert body["overlap_policy"] == "skip"
             assert body["jitter_seconds"] == 30
             assert body["schedule_id"] == "sched-1"
+
+    @pytest.mark.asyncio
+    async def test_action_input_uses_codec_envelope(self, client: Client) -> None:
+        resp = _mock_response(201, {"schedule_id": "sched-env", "outcome": "created"})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.create_schedule(
+                schedule_id="sched-env",
+                spec=ScheduleSpec(cron_expressions=["0 * * * *"]),
+                action=ScheduleAction(workflow_type="greeter", task_queue="q1", input=["Alice", 42]),
+            )
+            body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
+            action_input = body["action"]["input"]
+            assert action_input["codec"] == "json"
+            assert action_input["blob"] == '["Alice",42]'
 
     @pytest.mark.asyncio
     async def test_minimal(self, client: Client) -> None:

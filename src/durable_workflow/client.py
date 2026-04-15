@@ -67,7 +67,7 @@ class ScheduleAction:
         if self.task_queue is not None:
             d["task_queue"] = self.task_queue
         if self.input is not None:
-            d["input"] = self.input
+            d["input"] = serializer.envelope(self.input)
         if self.execution_timeout_seconds is not None:
             d["execution_timeout_seconds"] = self.execution_timeout_seconds
         if self.run_timeout_seconds is not None:
