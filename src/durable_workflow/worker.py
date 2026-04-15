@@ -52,6 +52,33 @@ class Worker:
         self._in_flight: set[asyncio.Task[Any]] = set()
 
     async def _register(self) -> None:
+        # Check server version compatibility
+        try:
+            info = await self.client.get_cluster_info()
+            server_version = info.get("version", "unknown")
+
+            # Parse major version (e.g., "0.1.9" -> 0, "2.0.0" -> 2)
+            try:
+                major = int(server_version.split(".")[0])
+            except (ValueError, IndexError):
+                log.warning("unable to parse server version %r; skipping compatibility check", server_version)
+                major = None
+
+            # Require server major version 0 or 2+ (0.x is pre-release, 2.x is stable)
+            # SDK 0.1.x is compatible with server 0.1.x and 2.x
+            if major is not None and major not in (0, 2):
+                raise RuntimeError(
+                    f"Server version {server_version} is incompatible with sdk-python 0.1.x "
+                    f"(requires server 0.x or 2.x). "
+                    f"Upgrade the server or use a compatible SDK version."
+                )
+
+            log.debug("server version %s is compatible", server_version)
+        except Exception as e:
+            if isinstance(e, RuntimeError) and "incompatible" in str(e):
+                raise
+            log.warning("failed to check server version compatibility: %s", e)
+
         await self.client.register_worker(
             worker_id=self.worker_id,
             task_queue=self.task_queue,
