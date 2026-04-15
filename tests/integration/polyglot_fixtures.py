@@ -1,0 +1,64 @@
+"""
+Polyglot interop test fixtures for Python SDK.
+
+These fixtures test bidirectional PHP↔Python worker interop:
+- Python activities called from PHP workflows
+- PHP activities called from Python workflows
+- JSON payload round-trip across runtimes
+"""
+from __future__ import annotations
+
+from durable_workflow import activity, workflow
+
+
+@activity.defn(name="tests.polyglot.python-activity")
+async def polyglot_python_activity(input_data: dict) -> dict:
+    """
+    Python activity fixture for polyglot interop testing.
+
+    Accepts structured input from a PHP workflow and returns
+    enriched output to validate JSON codec round-trip.
+    """
+    return {
+        "runtime": "python",
+        "received_input": input_data,
+        "type_checks": {
+            "has_string": "name" in input_data and isinstance(input_data["name"], str),
+            "has_int": "count" in input_data and isinstance(input_data["count"], int),
+            "has_float": "price" in input_data and isinstance(input_data["price"], float),
+            "has_bool": "active" in input_data and isinstance(input_data["active"], bool),
+            "has_array": "tags" in input_data and isinstance(input_data["tags"], list),
+            "has_nested": "metadata" in input_data and isinstance(input_data["metadata"], dict),
+        },
+        "computed": {
+            "name_length": len(input_data.get("name", "")),
+            "count_doubled": input_data.get("count", 0) * 2,
+            "tags_count": len(input_data.get("tags", [])),
+        },
+    }
+
+
+@workflow.defn(name="tests.polyglot.python-workflow")
+class PolyglotPythonWorkflow:
+    """
+    Python workflow fixture for polyglot interop testing.
+
+    Schedules a PHP activity to validate that:
+    1. Python workflows can call PHP activities
+    2. JSON payloads round-trip correctly across runtimes
+    3. Activity results from PHP are decoded properly in Python
+    """
+
+    def run(self, ctx, data: dict):  # type: ignore[no-untyped-def]
+        # Schedule PHP activity with structured input
+        php_result = yield ctx.schedule_activity("tests.polyglot.php-activity", [data])
+
+        return {
+            "workflow_runtime": "python",
+            "php_activity_result": php_result,
+            "validation": {
+                "called_php_activity": True,
+                "result_is_dict": isinstance(php_result, dict),
+                "result_has_runtime": php_result.get("runtime") == "php" if isinstance(php_result, dict) else False,
+            },
+        }
