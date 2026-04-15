@@ -77,9 +77,7 @@ Full documentation is available at [durable-workflow.github.io/docs/2.0/sdks/pyt
 
 ## Compatibility
 
-SDK version 0.1.x is compatible with:
-- **Server 0.x** (development/prerelease versions 0.1.0 through 0.1.9+)
-- **Server 2.x** (stable release versions 2.0.0+)
+SDK version 0.1.x requires **Server 2.x** (versions 2.0.0+).
 
 The worker automatically checks server version at startup and raises a clear error if incompatible.
 
