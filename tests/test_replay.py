@@ -232,12 +232,12 @@ class TestContinueAsNew:
         sc = cmd.to_server_command("default-q")
         assert sc["type"] == "continue_as_new"
         assert sc["workflow_type"] == "other"
-        assert sc["task_queue"] == "q2"
+        assert sc["queue"] == "q2"
 
     def test_server_command_defaults(self) -> None:
         cmd = ContinueAsNew(arguments=[1])
         sc = cmd.to_server_command("default-q")
-        assert sc["task_queue"] == "default-q"
+        assert sc["queue"] == "default-q"
         assert "workflow_type" not in sc
 
 

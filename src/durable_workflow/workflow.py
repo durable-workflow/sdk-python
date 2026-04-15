@@ -96,7 +96,7 @@ class ContinueAsNew:
         if self.workflow_type is not None:
             cmd["workflow_type"] = self.workflow_type
         cmd["arguments"] = serializer.envelope(self.arguments)
-        cmd["task_queue"] = self.task_queue or task_queue
+        cmd["queue"] = self.task_queue or task_queue
         return cmd
 
 
