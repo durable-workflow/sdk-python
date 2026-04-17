@@ -4,7 +4,7 @@ Polyglot interop test fixtures for Python SDK.
 These fixtures test bidirectional PHP↔Python worker interop:
 - Python activities called from PHP workflows
 - PHP activities called from Python workflows
-- JSON payload round-trip across runtimes
+- Avro payload round-trip across runtimes
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ async def polyglot_python_activity(input_data: dict) -> dict:
     Python activity fixture for polyglot interop testing.
 
     Accepts structured input from a PHP workflow and returns
-    enriched output to validate JSON codec round-trip.
+    enriched output to validate codec-aware round-trip behavior.
     """
     return {
         "runtime": "python",
@@ -45,7 +45,7 @@ class PolyglotPythonWorkflow:
 
     Schedules a PHP activity to validate that:
     1. Python workflows can call PHP activities
-    2. JSON payloads round-trip correctly across runtimes
+    2. Avro payloads round-trip correctly across runtimes
     3. Activity results from PHP are decoded properly in Python
     """
 

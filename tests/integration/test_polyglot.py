@@ -30,7 +30,7 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
 
     This validates:
     - Python workflows can schedule activities with type keys registered by PHP workers
-    - JSON payloads serialize correctly from Python
+    - Avro payloads serialize correctly from Python by default
     - PHP activity results deserialize correctly in Python
     - Codec envelopes round-trip across runtimes
     """
@@ -44,7 +44,7 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
         "count": 42,
         "price": 99.95,
         "active": True,
-        "tags": ["python", "php", "json"],
+        "tags": ["python", "php", "avro"],
         "metadata": {
             "source": "integration-test",
             "version": 2,
@@ -96,7 +96,7 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
         # Verify activity arguments are envelope-wrapped
         activity_args = server_cmd.get("arguments", {})
         assert "codec" in activity_args, "activity arguments should be codec-wrapped"
-        assert activity_args.get("codec") == "json"
+        assert activity_args.get("codec") == "avro"
 
         # 5. Complete workflow task
         await client.complete_workflow_task(
