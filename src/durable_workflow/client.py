@@ -301,7 +301,9 @@ class Client:
 
     async def get_cluster_info(self) -> dict[str, Any]:
         """Fetch server version and capabilities from /api/cluster/info."""
-        return await self._request("GET", "/cluster/info", worker=False, context="get_cluster_info")
+        result = await self._request("GET", "/cluster/info", worker=False, context="get_cluster_info")
+        assert isinstance(result, dict)
+        return result
 
     def get_workflow_handle(
         self, workflow_id: str, *, run_id: str | None = None, workflow_type: str = ""

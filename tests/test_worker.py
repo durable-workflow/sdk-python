@@ -38,6 +38,7 @@ def mock_client() -> AsyncMock:
     client.complete_activity_task = AsyncMock(return_value={"outcome": "completed"})
     client.fail_workflow_task = AsyncMock(return_value={"outcome": "failed"})
     client.fail_activity_task = AsyncMock(return_value={"outcome": "failed"})
+    client.get_cluster_info = AsyncMock(return_value={"version": "2.0.0"})
     return client
 
 
@@ -57,6 +58,56 @@ class TestWorkerRegistration:
         assert call_kwargs["task_queue"] == "q1"
         assert "test-wf" in call_kwargs["supported_workflow_types"]
         assert "test-act" in call_kwargs["supported_activity_types"]
+
+    @pytest.mark.asyncio
+    async def test_register_calls_cluster_info(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        await worker._register()
+        mock_client.get_cluster_info.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_register_accepts_server_major_0(self, mock_client: AsyncMock) -> None:
+        mock_client.get_cluster_info = AsyncMock(return_value={"version": "0.1.9"})
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        await worker._register()
+        mock_client.register_worker.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_register_accepts_server_major_2(self, mock_client: AsyncMock) -> None:
+        mock_client.get_cluster_info = AsyncMock(return_value={"version": "2.3.4"})
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        await worker._register()
+        mock_client.register_worker.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_register_rejects_incompatible_major_1(self, mock_client: AsyncMock) -> None:
+        mock_client.get_cluster_info = AsyncMock(return_value={"version": "1.4.0"})
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        with pytest.raises(RuntimeError, match="incompatible"):
+            await worker._register()
+        mock_client.register_worker.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_register_rejects_incompatible_major_3(self, mock_client: AsyncMock) -> None:
+        mock_client.get_cluster_info = AsyncMock(return_value={"version": "3.0.0"})
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        with pytest.raises(RuntimeError, match="incompatible"):
+            await worker._register()
+        mock_client.register_worker.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_register_skips_check_on_unparseable_version(self, mock_client: AsyncMock) -> None:
+        mock_client.get_cluster_info = AsyncMock(return_value={"version": "unknown"})
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        await worker._register()
+        mock_client.register_worker.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_register_continues_when_cluster_info_fails(self, mock_client: AsyncMock) -> None:
+        mock_client.get_cluster_info = AsyncMock(side_effect=RuntimeError("network down"))
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        await worker._register()
+        mock_client.register_worker.assert_awaited_once()
 
 
 class TestWorkflowTaskExecution:
