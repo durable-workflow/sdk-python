@@ -1,3 +1,11 @@
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
+try:
+    __version__ = _pkg_version("durable-workflow")
+except PackageNotFoundError:  # source checkout without installed metadata
+    __version__ = "0.0.0+unknown"
+
 from . import activity, sync, workflow
 from .activity import ActivityContext, ActivityInfo
 from .client import (
@@ -36,6 +44,7 @@ from .worker import Worker
 from .workflow import ContinueAsNew, StartChildWorkflow
 
 __all__ = [
+    "__version__",
     "ActivityCancelled",
     "ActivityContext",
     "ActivityInfo",

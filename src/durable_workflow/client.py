@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import Any
 
 import httpx
@@ -17,6 +19,16 @@ from .retry_policy import RetryPolicy
 
 PROTOCOL_VERSION = "1.0"
 CONTROL_PLANE_VERSION = "2"
+
+
+def _default_sdk_version() -> str:
+    try:
+        return f"durable-workflow-python/{_pkg_version('durable-workflow')}"
+    except PackageNotFoundError:
+        return "durable-workflow-python/0.0.0+unknown"
+
+
+DEFAULT_SDK_VERSION = _default_sdk_version()
 
 
 @dataclass
@@ -703,8 +715,10 @@ class Client:
         supported_workflow_types: list[str] | None = None,
         supported_activity_types: list[str] | None = None,
         runtime: str = "python",
-        sdk_version: str = "durable-workflow-python/0.1.0",
+        sdk_version: str | None = None,
     ) -> Any:
+        if sdk_version is None:
+            sdk_version = DEFAULT_SDK_VERSION
         body: dict[str, Any] = {
             "worker_id": worker_id,
             "task_queue": task_queue,

@@ -348,3 +348,28 @@ class TestRegisterWorker:
             assert result["registered"] is True
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["runtime"] == "python"
+
+    @pytest.mark.asyncio
+    async def test_register_advertises_installed_package_version(self, client: Client) -> None:
+        from importlib.metadata import version as _pkg_version
+
+        import durable_workflow
+
+        installed = _pkg_version("durable-workflow")
+        assert durable_workflow.__version__ == installed
+
+        resp = _mock_response(201, {"worker_id": "w1", "registered": True})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.register_worker(worker_id="w1", task_queue="q1")
+            body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
+            assert body["sdk_version"] == f"durable-workflow-python/{installed}"
+
+    @pytest.mark.asyncio
+    async def test_register_honors_explicit_sdk_version_override(self, client: Client) -> None:
+        resp = _mock_response(201, {"worker_id": "w1", "registered": True})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.register_worker(
+                worker_id="w1", task_queue="q1", sdk_version="custom-runtime/9.9.9"
+            )
+            body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
+            assert body["sdk_version"] == "custom-runtime/9.9.9"
