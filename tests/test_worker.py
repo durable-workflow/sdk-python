@@ -191,6 +191,27 @@ class TestActivityTaskExecution:
         mock_client.complete_activity_task.assert_called_once()
         call_kwargs = mock_client.complete_activity_task.call_args.kwargs
         assert call_kwargs["result"] == "result-hello"
+        assert call_kwargs["codec"] == "json"
+
+    @pytest.mark.asyncio
+    async def test_activity_echoes_avro_codec(self, mock_client: AsyncMock) -> None:
+        avro = pytest.importorskip("avro", reason="avro extra not installed")
+        del avro
+        from durable_workflow import serializer as _ser
+
+        worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[echo_activity])
+        task = {
+            "task_id": "at-avro",
+            "activity_attempt_id": "aa-avro",
+            "activity_type": "test-act",
+            "arguments": _ser.envelope(["hello"], codec="avro"),
+            "payload_codec": "avro",
+        }
+        await worker._run_activity_task(task)
+        mock_client.complete_activity_task.assert_called_once()
+        call_kwargs = mock_client.complete_activity_task.call_args.kwargs
+        assert call_kwargs["result"] == "result-hello"
+        assert call_kwargs["codec"] == "avro"
 
     @pytest.mark.asyncio
     async def test_async_activity(self, mock_client: AsyncMock) -> None:

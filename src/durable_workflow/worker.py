@@ -180,7 +180,9 @@ class Worker:
         activity_type: str = task.get("activity_type", "")
         attempt_number: int = task.get("attempt_number", 1)
         raw_args = task.get("arguments")
-        args = serializer.decode_envelope(raw_args, codec=task.get("payload_codec")) or []
+        inbound_codec = task.get("payload_codec") or serializer.JSON_CODEC
+        result_codec = inbound_codec if inbound_codec in serializer.SUPPORTED_CODECS else serializer.JSON_CODEC
+        args = serializer.decode_envelope(raw_args, codec=inbound_codec) or []
         if not isinstance(args, list):
             args = [args]
 
@@ -264,6 +266,7 @@ class Worker:
                 activity_attempt_id=attempt_id,
                 lease_owner=self.worker_id,
                 result=result,
+                codec=result_codec,
             )
         except Exception as e:
             log.warning("failed to complete activity task %s: %s", task_id, e)

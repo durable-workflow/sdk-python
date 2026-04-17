@@ -827,11 +827,12 @@ class Client:
         activity_attempt_id: str,
         lease_owner: str,
         result: Any,
+        codec: str = serializer.JSON_CODEC,
     ) -> Any:
         body: dict[str, Any] = {
             "activity_attempt_id": activity_attempt_id,
             "lease_owner": lease_owner,
-            "result": serializer.envelope(result),
+            "result": serializer.envelope(result, codec=codec),
         }
         return await self._request(
             "POST", f"/worker/activity-tasks/{task_id}/complete", worker=True, json=body

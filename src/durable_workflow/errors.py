@@ -101,6 +101,10 @@ class NonRetryableError(DurableWorkflowError):
         self.__cause__ = cause
 
 
+class AvroNotInstalledError(DurableWorkflowError, ImportError):
+    """Raised when Avro codec is requested but the ``avro`` extra is not installed."""
+
+
 def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
     if status < 400:
         return
