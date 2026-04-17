@@ -373,3 +373,55 @@ class TestRegisterWorker:
             )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["sdk_version"] == "custom-runtime/9.9.9"
+
+
+class TestGetClusterInfo:
+    @pytest.mark.asyncio
+    async def test_returns_dict_payload(self, client: Client) -> None:
+        payload = {"version": "2.0.0", "capabilities": {"workflow": True}}
+        resp = _mock_response(200, payload)
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
+            info = await client.get_cluster_info()
+            assert info == payload
+
+    @pytest.mark.asyncio
+    async def test_accepts_empty_dict(self, client: Client) -> None:
+        resp = _mock_response(200, {})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
+            info = await client.get_cluster_info()
+            assert info == {}
+
+    @pytest.mark.asyncio
+    async def test_rejects_list_payload(self, client: Client) -> None:
+        resp = httpx.Response(200, content=b"[]", headers={"content-type": "application/json"},
+                              request=httpx.Request("GET", "http://test"))
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
+            with pytest.raises(ServerError) as exc:
+                await client.get_cluster_info()
+            assert exc.value.reason() == "invalid_cluster_info"
+
+    @pytest.mark.asyncio
+    async def test_rejects_string_payload(self, client: Client) -> None:
+        resp = httpx.Response(200, content=b'"oops"', headers={"content-type": "application/json"},
+                              request=httpx.Request("GET", "http://test"))
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
+            with pytest.raises(ServerError) as exc:
+                await client.get_cluster_info()
+            assert exc.value.reason() == "invalid_cluster_info"
+
+
+class TestHealth:
+    @pytest.mark.asyncio
+    async def test_returns_dict_payload(self, client: Client) -> None:
+        resp = _mock_response(200, {"status": "ok"})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
+            assert await client.health() == {"status": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_dict(self, client: Client) -> None:
+        resp = httpx.Response(200, content=b"true", headers={"content-type": "application/json"},
+                              request=httpx.Request("GET", "http://test"))
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
+            with pytest.raises(ServerError) as exc:
+                await client.health()
+            assert exc.value.reason() == "invalid_health_response"

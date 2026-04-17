@@ -10,6 +10,7 @@ import httpx
 
 from . import serializer
 from .errors import (
+    ServerError,
     WorkflowCancelled,
     WorkflowFailed,
     WorkflowTerminated,
@@ -314,7 +315,11 @@ class Client:
     async def get_cluster_info(self) -> dict[str, Any]:
         """Fetch server version and capabilities from /api/cluster/info."""
         result = await self._request("GET", "/cluster/info", worker=False, context="get_cluster_info")
-        assert isinstance(result, dict)
+        if not isinstance(result, dict):
+            raise ServerError(
+                200,
+                {"reason": "invalid_cluster_info", "message": f"expected JSON object, got {type(result).__name__}"},
+            )
         return result
 
     def get_workflow_handle(
@@ -325,7 +330,11 @@ class Client:
     # ── Health ─────────────────────────────────────────────────────────
     async def health(self) -> dict[str, Any]:
         result = await self._request("GET", "/health")
-        assert isinstance(result, dict)
+        if not isinstance(result, dict):
+            raise ServerError(
+                200,
+                {"reason": "invalid_health_response", "message": f"expected JSON object, got {type(result).__name__}"},
+            )
         return result
 
     # ── Workflows ──────────────────────────────────────────────────────
