@@ -10,7 +10,13 @@ from typing import Any
 
 from . import serializer
 from .activity import ActivityContext, ActivityInfo, _set_context
-from .client import Client
+from .client import (
+    CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA,
+    CONTROL_PLANE_REQUEST_CONTRACT_VERSION,
+    CONTROL_PLANE_VERSION,
+    PROTOCOL_VERSION,
+    Client,
+)
 from .errors import ActivityCancelled, AvroNotInstalledError, NonRetryableError
 from .workflow import replay
 
@@ -23,6 +29,71 @@ def _activity_name(fn: Callable[..., Any]) -> str:
 
 def _workflow_name(cls: type) -> str:
     return getattr(cls, "__workflow_name__", cls.__name__)
+
+
+def _manifest_version(manifest: Any) -> str:
+    if isinstance(manifest, dict):
+        value = manifest.get("version")
+        if isinstance(value, str | int):
+            return str(value)
+    return "missing"
+
+
+def _validate_server_compatibility(info: dict[str, Any]) -> None:
+    control_plane = info.get("control_plane")
+    if not isinstance(control_plane, dict):
+        raise RuntimeError(
+            "Server compatibility error: missing control_plane manifest; "
+            f"sdk-python 0.2.x requires control_plane.version {CONTROL_PLANE_VERSION}."
+        )
+
+    control_plane_version = _manifest_version(control_plane)
+    if control_plane_version != CONTROL_PLANE_VERSION:
+        raise RuntimeError(
+            "Server compatibility error: unsupported control_plane.version "
+            f"{control_plane_version!r}; sdk-python 0.2.x requires {CONTROL_PLANE_VERSION!r}."
+        )
+
+    request_contract = control_plane.get("request_contract")
+    if not isinstance(request_contract, dict):
+        raise RuntimeError(
+            "Server compatibility error: missing control_plane.request_contract; "
+            f"expected {CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA} v{CONTROL_PLANE_REQUEST_CONTRACT_VERSION}."
+        )
+
+    request_schema = request_contract.get("schema")
+    request_version = request_contract.get("version")
+    if (
+        request_schema != CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA
+        or not _contract_version_matches(request_version, CONTROL_PLANE_REQUEST_CONTRACT_VERSION)
+    ):
+        raise RuntimeError(
+            "Server compatibility error: unsupported control_plane.request_contract "
+            f"{request_schema!r} v{request_version!r}; expected "
+            f"{CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA} v{CONTROL_PLANE_REQUEST_CONTRACT_VERSION}."
+        )
+
+    worker_protocol = info.get("worker_protocol")
+    if not isinstance(worker_protocol, dict):
+        raise RuntimeError(
+            "Server compatibility error: missing worker_protocol manifest; "
+            f"sdk-python 0.2.x requires worker_protocol.version {PROTOCOL_VERSION}."
+        )
+
+    worker_protocol_version = _manifest_version(worker_protocol)
+    if worker_protocol_version != PROTOCOL_VERSION:
+        raise RuntimeError(
+            "Server compatibility error: unsupported worker_protocol.version "
+            f"{worker_protocol_version!r}; sdk-python 0.2.x requires {PROTOCOL_VERSION!r}."
+        )
+
+
+def _contract_version_matches(value: Any, expected: int) -> bool:
+    if isinstance(value, int):
+        return value == expected
+    if isinstance(value, str) and value.isdigit():
+        return int(value) == expected
+    return False
 
 
 class Worker:
@@ -52,32 +123,18 @@ class Worker:
         self._in_flight: set[asyncio.Task[Any]] = set()
 
     async def _register(self) -> None:
-        # Check server version compatibility
         try:
             info = await self.client.get_cluster_info()
-            server_version = info.get("version", "unknown")
-
-            # Parse major version (e.g., "0.1.9" -> 0, "2.0.0" -> 2)
-            try:
-                major = int(server_version.split(".")[0])
-            except (ValueError, IndexError):
-                log.warning("unable to parse server version %r; skipping compatibility check", server_version)
-                major = None
-
-            # Require server major version 0 or 2 (0.x is pre-release, 2.x is stable).
-            # SDK 0.2.x is compatible with server 0.x prereleases and 2.x protocol releases.
-            if major is not None and major not in (0, 2):
-                raise RuntimeError(
-                    f"Server version {server_version} is incompatible with sdk-python 0.2.x "
-                    f"(requires server 0.x or 2.x). "
-                    f"Upgrade the server or use a compatible SDK version."
-                )
-
-            log.debug("server version %s is compatible", server_version)
         except Exception as e:
-            if isinstance(e, RuntimeError) and "incompatible" in str(e):
-                raise
-            log.warning("failed to check server version compatibility: %s", e)
+            raise RuntimeError(f"Server compatibility error: unable to read /api/cluster/info: {e}") from e
+
+        _validate_server_compatibility(info)
+        log.debug(
+            "server compatibility accepted: app_version=%s control_plane=%s worker_protocol=%s",
+            info.get("version", "unknown"),
+            _manifest_version(info.get("control_plane")),
+            _manifest_version(info.get("worker_protocol")),
+        )
 
         await self.client.register_worker(
             worker_id=self.worker_id,

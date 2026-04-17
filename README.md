@@ -77,9 +77,16 @@ Full documentation is available at [durable-workflow.github.io/docs/2.0/sdks/pyt
 
 ## Compatibility
 
-SDK version 0.2.x is compatible with Durable Workflow server 0.x prerelease images and the Server 2.x protocol line.
+SDK version 0.2.x is compatible with servers that advertise these protocol
+manifests from `GET /api/cluster/info`:
 
-The worker automatically checks server version at startup and raises a clear error if incompatible.
+- `control_plane.version: "2"`
+- `control_plane.request_contract.schema: durable-workflow.v2.control-plane-request.contract` version `1`
+- `worker_protocol.version: "1.0"`
+
+The top-level server `version` is build identity only. The worker checks these
+protocol manifests at startup and fails closed when compatibility is missing,
+unknown, or undiscoverable.
 
 ## Development
 

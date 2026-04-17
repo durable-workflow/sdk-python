@@ -20,6 +20,8 @@ from .retry_policy import RetryPolicy
 
 PROTOCOL_VERSION = "1.0"
 CONTROL_PLANE_VERSION = "2"
+CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA = "durable-workflow.v2.control-plane-request.contract"
+CONTROL_PLANE_REQUEST_CONTRACT_VERSION = 1
 
 
 def _default_sdk_version() -> str:
@@ -313,7 +315,7 @@ class Client:
         return resp.json()
 
     async def get_cluster_info(self) -> dict[str, Any]:
-        """Fetch server version and capabilities from /api/cluster/info."""
+        """Fetch server build identity, capabilities, and protocol manifests."""
         result = await self._request("GET", "/cluster/info", worker=False, context="get_cluster_info")
         if not isinstance(result, dict):
             raise ServerError(
