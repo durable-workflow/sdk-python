@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from durable_workflow import serializer
 from durable_workflow.client import (
     Client,
     ScheduleAction,
@@ -21,7 +22,6 @@ from durable_workflow.errors import (
     ScheduleAlreadyExists,
     ScheduleNotFound,
 )
-from durable_workflow import serializer
 
 
 def _mock_response(status: int = 200, json_data: dict | None = None) -> httpx.Response:

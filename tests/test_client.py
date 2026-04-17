@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from durable_workflow import serializer
 from durable_workflow.client import CONTROL_PLANE_VERSION, PROTOCOL_VERSION, Client, WorkflowExecution, WorkflowHandle
 from durable_workflow.errors import (
     InvalidArgument,
@@ -16,7 +17,6 @@ from durable_workflow.errors import (
     WorkflowAlreadyStarted,
     WorkflowNotFound,
 )
-from durable_workflow import serializer
 
 
 def _mock_response(status: int = 200, json_data: dict | None = None, text: str = "") -> httpx.Response:
@@ -76,7 +76,6 @@ class TestStartWorkflow:
             body = call_args.kwargs.get("json") or call_args[1].get("json")
             assert body["workflow_type"] == "greeter"
             assert body["input"]["codec"] == "avro"
-            import json as _json
             assert serializer.decode(body["input"]["blob"], codec="avro") == ["hello"]
 
     @pytest.mark.asyncio

@@ -273,6 +273,11 @@ class ReplayOutcome:
     commands: list[Command]
 
 
+def _decode_history_result(payload: dict[str, Any], fallback_codec: str | None) -> Any:
+    codec = payload.get("payload_codec") or fallback_codec
+    return serializer.decode_envelope(payload.get("result"), codec=codec)
+
+
 def replay(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
@@ -301,14 +306,14 @@ def replay(
         etype = ev.get("event_type")
         payload = ev.get("payload") or {}
         if etype in ("ActivityCompleted", "activity_completed"):
-            resolved_results.append(serializer.decode(payload.get("result"), codec=payload_codec))
+            resolved_results.append(_decode_history_result(payload, payload_codec))
         elif etype in ("TimerFired", "timer_fired"):
             resolved_results.append(None)
         elif etype in (
             "SideEffectRecorded", "side_effect_recorded",
             "ChildRunCompleted", "child_run_completed",
         ):
-            resolved_results.append(serializer.decode(payload.get("result"), codec=payload_codec))
+            resolved_results.append(_decode_history_result(payload, payload_codec))
         elif etype in ("ChildRunFailed", "child_run_failed"):
             resolved_results.append(ChildWorkflowFailed(
                 payload.get("message", "child workflow failed")

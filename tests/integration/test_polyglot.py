@@ -169,7 +169,7 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
         server_cmd2 = cmd2.to_server_command(task_queue)
 
         # Debug: inspect command before asserting
-        print(f"\n=== Replay outcome ===")
+        print("\n=== Replay outcome ===")
         print(f"Command type: {server_cmd2.get('type')}")
         print(f"Full command: {server_cmd2}")
         if server_cmd2.get("type") == "fail_workflow":
@@ -177,12 +177,14 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
             print(f"Failure details: {server_cmd2.get('details', 'N/A')}")
             import json
             print(f"History events count: {len(history2)}")
-            print(f"Last few history events:")
+            print("Last few history events:")
             for evt in history2[-3:]:
                 print(f"  - {evt.get('event_type')}: {json.dumps(evt, indent=2)[:200]}")
 
-        assert server_cmd2["type"] == "complete_workflow", \
-            f"Expected complete_workflow but got {server_cmd2['type']}: {server_cmd2.get('message', 'no error message')}"
+        assert server_cmd2["type"] == "complete_workflow", (
+            f"Expected complete_workflow but got {server_cmd2['type']}: "
+            f"{server_cmd2.get('message', 'no error message')}"
+        )
 
         # Verify workflow result includes PHP activity output
         workflow_result = server_cmd2.get("result", {})

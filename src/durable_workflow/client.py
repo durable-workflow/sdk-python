@@ -351,7 +351,6 @@ class Client:
         memo: dict[str, Any] | None = None,
         search_attributes: dict[str, Any] | None = None,
     ) -> WorkflowHandle:
-        encoded_input = serializer.encode(input if input is not None else [])
         body: dict[str, Any] = {
             "workflow_id": workflow_id,
             "workflow_type": workflow_type,

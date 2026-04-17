@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from durable_workflow import workflow
+from durable_workflow import serializer, workflow
 from durable_workflow.errors import ChildWorkflowFailed
 from durable_workflow.workflow import (
     CompleteWorkflow,
@@ -15,7 +15,6 @@ from durable_workflow.workflow import (
     WorkflowContext,
     replay,
 )
-from durable_workflow import serializer
 
 
 @workflow.defn(name="simple-return")
@@ -79,6 +78,22 @@ class TestOneActivity:
         cmd = outcome.commands[0]
         assert isinstance(cmd, CompleteWorkflow)
         assert cmd.result == {"greeting": "hello, world"}
+
+    def test_completed_activity_uses_event_payload_codec(self) -> None:
+        history = [
+            {
+                "event_type": "ActivityCompleted",
+                "payload": {
+                    "result": serializer.encode("hello, avro", codec="avro"),
+                    "payload_codec": "avro",
+                },
+            },
+        ]
+        outcome = replay(OneActivity, history, ["world"])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {"greeting": "hello, avro"}
 
     def test_server_command_shape(self) -> None:
         outcome = replay(OneActivity, [], ["world"])
