@@ -32,12 +32,10 @@ classifiers = [
 ]
 dependencies = [
     "httpx>=0.27",
+    "avro>=1.12,<2",
 ]
 
 [project.optional-dependencies]
-avro = [
-    "avro>=1.12,<2",
-]
 dev = [
     "avro>=1.12,<2",
     "pytest>=8.0",

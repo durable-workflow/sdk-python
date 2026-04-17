@@ -6,11 +6,10 @@ the wire carries a ``payload_codec`` tag alongside its opaque blob.
 
 Supported codecs:
 
-- ``"json"`` — the blob is a UTF-8 JSON document. Default and always
-  available.
+- ``"json"`` — the blob is a UTF-8 JSON document. Supported for decoding
+  existing data only, not used for new workflows.
 - ``"avro"`` — the blob is a base64-encoded Avro generic-wrapper payload
-  (see :mod:`durable_workflow._avro`). Requires the optional ``avro``
-  extra: ``pip install 'durable-workflow[avro]'``.
+  (see :mod:`durable_workflow._avro`). Default for all new v2 workflows.
 """
 from __future__ import annotations
 
