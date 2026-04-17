@@ -24,7 +24,7 @@ AVRO_CODEC = "avro"
 SUPPORTED_CODECS = (JSON_CODEC, AVRO_CODEC)
 
 
-def encode(value: Any, codec: str = JSON_CODEC) -> str:
+def encode(value: Any, codec: str = AVRO_CODEC) -> str:
     """Encode a Python value as a payload blob for *codec*.
 
     Raises ``ValueError`` for unknown codecs and
@@ -40,7 +40,7 @@ def encode(value: Any, codec: str = JSON_CODEC) -> str:
     )
 
 
-def envelope(value: Any, codec: str = JSON_CODEC) -> dict[str, str]:
+def envelope(value: Any, codec: str = AVRO_CODEC) -> dict[str, str]:
     """Wrap a value in a ``{codec, blob}`` payload envelope."""
     return {"codec": codec, "blob": encode(value, codec=codec)}
 

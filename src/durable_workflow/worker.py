@@ -230,7 +230,7 @@ class Worker:
         attempt_number: int = task.get("attempt_number", 1)
         raw_args = task.get("arguments")
         inbound_codec = task.get("payload_codec") or serializer.JSON_CODEC
-        result_codec = inbound_codec if inbound_codec in serializer.SUPPORTED_CODECS else serializer.JSON_CODEC
+        result_codec = inbound_codec if inbound_codec in serializer.SUPPORTED_CODECS else serializer.AVRO_CODEC
         try:
             args = serializer.decode_envelope(raw_args, codec=inbound_codec) or []
         except AvroNotInstalledError as e:

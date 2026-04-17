@@ -15,6 +15,7 @@ from durable_workflow.workflow import (
     WorkflowContext,
     replay,
 )
+from durable_workflow import serializer
 
 
 @workflow.defn(name="simple-return")
@@ -169,8 +170,8 @@ class TestCompleteWorkflowCommand:
         cmd = CompleteWorkflow(result={"key": "val"})
         server_cmd = cmd.to_server_command("q")
         assert server_cmd["type"] == "complete_workflow"
-        assert server_cmd["result"]["codec"] == "json"
-        assert '"key"' in server_cmd["result"]["blob"]
+        assert server_cmd["result"]["codec"] == "avro"
+        assert serializer.decode(server_cmd["result"]["blob"], codec="avro") == {"key": "val"}
 
 
 @workflow.defn(name="continue-as-new-wf")
@@ -273,8 +274,8 @@ class TestSideEffect:
         cmd = RecordSideEffect(result={"key": "val"})
         sc = cmd.to_server_command("q")
         assert sc["type"] == "record_side_effect"
-        assert sc["result"]["codec"] == "json"
-        assert '"key"' in sc["result"]["blob"]
+        assert sc["result"]["codec"] == "avro"
+        assert serializer.decode(sc["result"]["blob"], codec="avro") == {"key": "val"}
 
 
 class TestWorkflowContext:

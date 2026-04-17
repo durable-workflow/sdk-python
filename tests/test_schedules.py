@@ -21,6 +21,7 @@ from durable_workflow.errors import (
     ScheduleAlreadyExists,
     ScheduleNotFound,
 )
+from durable_workflow import serializer
 
 
 def _mock_response(status: int = 200, json_data: dict | None = None) -> httpx.Response:
@@ -71,7 +72,7 @@ class TestScheduleAction:
         d = action.to_dict()
         assert d["workflow_type"] == "greeter"
         assert d["task_queue"] == "q1"
-        assert d["input"] == {"codec": "json", "blob": '["hello"]'}
+        assert d["input"]["codec"] == "avro"
         assert d["execution_timeout_seconds"] == 3600
         assert d["run_timeout_seconds"] == 600
 
@@ -108,8 +109,8 @@ class TestCreateSchedule:
             )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             action_input = body["action"]["input"]
-            assert action_input["codec"] == "json"
-            assert action_input["blob"] == '["Alice",42]'
+            assert action_input["codec"] == "avro"
+            assert serializer.decode(action_input["blob"], codec="avro") == ["Alice", 42]
 
     @pytest.mark.asyncio
     async def test_minimal(self, client: Client) -> None:

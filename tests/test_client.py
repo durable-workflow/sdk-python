@@ -16,6 +16,7 @@ from durable_workflow.errors import (
     WorkflowAlreadyStarted,
     WorkflowNotFound,
 )
+from durable_workflow import serializer
 
 
 def _mock_response(status: int = 200, json_data: dict | None = None, text: str = "") -> httpx.Response:
@@ -74,9 +75,9 @@ class TestStartWorkflow:
             call_args = mock.call_args
             body = call_args.kwargs.get("json") or call_args[1].get("json")
             assert body["workflow_type"] == "greeter"
-            assert body["input"]["codec"] == "json"
+            assert body["input"]["codec"] == "avro"
             import json as _json
-            assert _json.loads(body["input"]["blob"]) == ["hello"]
+            assert serializer.decode(body["input"]["blob"], codec="avro") == ["hello"]
 
     @pytest.mark.asyncio
     async def test_duplicate_raises(self, client: Client) -> None:
@@ -142,8 +143,8 @@ class TestSignalWorkflow:
             call_args = mock.call_args
             assert "/signal/my-signal" in call_args[0][1]
             body = call_args.kwargs.get("json") or call_args[1].get("json")
-            assert body["input"]["codec"] == "json"
-            assert json.loads(body["input"]["blob"]) == ["data"]
+            assert body["input"]["codec"] == "avro"
+            assert serializer.decode(body["input"]["blob"], codec="avro") == ["data"]
 
 
 class TestCancelWorkflow:
@@ -303,8 +304,8 @@ class TestUpdateWorkflow:
             call_args = mock.call_args
             assert "/update/my-update" in call_args[0][1]
             body = call_args.kwargs.get("json") or call_args[1].get("json")
-            assert body["input"]["codec"] == "json"
-            assert json.loads(body["input"]["blob"]) == ["data"]
+            assert body["input"]["codec"] == "avro"
+            assert serializer.decode(body["input"]["blob"], codec="avro") == ["data"]
             assert body["wait_for"] == "completed"
             assert body["wait_timeout_seconds"] == 10
 

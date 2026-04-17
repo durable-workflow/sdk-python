@@ -356,7 +356,7 @@ class Client:
             "workflow_id": workflow_id,
             "workflow_type": workflow_type,
             "task_queue": task_queue,
-            "input": {"codec": "json", "blob": encoded_input},
+            "input": serializer.envelope(input if input is not None else []),
             "execution_timeout_seconds": execution_timeout_seconds,
             "run_timeout_seconds": run_timeout_seconds,
         }
@@ -827,7 +827,7 @@ class Client:
         activity_attempt_id: str,
         lease_owner: str,
         result: Any,
-        codec: str = serializer.JSON_CODEC,
+        codec: str = serializer.AVRO_CODEC,
     ) -> Any:
         body: dict[str, Any] = {
             "activity_attempt_id": activity_attempt_id,
