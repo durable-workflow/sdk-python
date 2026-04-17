@@ -64,11 +64,11 @@ class Worker:
                 log.warning("unable to parse server version %r; skipping compatibility check", server_version)
                 major = None
 
-            # Require server major version 0 or 2+ (0.x is pre-release, 2.x is stable)
-            # SDK 0.1.x is compatible with server 0.1.x and 2.x
+            # Require server major version 0 or 2 (0.x is pre-release, 2.x is stable).
+            # SDK 0.2.x is compatible with server 0.x prereleases and 2.x protocol releases.
             if major is not None and major not in (0, 2):
                 raise RuntimeError(
-                    f"Server version {server_version} is incompatible with sdk-python 0.1.x "
+                    f"Server version {server_version} is incompatible with sdk-python 0.2.x "
                     f"(requires server 0.x or 2.x). "
                     f"Upgrade the server or use a compatible SDK version."
                 )
@@ -121,7 +121,7 @@ class Worker:
             if decoded is not None:
                 start_input = decoded if isinstance(decoded, list) else [decoded]
         except AvroNotInstalledError as e:
-            log.exception("task %s start input Avro decode failed (extra not installed)", task_id)
+            log.exception("task %s start input Avro decode failed (avro dependency unavailable)", task_id)
             try:
                 await self.client.fail_workflow_task(
                     task_id=task_id,
@@ -129,7 +129,7 @@ class Worker:
                     workflow_task_attempt=attempt,
                     message=(
                         f"cannot decode workflow start input with codec 'avro': {e}. "
-                        f"Install the avro extra: pip install 'durable-workflow[avro]'."
+                        f"Reinstall durable-workflow with its runtime dependencies."
                     ),
                     failure_type=type(e).__name__,
                     stack_trace=traceback.format_exc(),
@@ -174,7 +174,7 @@ class Worker:
         try:
             outcome = replay(cls, history, start_input, run_id=run_id, payload_codec=codec)
         except AvroNotInstalledError as e:
-            log.exception("replay failed: Avro extra not installed")
+            log.exception("replay failed: Avro dependency unavailable")
             try:
                 await self.client.fail_workflow_task(
                     task_id=task_id,
@@ -182,7 +182,7 @@ class Worker:
                     workflow_task_attempt=attempt,
                     message=(
                         f"cannot replay workflow history with codec 'avro': {e}. "
-                        f"Install the avro extra: pip install 'durable-workflow[avro]'."
+                        f"Reinstall durable-workflow with its runtime dependencies."
                     ),
                     failure_type=type(e).__name__,
                     stack_trace=traceback.format_exc(),
@@ -234,7 +234,7 @@ class Worker:
         try:
             args = serializer.decode_envelope(raw_args, codec=inbound_codec) or []
         except AvroNotInstalledError as e:
-            log.exception("activity %s arguments Avro decode failed (extra not installed)", task_id)
+            log.exception("activity %s arguments Avro decode failed (avro dependency unavailable)", task_id)
             try:
                 await self.client.fail_activity_task(
                     task_id=task_id,
@@ -242,7 +242,7 @@ class Worker:
                     lease_owner=self.worker_id,
                     message=(
                         f"cannot decode activity arguments with codec 'avro': {e}. "
-                        f"Install the avro extra: pip install 'durable-workflow[avro]'."
+                        f"Reinstall durable-workflow with its runtime dependencies."
                     ),
                     failure_type=type(e).__name__,
                     stack_trace=traceback.format_exc(),

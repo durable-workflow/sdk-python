@@ -10,13 +10,9 @@ The ``json`` field carries ``json.dumps(value)``; ``version`` is currently
 are not yet encodeable/decodeable from this SDK because typed schemas
 require a schema registry that is out of scope for the first Avro release.
 
-The ``avro`` third-party package is an *optional* runtime dependency.
-Install it with::
-
-    pip install 'durable-workflow[avro]'
-
-If the extra is not installed, calling :func:`encode` or :func:`decode`
-raises :class:`AvroNotInstalledError` with the install hint.
+The ``avro`` third-party package is a core runtime dependency. If it is
+missing from a broken or partial installation, calling :func:`encode` or
+:func:`decode` raises :class:`AvroNotInstalledError` with a reinstall hint.
 """
 from __future__ import annotations
 
@@ -43,7 +39,7 @@ def _load_avro_schema() -> Any:
     except ImportError as exc:
         raise AvroNotInstalledError(
             "The 'avro' package is required to encode/decode payloads with the 'avro' "
-            "codec. Install with: pip install 'durable-workflow[avro]'"
+            "codec. Reinstall durable-workflow with its runtime dependencies."
         ) from exc
 
     return avro.schema.parse(WRAPPER_SCHEMA_JSON)
@@ -59,7 +55,7 @@ def encode(value: Any) -> str:
     except ImportError as exc:
         raise AvroNotInstalledError(
             "The 'avro' package is required to encode payloads with the 'avro' "
-            "codec. Install with: pip install 'durable-workflow[avro]'"
+            "codec. Reinstall durable-workflow with its runtime dependencies."
         ) from exc
 
     schema = _load_avro_schema()
@@ -88,7 +84,7 @@ def decode(blob: str) -> Any:
     except ImportError as exc:
         raise AvroNotInstalledError(
             "The 'avro' package is required to decode payloads with the 'avro' "
-            "codec. Install with: pip install 'durable-workflow[avro]'"
+            "codec. Reinstall durable-workflow with its runtime dependencies."
         ) from exc
 
     try:

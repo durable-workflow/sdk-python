@@ -195,7 +195,7 @@ class TestActivityTaskExecution:
 
     @pytest.mark.asyncio
     async def test_activity_echoes_avro_codec(self, mock_client: AsyncMock) -> None:
-        avro = pytest.importorskip("avro", reason="avro extra not installed")
+        avro = pytest.importorskip("avro", reason="avro package not installed")
         del avro
         from durable_workflow import serializer as _ser
 
@@ -317,7 +317,7 @@ class TestCodecDecodeFailures:
 
     @pytest.mark.asyncio
     async def test_activity_avro_decode_failure_fails_task(self, mock_client: AsyncMock) -> None:
-        pytest.importorskip("avro", reason="avro extra not installed")
+        pytest.importorskip("avro", reason="avro package not installed")
         worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[echo_activity])
         task = {
             "task_id": "at-bad-avro",
@@ -335,7 +335,7 @@ class TestCodecDecodeFailures:
         mock_client.complete_activity_task.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_activity_avro_missing_extra_fails_task(
+    async def test_activity_avro_missing_dependency_fails_task(
         self, mock_client: AsyncMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from durable_workflow import _avro
@@ -344,7 +344,7 @@ class TestCodecDecodeFailures:
         def _raise_missing(_blob: str) -> None:
             raise AvroNotInstalledError(
                 "The 'avro' package is required to encode/decode payloads with the 'avro' "
-                "codec. Install with: pip install 'durable-workflow[avro]'"
+                "codec. Reinstall durable-workflow with its runtime dependencies."
             )
 
         monkeypatch.setattr(_avro, "decode", _raise_missing)
@@ -360,7 +360,7 @@ class TestCodecDecodeFailures:
         await worker._run_activity_task(task)
         mock_client.fail_activity_task.assert_called_once()
         call_kwargs = mock_client.fail_activity_task.call_args.kwargs
-        assert "avro extra" in call_kwargs["message"].lower() or "pip install" in call_kwargs["message"]
+        assert "runtime dependencies" in call_kwargs["message"]
         assert call_kwargs["failure_type"] == "AvroNotInstalledError"
         assert call_kwargs["non_retryable"] is True
         mock_client.complete_activity_task.assert_not_called()
@@ -384,7 +384,7 @@ class TestCodecDecodeFailures:
         mock_client.complete_workflow_task.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_workflow_avro_missing_extra_fails_task(
+    async def test_workflow_avro_missing_dependency_fails_task(
         self, mock_client: AsyncMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from durable_workflow import _avro
@@ -393,7 +393,7 @@ class TestCodecDecodeFailures:
         def _raise_missing(_blob: str) -> None:
             raise AvroNotInstalledError(
                 "The 'avro' package is required to encode/decode payloads with the 'avro' "
-                "codec. Install with: pip install 'durable-workflow[avro]'"
+                "codec. Reinstall durable-workflow with its runtime dependencies."
             )
 
         monkeypatch.setattr(_avro, "decode", _raise_missing)
@@ -410,15 +410,15 @@ class TestCodecDecodeFailures:
         await worker._run_workflow_task(task)
         mock_client.fail_workflow_task.assert_called_once()
         call_kwargs = mock_client.fail_workflow_task.call_args.kwargs
-        assert "avro extra" in call_kwargs["message"].lower() or "pip install" in call_kwargs["message"]
+        assert "runtime dependencies" in call_kwargs["message"]
         assert call_kwargs["failure_type"] == "AvroNotInstalledError"
         mock_client.complete_workflow_task.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_workflow_replay_avro_missing_extra_fails_task(
+    async def test_workflow_replay_avro_missing_dependency_fails_task(
         self, mock_client: AsyncMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Avro-encoded history result that cannot be decoded (extra missing)
+        """Avro-encoded history result that cannot be decoded (dependency missing)
         surfaces as fail_workflow_task, not an unhandled dispatcher exception."""
         from durable_workflow import _avro
         from durable_workflow.errors import AvroNotInstalledError
@@ -426,7 +426,7 @@ class TestCodecDecodeFailures:
         def _raise_missing(_blob: str) -> None:
             raise AvroNotInstalledError(
                 "The 'avro' package is required to encode/decode payloads with the 'avro' "
-                "codec. Install with: pip install 'durable-workflow[avro]'"
+                "codec. Reinstall durable-workflow with its runtime dependencies."
             )
 
         monkeypatch.setattr(_avro, "decode", _raise_missing)

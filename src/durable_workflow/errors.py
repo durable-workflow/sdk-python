@@ -102,7 +102,7 @@ class NonRetryableError(DurableWorkflowError):
 
 
 class AvroNotInstalledError(DurableWorkflowError, ImportError):
-    """Raised when Avro codec is requested but the ``avro`` extra is not installed."""
+    """Raised when the core ``avro`` runtime dependency is unavailable."""
 
 
 def _raise_for_status(status: int, body: object, *, context: str = "") -> None:

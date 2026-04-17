@@ -4,18 +4,17 @@ All notable changes to the `durable-workflow` Python SDK are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.1] — unreleased
+## [0.2.0] — 2026-04-17
 
 ### Added
 - Runtime server version compatibility check at worker registration. On
   `Worker.run()`, the SDK now calls `/api/cluster/info` and refuses to
   register against a server whose major version falls outside the set the
-  SDK knows how to talk to. This prevents a 0.1.x worker from silently
+  SDK knows how to talk to. This prevents a 0.2.x worker from silently
   attempting to drive a future breaking-release server. (#302)
 - `Client.get_cluster_info()` — fetches the server version and declared
   capability manifest from `/api/cluster/info`.
-- Avro payload codec support (optional). Install with
-  `pip install 'durable-workflow[avro]'` to pull in `apache/avro 1.12`.
+- Avro payload codec support as a core runtime dependency.
   `serializer.encode()`, `serializer.decode()`, and
   `serializer.envelope()` now accept a `codec=` argument, and
   `decode_envelope()` honors the inner codec tag. The Worker decodes
@@ -24,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generic-wrapper (base64 of `0x00` + Avro binary of a `{json: string,
   version: int}` record), byte-compatible with the PHP
   `Workflow\Serializers\Avro` serializer. (#362)
+
+### Changed
+- Avro is now the default codec for new payloads produced by the client,
+  serializer helpers, schedules, workflow commands, and activity results.
+  JSON payloads remain supported for compatibility with existing history.
+- Replayed activity results now decode using the event payload codec.
 
 ## [0.1.0] — 2026-04-12
 

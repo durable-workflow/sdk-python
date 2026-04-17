@@ -11,7 +11,7 @@ except ImportError:
     _AVRO_AVAILABLE = False
 
 requires_avro = pytest.mark.skipif(
-    not _AVRO_AVAILABLE, reason="avro extra not installed"
+    not _AVRO_AVAILABLE, reason="avro package not installed"
 )
 
 
@@ -170,14 +170,14 @@ class TestAvroCodec:
 class TestAvroNotInstalledError:
     """Verify AvroNotInstalledError is a proper ImportError subclass.
 
-    This matters because callers who already catch ImportError to detect
-    optional-dep absence (a common Python pattern) will transparently
-    catch the SDK-specific error too.
+    This matters because callers who already catch ImportError for broken
+    or partial installations will transparently catch the SDK-specific
+    error too.
     """
 
     def test_is_import_error_subclass(self) -> None:
         assert issubclass(AvroNotInstalledError, ImportError)
 
     def test_carries_install_hint_in_message(self) -> None:
-        exc = AvroNotInstalledError("install with: pip install 'durable-workflow[avro]'")
-        assert "durable-workflow[avro]" in str(exc)
+        exc = AvroNotInstalledError("reinstall durable-workflow with runtime dependencies")
+        assert "runtime dependencies" in str(exc)

@@ -28,7 +28,7 @@ def encode(value: Any, codec: str = AVRO_CODEC) -> str:
 
     Raises ``ValueError`` for unknown codecs and
     :class:`~durable_workflow.errors.AvroNotInstalledError` when the Avro
-    extra is requested but not installed.
+    runtime dependency is missing from a broken or partial installation.
     """
     if codec == JSON_CODEC:
         return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
@@ -61,7 +61,7 @@ def decode(blob: str | None, codec: str | None = None) -> Any:
 
     Raises ``ValueError`` for unknown codecs or malformed blobs, and
     :class:`~durable_workflow.errors.AvroNotInstalledError` when the Avro
-    extra is requested but not installed.
+    runtime dependency is missing from a broken or partial installation.
     """
     if blob is None or blob == "":
         return None

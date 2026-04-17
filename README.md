@@ -56,7 +56,7 @@ async def main():
 - **Type-safe**: Full type hints, passes `mypy --strict`
 - **Polyglot**: Works alongside PHP workers on the same task queue
 - **HTTP/JSON protocol**: No gRPC, no protobuf dependencies
-- **Codec envelopes**: Proper `{codec: "json", blob: "..."}` serialization for cross-language workflows
+- **Codec envelopes**: Avro payloads by default, with JSON decode compatibility for existing history
 
 ## Documentation
 
@@ -77,7 +77,7 @@ Full documentation is available at [durable-workflow.github.io/docs/2.0/sdks/pyt
 
 ## Compatibility
 
-SDK version 0.1.x requires **Server 2.x** (versions 2.0.0+).
+SDK version 0.2.x is compatible with Durable Workflow server 0.x prerelease images and the Server 2.x protocol line.
 
 The worker automatically checks server version at startup and raises a clear error if incompatible.
 
