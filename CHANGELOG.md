@@ -4,6 +4,17 @@ All notable changes to the `durable-workflow` Python SDK are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Worker compatibility checks now use `/api/cluster/info` protocol manifests
+  as the authority instead of the top-level server app version. SDK 0.2.x
+  requires `control_plane.version: "2"`,
+  `control_plane.request_contract` schema
+  `durable-workflow.v2.control-plane-request.contract` version `1`, and
+  `worker_protocol.version: "1.0"`. Missing, unknown, or undiscoverable
+  compatibility states fail closed.
+
 ## [0.2.0] — 2026-04-17
 
 ### Added
