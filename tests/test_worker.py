@@ -292,6 +292,166 @@ class TestEnvelopeArguments:
         mock_client.complete_workflow_task.assert_called_once()
 
 
+class TestCodecDecodeFailures:
+    """TD-P012 / #370 regression: codec decode failures at the task boundary
+    must turn into a deterministic fail_{workflow,activity}_task call so the
+    lease does not sit until timeout."""
+
+    @pytest.mark.asyncio
+    async def test_activity_json_decode_failure_fails_task(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[echo_activity])
+        task = {
+            "task_id": "at-bad-json",
+            "activity_attempt_id": "aa-bad-json",
+            "activity_type": "test-act",
+            "arguments": "{not valid json",
+            "payload_codec": "json",
+        }
+        await worker._run_activity_task(task)
+        mock_client.fail_activity_task.assert_called_once()
+        call_kwargs = mock_client.fail_activity_task.call_args.kwargs
+        assert "decode" in call_kwargs["message"].lower()
+        assert "json" in call_kwargs["message"]
+        assert call_kwargs["non_retryable"] is True
+        mock_client.complete_activity_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_activity_avro_decode_failure_fails_task(self, mock_client: AsyncMock) -> None:
+        pytest.importorskip("avro", reason="avro extra not installed")
+        worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[echo_activity])
+        task = {
+            "task_id": "at-bad-avro",
+            "activity_attempt_id": "aa-bad-avro",
+            "activity_type": "test-act",
+            "arguments": "!!!not-valid-base64!!!",
+            "payload_codec": "avro",
+        }
+        await worker._run_activity_task(task)
+        mock_client.fail_activity_task.assert_called_once()
+        call_kwargs = mock_client.fail_activity_task.call_args.kwargs
+        assert "decode" in call_kwargs["message"].lower()
+        assert "avro" in call_kwargs["message"]
+        assert call_kwargs["non_retryable"] is True
+        mock_client.complete_activity_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_activity_avro_missing_extra_fails_task(
+        self, mock_client: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from durable_workflow import _avro
+        from durable_workflow.errors import AvroNotInstalledError
+
+        def _raise_missing(_blob: str) -> None:
+            raise AvroNotInstalledError(
+                "The 'avro' package is required to encode/decode payloads with the 'avro' "
+                "codec. Install with: pip install 'durable-workflow[avro]'"
+            )
+
+        monkeypatch.setattr(_avro, "decode", _raise_missing)
+
+        worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[echo_activity])
+        task = {
+            "task_id": "at-no-avro",
+            "activity_attempt_id": "aa-no-avro",
+            "activity_type": "test-act",
+            "arguments": "anything",
+            "payload_codec": "avro",
+        }
+        await worker._run_activity_task(task)
+        mock_client.fail_activity_task.assert_called_once()
+        call_kwargs = mock_client.fail_activity_task.call_args.kwargs
+        assert "avro extra" in call_kwargs["message"].lower() or "pip install" in call_kwargs["message"]
+        assert call_kwargs["failure_type"] == "AvroNotInstalledError"
+        assert call_kwargs["non_retryable"] is True
+        mock_client.complete_activity_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workflow_json_decode_failure_fails_task(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        task = {
+            "task_id": "t-bad-json",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": "{not valid json",
+            "payload_codec": "json",
+        }
+        await worker._run_workflow_task(task)
+        mock_client.fail_workflow_task.assert_called_once()
+        call_kwargs = mock_client.fail_workflow_task.call_args.kwargs
+        assert "decode" in call_kwargs["message"].lower()
+        assert "json" in call_kwargs["message"]
+        mock_client.complete_workflow_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workflow_avro_missing_extra_fails_task(
+        self, mock_client: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from durable_workflow import _avro
+        from durable_workflow.errors import AvroNotInstalledError
+
+        def _raise_missing(_blob: str) -> None:
+            raise AvroNotInstalledError(
+                "The 'avro' package is required to encode/decode payloads with the 'avro' "
+                "codec. Install with: pip install 'durable-workflow[avro]'"
+            )
+
+        monkeypatch.setattr(_avro, "decode", _raise_missing)
+
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        task = {
+            "task_id": "t-no-avro",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": "anything",
+            "payload_codec": "avro",
+        }
+        await worker._run_workflow_task(task)
+        mock_client.fail_workflow_task.assert_called_once()
+        call_kwargs = mock_client.fail_workflow_task.call_args.kwargs
+        assert "avro extra" in call_kwargs["message"].lower() or "pip install" in call_kwargs["message"]
+        assert call_kwargs["failure_type"] == "AvroNotInstalledError"
+        mock_client.complete_workflow_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workflow_replay_avro_missing_extra_fails_task(
+        self, mock_client: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Avro-encoded history result that cannot be decoded (extra missing)
+        surfaces as fail_workflow_task, not an unhandled dispatcher exception."""
+        from durable_workflow import _avro
+        from durable_workflow.errors import AvroNotInstalledError
+
+        def _raise_missing(_blob: str) -> None:
+            raise AvroNotInstalledError(
+                "The 'avro' package is required to encode/decode payloads with the 'avro' "
+                "codec. Install with: pip install 'durable-workflow[avro]'"
+            )
+
+        monkeypatch.setattr(_avro, "decode", _raise_missing)
+
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        # JSON envelope for start args bypasses the Avro path so the replay
+        # decode of history result (under the run's avro codec) is the site
+        # that triggers AvroNotInstalledError.
+        task = {
+            "task_id": "t-replay-no-avro",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [
+                {"event_type": "ActivityCompleted", "payload": {"result": "anything"}},
+            ],
+            "arguments": {"codec": "json", "blob": '["hello"]'},
+            "payload_codec": "avro",
+        }
+        await worker._run_workflow_task(task)
+        mock_client.fail_workflow_task.assert_called_once()
+        call_kwargs = mock_client.fail_workflow_task.call_args.kwargs
+        assert call_kwargs["failure_type"] == "AvroNotInstalledError"
+        mock_client.complete_workflow_task.assert_not_called()
+
+
 class TestWorkerStop:
     @pytest.mark.asyncio
     async def test_stop_sets_event(self, mock_client: AsyncMock) -> None:

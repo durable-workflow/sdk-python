@@ -279,6 +279,7 @@ def replay(
     start_input: list[Any],
     *,
     run_id: str = "",
+    payload_codec: str | None = None,
 ) -> ReplayOutcome:
     events = list(history_events)
 
@@ -300,14 +301,14 @@ def replay(
         etype = ev.get("event_type")
         payload = ev.get("payload") or {}
         if etype in ("ActivityCompleted", "activity_completed"):
-            resolved_results.append(serializer.decode(payload.get("result")))
+            resolved_results.append(serializer.decode(payload.get("result"), codec=payload_codec))
         elif etype in ("TimerFired", "timer_fired"):
             resolved_results.append(None)
         elif etype in (
             "SideEffectRecorded", "side_effect_recorded",
             "ChildRunCompleted", "child_run_completed",
         ):
-            resolved_results.append(serializer.decode(payload.get("result")))
+            resolved_results.append(serializer.decode(payload.get("result"), codec=payload_codec))
         elif etype in ("ChildRunFailed", "child_run_failed"):
             resolved_results.append(ChildWorkflowFailed(
                 payload.get("message", "child workflow failed")

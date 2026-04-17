@@ -11,7 +11,7 @@ from typing import Any
 from . import serializer
 from .activity import ActivityContext, ActivityInfo, _set_context
 from .client import Client
-from .errors import ActivityCancelled, NonRetryableError
+from .errors import ActivityCancelled, AvroNotInstalledError, NonRetryableError
 from .workflow import replay
 
 log = logging.getLogger("durable_workflow.worker")
@@ -120,8 +120,40 @@ class Worker:
             decoded = serializer.decode_envelope(raw_args, codec=codec)
             if decoded is not None:
                 start_input = decoded if isinstance(decoded, list) else [decoded]
-        except ValueError as e:
-            log.warning("task %s start input unreadable (%s); falling back to [].", task_id, e)
+        except AvroNotInstalledError as e:
+            log.exception("task %s start input Avro decode failed (extra not installed)", task_id)
+            try:
+                await self.client.fail_workflow_task(
+                    task_id=task_id,
+                    lease_owner=self.worker_id,
+                    workflow_task_attempt=attempt,
+                    message=(
+                        f"cannot decode workflow start input with codec 'avro': {e}. "
+                        f"Install the avro extra: pip install 'durable-workflow[avro]'."
+                    ),
+                    failure_type=type(e).__name__,
+                    stack_trace=traceback.format_exc(),
+                )
+            except Exception as fe:
+                log.warning("failed to report Avro-missing start input failure: %s", fe)
+            return None
+        except (ValueError, TypeError) as e:
+            log.exception("task %s start input decode failed (codec=%r)", task_id, codec)
+            try:
+                await self.client.fail_workflow_task(
+                    task_id=task_id,
+                    lease_owner=self.worker_id,
+                    workflow_task_attempt=attempt,
+                    message=(
+                        f"cannot decode workflow start input with codec {codec!r}: {e}. "
+                        f"Verify the start input bytes match the declared codec and writer schema."
+                    ),
+                    failure_type=type(e).__name__,
+                    stack_trace=traceback.format_exc(),
+                )
+            except Exception as fe:
+                log.warning("failed to report start input decode failure: %s", fe)
+            return None
 
         run_id: str = task.get("run_id", "")
 
@@ -140,7 +172,24 @@ class Worker:
             return None
 
         try:
-            outcome = replay(cls, history, start_input, run_id=run_id)
+            outcome = replay(cls, history, start_input, run_id=run_id, payload_codec=codec)
+        except AvroNotInstalledError as e:
+            log.exception("replay failed: Avro extra not installed")
+            try:
+                await self.client.fail_workflow_task(
+                    task_id=task_id,
+                    lease_owner=self.worker_id,
+                    workflow_task_attempt=attempt,
+                    message=(
+                        f"cannot replay workflow history with codec 'avro': {e}. "
+                        f"Install the avro extra: pip install 'durable-workflow[avro]'."
+                    ),
+                    failure_type=type(e).__name__,
+                    stack_trace=traceback.format_exc(),
+                )
+            except Exception as fe:
+                log.warning("failed to report replay Avro-missing failure: %s", fe)
+            return None
         except Exception as e:
             log.exception("replay failed")
             try:
@@ -182,7 +231,44 @@ class Worker:
         raw_args = task.get("arguments")
         inbound_codec = task.get("payload_codec") or serializer.JSON_CODEC
         result_codec = inbound_codec if inbound_codec in serializer.SUPPORTED_CODECS else serializer.JSON_CODEC
-        args = serializer.decode_envelope(raw_args, codec=inbound_codec) or []
+        try:
+            args = serializer.decode_envelope(raw_args, codec=inbound_codec) or []
+        except AvroNotInstalledError as e:
+            log.exception("activity %s arguments Avro decode failed (extra not installed)", task_id)
+            try:
+                await self.client.fail_activity_task(
+                    task_id=task_id,
+                    activity_attempt_id=attempt_id,
+                    lease_owner=self.worker_id,
+                    message=(
+                        f"cannot decode activity arguments with codec 'avro': {e}. "
+                        f"Install the avro extra: pip install 'durable-workflow[avro]'."
+                    ),
+                    failure_type=type(e).__name__,
+                    stack_trace=traceback.format_exc(),
+                    non_retryable=True,
+                )
+            except Exception as fe:
+                log.warning("failed to report Avro-missing activity decode failure: %s", fe)
+            return
+        except (ValueError, TypeError) as e:
+            log.exception("activity %s arguments decode failed (codec=%r)", task_id, inbound_codec)
+            try:
+                await self.client.fail_activity_task(
+                    task_id=task_id,
+                    activity_attempt_id=attempt_id,
+                    lease_owner=self.worker_id,
+                    message=(
+                        f"cannot decode activity arguments with codec {inbound_codec!r}: {e}. "
+                        f"Verify the argument bytes match the declared codec and writer schema."
+                    ),
+                    failure_type=type(e).__name__,
+                    stack_trace=traceback.format_exc(),
+                    non_retryable=True,
+                )
+            except Exception as fe:
+                log.warning("failed to report activity decode failure: %s", fe)
+            return
         if not isinstance(args, list):
             args = [args]
 
