@@ -407,7 +407,19 @@ class WorkflowContext:
         )
 
     def start_timer(self, seconds: int) -> StartTimer:
+        """Yield a durable timer that resolves after ``seconds`` seconds."""
         return StartTimer(delay_seconds=seconds)
+
+    def sleep(self, seconds: float) -> StartTimer:
+        """Sleep for ``seconds`` seconds of durable wall time.
+
+        Sugar over :meth:`start_timer` that accepts a float and rounds up to
+        the next whole second (the server stores timer deadlines as integer
+        seconds). The call is still a single yield of a durable command —
+        use ``yield ctx.sleep(60)`` or bare ``yield ctx.sleep(60)`` from the
+        workflow ``run`` method.
+        """
+        return StartTimer(delay_seconds=max(0, math.ceil(seconds)))
 
     def side_effect(self, fn: Callable[[], Any]) -> RecordSideEffect:
         result = fn()
