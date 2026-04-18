@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import serializer
-from .errors import ChildWorkflowFailed
+from .errors import ChildWorkflowFailed, QueryFailed
 
 _REGISTRY: dict[str, type] = {}
 
@@ -36,14 +36,18 @@ _REGISTRY: dict[str, type] = {}
 def defn(*, name: str):  # type: ignore[no-untyped-def]
     """Register a class as a workflow type under a language-neutral name.
 
-    Scans the class for ``@signal``-decorated methods and builds a signal
-    registry at decoration time so the replayer can dispatch incoming
-    signals without re-inspecting the class on every history event.
+    Scans the class for ``@signal``, ``@query``, and ``@update`` decorated
+    methods and builds registries at decoration time so worker-side dispatch
+    can use stable receiver names without re-inspecting the class on every
+    history event or control-plane request.
     """
 
     def wrap(cls: type) -> type:
         cls.__workflow_name__ = name  # type: ignore[attr-defined]
         signals: dict[str, str] = {}
+        queries: dict[str, str] = {}
+        updates: dict[str, str] = {}
+        update_validators: dict[str, str] = {}
         for attr in dir(cls):
             if attr.startswith("_"):
                 continue
@@ -51,7 +55,19 @@ def defn(*, name: str):  # type: ignore[no-untyped-def]
             signal_name = getattr(member, "__signal_name__", None)
             if isinstance(signal_name, str) and signal_name:
                 signals[signal_name] = attr
+            query_name = getattr(member, "__query_name__", None)
+            if isinstance(query_name, str) and query_name:
+                queries[query_name] = attr
+            update_name = getattr(member, "__update_name__", None)
+            if isinstance(update_name, str) and update_name:
+                updates[update_name] = attr
+            update_validator_name = getattr(member, "__update_validator_name__", None)
+            if isinstance(update_validator_name, str) and update_validator_name:
+                update_validators[update_validator_name] = attr
         cls.__workflow_signals__ = signals  # type: ignore[attr-defined]
+        cls.__workflow_queries__ = queries  # type: ignore[attr-defined]
+        cls.__workflow_updates__ = updates  # type: ignore[attr-defined]
+        cls.__workflow_update_validators__ = update_validators  # type: ignore[attr-defined]
         _REGISTRY[name] = cls
         return cls
 
@@ -82,6 +98,60 @@ def signal(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
 
     def wrap(method: Callable[..., Any]) -> Callable[..., Any]:
         method.__signal_name__ = name  # type: ignore[attr-defined]
+        return method
+
+    return wrap
+
+
+def query(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Mark a workflow method as a read-only query handler.
+
+    Query methods are invoked against replayed workflow state. They must not
+    mutate ``self`` or perform I/O. The server-side worker query transport is
+    still implemented separately; this decorator records the Python receiver
+    metadata and is used by :func:`query_state`.
+    """
+
+    def wrap(method: Callable[..., Any]) -> Callable[..., Any]:
+        method.__query_name__ = name  # type: ignore[attr-defined]
+        return method
+
+    return wrap
+
+
+def update(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Mark a workflow method as an update handler.
+
+    The returned function also exposes ``.validator`` for the common pattern::
+
+        @workflow.update("approve")
+        def approve(self, approved: bool) -> dict: ...
+
+        @approve.validator
+        def validate_approve(self, approved: bool) -> None: ...
+
+    This release records receiver metadata only. The server-side Python update
+    execution transport is tracked separately.
+    """
+
+    def wrap(method: Callable[..., Any]) -> Callable[..., Any]:
+        method.__update_name__ = name  # type: ignore[attr-defined]
+
+        def validator(validator_method: Callable[..., Any]) -> Callable[..., Any]:
+            validator_method.__update_validator_name__ = name  # type: ignore[attr-defined]
+            return validator_method
+
+        method.validator = validator  # type: ignore[attr-defined]
+        return method
+
+    return wrap
+
+
+def update_validator(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Mark a workflow method as the validator for an update name."""
+
+    def wrap(method: Callable[..., Any]) -> Callable[..., Any]:
+        method.__update_validator_name__ = name  # type: ignore[attr-defined]
         return method
 
     return wrap
@@ -505,6 +575,12 @@ class ReplayOutcome:
     commands: list[Command]
 
 
+@dataclass
+class _ReplayState:
+    outcome: ReplayOutcome
+    instance: Any
+
+
 def _decode_history_result(payload: dict[str, Any], fallback_codec: str | None) -> Any:
     codec = payload.get("payload_codec") or fallback_codec
     return serializer.decode_envelope(payload.get("result"), codec=codec)
@@ -533,6 +609,70 @@ def replay(
     run_id: str = "",
     payload_codec: str | None = None,
 ) -> ReplayOutcome:
+    return _replay_state(
+        workflow_cls,
+        history_events,
+        start_input,
+        run_id=run_id,
+        payload_codec=payload_codec,
+    ).outcome
+
+
+def query_state(
+    workflow_cls: type,
+    history_events: Iterable[dict[str, Any]],
+    start_input: list[Any],
+    query_name: str,
+    args: list[Any] | None = None,
+    *,
+    run_id: str = "",
+    payload_codec: str | None = None,
+) -> Any:
+    """Replay a workflow to current state and invoke a registered query.
+
+    This is the Python-side core that a future server-routed query task can
+    call after fetching durable history. Unknown query names and handler
+    exceptions are normalized to :class:`~durable_workflow.errors.QueryFailed`.
+    """
+    try:
+        state = _replay_state(
+            workflow_cls,
+            history_events,
+            start_input,
+            run_id=run_id,
+            payload_codec=payload_codec,
+        )
+    except Exception as exc:
+        raise QueryFailed(f"workflow replay failed before query: {exc}") from exc
+    if state.outcome.commands and isinstance(state.outcome.commands[0], FailWorkflow):
+        failure = state.outcome.commands[0]
+        raise QueryFailed(f"workflow replay failed before query: {failure.message}") from None
+
+    query_registry: dict[str, str] = getattr(workflow_cls, "__workflow_queries__", {}) or {}
+    method_name = query_registry.get(query_name)
+    if method_name is None:
+        raise QueryFailed(f"unknown query {query_name!r}")
+
+    handler = getattr(state.instance, method_name, None)
+    if handler is None:
+        raise QueryFailed(f"query handler {query_name!r} is not available")
+
+    try:
+        return handler(*(list(args) if args is not None else []))
+    except QueryFailed:
+        raise
+    except Exception as exc:
+        raise QueryFailed(str(exc) or f"query {query_name!r} failed") from exc
+
+
+def _replay_state(
+    workflow_cls: type,
+    history_events: Iterable[dict[str, Any]],
+    start_input: list[Any],
+    *,
+    run_id: str = "",
+    payload_codec: str | None = None,
+) -> _ReplayState:
     events = list(history_events)
 
     workflow_start_time: datetime | None = None
@@ -547,6 +687,9 @@ def replay(
 
     instance = workflow_cls()
     ctx = WorkflowContext(run_id=run_id, current_time=workflow_start_time)
+
+    def _state(commands: list[Command]) -> _ReplayState:
+        return _ReplayState(outcome=ReplayOutcome(commands=commands), instance=instance)
 
     resolved_results: list[Any] = []
     # (resolved_result_index_before_apply, signal_name, decoded_args) —
@@ -597,8 +740,8 @@ def replay(
     gen = instance.run(ctx, *start_input)
     if not hasattr(gen, "__next__"):
         if isinstance(gen, ContinueAsNew):
-            return ReplayOutcome(commands=[gen])
-        return ReplayOutcome(commands=[CompleteWorkflow(result=gen)])
+            return _state([gen])
+        return _state([CompleteWorkflow(result=gen)])
 
     ctx.logger._set_replaying(True)
 
@@ -631,15 +774,15 @@ def replay(
                             continue
                         except StopIteration as stop:
                             if isinstance(stop.value, ContinueAsNew):
-                                return ReplayOutcome(commands=[stop.value])
-                            return ReplayOutcome(commands=[CompleteWorkflow(result=stop.value)])
+                                return _state([stop.value])
+                            return _state([CompleteWorkflow(result=stop.value)])
                     next_value = vals
                     continue
                 ctx.logger._set_replaying(False)
                 pending.extend(cmd)
-                return ReplayOutcome(commands=pending)
+                return _state(pending)
             if isinstance(cmd, ContinueAsNew):
-                return ReplayOutcome(commands=[cmd])
+                return _state([cmd])
             if isinstance(cmd, RecordSideEffect):
                 if result_cursor < len(resolved_results):
                     next_value = resolved_results[result_cursor]
@@ -678,20 +821,20 @@ def replay(
                             continue
                         except StopIteration as stop:
                             if isinstance(stop.value, ContinueAsNew):
-                                return ReplayOutcome(commands=[stop.value])
-                            return ReplayOutcome(commands=[CompleteWorkflow(result=stop.value)])
+                                return _state([stop.value])
+                            return _state([CompleteWorkflow(result=stop.value)])
                     next_value = val
                     continue
                 ctx.logger._set_replaying(False)
                 pending.append(cmd)
-                return ReplayOutcome(commands=pending)
+                return _state(pending)
             raise TypeError(f"workflow yielded unsupported command: {cmd!r}")
     except StopIteration as stop:
         if isinstance(stop.value, ContinueAsNew):
-            return ReplayOutcome(commands=pending + [stop.value])
-        return ReplayOutcome(commands=pending + [CompleteWorkflow(result=stop.value)])
+            return _state(pending + [stop.value])
+        return _state(pending + [CompleteWorkflow(result=stop.value)])
     except Exception as exc:
-        return ReplayOutcome(commands=[FailWorkflow(
+        return _state([FailWorkflow(
             message=str(exc),
             exception_type=type(exc).__name__,
         )])

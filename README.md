@@ -2,7 +2,7 @@
 
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
-Status: **Alpha**. Core features implemented: workflows, activities, schedules, signals, queries, updates, timers, child workflows, continue-as-new, side effects, and version markers. Full language-neutral protocol support for cross-PHP/Python orchestration.
+Status: **Alpha**. Core features implemented: workflows, activities, schedules, signals, timers, child workflows, continue-as-new, side effects, and version markers. Client calls for queries and updates exist; Python workflow-side query/update receiver metadata is available, while server-routed Python query/update execution is still in progress. Full language-neutral protocol support for cross-PHP/Python orchestration is the release goal.
 
 ## Install
 
@@ -96,6 +96,41 @@ receipt = yield ctx.start_child_workflow(
     run_timeout_seconds=120,
 )
 ```
+
+## Workflow signals, queries, and updates
+
+Signals mutate workflow state during replay:
+
+```python
+@workflow.defn(name="approval")
+class ApprovalWorkflow:
+    def __init__(self) -> None:
+        self.approved = False
+
+    @workflow.signal("approve")
+    def approve(self, by: str) -> None:
+        self.approved = True
+
+    @workflow.query("status")
+    def status(self) -> dict:
+        return {"approved": self.approved}
+
+    @workflow.update("set_approval")
+    def set_approval(self, approved: bool) -> dict:
+        self.approved = approved
+        return {"approved": self.approved}
+
+    @set_approval.validator
+    def validate_set_approval(self, approved: bool) -> None:
+        if not isinstance(approved, bool):
+            raise ValueError("approved must be boolean")
+```
+
+The Python SDK now records query and update receiver metadata on workflow
+classes, and exposes a query-state replay helper for future worker-side query
+execution. Production server routing for Python query and update handlers is
+tracked separately; use the client query/update methods only with server and
+worker runtimes that advertise support for the target workflow type.
 
 ## Features
 
