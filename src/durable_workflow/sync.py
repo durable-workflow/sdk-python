@@ -17,6 +17,8 @@ from .client import (
     WorkflowHandle,
     WorkflowList,
 )
+from .metrics import MetricsRecorder
+from .retry_policy import RetryPolicy
 
 
 def _run(coro: Any) -> Any:
@@ -139,8 +141,17 @@ class Client:
         token: str | None = None,
         namespace: str = "default",
         timeout: float = 60.0,
+        retry_policy: RetryPolicy | None = None,
+        metrics: MetricsRecorder | None = None,
     ) -> None:
-        self._async = AsyncClient(base_url, token=token, namespace=namespace, timeout=timeout)
+        self._async = AsyncClient(
+            base_url,
+            token=token,
+            namespace=namespace,
+            timeout=timeout,
+            retry_policy=retry_policy,
+            metrics=metrics,
+        )
 
     def close(self) -> None:
         _run(self._async.aclose())

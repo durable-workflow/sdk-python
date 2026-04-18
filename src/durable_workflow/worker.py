@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable
@@ -18,6 +19,14 @@ from .client import (
     Client,
 )
 from .errors import ActivityCancelled, AvroNotInstalledError, NonRetryableError
+from .metrics import (
+    NOOP_METRICS,
+    WORKER_POLL_DURATION_SECONDS,
+    WORKER_POLLS,
+    WORKER_TASK_DURATION_SECONDS,
+    WORKER_TASKS,
+    MetricsRecorder,
+)
 from .workflow import replay
 
 log = logging.getLogger("durable_workflow.worker")
@@ -113,6 +122,7 @@ class Worker:
         max_concurrent_workflow_tasks: int = 10,
         max_concurrent_activity_tasks: int = 10,
         shutdown_timeout: float = 30.0,
+        metrics: MetricsRecorder | None = None,
     ) -> None:
         self.client = client
         self.task_queue = task_queue
@@ -125,6 +135,18 @@ class Worker:
         self._act_semaphore = asyncio.Semaphore(max_concurrent_activity_tasks)
         self._shutdown_timeout = shutdown_timeout
         self._in_flight: set[asyncio.Task[Any]] = set()
+        configured_metrics = metrics if metrics is not None else getattr(client, "metrics", NOOP_METRICS)
+        self.metrics: MetricsRecorder = configured_metrics or NOOP_METRICS
+
+    def _record_poll_metrics(self, task_kind: str, outcome: str, duration: float) -> None:
+        tags = {"task_kind": task_kind, "task_queue": self.task_queue, "outcome": outcome}
+        self.metrics.increment(WORKER_POLLS, tags=tags)
+        self.metrics.record(WORKER_POLL_DURATION_SECONDS, duration, tags=tags)
+
+    def _record_task_metrics(self, task_kind: str, outcome: str, duration: float) -> None:
+        tags = {"task_kind": task_kind, "task_queue": self.task_queue, "outcome": outcome}
+        self.metrics.increment(WORKER_TASKS, tags=tags)
+        self.metrics.record(WORKER_TASK_DURATION_SECONDS, duration, tags=tags)
 
     async def _register(self) -> None:
         try:
@@ -288,7 +310,7 @@ class Worker:
             log.warning("failed to complete workflow task %s: %s", task_id, e)
         return commands
 
-    async def _run_activity_task(self, task: dict[str, Any]) -> None:
+    async def _run_activity_task(self, task: dict[str, Any]) -> str:
         task_id: str = task["task_id"]
         attempt_id: str = task.get("activity_attempt_id") or task.get("attempt_id", "")
         activity_type: str = task.get("activity_type", "")
@@ -315,7 +337,7 @@ class Worker:
                 )
             except Exception as fe:
                 log.warning("failed to report Avro-missing activity decode failure: %s", fe)
-            return
+            return "decode_error"
         except (ValueError, TypeError) as e:
             log.exception("activity %s arguments decode failed (codec=%r)", task_id, inbound_codec)
             try:
@@ -333,7 +355,7 @@ class Worker:
                 )
             except Exception as fe:
                 log.warning("failed to report activity decode failure: %s", fe)
-            return
+            return "decode_error"
         if not isinstance(args, list):
             args = [args]
 
@@ -348,7 +370,7 @@ class Worker:
                 )
             except Exception as e:
                 log.warning("failed to report unknown activity type: %s", e)
-            return
+            return "no_handler"
 
         act_ctx = ActivityContext(
             info=ActivityInfo(
@@ -377,7 +399,7 @@ class Worker:
                 )
             except Exception as fe:
                 log.warning("failed to report activity cancellation: %s", fe)
-            return
+            return "cancelled"
         except NonRetryableError as e:
             log.exception("activity failed (non-retryable)")
             try:
@@ -392,7 +414,7 @@ class Worker:
                 )
             except Exception as fe:
                 log.warning("failed to report activity failure: %s", fe)
-            return
+            return "failed_non_retryable"
         except Exception as e:
             log.exception("activity failed")
             try:
@@ -406,7 +428,7 @@ class Worker:
                 )
             except Exception as fe:
                 log.warning("failed to report activity failure: %s", fe)
-            return
+            return "failed"
         finally:
             _set_context(None)
 
@@ -421,6 +443,8 @@ class Worker:
             )
         except Exception as e:
             log.warning("failed to complete activity task %s: %s", task_id, e)
+            return "complete_error"
+        return "completed"
 
     def _track(self, coro: Any) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)
@@ -435,6 +459,7 @@ class Worker:
                 self._wf_semaphore.release()
                 return
             try:
+                poll_start = time.perf_counter()
                 task = await self.client.poll_workflow_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
@@ -442,21 +467,28 @@ class Worker:
                 )
             except Exception as e:
                 self._wf_semaphore.release()
+                self._record_poll_metrics("workflow", "error", time.perf_counter() - poll_start)
                 log.warning("workflow poll error: %s", e)
                 await asyncio.sleep(1.0)
                 continue
             if task is None:
                 self._wf_semaphore.release()
+                self._record_poll_metrics("workflow", "empty", time.perf_counter() - poll_start)
                 await asyncio.sleep(0)
                 continue
+            self._record_poll_metrics("workflow", "task", time.perf_counter() - poll_start)
             self._track(self._dispatch_workflow_task(task))
 
     async def _dispatch_workflow_task(self, task: dict[str, Any]) -> None:
+        task_start = time.perf_counter()
+        outcome = "error"
         try:
-            await self._run_workflow_task(task)
+            commands = await self._run_workflow_task(task)
+            outcome = "completed" if commands is not None else "failed"
         except Exception:
             log.exception("unhandled error in workflow task execution")
         finally:
+            self._record_task_metrics("workflow", outcome, time.perf_counter() - task_start)
             self._wf_semaphore.release()
 
     async def _poll_activity_tasks(self) -> None:
@@ -466,6 +498,7 @@ class Worker:
                 self._act_semaphore.release()
                 return
             try:
+                poll_start = time.perf_counter()
                 task = await self.client.poll_activity_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
@@ -473,21 +506,27 @@ class Worker:
                 )
             except Exception as e:
                 self._act_semaphore.release()
+                self._record_poll_metrics("activity", "error", time.perf_counter() - poll_start)
                 log.warning("activity poll error: %s", e)
                 await asyncio.sleep(1.0)
                 continue
             if task is None:
                 self._act_semaphore.release()
+                self._record_poll_metrics("activity", "empty", time.perf_counter() - poll_start)
                 await asyncio.sleep(0)
                 continue
+            self._record_poll_metrics("activity", "task", time.perf_counter() - poll_start)
             self._track(self._dispatch_activity_task(task))
 
     async def _dispatch_activity_task(self, task: dict[str, Any]) -> None:
+        task_start = time.perf_counter()
+        outcome = "error"
         try:
-            await self._run_activity_task(task)
+            outcome = await self._run_activity_task(task)
         except Exception:
             log.exception("unhandled error in activity task execution")
         finally:
+            self._record_task_metrics("activity", outcome, time.perf_counter() - task_start)
             self._act_semaphore.release()
 
     async def run(self) -> None:

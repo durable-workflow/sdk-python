@@ -42,6 +42,9 @@ dev = [
     "mypy>=1.10",
     "ruff>=0.4",
 ]
+prometheus = [
+    "prometheus-client>=0.20",
+]
 
 [project.urls]
 Homepage = "https://github.com/durable-workflow/sdk-python"

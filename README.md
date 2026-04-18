@@ -57,6 +57,24 @@ async def main():
 - **Polyglot**: Works alongside PHP workers on the same task queue
 - **HTTP/JSON protocol**: No gRPC, no protobuf dependencies
 - **Codec envelopes**: Avro payloads by default, with JSON decode compatibility for existing history
+- **Metrics hooks**: Pluggable counters and histograms, with an optional Prometheus adapter
+
+## Metrics
+
+Pass a recorder to `Client(metrics=...)` or `Worker(metrics=...)` to collect request, poll, and task metrics. The SDK ships a no-op default, an `InMemoryMetrics` recorder for tests or custom exporter loops, and `PrometheusMetrics` for deployments that install the optional extra:
+
+```bash
+pip install 'durable-workflow[prometheus]'
+```
+
+```python
+from durable_workflow import Client, PrometheusMetrics
+
+metrics = PrometheusMetrics()
+client = Client("http://server:8080", token="dev-token-123", metrics=metrics)
+```
+
+Custom recorders implement `increment(name, value=1.0, tags=None)` and `record(name, value, tags=None)`.
 
 ## Documentation
 

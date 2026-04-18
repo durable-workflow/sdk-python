@@ -40,6 +40,12 @@ from .errors import (
     WorkflowNotFound,
     WorkflowTerminated,
 )
+from .metrics import (
+    InMemoryMetrics,
+    MetricsRecorder,
+    NoopMetrics,
+    PrometheusMetrics,
+)
 from .worker import Worker
 from .workflow import ContinueAsNew, StartChildWorkflow
 
@@ -71,8 +77,12 @@ __all__ = [
     "workflow",
     "DurableWorkflowError",
     "InvalidArgument",
+    "InMemoryMetrics",
+    "MetricsRecorder",
     "NamespaceNotFound",
+    "NoopMetrics",
     "QueryFailed",
+    "PrometheusMetrics",
     "ServerError",
     "Unauthorized",
     "UpdateRejected",

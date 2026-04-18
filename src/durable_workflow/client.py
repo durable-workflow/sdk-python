@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -16,6 +17,7 @@ from .errors import (
     WorkflowTerminated,
     _raise_for_status,
 )
+from .metrics import CLIENT_REQUEST_DURATION_SECONDS, CLIENT_REQUESTS, NOOP_METRICS, MetricsRecorder
 from .retry_policy import RetryPolicy
 
 PROTOCOL_VERSION = "1.0"
@@ -32,6 +34,28 @@ def _default_sdk_version() -> str:
 
 
 DEFAULT_SDK_VERSION = _default_sdk_version()
+
+
+def _route_for_metrics(path: str) -> str:
+    clean_path = path.split("?", 1)[0]
+    parts = [part for part in clean_path.strip("/").split("/") if part]
+    if not parts:
+        return "/"
+
+    if parts[0] == "workflows" and len(parts) >= 2:
+        parts[1] = "{workflow_id}"
+        if len(parts) >= 4 and parts[2] in {"signal", "query", "update"}:
+            parts[3] = "{name}"
+        if len(parts) >= 4 and parts[2] == "runs":
+            parts[3] = "{run_id}"
+    elif parts[0] == "schedules" and len(parts) >= 2:
+        parts[1] = "{schedule_id}"
+    elif (
+        parts[:2] == ["worker", "workflow-tasks"] or parts[:2] == ["worker", "activity-tasks"]
+    ) and len(parts) >= 3:
+        parts[2] = "{task_id}"
+
+    return "/" + "/".join(parts)
 
 
 @dataclass
@@ -250,11 +274,13 @@ class Client:
         namespace: str = "default",
         timeout: float = 60.0,
         retry_policy: RetryPolicy | None = None,
+        metrics: MetricsRecorder | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.namespace = namespace
         self.retry_policy = retry_policy or RetryPolicy()
+        self.metrics = metrics or NOOP_METRICS
         self._http = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
 
     async def aclose(self) -> None:
@@ -287,6 +313,12 @@ class Client:
         timeout: float | None = None,
         context: str = "",
     ) -> Any:
+        start = time.perf_counter()
+        route = _route_for_metrics(path)
+        plane = "worker" if worker else "control"
+        status_code = "none"
+        outcome = "pending"
+
         async def _do_request() -> httpx.Response:
             resp = await self._http.request(
                 method,
@@ -300,19 +332,40 @@ class Client:
             return resp
 
         try:
-            resp = await self.retry_policy.execute(_do_request)
-        except httpx.HTTPStatusError as exc:
-            # Convert to our custom exception types
             try:
-                body = exc.response.json()
-            except ValueError:
-                body = exc.response.text
-            _raise_for_status(exc.response.status_code, body, context=context)
-            raise  # unreachable, but keeps type checker happy
+                resp = await self.retry_policy.execute(_do_request)
+            except httpx.HTTPStatusError as exc:
+                status_code = str(exc.response.status_code)
+                outcome = "http_error"
+                # Convert to our custom exception types
+                try:
+                    body = exc.response.json()
+                except ValueError:
+                    body = exc.response.text
+                _raise_for_status(exc.response.status_code, body, context=context)
+                raise  # unreachable, but keeps type checker happy
 
-        if resp.status_code == 204 or not resp.content:
-            return None
-        return resp.json()
+            status_code = str(resp.status_code)
+            if resp.status_code == 204 or not resp.content:
+                outcome = "ok"
+                return None
+            result = resp.json()
+            outcome = "ok"
+            return result
+        except Exception as exc:
+            if outcome == "pending":
+                outcome = type(exc).__name__
+            raise
+        finally:
+            tags = {
+                "method": method.upper(),
+                "route": route,
+                "plane": plane,
+                "status_code": status_code,
+                "outcome": outcome,
+            }
+            self.metrics.increment(CLIENT_REQUESTS, tags=tags)
+            self.metrics.record(CLIENT_REQUEST_DURATION_SECONDS, time.perf_counter() - start, tags=tags)
 
     async def get_cluster_info(self) -> dict[str, Any]:
         """Fetch server build identity, capabilities, and protocol manifests."""
