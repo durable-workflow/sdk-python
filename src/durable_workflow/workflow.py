@@ -148,6 +148,14 @@ ActivityRetryPolicyInput = ActivityRetryPolicy | Mapping[str, Any]
 
 
 @dataclass
+class ChildWorkflowRetryPolicy(ActivityRetryPolicy):
+    """Retry policy applied to one started child workflow call."""
+
+
+ChildWorkflowRetryPolicyInput = ChildWorkflowRetryPolicy | ActivityRetryPolicy | Mapping[str, Any]
+
+
+@dataclass
 class ScheduleActivity:
     """Command requesting an activity task."""
 
@@ -280,6 +288,9 @@ class StartChildWorkflow:
     arguments: list[Any] = field(default_factory=list)
     task_queue: str | None = None
     parent_close_policy: str | None = None
+    retry_policy: ChildWorkflowRetryPolicyInput | None = None
+    execution_timeout_seconds: int | None = None
+    run_timeout_seconds: int | None = None
 
     def to_server_command(
         self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
@@ -295,6 +306,16 @@ class StartChildWorkflow:
             cmd["queue"] = task_queue
         if self.parent_close_policy is not None:
             cmd["parent_close_policy"] = self.parent_close_policy
+        if self.retry_policy is not None:
+            cmd["retry_policy"] = (
+                self.retry_policy.to_dict()
+                if isinstance(self.retry_policy, ActivityRetryPolicy)
+                else dict(self.retry_policy)
+            )
+        if self.execution_timeout_seconds is not None:
+            cmd["execution_timeout_seconds"] = self.execution_timeout_seconds
+        if self.run_timeout_seconds is not None:
+            cmd["run_timeout_seconds"] = self.run_timeout_seconds
         return cmd
 
 
@@ -432,12 +453,18 @@ class WorkflowContext:
         *,
         task_queue: str | None = None,
         parent_close_policy: str | None = None,
+        retry_policy: ChildWorkflowRetryPolicyInput | None = None,
+        execution_timeout_seconds: int | None = None,
+        run_timeout_seconds: int | None = None,
     ) -> StartChildWorkflow:
         return StartChildWorkflow(
             workflow_type=workflow_type,
             arguments=list(arguments) if arguments is not None else [],
             task_queue=task_queue,
             parent_close_policy=parent_close_policy,
+            retry_policy=retry_policy,
+            execution_timeout_seconds=execution_timeout_seconds,
+            run_timeout_seconds=run_timeout_seconds,
         )
 
     def get_version(

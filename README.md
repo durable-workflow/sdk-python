@@ -77,6 +77,26 @@ result = yield ctx.schedule_activity(
 )
 ```
 
+Child workflow starts use the same retry policy shape and workflow-level
+execution/run timeout names:
+
+```python
+from durable_workflow import ChildWorkflowRetryPolicy
+
+receipt = yield ctx.start_child_workflow(
+    "payment.child",
+    [order],
+    retry_policy=ChildWorkflowRetryPolicy(
+        max_attempts=3,
+        initial_interval_seconds=2,
+        backoff_coefficient=2,
+        non_retryable_error_types=["ValidationError"],
+    ),
+    execution_timeout_seconds=600,
+    run_timeout_seconds=120,
+)
+```
+
 ## Features
 
 - **Async-first**: Built on `httpx` and `asyncio`

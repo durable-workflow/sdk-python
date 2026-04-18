@@ -72,6 +72,7 @@ nav:
       - Serializer: reference/serializer.md
       - Metrics: reference/metrics.md
       - Sync helpers: reference/sync.md
+      - Testing: reference/testing.md
 
 extra:
   social:

@@ -4,6 +4,7 @@ from durable_workflow import serializer, workflow
 from durable_workflow.errors import ChildWorkflowFailed
 from durable_workflow.workflow import (
     ActivityRetryPolicy,
+    ChildWorkflowRetryPolicy,
     CompleteWorkflow,
     ContinueAsNew,
     FailWorkflow,
@@ -421,6 +422,22 @@ class TestWorkflowContext:
         assert cmd.schedule_to_close_timeout == 300
         assert cmd.heartbeat_timeout == 15
 
+    def test_start_child_workflow_accepts_retry_policy_and_timeouts(self) -> None:
+        ctx = WorkflowContext(run_id="r1")
+        policy = ChildWorkflowRetryPolicy(max_attempts=2, backoff_seconds=[7])
+
+        cmd = ctx.start_child_workflow(
+            "child",
+            [{"order_id": "o-1"}],
+            retry_policy=policy,
+            execution_timeout_seconds=600,
+            run_timeout_seconds=120,
+        )
+
+        assert cmd.retry_policy is policy
+        assert cmd.execution_timeout_seconds == 600
+        assert cmd.run_timeout_seconds == 120
+
 
 class TestReplayWithRunId:
     def test_run_id_passed_to_context(self) -> None:
@@ -532,18 +549,40 @@ class TestChildWorkflow:
         assert cmd.result == {"fallback": "ok"}
 
     def test_server_command_shape(self) -> None:
-        cmd = StartChildWorkflow(workflow_type="sub", arguments=[1], task_queue="q2", parent_close_policy="terminate")
+        cmd = StartChildWorkflow(
+            workflow_type="sub",
+            arguments=[1],
+            task_queue="q2",
+            parent_close_policy="terminate",
+            retry_policy=ChildWorkflowRetryPolicy(
+                max_attempts=3,
+                backoff_seconds=[2, 8],
+                non_retryable_error_types=["ValidationError"],
+            ),
+            execution_timeout_seconds=600,
+            run_timeout_seconds=120,
+        )
         sc = cmd.to_server_command("default-q")
         assert sc["type"] == "start_child_workflow"
         assert sc["workflow_type"] == "sub"
         assert sc["queue"] == "q2"
         assert sc["parent_close_policy"] == "terminate"
+        assert sc["retry_policy"] == {
+            "max_attempts": 3,
+            "backoff_seconds": [2, 8],
+            "non_retryable_error_types": ["ValidationError"],
+        }
+        assert sc["execution_timeout_seconds"] == 600
+        assert sc["run_timeout_seconds"] == 120
 
     def test_server_command_defaults(self) -> None:
         cmd = StartChildWorkflow(workflow_type="sub", arguments=[])
         sc = cmd.to_server_command("default-q")
         assert sc["queue"] == "default-q"
         assert "parent_close_policy" not in sc
+        assert "retry_policy" not in sc
+        assert "execution_timeout_seconds" not in sc
+        assert "run_timeout_seconds" not in sc
 
 
 class TestVersionMarker:

@@ -6,7 +6,7 @@ try:
 except PackageNotFoundError:  # source checkout without installed metadata
     __version__ = "0.0.0+unknown"
 
-from . import activity, sync, workflow
+from . import activity, sync, testing, workflow
 from .activity import ActivityContext, ActivityInfo
 from .client import (
     Client,
@@ -48,7 +48,7 @@ from .metrics import (
 )
 from .retry_policy import RetryPolicy, TransportRetryPolicy
 from .worker import Worker
-from .workflow import ActivityRetryPolicy, ContinueAsNew, StartChildWorkflow
+from .workflow import ActivityRetryPolicy, ChildWorkflowRetryPolicy, ContinueAsNew, StartChildWorkflow
 
 __all__ = [
     "__version__",
@@ -56,6 +56,7 @@ __all__ = [
     "ActivityContext",
     "ActivityInfo",
     "ActivityRetryPolicy",
+    "ChildWorkflowRetryPolicy",
     "ChildWorkflowFailed",
     "Client",
     "ContinueAsNew",
@@ -76,6 +77,7 @@ __all__ = [
     "WorkflowList",
     "activity",
     "sync",
+    "testing",
     "workflow",
     "DurableWorkflowError",
     "InvalidArgument",
