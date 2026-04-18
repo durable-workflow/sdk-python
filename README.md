@@ -2,7 +2,7 @@
 
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
-Status: **Alpha**. Core features implemented: workflows, activities, schedules, signals, timers, child workflows, continue-as-new, side effects, and version markers. Client calls for queries and updates exist; Python workflow-side query/update receiver metadata is available, while server-routed Python query/update execution is still in progress. Full language-neutral protocol support for cross-PHP/Python orchestration is the release goal.
+Status: **Alpha**. Core features implemented: workflows, activities, schedules, signals, timers, child workflows, continue-as-new, side effects, version markers, and worker-applied accepted updates. Client calls for queries and updates exist; Python workflow-side query receiver metadata is available, while server-routed Python query execution and pre-accept update validator routing are still in progress. Full language-neutral protocol support for cross-PHP/Python orchestration is the release goal.
 
 ## Install
 
@@ -126,11 +126,12 @@ class ApprovalWorkflow:
             raise ValueError("approved must be boolean")
 ```
 
-The Python SDK now records query and update receiver metadata on workflow
-classes, and exposes a query-state replay helper for future worker-side query
-execution. Production server routing for Python query and update handlers is
-tracked separately; use the client query/update methods only with server and
-worker runtimes that advertise support for the target workflow type.
+The Python SDK records query and update receiver metadata on workflow classes,
+exposes a query-state replay helper, and applies accepted updates on Python
+workflow tasks by emitting `complete_update` or `fail_update` back to the
+server. Query routing and synchronous pre-accept update validator execution are
+still server-side follow-ups; use those paths only with deployments that
+advertise support for the target workflow type.
 
 ## Features
 

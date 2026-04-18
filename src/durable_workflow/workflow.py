@@ -317,6 +317,50 @@ class FailWorkflow:
 
 
 @dataclass
+class CompleteUpdate:
+    """Worker command completing an accepted workflow update."""
+
+    update_id: str
+    result: Any
+
+    def to_server_command(
+        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+    ) -> dict[str, Any]:
+        return {
+            "type": "complete_update",
+            "update_id": self.update_id,
+            "result": serializer.envelope(self.result, codec=payload_codec),
+        }
+
+
+@dataclass
+class FailUpdate:
+    """Worker command failing an accepted workflow update."""
+
+    update_id: str
+    message: str
+    exception_type: str | None = None
+    exception_class: str | None = None
+    non_retryable: bool = True
+
+    def to_server_command(
+        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+    ) -> dict[str, Any]:
+        cmd: dict[str, Any] = {
+            "type": "fail_update",
+            "update_id": self.update_id,
+            "message": self.message,
+        }
+        if self.exception_type is not None:
+            cmd["exception_type"] = self.exception_type
+        if self.exception_class is not None:
+            cmd["exception_class"] = self.exception_class
+        if self.non_retryable:
+            cmd["non_retryable"] = True
+        return cmd
+
+
+@dataclass
 class ContinueAsNew:
     """Workflow return value that starts a new run with fresh history."""
 
@@ -427,7 +471,7 @@ class UpsertSearchAttributes:
 
 Command = (
     ScheduleActivity | StartTimer | CompleteWorkflow | FailWorkflow
-    | ContinueAsNew | RecordSideEffect | StartChildWorkflow
+    | CompleteUpdate | FailUpdate | ContinueAsNew | RecordSideEffect | StartChildWorkflow
     | RecordVersionMarker | UpsertSearchAttributes
 )
 
@@ -601,6 +645,17 @@ def _decode_signal_args(payload: dict[str, Any], fallback_codec: str | None) -> 
     return [decoded]
 
 
+def _decode_update_args(payload: dict[str, Any], fallback_codec: str | None) -> list[Any]:
+    codec = payload.get("payload_codec") or fallback_codec
+    raw = payload.get("arguments")
+    if raw is None:
+        return []
+    decoded = serializer.decode_envelope(raw, codec=codec)
+    if isinstance(decoded, list):
+        return decoded
+    return [decoded]
+
+
 def replay(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
@@ -665,6 +720,135 @@ def query_state(
         raise QueryFailed(str(exc) or f"query {query_name!r} failed") from exc
 
 
+def apply_update(
+    workflow_cls: type,
+    history_events: Iterable[dict[str, Any]],
+    start_input: list[Any],
+    update_id: str,
+    *,
+    run_id: str = "",
+    payload_codec: str | None = None,
+) -> CompleteUpdate | FailUpdate:
+    """Replay current workflow state and run one accepted update handler.
+
+    The server remains the durable authority: it accepts the update, sends a
+    workflow task carrying ``workflow_update_id``, and records
+    ``UpdateApplied`` / ``UpdateCompleted`` when this helper's worker command
+    is submitted. Python only reconstructs in-memory state and runs the
+    registered receiver method for the accepted update.
+    """
+    events = list(history_events)
+    try:
+        state = _replay_state(
+            workflow_cls,
+            events,
+            start_input,
+            run_id=run_id,
+            payload_codec=payload_codec,
+        )
+    except Exception as exc:
+        return _fail_update_from_exception(
+            update_id,
+            "workflow replay failed before update",
+            exc,
+        )
+
+    if state.outcome.commands and isinstance(state.outcome.commands[0], FailWorkflow):
+        failure = state.outcome.commands[0]
+        return FailUpdate(
+            update_id=update_id,
+            message=f"workflow replay failed before update: {failure.message}",
+            exception_type=failure.exception_type,
+        )
+
+    accepted = _accepted_update_payload(events, update_id)
+    if accepted is None:
+        return FailUpdate(
+            update_id=update_id,
+            message=f"accepted update {update_id!r} was not present in workflow history",
+            exception_type="UpdateNotFound",
+        )
+
+    update_name = accepted.get("update_name")
+    if not isinstance(update_name, str) or update_name == "":
+        return FailUpdate(
+            update_id=update_id,
+            message=f"accepted update {update_id!r} is missing an update name",
+            exception_type="InvalidUpdate",
+        )
+
+    try:
+        args = _decode_update_args(accepted, payload_codec)
+    except Exception as exc:
+        return _fail_update_from_exception(update_id, "update argument decode failed", exc)
+
+    update_registry: dict[str, str] = getattr(workflow_cls, "__workflow_updates__", {}) or {}
+    method_name = update_registry.get(update_name)
+    if method_name is None:
+        return FailUpdate(
+            update_id=update_id,
+            message=f"unknown update {update_name!r}",
+            exception_type="UnknownUpdate",
+        )
+
+    validator_registry: dict[str, str] = getattr(
+        workflow_cls,
+        "__workflow_update_validators__",
+        {},
+    ) or {}
+    validator_name = validator_registry.get(update_name)
+    if validator_name is not None:
+        validator = getattr(state.instance, validator_name, None)
+        if validator is None:
+            return FailUpdate(
+                update_id=update_id,
+                message=f"update validator {update_name!r} is not available",
+                exception_type="UnknownUpdateValidator",
+            )
+        try:
+            validation_result = validator(*args)
+            if validation_result is False:
+                raise ValueError(f"update validator {update_name!r} returned false")
+        except Exception as exc:
+            return _fail_update_from_exception(update_id, "update validator failed", exc)
+
+    handler = getattr(state.instance, method_name, None)
+    if handler is None:
+        return FailUpdate(
+            update_id=update_id,
+            message=f"update handler {update_name!r} is not available",
+            exception_type="UnknownUpdate",
+        )
+
+    try:
+        return CompleteUpdate(update_id=update_id, result=handler(*args))
+    except Exception as exc:
+        return _fail_update_from_exception(update_id, "update handler failed", exc)
+
+
+def _accepted_update_payload(
+    events: list[dict[str, Any]],
+    update_id: str,
+) -> dict[str, Any] | None:
+    for event in reversed(events):
+        if event.get("event_type") not in ("UpdateAccepted", "update_accepted"):
+            continue
+        payload = event.get("payload") or {}
+        if payload.get("update_id") == update_id:
+            return payload
+    return None
+
+
+def _fail_update_from_exception(update_id: str, prefix: str, exc: Exception) -> FailUpdate:
+    message = str(exc) or type(exc).__name__
+    return FailUpdate(
+        update_id=update_id,
+        message=f"{prefix}: {message}",
+        exception_type=type(exc).__name__,
+        exception_class=f"{type(exc).__module__}.{type(exc).__qualname__}",
+    )
+
+
 def _replay_state(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
@@ -692,10 +876,10 @@ def _replay_state(
         return _ReplayState(outcome=ReplayOutcome(commands=commands), instance=instance)
 
     resolved_results: list[Any] = []
-    # (resolved_result_index_before_apply, signal_name, decoded_args) —
-    # signals apply before the generator consumes the resolved_result at the
-    # stored index, which preserves history interleaving with activities.
-    pending_signals: list[tuple[int, str, list[Any]]] = []
+    # (resolved_result_index_before_apply, receiver_kind, name, decoded_args) —
+    # external receivers apply before the generator consumes the resolved_result
+    # at the stored index, preserving history interleaving with activities.
+    pending_receivers: list[tuple[int, str, str, list[Any]]] = []
     for ev in events:
         etype = ev.get("event_type")
         payload = ev.get("payload") or {}
@@ -719,23 +903,50 @@ def _replay_state(
         elif etype in ("SignalReceived", "signal_received"):
             signal_name = payload.get("signal_name")
             if isinstance(signal_name, str) and signal_name:
-                pending_signals.append(
-                    (len(resolved_results), signal_name, _decode_signal_args(payload, payload_codec))
+                pending_receivers.append(
+                    (
+                        len(resolved_results),
+                        "signal",
+                        signal_name,
+                        _decode_signal_args(payload, payload_codec),
+                    )
+                )
+        elif etype in ("UpdateApplied", "update_applied"):
+            update_name = payload.get("update_name")
+            if isinstance(update_name, str) and update_name:
+                pending_receivers.append(
+                    (
+                        len(resolved_results),
+                        "update",
+                        update_name,
+                        _decode_update_args(payload, payload_codec),
+                    )
                 )
 
     signal_registry: dict[str, str] = getattr(workflow_cls, "__workflow_signals__", {}) or {}
+    update_registry: dict[str, str] = getattr(workflow_cls, "__workflow_updates__", {}) or {}
 
-    def _apply_due_signals() -> None:
-        while pending_signals and pending_signals[0][0] <= result_cursor:
-            _, name, args = pending_signals.pop(0)
-            method_name = signal_registry.get(name)
-            if method_name is None:
-                continue
+    def _apply_due_receivers() -> None:
+        while pending_receivers and pending_receivers[0][0] <= result_cursor:
+            _, kind, name, args = pending_receivers.pop(0)
+            if kind == "signal":
+                method_name = signal_registry.get(name)
+                if method_name is None:
+                    continue
+            else:
+                method_name = update_registry.get(name)
+                if method_name is None:
+                    raise TypeError(f"unknown update {name!r} in workflow history")
             handler = getattr(instance, method_name, None)
             if handler is None:
-                continue
+                if kind == "signal":
+                    continue
+                raise TypeError(f"update handler {name!r} is not available")
             ctx.logger._set_replaying(True)
             handler(*args)
+
+    result_cursor = 0
+    _apply_due_receivers()
 
     gen = instance.run(ctx, *start_input)
     if not hasattr(gen, "__next__"):
@@ -745,14 +956,13 @@ def _replay_state(
 
     ctx.logger._set_replaying(True)
 
-    result_cursor = 0
     next_value: Any = None
     first = True
     pending: list[Command] = []
     advanced_cmd: Any = None
     try:
         while True:
-            _apply_due_signals()
+            _apply_due_receivers()
             if advanced_cmd is not None:
                 cmd = advanced_cmd
                 advanced_cmd = None

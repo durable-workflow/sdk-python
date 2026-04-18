@@ -43,7 +43,7 @@ from .metrics import (
     WORKER_TASKS,
     MetricsRecorder,
 )
-from .workflow import replay
+from .workflow import apply_update, replay
 
 log = logging.getLogger("durable_workflow.worker")
 
@@ -274,6 +274,37 @@ class Worker:
             except Exception as e:
                 log.warning("failed to report unknown workflow type: %s", e)
             return None
+
+        update_id = task.get("workflow_update_id")
+        if isinstance(update_id, str) and update_id:
+            update_command = apply_update(
+                cls,
+                history,
+                start_input,
+                update_id,
+                run_id=run_id,
+                payload_codec=codec,
+            )
+            command = update_command.to_server_command(
+                self.task_queue,
+                payload_codec=command_codec,
+            )
+            log.info(
+                "completing workflow update task %s for update %s with %s",
+                task_id,
+                update_id,
+                command["type"],
+            )
+            try:
+                await self.client.complete_workflow_task(
+                    task_id=task_id,
+                    lease_owner=self.worker_id,
+                    workflow_task_attempt=attempt,
+                    commands=[command],
+                )
+            except Exception as e:
+                log.warning("failed to complete workflow update task %s: %s", task_id, e)
+            return [command]
 
         try:
             outcome = replay(cls, history, start_input, run_id=run_id, payload_codec=codec)

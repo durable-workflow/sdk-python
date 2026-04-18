@@ -25,6 +25,21 @@ class TestWorkflow:
         return result
 
 
+@workflow.defn(name="update-wf")
+class UpdateWorkflow:
+    def __init__(self) -> None:
+        self.count = 0
+
+    @workflow.update("increment")
+    def increment(self, amount: int) -> dict[str, int]:
+        self.count += amount
+        return {"count": self.count}
+
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        yield ctx.schedule_activity("wait", [])
+        return self.count
+
+
 @activity.defn(name="test-act")
 def echo_activity(val: str) -> str:
     return f"result-{val}"
@@ -215,6 +230,48 @@ class TestWorkflowTaskExecution:
         await worker._run_workflow_task(task)
         call_kwargs = mock_client.fail_workflow_task.call_args.kwargs
         assert "message" in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_update_backed_workflow_task_completes_update_command(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[UpdateWorkflow], activities=[])
+        task = {
+            "task_id": "t-update",
+            "workflow_type": "update-wf",
+            "workflow_task_attempt": 1,
+            "workflow_update_id": "upd-worker-1",
+            "workflow_wait_kind": "update",
+            "history_events": [
+                {
+                    "event_type": "UpdateAccepted",
+                    "payload": {
+                        "update_id": "upd-worker-1",
+                        "update_name": "increment",
+                        "arguments": serializer.encode([6], codec="json"),
+                        "payload_codec": "json",
+                    },
+                },
+            ],
+            "arguments": "[]",
+            "payload_codec": "json",
+        }
+
+        await worker._run_workflow_task(task)
+
+        mock_client.complete_workflow_task.assert_called_once()
+        commands = mock_client.complete_workflow_task.call_args.kwargs["commands"]
+        assert commands == [
+            {
+                "type": "complete_update",
+                "update_id": "upd-worker-1",
+                "result": {
+                    "codec": "json",
+                    "blob": '{"count":6}',
+                },
+            },
+        ]
+        mock_client.fail_workflow_task.assert_not_called()
 
 
 class TestActivityTaskExecution:
