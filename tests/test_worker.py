@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from durable_workflow import activity, workflow
+from durable_workflow import activity, serializer, workflow
 from durable_workflow.client import (
     CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA,
     CONTROL_PLANE_REQUEST_CONTRACT_VERSION,
@@ -165,6 +165,8 @@ class TestWorkflowTaskExecution:
         assert len(commands) == 1
         assert commands[0]["type"] == "schedule_activity"
         assert commands[0]["activity_type"] == "test-act"
+        assert commands[0]["arguments"]["codec"] == "json"
+        assert serializer.decode(commands[0]["arguments"]["blob"], codec="json") == ["hello"]
 
     @pytest.mark.asyncio
     async def test_complete_on_resolved_activity(self, mock_client: AsyncMock) -> None:
@@ -183,6 +185,8 @@ class TestWorkflowTaskExecution:
         mock_client.complete_workflow_task.assert_called_once()
         commands = mock_client.complete_workflow_task.call_args.kwargs["commands"]
         assert commands[0]["type"] == "complete_workflow"
+        assert commands[0]["result"]["codec"] == "json"
+        assert serializer.decode(commands[0]["result"]["blob"], codec="json") == "done"
 
     @pytest.mark.asyncio
     async def test_unknown_workflow_type_fails_task(self, mock_client: AsyncMock) -> None:

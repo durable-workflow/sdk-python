@@ -87,7 +87,7 @@ async def test_greeter_workflow_end_to_end(server_url: str, server_token: str) -
         outcome = replay(SmokeGreeterWorkflow, history, start_input, run_id=wf_task.get("run_id", ""))
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
-        server_cmd = cmd.to_server_command(task_queue)
+        server_cmd = cmd.to_server_command(task_queue, payload_codec=codec)
         assert server_cmd["type"] == "schedule_activity"
 
         # 5. Complete workflow task with ScheduleActivity command
@@ -137,7 +137,8 @@ async def test_greeter_workflow_end_to_end(server_url: str, server_token: str) -
         outcome2 = replay(SmokeGreeterWorkflow, history2, start_input2, run_id=wf_task2.get("run_id", ""))
         assert len(outcome2.commands) == 1
         cmd2 = outcome2.commands[0]
-        server_cmd2 = cmd2.to_server_command(task_queue)
+        codec2 = wf_task2.get("payload_codec")
+        server_cmd2 = cmd2.to_server_command(task_queue, payload_codec=codec2)
         assert server_cmd2["type"] == "complete_workflow"
 
         # 11. Complete the final workflow task

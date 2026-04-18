@@ -102,6 +102,14 @@ class TestOneActivity:
         assert server_cmd["type"] == "schedule_activity"
         assert server_cmd["activity_type"] == "greet"
         assert server_cmd["queue"] == "default-queue"
+        assert server_cmd["arguments"]["codec"] == "avro"
+
+    def test_server_command_uses_payload_codec(self) -> None:
+        outcome = replay(OneActivity, [], ["world"])
+        cmd = outcome.commands[0]
+        server_cmd = cmd.to_server_command("default-queue", payload_codec="json")
+        assert server_cmd["arguments"]["codec"] == "json"
+        assert serializer.decode(server_cmd["arguments"]["blob"], codec="json") == ["world"]
 
 
 class TestTwoActivities:
@@ -187,6 +195,12 @@ class TestCompleteWorkflowCommand:
         assert server_cmd["type"] == "complete_workflow"
         assert server_cmd["result"]["codec"] == "avro"
         assert serializer.decode(server_cmd["result"]["blob"], codec="avro") == {"key": "val"}
+
+    def test_server_command_uses_payload_codec(self) -> None:
+        cmd = CompleteWorkflow(result={"key": "val"})
+        server_cmd = cmd.to_server_command("q", payload_codec="json")
+        assert server_cmd["result"]["codec"] == "json"
+        assert serializer.decode(server_cmd["result"]["blob"], codec="json") == {"key": "val"}
 
 
 @workflow.defn(name="continue-as-new-wf")
@@ -289,8 +303,12 @@ class TestSideEffect:
         cmd = RecordSideEffect(result={"key": "val"})
         sc = cmd.to_server_command("q")
         assert sc["type"] == "record_side_effect"
-        assert sc["result"]["codec"] == "avro"
-        assert serializer.decode(sc["result"]["blob"], codec="avro") == {"key": "val"}
+        assert serializer.decode(sc["result"], codec="avro") == {"key": "val"}
+
+    def test_server_command_uses_payload_codec(self) -> None:
+        cmd = RecordSideEffect(result={"key": "val"})
+        sc = cmd.to_server_command("q", payload_codec="json")
+        assert serializer.decode(sc["result"], codec="json") == {"key": "val"}
 
 
 class TestWorkflowContext:

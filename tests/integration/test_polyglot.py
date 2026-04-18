@@ -89,7 +89,7 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
         outcome = replay(PolyglotPythonWorkflow, history, start_input, run_id=wf_task.get("run_id", ""))
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
-        server_cmd = cmd.to_server_command(task_queue)
+        server_cmd = cmd.to_server_command(task_queue, payload_codec=codec)
         assert server_cmd["type"] == "schedule_activity"
         assert server_cmd["activity_type"] == "tests.polyglot.php-activity"
 
@@ -166,7 +166,8 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
         outcome2 = replay(PolyglotPythonWorkflow, history2, start_input2, run_id=wf_task2.get("run_id", ""))
         assert len(outcome2.commands) == 1
         cmd2 = outcome2.commands[0]
-        server_cmd2 = cmd2.to_server_command(task_queue)
+        codec2 = wf_task2.get("payload_codec")
+        server_cmd2 = cmd2.to_server_command(task_queue, payload_codec=codec2)
 
         # Debug: inspect command before asserting
         print("\n=== Replay outcome ===")

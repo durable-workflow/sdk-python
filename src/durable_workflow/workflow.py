@@ -36,11 +36,13 @@ class ScheduleActivity:
     arguments: list[Any]
     queue: str | None = None
 
-    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+    def to_server_command(
+        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+    ) -> dict[str, Any]:
         return {
             "type": "schedule_activity",
             "activity_type": self.activity_type,
-            "arguments": serializer.envelope(self.arguments),
+            "arguments": serializer.envelope(self.arguments, codec=payload_codec),
             "queue": self.queue or task_queue,
         }
 
@@ -49,7 +51,9 @@ class ScheduleActivity:
 class StartTimer:
     delay_seconds: int
 
-    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+    def to_server_command(
+        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+    ) -> dict[str, Any]:
         return {
             "type": "start_timer",
             "delay_seconds": self.delay_seconds,
@@ -60,10 +64,12 @@ class StartTimer:
 class CompleteWorkflow:
     result: Any
 
-    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+    def to_server_command(
+        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+    ) -> dict[str, Any]:
         return {
             "type": "complete_workflow",
-            "result": serializer.envelope(self.result),
+            "result": serializer.envelope(self.result, codec=payload_codec),
         }
 
 
@@ -73,7 +79,9 @@ class FailWorkflow:
     exception_type: str | None = None
     non_retryable: bool = False
 
-    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+    def to_server_command(
+        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+    ) -> dict[str, Any]:
         cmd: dict[str, Any] = {
             "type": "fail_workflow",
             "message": self.message,
@@ -91,11 +99,13 @@ class ContinueAsNew:
     arguments: list[Any] = field(default_factory=list)
     task_queue: str | None = None
 
-    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+    def to_server_command(
+        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+    ) -> dict[str, Any]:
         cmd: dict[str, Any] = {"type": "continue_as_new"}
         if self.workflow_type is not None:
             cmd["workflow_type"] = self.workflow_type
-        cmd["arguments"] = serializer.envelope(self.arguments)
+        cmd["arguments"] = serializer.envelope(self.arguments, codec=payload_codec)
         cmd["queue"] = self.task_queue or task_queue
         return cmd
 
@@ -104,10 +114,12 @@ class ContinueAsNew:
 class RecordSideEffect:
     result: Any
 
-    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+    def to_server_command(
+        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+    ) -> dict[str, Any]:
         return {
             "type": "record_side_effect",
-            "result": serializer.envelope(self.result),
+            "result": serializer.encode(self.result, codec=payload_codec),
         }
 
 
@@ -118,11 +130,13 @@ class StartChildWorkflow:
     task_queue: str | None = None
     parent_close_policy: str | None = None
 
-    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+    def to_server_command(
+        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+    ) -> dict[str, Any]:
         cmd: dict[str, Any] = {
             "type": "start_child_workflow",
             "workflow_type": self.workflow_type,
-            "arguments": serializer.envelope(self.arguments),
+            "arguments": serializer.envelope(self.arguments, codec=payload_codec),
         }
         if self.task_queue is not None:
             cmd["queue"] = self.task_queue
@@ -140,7 +154,9 @@ class RecordVersionMarker:
     min_supported: int
     max_supported: int
 
-    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+    def to_server_command(
+        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+    ) -> dict[str, Any]:
         return {
             "type": "record_version_marker",
             "change_id": self.change_id,
@@ -154,7 +170,9 @@ class RecordVersionMarker:
 class UpsertSearchAttributes:
     attributes: dict[str, Any]
 
-    def to_server_command(self, task_queue: str) -> dict[str, Any]:
+    def to_server_command(
+        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+    ) -> dict[str, Any]:
         return {
             "type": "upsert_search_attributes",
             "attributes": self.attributes,

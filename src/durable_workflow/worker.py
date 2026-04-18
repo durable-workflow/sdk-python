@@ -23,6 +23,10 @@ from .workflow import replay
 log = logging.getLogger("durable_workflow.worker")
 
 
+def _command_payload_codec(codec: object) -> str:
+    return codec if isinstance(codec, str) and codec in serializer.SUPPORTED_CODECS else serializer.AVRO_CODEC
+
+
 def _activity_name(fn: Callable[..., Any]) -> str:
     return getattr(fn, "__activity_name__", fn.__name__)
 
@@ -172,6 +176,7 @@ class Worker:
 
         start_input: list[Any] = []
         codec = task.get("payload_codec")
+        command_codec = _command_payload_codec(codec)
         raw_args = task.get("arguments")
         try:
             decoded = serializer.decode_envelope(raw_args, codec=codec)
@@ -262,7 +267,10 @@ class Worker:
                 log.warning("failed to report replay failure: %s", fe)
             return None
 
-        commands = [c.to_server_command(self.task_queue) for c in outcome.commands]
+        commands = [
+            c.to_server_command(self.task_queue, payload_codec=command_codec)
+            for c in outcome.commands
+        ]
         log.info(
             "completing workflow task %s with %d command(s): %s",
             task_id,
