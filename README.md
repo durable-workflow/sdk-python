@@ -1,4 +1,4 @@
-# durable-workflow (Python SDK)
+# Durable Workflow (Python SDK)
 
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
