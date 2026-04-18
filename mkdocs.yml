@@ -1,0 +1,77 @@
+site_name: Durable Workflow Python SDK
+site_description: API reference for durable-workflow, the Python SDK for the Durable Workflow server.
+site_url: https://python.durable-workflow.com/
+repo_url: https://github.com/durable-workflow/sdk-python
+repo_name: durable-workflow/sdk-python
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            docstring_style: google
+            separate_signature: true
+            merge_init_into_class: true
+            members_order: source
+            filters: ["!^_"]
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Reference:
+      - Client: reference/client.md
+      - Worker: reference/worker.md
+      - Workflow: reference/workflow.md
+      - Activity: reference/activity.md
+      - Errors: reference/errors.md
+      - Retry policy: reference/retry_policy.md
+      - Serializer: reference/serializer.md
+      - Metrics: reference/metrics.md
+      - Sync helpers: reference/sync.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/durable-workflow/sdk-python
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/durable-workflow/

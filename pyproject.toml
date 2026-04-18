@@ -45,6 +45,10 @@ dev = [
 prometheus = [
     "prometheus-client>=0.20",
 ]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.25",
+]
 
 [project.urls]
 Homepage = "https://github.com/durable-workflow/sdk-python"
