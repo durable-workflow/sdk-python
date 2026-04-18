@@ -148,10 +148,12 @@ mypy src/durable_workflow/
 # Lint
 ruff check src/ tests/
 
-# Regenerate the docs-site API reference
-python scripts/generate-api-reference.py \
-  --output ../durable-workflow.github.io/docs/polyglot/python-api-reference.md
+# Preview the API reference site locally
+pip install -e '.[docs]'
+mkdocs serve
 ```
+
+The API reference is published to [python.durable-workflow.com](https://python.durable-workflow.com/) and rebuilt automatically on push to `main`.
 
 ## License
 
