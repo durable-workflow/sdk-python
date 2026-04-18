@@ -1,3 +1,19 @@
+"""Workflow authoring primitives: decorators, context, commands, and replayer.
+
+A workflow is a Python class registered with :func:`defn`. Its ``run`` method
+is a generator that yields command dataclasses (``ScheduleActivity``,
+``StartTimer``, ``StartChildWorkflow``, …) — the worker's replayer drives the
+generator forward by resolving each yielded command against the current
+history of the workflow run. Yield a *list* of commands to run them in
+parallel.
+
+Determinism-sensitive helpers live on the :class:`WorkflowContext` passed to
+``run``: :meth:`WorkflowContext.random`, :meth:`WorkflowContext.uuid4`,
+:meth:`WorkflowContext.now`, and :meth:`WorkflowContext.side_effect` all
+produce values that are recorded on first execution and replayed verbatim
+on every subsequent replay of the same history.
+"""
+
 from __future__ import annotations
 
 import contextlib

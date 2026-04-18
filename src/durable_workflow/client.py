@@ -1,3 +1,20 @@
+"""Async client for the Durable Workflow server's control and worker planes.
+
+The :class:`Client` wraps the server's HTTP/JSON protocol. Control-plane
+methods (``start_workflow``, ``signal_workflow``, ``describe_workflow``,
+schedule management, …) are what callers use to drive workflows from outside.
+Worker-plane methods (``register_worker``, ``poll_workflow_task``,
+``complete_activity_task``, …) are what the :class:`~durable_workflow.Worker`
+uses to run tasks; they are public so advanced users can build custom
+workers, but most applications should not call them directly.
+
+The module also defines the returned-value dataclasses (``WorkflowExecution``,
+``WorkflowList``, ``ScheduleSpec``, ``ScheduleDescription``, …) and the
+ergonomic handle classes (:class:`WorkflowHandle`, :class:`ScheduleHandle`)
+that bind a workflow or schedule id to a :class:`Client` so you can call
+methods without repeating the id on every call.
+"""
+
 from __future__ import annotations
 
 import asyncio

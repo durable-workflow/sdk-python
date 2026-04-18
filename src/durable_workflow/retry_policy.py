@@ -1,3 +1,15 @@
+"""HTTP transport retry policy used inside :class:`~durable_workflow.Client`.
+
+.. warning::
+
+   This :class:`RetryPolicy` covers **only client-side HTTP retries** for
+   transient transport errors (connection failures, timeouts, 5xx responses,
+   429 rate-limiting). It is **not** the activity retry policy. Activity-level
+   retry and timeout configuration is tracked in
+   https://github.com/zorporation/durable-workflow/issues/392 and will land on
+   ``ctx.schedule_activity(..., retry_policy=...)``.
+"""
+
 from __future__ import annotations
 
 import asyncio

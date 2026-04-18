@@ -1,3 +1,15 @@
+"""Pluggable metrics hooks for the Durable Workflow client and worker.
+
+Pass any :class:`MetricsRecorder` implementation as ``metrics=`` on
+:class:`~durable_workflow.Client` or :class:`~durable_workflow.Worker`. The
+SDK ships three recorders out of the box: :class:`NoopMetrics` (the default),
+:class:`InMemoryMetrics` for tests and small exporter loops, and
+:class:`PrometheusMetrics` which forwards to the optional ``prometheus-client``
+package. Custom recorders implement two methods — :meth:`MetricsRecorder.increment`
+and :meth:`MetricsRecorder.record` — and receive stable metric names and tag
+dicts defined as module-level constants in this file.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -30,10 +42,10 @@ class NoopMetrics:
     """Default metrics recorder that intentionally drops all observations."""
 
     def increment(self, name: str, value: float = 1.0, tags: MetricTags | None = None) -> None:
-        pass
+        """Implements :meth:`MetricsRecorder.increment` as a no-op."""
 
     def record(self, name: str, value: float, tags: MetricTags | None = None) -> None:
-        pass
+        """Implements :meth:`MetricsRecorder.record` as a no-op."""
 
 
 NOOP_METRICS = NoopMetrics()
@@ -51,16 +63,20 @@ class InMemoryMetrics:
     histograms: dict[MetricKey, list[float]] = field(default_factory=dict)
 
     def increment(self, name: str, value: float = 1.0, tags: MetricTags | None = None) -> None:
+        """Accumulate into an in-memory counter keyed by ``name`` + sorted ``tags``."""
         key = _metric_key(name, tags)
         self.counters[key] = self.counters.get(key, 0.0) + value
 
     def record(self, name: str, value: float, tags: MetricTags | None = None) -> None:
+        """Append an observation to an in-memory histogram keyed by ``name`` + sorted ``tags``."""
         self.histograms.setdefault(_metric_key(name, tags), []).append(value)
 
     def counter_value(self, name: str, tags: MetricTags | None = None) -> float:
+        """Return the current value of a counter, or ``0.0`` if it has never been incremented."""
         return self.counters.get(_metric_key(name, tags), 0.0)
 
     def observations(self, name: str, tags: MetricTags | None = None) -> list[float]:
+        """Return a copy of the histogram observations recorded under ``name`` + ``tags``."""
         return list(self.histograms.get(_metric_key(name, tags), []))
 
 
@@ -84,6 +100,7 @@ class PrometheusMetrics:
         self._label_names: dict[tuple[str, str], tuple[str, ...]] = {}
 
     def increment(self, name: str, value: float = 1.0, tags: MetricTags | None = None) -> None:
+        """Forward to a ``prometheus_client.Counter``, creating one on first use."""
         tag_values = dict(_metric_key(name, tags)[1])
         counter = self._metric("counter", name, tuple(tag_values))
         if tag_values:
@@ -92,6 +109,7 @@ class PrometheusMetrics:
             counter.inc(value)
 
     def record(self, name: str, value: float, tags: MetricTags | None = None) -> None:
+        """Forward to a ``prometheus_client.Histogram``, creating one on first use."""
         tag_values = dict(_metric_key(name, tags)[1])
         histogram = self._metric("histogram", name, tuple(tag_values))
         if tag_values:

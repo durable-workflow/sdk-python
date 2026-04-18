@@ -45,13 +45,26 @@ class ActivityContext:
 
     @property
     def info(self) -> ActivityInfo:
+        """Metadata for the currently running activity attempt."""
         return self._info
 
     @property
     def is_cancelled(self) -> bool:
+        """``True`` once the server has signalled that the owning workflow cancelled this activity."""
         return self._cancel_requested
 
     async def heartbeat(self, details: dict[str, Any] | None = None) -> None:
+        """Report liveness to the server and check for a cancellation request.
+
+        Long-running activities should call ``heartbeat()`` periodically so the
+        server can distinguish a slow-but-alive attempt from a dead worker.
+        Optional ``details`` are attached to the heartbeat and surface as the
+        activity's last-known progress on failure.
+
+        Raises :class:`~durable_workflow.errors.ActivityCancelled` when the
+        owning workflow has requested cancellation, so the activity can exit
+        cleanly at its next natural break point.
+        """
         resp = await self._client.heartbeat_activity_task(
             task_id=self._info.task_id,
             activity_attempt_id=self._info.activity_attempt_id,

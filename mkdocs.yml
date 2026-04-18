@@ -44,7 +44,11 @@ plugins:
             separate_signature: true
             merge_init_into_class: true
             members_order: source
-            filters: ["!^_"]
+            inherited_members: true
+            filters:
+              - "!^_"
+              - "!^to_server_command$"
+              - "!^to_dict$"
 
 markdown_extensions:
   - admonition

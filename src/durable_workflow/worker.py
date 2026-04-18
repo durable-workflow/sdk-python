@@ -1,3 +1,18 @@
+"""Long-polling worker that runs workflow and activity tasks.
+
+:class:`Worker` registers itself with the server for a given task queue, then
+spawns poll loops for both workflow tasks and activity tasks. Each received
+task is dispatched to the registered workflow class or activity function,
+results are serialized, and success/failure commands are sent back to the
+server. Workers drain in-flight tasks on shutdown up to a configurable
+``shutdown_timeout``.
+
+Most applications create one :class:`Worker` per task queue and pass it the
+same :class:`~durable_workflow.Client` used for control-plane calls, plus
+lists of workflow classes and activity callables registered via
+:func:`durable_workflow.workflow.defn` and :func:`durable_workflow.activity.defn`.
+"""
+
 from __future__ import annotations
 
 import asyncio
