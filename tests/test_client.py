@@ -334,6 +334,67 @@ class TestUpdateWorkflow:
             assert body["request_id"] == "req-123"
 
 
+class TestGetResult:
+    @pytest.mark.asyncio
+    async def test_completed_result_uses_event_payload_codec(self, client: Client) -> None:
+        handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
+        client.describe_workflow = AsyncMock(
+            return_value=WorkflowExecution(
+                workflow_id="wf-1",
+                run_id="run-1",
+                workflow_type="greeter",
+                status="completed",
+                payload_codec="avro",
+            )
+        )
+        client.get_history = AsyncMock(
+            return_value={
+                "events": [
+                    {
+                        "event_type": "WorkflowCompleted",
+                        "payload": {
+                            "output": serializer.encode({"greeting": "hello"}, codec="avro"),
+                            "payload_codec": "avro",
+                        },
+                    }
+                ]
+            }
+        )
+
+        result = await client.get_result(handle)
+
+        assert result == {"greeting": "hello"}
+
+    @pytest.mark.asyncio
+    async def test_completed_result_uses_describe_payload_codec_fallback(self, client: Client) -> None:
+        handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
+        client.describe_workflow = AsyncMock(
+            return_value=WorkflowExecution(
+                workflow_id="wf-1",
+                run_id="run-1",
+                workflow_type="greeter",
+                status="completed",
+                payload_codec="avro",
+            )
+        )
+        client.get_history = AsyncMock(
+            return_value={
+                "events": [
+                    {
+                        "event_type": "WorkflowCompleted",
+                        "payload": {
+                            "output": serializer.encode({"greeting": "hello"}, codec="avro"),
+                        },
+                    }
+                ]
+            }
+        )
+
+        result = await client.get_result(handle)
+
+        assert result == {"greeting": "hello"}
+
+
 class TestRegisterWorker:
     @pytest.mark.asyncio
     async def test_register(self, client: Client) -> None:

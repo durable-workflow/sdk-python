@@ -17,6 +17,7 @@ from .client import (
     CONTROL_PLANE_VERSION,
     PROTOCOL_VERSION,
     Client,
+    WorkflowExecution,
 )
 from .errors import ActivityCancelled, AvroNotInstalledError, NonRetryableError
 from .metrics import (
@@ -30,6 +31,8 @@ from .metrics import (
 from .workflow import replay
 
 log = logging.getLogger("durable_workflow.worker")
+
+_TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
 
 
 def _command_payload_codec(codec: object) -> str:
@@ -535,6 +538,92 @@ class Worker:
         act_loop = asyncio.create_task(self._poll_activity_tasks())
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(wf_loop, act_loop)
+
+    async def run_until(
+        self,
+        *,
+        workflow_id: str,
+        timeout: float = 60.0,
+        poll_interval: float = 0.5,
+    ) -> WorkflowExecution:
+        """Run this worker until a workflow reaches a terminal state.
+
+        This is intended for examples, smoke tests, and single-workflow scripts.
+        Long-running workers should call :meth:`run` and coordinate shutdown from
+        their process supervisor.
+        """
+        deadline = time.monotonic() + timeout
+        next_task_kind = "workflow"
+
+        try:
+            await self._register()
+            while True:
+                desc = await self.client.describe_workflow(workflow_id)
+                status = (desc.status or "").lower()
+                if status in _TERMINAL_WORKFLOW_STATUSES:
+                    return desc
+
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"workflow {workflow_id} not terminal after {timeout}s (status={desc.status})"
+                    )
+
+                if next_task_kind == "workflow":
+                    poll_start = time.perf_counter()
+                    task = await self.client.poll_workflow_task(
+                        worker_id=self.worker_id,
+                        task_queue=self.task_queue,
+                        timeout=self._poll_timeout,
+                    )
+                    self._record_poll_metrics(
+                        "workflow",
+                        "task" if task is not None else "empty",
+                        time.perf_counter() - poll_start,
+                    )
+                    if task is None:
+                        next_task_kind = "activity"
+                        await asyncio.sleep(poll_interval)
+                        continue
+
+                    task_start = time.perf_counter()
+                    outcome = "error"
+                    try:
+                        commands = await self._run_workflow_task(task)
+                        outcome = "completed" if commands is not None else "failed"
+                    finally:
+                        self._record_task_metrics("workflow", outcome, time.perf_counter() - task_start)
+
+                    if commands and any(command.get("type") == "schedule_activity" for command in commands):
+                        next_task_kind = "activity"
+                    else:
+                        next_task_kind = "workflow"
+                    continue
+
+                poll_start = time.perf_counter()
+                task = await self.client.poll_activity_task(
+                    worker_id=self.worker_id,
+                    task_queue=self.task_queue,
+                    timeout=self._poll_timeout,
+                )
+                self._record_poll_metrics(
+                    "activity",
+                    "task" if task is not None else "empty",
+                    time.perf_counter() - poll_start,
+                )
+                if task is None:
+                    next_task_kind = "workflow"
+                    await asyncio.sleep(poll_interval)
+                    continue
+
+                task_start = time.perf_counter()
+                outcome = "error"
+                try:
+                    outcome = await self._run_activity_task(task)
+                finally:
+                    self._record_task_metrics("activity", outcome, time.perf_counter() - task_start)
+                next_task_kind = "workflow"
+        finally:
+            await self.stop()
 
     async def stop(self) -> None:
         self._stop.set()

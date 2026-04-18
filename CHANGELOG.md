@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `Worker.run_until(workflow_id=..., timeout=...)` for examples, smoke tests,
+  and single-workflow scripts that need to run a worker until one workflow
+  reaches a terminal state.
+- A Docker Compose order-processing example under `examples/order_processing`
+  that starts a local server and runs a multi-activity Python workflow
+  end-to-end.
+
 ### Changed
 - Worker compatibility checks now use `/api/cluster/info` protocol manifests
   as the authority instead of the top-level server app version. SDK 0.2.x
@@ -14,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `durable-workflow.v2.control-plane-request.contract` version `1`, and
   `worker_protocol.version: "1.0"`. Missing, unknown, or undiscoverable
   compatibility states fail closed.
+- `Client.get_result()` now decodes `WorkflowCompleted` output with the event
+  or workflow payload codec instead of assuming JSON.
 
 ## [0.2.0] — 2026-04-17
 

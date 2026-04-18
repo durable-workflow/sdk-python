@@ -51,18 +51,10 @@ async def main() -> int:
             task_queue=task_queue,
             workflows=[GreeterWorkflow],
             activities=[greet],
-            poll_timeout=5.0,
         )
 
-        log.info("running worker for 30s...")
-        worker_task = asyncio.create_task(worker.run())
-        await asyncio.sleep(30.0)
-        worker.stop()
-        worker_task.cancel()
-        try:
-            await worker_task
-        except (asyncio.CancelledError, Exception):
-            pass
+        log.info("running worker until workflow completes...")
+        await worker.run_until(workflow_id=wf_id, timeout=30.0)
 
     log.info("worker stopped, checking result...")
     async with Client(url, token=token, namespace="default") as client2:

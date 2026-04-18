@@ -45,10 +45,14 @@ async def main():
         task_queue="python-workers",
         input=["world"],
     )
-    await worker.run_until(workflow_id="greet-1")
+    await worker.run_until(workflow_id="greet-1", timeout=30.0)
     result = await client.get_result(handle)
     print(result)  # "hello, world"
 ```
+
+For a fuller deployable example, see
+[`examples/order_processing`](examples/order_processing), which runs a
+multi-activity order workflow against a local server with Docker Compose.
 
 ## Features
 

@@ -13,6 +13,7 @@ from durable_workflow.client import (
     CONTROL_PLANE_VERSION,
     PROTOCOL_VERSION,
     Client,
+    WorkflowExecution,
 )
 from durable_workflow.worker import Worker
 
@@ -662,3 +663,51 @@ class TestPollLoops:
         assert mock_client.register_worker.call_count == 1
         assert mock_client.poll_workflow_task.call_count >= 1
         assert mock_client.poll_activity_task.call_count >= 1
+
+
+class TestRunUntil:
+    @pytest.mark.asyncio
+    async def test_run_until_returns_terminal_description(self, mock_client: AsyncMock) -> None:
+        mock_client.describe_workflow = AsyncMock(
+            side_effect=[
+                WorkflowExecution(workflow_id="wf-1", run_id="run-1", workflow_type="test-wf", status="running"),
+                WorkflowExecution(workflow_id="wf-1", run_id="run-1", workflow_type="test-wf", status="completed"),
+            ]
+        )
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            poll_timeout=0.01,
+        )
+
+        desc = await worker.run_until(workflow_id="wf-1", timeout=1.0, poll_interval=0.01)
+
+        assert desc.status == "completed"
+        assert worker._stop.is_set()
+        mock_client.register_worker.assert_awaited_once()
+        assert mock_client.describe_workflow.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_run_until_times_out_and_stops_worker(self, mock_client: AsyncMock) -> None:
+        mock_client.describe_workflow = AsyncMock(
+            return_value=WorkflowExecution(
+                workflow_id="wf-timeout",
+                run_id="run-1",
+                workflow_type="test-wf",
+                status="running",
+            )
+        )
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            poll_timeout=0.01,
+        )
+
+        with pytest.raises(TimeoutError, match="wf-timeout"):
+            await worker.run_until(workflow_id="wf-timeout", timeout=0.02, poll_interval=0.01)
+
+        assert worker._stop.is_set()

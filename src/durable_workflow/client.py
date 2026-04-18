@@ -570,7 +570,10 @@ class Client:
                     etype = ev.get("event_type")
                     payload = ev.get("payload") or {}
                     if etype in ("WorkflowCompleted", "workflow_completed"):
-                        return serializer.decode(payload.get("output") or payload.get("result"))
+                        return serializer.decode_envelope(
+                            payload.get("output") or payload.get("result"),
+                            codec=payload.get("payload_codec") or desc.payload_codec,
+                        )
                     if etype in ("WorkflowFailed", "workflow_failed"):
                         raise WorkflowFailed(
                             payload.get("message", "workflow failed"),
