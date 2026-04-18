@@ -187,7 +187,7 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
         raise Unauthorized(message or "unauthorized")
 
     if status == 404:
-        if reason == "query_not_found":
+        if reason in ("query_not_found", "rejected_unknown_query"):
             raise QueryFailed(message or "query not found")
         if reason == "schedule_not_found":
             raise ScheduleNotFound(context)
@@ -202,10 +202,15 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
             raise ScheduleAlreadyExists(context)
         if reason == "duplicate_not_allowed":
             raise WorkflowAlreadyStarted(context)
-        if reason == "query_rejected":
+        if reason in ("query_rejected", "query_worker_unavailable"):
             raise QueryFailed(message or "query rejected")
         if reason == "update_rejected":
             raise UpdateRejected(message or "update rejected")
+        raise ServerError(status, body)
+
+    if status == 504:
+        if reason == "query_worker_timeout":
+            raise QueryFailed(message or "query worker timed out")
         raise ServerError(status, body)
 
     if status == 422:

@@ -40,6 +40,19 @@ class UpdateWorkflow:
         return self.count
 
 
+@workflow.defn(name="query-wf")
+class QueryWorkflow:
+    def __init__(self) -> None:
+        self.status = "ready"
+
+    @workflow.query("status")
+    def current_status(self) -> dict[str, str]:
+        return {"status": self.status}
+
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        return self.status
+
+
 @activity.defn(name="test-act")
 def echo_activity(val: str) -> str:
     return f"result-{val}"
@@ -56,10 +69,13 @@ def mock_client() -> AsyncMock:
     client.register_worker = AsyncMock(return_value={"worker_id": "w1", "registered": True})
     client.poll_workflow_task = AsyncMock(return_value=None)
     client.poll_activity_task = AsyncMock(return_value=None)
+    client.poll_query_task = AsyncMock(return_value=None)
     client.complete_workflow_task = AsyncMock(return_value={"outcome": "completed"})
     client.complete_activity_task = AsyncMock(return_value={"outcome": "completed"})
+    client.complete_query_task = AsyncMock(return_value={"outcome": "completed"})
     client.fail_workflow_task = AsyncMock(return_value={"outcome": "failed"})
     client.fail_activity_task = AsyncMock(return_value={"outcome": "failed"})
+    client.fail_query_task = AsyncMock(return_value={"outcome": "failed"})
     client.get_cluster_info = AsyncMock(return_value=compatible_cluster_info())
     return client
 
@@ -77,6 +93,9 @@ def compatible_cluster_info(**overrides: object) -> dict[str, object]:
         },
         "worker_protocol": {
             "version": PROTOCOL_VERSION,
+            "server_capabilities": {
+                "query_tasks": True,
+            },
         },
     }
     info.update(overrides)
@@ -272,6 +291,55 @@ class TestWorkflowTaskExecution:
             },
         ]
         mock_client.fail_workflow_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_task_executes_registered_query(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[QueryWorkflow], activities=[])
+        task = {
+            "query_task_id": "qt1",
+            "query_task_attempt": 1,
+            "workflow_type": "query-wf",
+            "query_name": "status",
+            "history_events": [],
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "completed"
+        mock_client.complete_query_task.assert_awaited_once_with(
+            query_task_id="qt1",
+            lease_owner=worker.worker_id,
+            query_task_attempt=1,
+            result={"status": "ready"},
+            codec="json",
+        )
+        mock_client.fail_query_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_task_reports_unknown_query(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[QueryWorkflow], activities=[])
+        task = {
+            "query_task_id": "qt-missing",
+            "query_task_attempt": 2,
+            "workflow_type": "query-wf",
+            "query_name": "missing",
+            "history_events": [],
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "failed"
+        mock_client.fail_query_task.assert_awaited_once()
+        call_kwargs = mock_client.fail_query_task.call_args.kwargs
+        assert call_kwargs["query_task_id"] == "qt-missing"
+        assert call_kwargs["query_task_attempt"] == 2
+        assert call_kwargs["reason"] == "rejected_unknown_query"
 
 
 class TestActivityTaskExecution:
@@ -720,6 +788,30 @@ class TestPollLoops:
         assert mock_client.register_worker.call_count == 1
         assert mock_client.poll_workflow_task.call_count >= 1
         assert mock_client.poll_activity_task.call_count >= 1
+        assert mock_client.poll_query_task.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_run_skips_query_loop_without_query_task_capability(self, mock_client: AsyncMock) -> None:
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(worker_protocol={"version": PROTOCOL_VERSION})
+        )
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            poll_timeout=0.01,
+        )
+        run_task = asyncio.create_task(worker.run())
+        await asyncio.sleep(0.05)
+        await worker.stop()
+        run_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run_task
+        assert mock_client.register_worker.call_count == 1
+        assert mock_client.poll_workflow_task.call_count >= 1
+        assert mock_client.poll_activity_task.call_count >= 1
+        mock_client.poll_query_task.assert_not_called()
 
 
 class TestRunUntil:

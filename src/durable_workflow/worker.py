@@ -34,7 +34,7 @@ from .client import (
     Client,
     WorkflowExecution,
 )
-from .errors import ActivityCancelled, AvroNotInstalledError, NonRetryableError
+from .errors import ActivityCancelled, AvroNotInstalledError, NonRetryableError, QueryFailed
 from .metrics import (
     NOOP_METRICS,
     WORKER_POLL_DURATION_SECONDS,
@@ -43,7 +43,7 @@ from .metrics import (
     WORKER_TASKS,
     MetricsRecorder,
 )
-from .workflow import apply_update, replay
+from .workflow import apply_update, query_state, replay
 
 log = logging.getLogger("durable_workflow.worker")
 
@@ -119,6 +119,14 @@ def _validate_server_compatibility(info: dict[str, Any]) -> None:
         )
 
 
+def _server_supports_query_tasks(info: dict[str, Any]) -> bool:
+    worker_protocol = info.get("worker_protocol")
+    if not isinstance(worker_protocol, dict):
+        return False
+    capabilities = worker_protocol.get("server_capabilities")
+    return isinstance(capabilities, dict) and capabilities.get("query_tasks") is True
+
+
 def _contract_version_matches(value: Any, expected: int) -> bool:
     if isinstance(value, int):
         return value == expected
@@ -155,6 +163,7 @@ class Worker:
         self._act_semaphore = asyncio.Semaphore(max_concurrent_activity_tasks)
         self._shutdown_timeout = shutdown_timeout
         self._in_flight: set[asyncio.Task[Any]] = set()
+        self._query_tasks_supported = False
         configured_metrics = metrics if metrics is not None else getattr(client, "metrics", NOOP_METRICS)
         self.metrics: MetricsRecorder = configured_metrics or NOOP_METRICS
 
@@ -175,6 +184,7 @@ class Worker:
             raise RuntimeError(f"Server compatibility error: unable to read /api/cluster/info: {e}") from e
 
         _validate_server_compatibility(info)
+        self._query_tasks_supported = _server_supports_query_tasks(info)
         log.debug(
             "server compatibility accepted: app_version=%s control_plane=%s worker_protocol=%s",
             info.get("version", "unknown"),
@@ -497,6 +507,124 @@ class Worker:
             return "complete_error"
         return "completed"
 
+    async def _run_query_task(self, task: dict[str, Any]) -> str:
+        query_task_id: str = task["query_task_id"]
+        attempt: int = task.get("query_task_attempt", 1)
+        wf_type: str = task.get("workflow_type", "")
+        query_name: str = task.get("query_name", "")
+        codec = task.get("payload_codec")
+        result_codec = _command_payload_codec(codec)
+        history = task.get("history_events", [])
+
+        cls = self.workflows.get(wf_type)
+        if cls is None:
+            await self._fail_query_task(
+                query_task_id,
+                attempt,
+                f"no workflow registered for type {wf_type!r}",
+                reason="query_workflow_type_not_registered",
+                failure_type="WorkflowTypeNotRegistered",
+            )
+            return "failed"
+
+        try:
+            start_input = self._decode_list_payload(
+                task.get("workflow_arguments"),
+                codec=codec,
+                context="workflow query start input",
+            )
+            query_args = self._decode_list_payload(
+                task.get("query_arguments"),
+                codec=codec,
+                context="workflow query arguments",
+            )
+            result = query_state(
+                cls,
+                history,
+                start_input,
+                query_name,
+                query_args,
+                run_id=task.get("run_id", ""),
+                payload_codec=codec,
+            )
+        except AvroNotInstalledError as e:
+            await self._fail_query_task(
+                query_task_id,
+                attempt,
+                (
+                    "cannot execute query with codec 'avro': "
+                    f"{e}. Reinstall durable-workflow with its runtime dependencies."
+                ),
+                reason="query_payload_decode_failed",
+                failure_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
+            )
+            return "failed"
+        except QueryFailed as e:
+            reason = "rejected_unknown_query" if "unknown query" in str(e) else "query_rejected"
+            await self._fail_query_task(
+                query_task_id,
+                attempt,
+                str(e),
+                reason=reason,
+                failure_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
+            )
+            return "failed"
+        except Exception as e:
+            await self._fail_query_task(
+                query_task_id,
+                attempt,
+                str(e) or "query execution failed",
+                reason="query_rejected",
+                failure_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
+            )
+            return "failed"
+
+        await self.client.complete_query_task(
+            query_task_id=query_task_id,
+            lease_owner=self.worker_id,
+            query_task_attempt=attempt,
+            result=result,
+            codec=result_codec,
+        )
+        return "completed"
+
+    def _decode_list_payload(self, raw: Any, *, codec: Any, context: str) -> list[Any]:
+        try:
+            decoded = serializer.decode_envelope(raw, codec=codec)
+        except Exception:
+            log.exception("%s decode failed", context)
+            raise
+
+        if decoded is None:
+            return []
+        return decoded if isinstance(decoded, list) else [decoded]
+
+    async def _fail_query_task(
+        self,
+        query_task_id: str,
+        attempt: int,
+        message: str,
+        *,
+        reason: str,
+        failure_type: str | None = None,
+        stack_trace: str | None = None,
+    ) -> None:
+        try:
+            await self.client.fail_query_task(
+                query_task_id=query_task_id,
+                lease_owner=self.worker_id,
+                query_task_attempt=attempt,
+                message=message,
+                reason=reason,
+                failure_type=failure_type,
+                stack_trace=stack_trace,
+            )
+        except Exception as e:
+            log.warning("failed to report query task failure %s: %s", query_task_id, e)
+
     def _track(self, coro: Any) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)
         self._in_flight.add(task)
@@ -580,13 +708,47 @@ class Worker:
             self._record_task_metrics("activity", outcome, time.perf_counter() - task_start)
             self._act_semaphore.release()
 
+    async def _poll_query_tasks(self) -> None:
+        while not self._stop.is_set():
+            try:
+                poll_start = time.perf_counter()
+                task = await self.client.poll_query_task(
+                    worker_id=self.worker_id,
+                    task_queue=self.task_queue,
+                    timeout=self._poll_timeout,
+                )
+            except Exception as e:
+                self._record_poll_metrics("query", "error", time.perf_counter() - poll_start)
+                log.warning("query poll error: %s", e)
+                await asyncio.sleep(1.0)
+                continue
+            if task is None:
+                self._record_poll_metrics("query", "empty", time.perf_counter() - poll_start)
+                await asyncio.sleep(0)
+                continue
+            self._record_poll_metrics("query", "task", time.perf_counter() - poll_start)
+            self._track(self._dispatch_query_task(task))
+
+    async def _dispatch_query_task(self, task: dict[str, Any]) -> None:
+        task_start = time.perf_counter()
+        outcome = "error"
+        try:
+            outcome = await self._run_query_task(task)
+        except Exception:
+            log.exception("unhandled error in query task execution")
+        finally:
+            self._record_task_metrics("query", outcome, time.perf_counter() - task_start)
+
     async def run(self) -> None:
         """Register the worker and poll until `stop()` is called or the task is cancelled."""
         await self._register()
         wf_loop = asyncio.create_task(self._poll_workflow_tasks())
         act_loop = asyncio.create_task(self._poll_activity_tasks())
+        loops = [wf_loop, act_loop]
+        if self._query_tasks_supported:
+            loops.append(asyncio.create_task(self._poll_query_tasks()))
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.gather(wf_loop, act_loop)
+            await asyncio.gather(*loops)
 
     async def run_until(
         self,

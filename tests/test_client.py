@@ -209,8 +209,35 @@ class TestQueryWorkflow:
             await client.query_workflow("wf-1", "status")
 
     @pytest.mark.asyncio
+    async def test_worker_routed_unknown_query_raises_query_failed(self, client: Client) -> None:
+        resp = _mock_response(404, {"reason": "rejected_unknown_query", "message": "unknown query 'status'"})
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(QueryFailed),
+        ):
+            await client.query_workflow("wf-1", "status")
+
+    @pytest.mark.asyncio
     async def test_query_rejected(self, client: Client) -> None:
         resp = _mock_response(409, {"reason": "query_rejected", "message": "workflow unavailable"})
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(QueryFailed),
+        ):
+            await client.query_workflow("wf-1", "status")
+
+    @pytest.mark.asyncio
+    async def test_worker_routed_query_unavailable_raises_query_failed(self, client: Client) -> None:
+        resp = _mock_response(409, {"reason": "query_worker_unavailable", "message": "no worker"})
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(QueryFailed),
+        ):
+            await client.query_workflow("wf-1", "status")
+
+    @pytest.mark.asyncio
+    async def test_worker_routed_query_timeout_raises_query_failed(self, client: Client) -> None:
+        resp = _mock_response(504, {"reason": "query_worker_timeout", "message": "timed out"})
         with (
             patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
             pytest.raises(QueryFailed),
@@ -475,6 +502,56 @@ class TestRegisterWorker:
             )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["sdk_version"] == "custom-runtime/9.9.9"
+
+
+class TestQueryTasks:
+    @pytest.mark.asyncio
+    async def test_poll_query_task_returns_task_payload(self, client: Client) -> None:
+        resp = _mock_response(200, {"task": {"query_task_id": "qt1"}})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            task = await client.poll_query_task(worker_id="w1", task_queue="q1", timeout=5.0)
+
+            assert task == {"query_task_id": "qt1"}
+            assert mock.call_args.args[:2] == ("POST", "/api/worker/query-tasks/poll")
+
+    @pytest.mark.asyncio
+    async def test_complete_query_task_sends_result_and_envelope(self, client: Client) -> None:
+        resp = _mock_response(200, {"outcome": "completed"})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.complete_query_task(
+                query_task_id="qt1",
+                lease_owner="w1",
+                query_task_attempt=2,
+                result={"ok": True},
+                codec="json",
+            )
+
+            assert result["outcome"] == "completed"
+            body = mock.call_args.kwargs["json"]
+            assert body["lease_owner"] == "w1"
+            assert body["query_task_attempt"] == 2
+            assert body["result"] == {"ok": True}
+            assert body["result_envelope"] == {"codec": "json", "blob": '{"ok":true}'}
+
+    @pytest.mark.asyncio
+    async def test_fail_query_task_sends_failure_reason(self, client: Client) -> None:
+        resp = _mock_response(200, {"outcome": "failed"})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.fail_query_task(
+                query_task_id="qt1",
+                lease_owner="w1",
+                query_task_attempt=3,
+                message="unknown query",
+                reason="rejected_unknown_query",
+                failure_type="QueryFailed",
+            )
+
+            body = mock.call_args.kwargs["json"]
+            assert body["failure"] == {
+                "message": "unknown query",
+                "reason": "rejected_unknown_query",
+                "type": "QueryFailed",
+            }
 
 
 class TestGetClusterInfo:

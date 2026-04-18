@@ -4,7 +4,8 @@ The :class:`Client` wraps the server's HTTP/JSON protocol. Control-plane
 methods (``start_workflow``, ``signal_workflow``, ``describe_workflow``,
 schedule management, …) are what callers use to drive workflows from outside.
 Worker-plane methods (``register_worker``, ``poll_workflow_task``,
-``complete_activity_task``, …) are what the :class:`~durable_workflow.Worker`
+``poll_query_task``, ``complete_activity_task``, …) are what the
+:class:`~durable_workflow.Worker`
 uses to run tasks; they are public so advanced users can build custom
 workers, but most applications should not call them directly.
 
@@ -68,7 +69,9 @@ def _route_for_metrics(path: str) -> str:
     elif parts[0] == "schedules" and len(parts) >= 2:
         parts[1] = "{schedule_id}"
     elif (
-        parts[:2] == ["worker", "workflow-tasks"] or parts[:2] == ["worker", "activity-tasks"]
+        parts[:2] == ["worker", "workflow-tasks"]
+        or parts[:2] == ["worker", "activity-tasks"]
+        or parts[:2] == ["worker", "query-tasks"]
     ) and len(parts) >= 3:
         parts[2] = "{task_id}"
 
@@ -1087,6 +1090,69 @@ class Client:
         }
         return await self._request(
             "POST", f"/worker/workflow-tasks/{task_id}/history", worker=True, json=body
+        )
+
+    async def poll_query_task(
+        self, *, worker_id: str, task_queue: str, timeout: float = 35.0
+    ) -> Any:
+        """Long-poll for the next workflow query task on ``task_queue``.
+
+        Query tasks are ephemeral worker-plane requests created when the server
+        must route a control-plane query to a non-PHP workflow runtime.
+        """
+        body: dict[str, Any] = {"worker_id": worker_id, "task_queue": task_queue}
+        try:
+            data = await self._request(
+                "POST", "/worker/query-tasks/poll", worker=True, json=body, timeout=timeout
+            )
+        except httpx.TimeoutException:
+            return None
+        return (data or {}).get("task")
+
+    async def complete_query_task(
+        self,
+        *,
+        query_task_id: str,
+        lease_owner: str,
+        query_task_attempt: int,
+        result: Any,
+        codec: str = serializer.AVRO_CODEC,
+    ) -> Any:
+        """Submit the successful result for a worker-routed query task."""
+        body: dict[str, Any] = {
+            "lease_owner": lease_owner,
+            "query_task_attempt": query_task_attempt,
+            "result": result,
+            "result_envelope": serializer.envelope(result, codec=codec),
+        }
+        return await self._request(
+            "POST", f"/worker/query-tasks/{query_task_id}/complete", worker=True, json=body
+        )
+
+    async def fail_query_task(
+        self,
+        *,
+        query_task_id: str,
+        lease_owner: str,
+        query_task_attempt: int,
+        message: str,
+        reason: str = "query_rejected",
+        failure_type: str | None = None,
+        stack_trace: str | None = None,
+    ) -> Any:
+        """Report a failed worker-routed query task."""
+        failure: dict[str, Any] = {"message": message, "reason": reason}
+        if failure_type is not None:
+            failure["type"] = failure_type
+        if stack_trace is not None:
+            failure["stack_trace"] = stack_trace
+        body: dict[str, Any] = {
+            "lease_owner": lease_owner,
+            "query_task_attempt": query_task_attempt,
+            "failure": failure,
+        }
+        return await self._request(
+            "POST", f"/worker/query-tasks/{query_task_id}/fail", worker=True, json=body
         )
 
     async def poll_activity_task(
