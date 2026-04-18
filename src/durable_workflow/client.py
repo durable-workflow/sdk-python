@@ -915,6 +915,8 @@ class Client:
         failure_type: str | None = None,
         stack_trace: str | None = None,
         non_retryable: bool = False,
+        details: Any | None = None,
+        codec: str = serializer.AVRO_CODEC,
     ) -> Any:
         failure: dict[str, Any] = {"message": message}
         if failure_type is not None:
@@ -923,6 +925,8 @@ class Client:
             failure["stack_trace"] = stack_trace
         if non_retryable:
             failure["non_retryable"] = True
+        if details is not None:
+            failure["details"] = serializer.envelope(details, codec=codec)
         body: dict[str, Any] = {
             "activity_attempt_id": activity_attempt_id,
             "lease_owner": lease_owner,

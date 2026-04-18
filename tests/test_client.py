@@ -300,6 +300,24 @@ class TestFailActivityTask:
             assert body["failure"]["message"] == "activity error"
             assert body["failure"]["non_retryable"] is True
 
+    @pytest.mark.asyncio
+    async def test_details_are_sent_as_payload_envelope(self, client: Client) -> None:
+        resp = _mock_response(200, {"task_id": "t1", "outcome": "failed"})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.fail_activity_task(
+                task_id="t1",
+                activity_attempt_id="a1",
+                lease_owner="w1",
+                message="activity error",
+                details={"retry_after": 30},
+                codec=serializer.JSON_CODEC,
+            )
+            body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
+            envelope = body["failure"]["details"]
+
+            assert envelope["codec"] == serializer.JSON_CODEC
+            assert serializer.decode_envelope(envelope) == {"retry_after": 30}
+
 
 class TestHeartbeatActivityTask:
     @pytest.mark.asyncio
