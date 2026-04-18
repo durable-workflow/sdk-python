@@ -34,12 +34,55 @@ _REGISTRY: dict[str, type] = {}
 
 
 def defn(*, name: str):  # type: ignore[no-untyped-def]
-    """Register a class as a workflow type under a language-neutral name."""
+    """Register a class as a workflow type under a language-neutral name.
+
+    Scans the class for ``@signal``-decorated methods and builds a signal
+    registry at decoration time so the replayer can dispatch incoming
+    signals without re-inspecting the class on every history event.
+    """
 
     def wrap(cls: type) -> type:
         cls.__workflow_name__ = name  # type: ignore[attr-defined]
+        signals: dict[str, str] = {}
+        for attr in dir(cls):
+            if attr.startswith("_"):
+                continue
+            member = getattr(cls, attr, None)
+            signal_name = getattr(member, "__signal_name__", None)
+            if isinstance(signal_name, str) and signal_name:
+                signals[signal_name] = attr
+        cls.__workflow_signals__ = signals  # type: ignore[attr-defined]
         _REGISTRY[name] = cls
         return cls
+
+    return wrap
+
+
+def signal(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Mark a workflow method as the handler for an external signal.
+
+    Example::
+
+        @workflow.defn(name="approval")
+        class ApprovalWorkflow:
+            def __init__(self) -> None:
+                self.approved: bool = False
+
+            @workflow.signal("approve")
+            def on_approve(self, by: str) -> None:
+                self.approved = True
+
+    The decorated method is called by the replayer when a matching
+    ``SignalReceived`` history event is observed, with the signal's
+    decoded arguments unpacked into positional parameters. Handler return
+    values are ignored; to expose state back to the workflow's main run
+    loop, mutate ``self.*`` attributes (as ``on_approve`` does above) and
+    yield the usual commands from ``run()``.
+    """
+
+    def wrap(method: Callable[..., Any]) -> Callable[..., Any]:
+        method.__signal_name__ = name  # type: ignore[attr-defined]
+        return method
 
     return wrap
 
@@ -428,6 +471,21 @@ def _decode_history_result(payload: dict[str, Any], fallback_codec: str | None) 
     return serializer.decode_envelope(payload.get("result"), codec=codec)
 
 
+def _decode_signal_args(payload: dict[str, Any], fallback_codec: str | None) -> list[Any]:
+    codec = payload.get("payload_codec") or fallback_codec
+    raw = payload.get("value")
+    if raw is None:
+        raw = payload.get("input")
+    if raw is None:
+        raw = payload.get("arguments")
+    if raw is None:
+        return []
+    decoded = serializer.decode_envelope(raw, codec=codec)
+    if isinstance(decoded, list):
+        return decoded
+    return [decoded]
+
+
 def replay(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
@@ -452,6 +510,10 @@ def replay(
     ctx = WorkflowContext(run_id=run_id, current_time=workflow_start_time)
 
     resolved_results: list[Any] = []
+    # (resolved_result_index_before_apply, signal_name, decoded_args) —
+    # signals apply before the generator consumes the resolved_result at the
+    # stored index, which preserves history interleaving with activities.
+    pending_signals: list[tuple[int, str, list[Any]]] = []
     for ev in events:
         etype = ev.get("event_type")
         payload = ev.get("payload") or {}
@@ -472,6 +534,26 @@ def replay(
             resolved_results.append(payload.get("version", 0))
         elif etype in ("SearchAttributesUpserted", "search_attributes_upserted"):
             resolved_results.append(None)
+        elif etype in ("SignalReceived", "signal_received"):
+            signal_name = payload.get("signal_name")
+            if isinstance(signal_name, str) and signal_name:
+                pending_signals.append(
+                    (len(resolved_results), signal_name, _decode_signal_args(payload, payload_codec))
+                )
+
+    signal_registry: dict[str, str] = getattr(workflow_cls, "__workflow_signals__", {}) or {}
+
+    def _apply_due_signals() -> None:
+        while pending_signals and pending_signals[0][0] <= result_cursor:
+            _, name, args = pending_signals.pop(0)
+            method_name = signal_registry.get(name)
+            if method_name is None:
+                continue
+            handler = getattr(instance, method_name, None)
+            if handler is None:
+                continue
+            ctx.logger._set_replaying(True)
+            handler(*args)
 
     gen = instance.run(ctx, *start_input)
     if not hasattr(gen, "__next__"):
@@ -488,6 +570,7 @@ def replay(
     advanced_cmd: Any = None
     try:
         while True:
+            _apply_due_signals()
             if advanced_cmd is not None:
                 cmd = advanced_cmd
                 advanced_cmd = None
