@@ -60,6 +60,8 @@ def _route_for_metrics(path: str) -> str:
 
 @dataclass
 class WorkflowExecution:
+    """Current server view of one workflow execution."""
+
     workflow_id: str
     run_id: str | None
     workflow_type: str
@@ -73,12 +75,16 @@ class WorkflowExecution:
 
 @dataclass
 class WorkflowList:
+    """One page of workflow visibility results."""
+
     executions: list[WorkflowExecution]
     next_page_token: str | None = None
 
 
 @dataclass
 class ScheduleSpec:
+    """Calendar or interval rules for a scheduled workflow."""
+
     cron_expressions: list[str] | None = None
     intervals: list[dict[str, str]] | None = None
     timezone: str | None = None
@@ -96,6 +102,8 @@ class ScheduleSpec:
 
 @dataclass
 class ScheduleAction:
+    """Workflow start request issued whenever a schedule fires."""
+
     workflow_type: str
     task_queue: str | None = None
     input: list[Any] | None = None
@@ -117,6 +125,8 @@ class ScheduleAction:
 
 @dataclass
 class ScheduleDescription:
+    """Current server view of a schedule and its recent execution state."""
+
     schedule_id: str
     status: str | None = None
     spec: dict[str, Any] | None = None
@@ -141,12 +151,16 @@ class ScheduleDescription:
 
 @dataclass
 class ScheduleList:
+    """One page of schedule visibility results."""
+
     schedules: list[ScheduleDescription]
     next_page_token: str | None = None
 
 
 @dataclass
 class ScheduleTriggerResult:
+    """Outcome returned after manually triggering a schedule."""
+
     schedule_id: str
     outcome: str
     workflow_id: str | None = None
@@ -157,6 +171,8 @@ class ScheduleTriggerResult:
 
 @dataclass
 class ScheduleBackfillResult:
+    """Outcome returned after asking a schedule to backfill missed fires."""
+
     schedule_id: str
     outcome: str
     fires_attempted: int = 0
@@ -164,6 +180,8 @@ class ScheduleBackfillResult:
 
 
 class WorkflowHandle:
+    """Convenience wrapper for operating on one workflow ID."""
+
     def __init__(self, client: Client, workflow_id: str, run_id: str | None = None, workflow_type: str = "") -> None:
         self._client = client
         self.workflow_id = workflow_id
@@ -208,6 +226,8 @@ class WorkflowHandle:
 
 
 class ScheduleHandle:
+    """Convenience wrapper for operating on one schedule ID."""
+
     def __init__(self, client: Client, schedule_id: str) -> None:
         self._client = client
         self.schedule_id = schedule_id
@@ -264,7 +284,11 @@ class ScheduleHandle:
 
 
 class Client:
-    """HTTP client for the Durable Workflow server."""
+    """Async HTTP client for Durable Workflow control-plane and worker APIs.
+
+    The client owns one `httpx.AsyncClient` connection pool. Use it as an async
+    context manager or call `aclose()` when finished.
+    """
 
     def __init__(
         self,

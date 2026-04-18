@@ -113,6 +113,8 @@ def _contract_version_matches(value: Any, expected: int) -> bool:
 
 
 class Worker:
+    """Polls workflow and activity tasks and dispatches them to Python callables."""
+
     def __init__(
         self,
         client: Client,
@@ -533,6 +535,7 @@ class Worker:
             self._act_semaphore.release()
 
     async def run(self) -> None:
+        """Register the worker and poll until `stop()` is called or the task is cancelled."""
         await self._register()
         wf_loop = asyncio.create_task(self._poll_workflow_tasks())
         act_loop = asyncio.create_task(self._poll_activity_tasks())
@@ -626,6 +629,7 @@ class Worker:
             await self.stop()
 
     async def stop(self) -> None:
+        """Stop polling and drain in-flight tasks up to the configured shutdown timeout."""
         self._stop.set()
         if self._in_flight:
             log.info("draining %d in-flight task(s)…", len(self._in_flight))

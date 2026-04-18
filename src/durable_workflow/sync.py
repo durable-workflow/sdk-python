@@ -36,6 +36,8 @@ def _run(coro: Any) -> Any:
 
 
 class SyncWorkflowHandle:
+    """Blocking wrapper around an async workflow handle."""
+
     def __init__(self, async_handle: WorkflowHandle) -> None:
         self._handle = async_handle
         self.workflow_id = async_handle.workflow_id
@@ -79,6 +81,8 @@ class SyncWorkflowHandle:
 
 
 class SyncScheduleHandle:
+    """Blocking wrapper around an async schedule handle."""
+
     def __init__(self, async_handle: ScheduleHandle) -> None:
         self._handle = async_handle
         self.schedule_id = async_handle.schedule_id
@@ -132,7 +136,12 @@ class SyncScheduleHandle:
 
 
 class Client:
-    """Blocking wrapper around the async Client. Each call opens and closes its own event loop."""
+    """Blocking wrapper around the async client.
+
+    Each call opens and closes its own event loop, so this facade is best for
+    scripts, notebooks, and command-line tools rather than high-throughput
+    services.
+    """
 
     def __init__(
         self,

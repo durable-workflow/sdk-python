@@ -48,7 +48,7 @@ prometheus = [
 
 [project.urls]
 Homepage = "https://github.com/durable-workflow/sdk-python"
-Documentation = "https://durable-workflow.github.io/docs/2.0/sdks/python/"
+Documentation = "https://durable-workflow.github.io/docs/2.0/polyglot/python"
 Repository = "https://github.com/durable-workflow/sdk-python"
 Issues = "https://github.com/zorporation/durable-workflow/issues"
 

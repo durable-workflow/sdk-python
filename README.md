@@ -106,15 +106,11 @@ Custom recorders implement `increment(name, value=1.0, tags=None)` and `record(n
 
 ## Documentation
 
-Full documentation is available at [durable-workflow.github.io/docs/2.0/sdks/python/](https://durable-workflow.github.io/docs/2.0/sdks/python/):
+Full documentation is available at
+[durable-workflow.github.io/docs/2.0/polyglot/python](https://durable-workflow.github.io/docs/2.0/polyglot/python):
 
-- [Quickstart](https://durable-workflow.github.io/docs/2.0/sdks/python/quickstart)
-- [Client API](https://durable-workflow.github.io/docs/2.0/sdks/python/client)
-- [Workflow Authoring](https://durable-workflow.github.io/docs/2.0/sdks/python/workflows)
-- [Activity Authoring](https://durable-workflow.github.io/docs/2.0/sdks/python/activities)
-- [Worker Configuration](https://durable-workflow.github.io/docs/2.0/sdks/python/workers)
-- [Error Handling](https://durable-workflow.github.io/docs/2.0/sdks/python/errors)
-- [Schedules (Cron)](https://durable-workflow.github.io/docs/2.0/sdks/python/schedules)
+- [Python SDK guide](https://durable-workflow.github.io/docs/2.0/polyglot/python)
+- [API reference](https://durable-workflow.github.io/docs/2.0/polyglot/python-api-reference)
 
 ## Requirements
 
@@ -151,6 +147,10 @@ mypy src/durable_workflow/
 
 # Lint
 ruff check src/ tests/
+
+# Regenerate the docs-site API reference
+python scripts/generate-api-reference.py \
+  --output ../durable-workflow.github.io/docs/polyglot/python-api-reference.md
 ```
 
 ## License

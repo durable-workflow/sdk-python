@@ -20,6 +20,8 @@ _current_context: contextvars.ContextVar[ActivityContext | None] = contextvars.C
 
 @dataclass(frozen=True)
 class ActivityInfo:
+    """Metadata attached to the currently running activity attempt."""
+
     task_id: str
     activity_type: str
     activity_attempt_id: str
@@ -29,6 +31,8 @@ class ActivityInfo:
 
 
 class ActivityContext:
+    """Per-attempt activity context exposed by :func:`durable_workflow.activity.context`."""
+
     def __init__(
         self,
         *,
@@ -60,6 +64,7 @@ class ActivityContext:
 
 
 def context() -> ActivityContext:
+    """Return the current activity attempt context."""
     ctx = _current_context.get()
     if ctx is None:
         raise RuntimeError("activity.context() called outside of an activity execution")
@@ -71,6 +76,8 @@ def _set_context(ctx: ActivityContext | None) -> contextvars.Token[ActivityConte
 
 
 def defn(*, name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Register a callable as an activity type under a language-neutral name."""
+
     def wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
         fn.__activity_name__ = name  # type: ignore[attr-defined]
         _REGISTRY[name] = fn
@@ -80,4 +87,5 @@ def defn(*, name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
 
 
 def registry() -> dict[str, Callable[..., Any]]:
+    """Return a copy of activity callables registered in this process."""
     return dict(_REGISTRY)

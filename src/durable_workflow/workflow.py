@@ -17,6 +17,8 @@ _REGISTRY: dict[str, type] = {}
 
 
 def defn(*, name: str):  # type: ignore[no-untyped-def]
+    """Register a class as a workflow type under a language-neutral name."""
+
     def wrap(cls: type) -> type:
         cls.__workflow_name__ = name  # type: ignore[attr-defined]
         _REGISTRY[name] = cls
@@ -26,12 +28,15 @@ def defn(*, name: str):  # type: ignore[no-untyped-def]
 
 
 def registry() -> dict[str, type]:
+    """Return a copy of workflow types registered in this process."""
     return dict(_REGISTRY)
 
 
 # ── Commands yielded from a workflow ──────────────────────────────────
 @dataclass
 class ScheduleActivity:
+    """Command requesting an activity task."""
+
     activity_type: str
     arguments: list[Any]
     queue: str | None = None
@@ -49,6 +54,8 @@ class ScheduleActivity:
 
 @dataclass
 class StartTimer:
+    """Command requesting a durable timer."""
+
     delay_seconds: int
 
     def to_server_command(
@@ -62,6 +69,8 @@ class StartTimer:
 
 @dataclass
 class CompleteWorkflow:
+    """Command completing a workflow with a payload result."""
+
     result: Any
 
     def to_server_command(
@@ -75,6 +84,8 @@ class CompleteWorkflow:
 
 @dataclass
 class FailWorkflow:
+    """Command failing a workflow with diagnostic metadata."""
+
     message: str
     exception_type: str | None = None
     non_retryable: bool = False
@@ -95,6 +106,8 @@ class FailWorkflow:
 
 @dataclass
 class ContinueAsNew:
+    """Workflow return value that starts a new run with fresh history."""
+
     workflow_type: str | None = None
     arguments: list[Any] = field(default_factory=list)
     task_queue: str | None = None
@@ -112,6 +125,8 @@ class ContinueAsNew:
 
 @dataclass
 class RecordSideEffect:
+    """Command recording the result of a non-deterministic function."""
+
     result: Any
 
     def to_server_command(
@@ -125,6 +140,8 @@ class RecordSideEffect:
 
 @dataclass
 class StartChildWorkflow:
+    """Command requesting a child workflow run."""
+
     workflow_type: str
     arguments: list[Any] = field(default_factory=list)
     task_queue: str | None = None
@@ -149,6 +166,8 @@ class StartChildWorkflow:
 
 @dataclass
 class RecordVersionMarker:
+    """Command recording a workflow code-version marker."""
+
     change_id: str
     version: int
     min_supported: int
@@ -168,6 +187,8 @@ class RecordVersionMarker:
 
 @dataclass
 class UpsertSearchAttributes:
+    """Command updating workflow search attributes."""
+
     attributes: dict[str, Any]
 
     def to_server_command(
@@ -219,6 +240,8 @@ class _ReplayLogger:
 
 
 class WorkflowContext:
+    """Replay-safe helper surface passed to workflow ``run`` methods."""
+
     def __init__(self, *, run_id: str = "", current_time: datetime | None = None) -> None:
         self._run_id = run_id
         self._current_time = current_time or datetime.now(timezone.utc)
