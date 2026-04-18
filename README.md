@@ -109,8 +109,8 @@ Custom recorders implement `increment(name, value=1.0, tags=None)` and `record(n
 Full documentation is available at
 [durable-workflow.github.io/docs/2.0/polyglot/python](https://durable-workflow.github.io/docs/2.0/polyglot/python):
 
-- [Python SDK guide](https://durable-workflow.github.io/docs/2.0/polyglot/python)
-- [API reference](https://durable-workflow.github.io/docs/2.0/polyglot/python-api-reference)
+- [Python SDK guide](https://durable-workflow.com/docs/2.0/polyglot/python)
+- [API reference](https://python.durable-workflow.com/)
 
 ## Requirements
 
