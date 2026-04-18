@@ -206,21 +206,27 @@ class WorkflowHandle:
         self.workflow_type = workflow_type
 
     async def result(self, *, poll_interval: float = 0.5, timeout: float = 30.0) -> Any:
+        """Block until this workflow terminates and return its result. See :meth:`Client.get_result`."""
         return await self._client.get_result(self, poll_interval=poll_interval, timeout=timeout)
 
     async def describe(self) -> WorkflowExecution:
+        """Return the server's current view of this workflow. See :meth:`Client.describe_workflow`."""
         return await self._client.describe_workflow(self.workflow_id)
 
     async def signal(self, signal_name: str, args: list[Any] | None = None) -> None:
+        """Deliver an external signal to this workflow. See :meth:`Client.signal_workflow`."""
         await self._client.signal_workflow(self.workflow_id, signal_name, args=args)
 
     async def query(self, query_name: str, args: list[Any] | None = None) -> Any:
+        """Execute a read-only query against this workflow. See :meth:`Client.query_workflow`."""
         return await self._client.query_workflow(self.workflow_id, query_name, args=args)
 
     async def cancel(self, *, reason: str | None = None) -> None:
+        """Request graceful cancellation of this workflow. See :meth:`Client.cancel_workflow`."""
         await self._client.cancel_workflow(self.workflow_id, reason=reason)
 
     async def terminate(self, *, reason: str | None = None) -> None:
+        """Forcefully stop this workflow. See :meth:`Client.terminate_workflow`."""
         await self._client.terminate_workflow(self.workflow_id, reason=reason)
 
     async def update(
@@ -232,6 +238,7 @@ class WorkflowHandle:
         wait_timeout_seconds: int | None = None,
         request_id: str | None = None,
     ) -> Any:
+        """Send a synchronous update to this workflow and wait for the result. See :meth:`Client.update_workflow`."""
         return await self._client.update_workflow(
             self.workflow_id,
             update_name,
@@ -250,6 +257,7 @@ class ScheduleHandle:
         self.schedule_id = schedule_id
 
     async def describe(self) -> ScheduleDescription:
+        """Return the server's current view of this schedule. See :meth:`Client.describe_schedule`."""
         return await self._client.describe_schedule(self.schedule_id)
 
     async def update(
@@ -264,6 +272,7 @@ class ScheduleHandle:
         search_attributes: dict[str, Any] | None = None,
         note: str | None = None,
     ) -> None:
+        """Update one or more fields of this schedule. See :meth:`Client.update_schedule`."""
         await self._client.update_schedule(
             self.schedule_id,
             spec=spec,
@@ -277,15 +286,19 @@ class ScheduleHandle:
         )
 
     async def pause(self, *, note: str | None = None) -> None:
+        """Pause this schedule so it stops firing. See :meth:`Client.pause_schedule`."""
         await self._client.pause_schedule(self.schedule_id, note=note)
 
     async def resume(self, *, note: str | None = None) -> None:
+        """Resume this paused schedule. See :meth:`Client.resume_schedule`."""
         await self._client.resume_schedule(self.schedule_id, note=note)
 
     async def trigger(self, *, overlap_policy: str | None = None) -> ScheduleTriggerResult:
+        """Fire this schedule immediately. See :meth:`Client.trigger_schedule`."""
         return await self._client.trigger_schedule(self.schedule_id, overlap_policy=overlap_policy)
 
     async def delete(self) -> None:
+        """Delete this schedule. See :meth:`Client.delete_schedule`."""
         await self._client.delete_schedule(self.schedule_id)
 
     async def backfill(
@@ -295,6 +308,7 @@ class ScheduleHandle:
         end_time: str,
         overlap_policy: str | None = None,
     ) -> ScheduleBackfillResult:
+        """Fire this schedule for every moment in a past time range. See :meth:`Client.backfill_schedule`."""
         return await self._client.backfill_schedule(
             self.schedule_id, start_time=start_time, end_time=end_time, overlap_policy=overlap_policy,
         )
@@ -329,6 +343,11 @@ class Client:
         self._http = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
 
     async def aclose(self) -> None:
+        """Close the underlying ``httpx`` connection pool.
+
+        Equivalent to exiting the async-context-manager form of the client.
+        Safe to call multiple times.
+        """
         await self._http.aclose()
 
     async def __aenter__(self) -> Client:
@@ -431,10 +450,18 @@ class Client:
     def get_workflow_handle(
         self, workflow_id: str, *, run_id: str | None = None, workflow_type: str = ""
     ) -> WorkflowHandle:
+        """Return a :class:`WorkflowHandle` bound to an existing workflow instance.
+
+        Does not round-trip to the server. Pass ``run_id`` to pin the handle to
+        a specific run, otherwise the handle resolves to whichever run is
+        current at the time each method is called. ``workflow_type`` is
+        optional and used only in error messages.
+        """
         return WorkflowHandle(self, workflow_id=workflow_id, run_id=run_id, workflow_type=workflow_type)
 
     # ── Health ─────────────────────────────────────────────────────────
     async def health(self) -> dict[str, Any]:
+        """Call the server's ``/health`` endpoint and return the JSON response."""
         result = await self._request("GET", "/health")
         if not isinstance(result, dict):
             raise ServerError(
@@ -457,6 +484,24 @@ class Client:
         memo: dict[str, Any] | None = None,
         search_attributes: dict[str, Any] | None = None,
     ) -> WorkflowHandle:
+        """Start a new workflow instance and return a handle bound to it.
+
+        ``workflow_type`` is the language-neutral type key registered via
+        :func:`durable_workflow.workflow.defn`. ``task_queue`` selects which
+        worker pool picks up the workflow. ``workflow_id`` is the
+        caller-supplied instance id — if it collides with an existing
+        workflow, behavior depends on ``duplicate_policy``
+        (``reject`` | ``allow`` | ``terminate_existing``).
+
+        ``input`` is a list of positional arguments passed to the workflow's
+        ``run`` method; the SDK encodes the list with the default payload
+        codec (Avro). ``execution_timeout_seconds`` covers the entire workflow
+        execution across all runs (including continue-as-new), while
+        ``run_timeout_seconds`` applies to this single run only.
+
+        ``memo`` and ``search_attributes`` attach operator-facing metadata to
+        the instance; see the main docs site for the key/value rules.
+        """
         body: dict[str, Any] = {
             "workflow_id": workflow_id,
             "workflow_type": workflow_type,
@@ -480,6 +525,12 @@ class Client:
         )
 
     async def describe_workflow(self, workflow_id: str) -> WorkflowExecution:
+        """Return the server's current view of a workflow instance.
+
+        Resolves to the newest durable run in the instance's chain (including
+        any continue-as-new runs). Decodes the recorded ``input`` and
+        ``output`` envelopes when present.
+        """
         data = await self._request("GET", f"/workflows/{workflow_id}", context=workflow_id)
         input_val = None
         output_val = None
@@ -512,6 +563,12 @@ class Client:
         page_size: int | None = None,
         next_page_token: str | None = None,
     ) -> WorkflowList:
+        """Page through workflow instances, optionally filtered by type, status, or query string.
+
+        Pass the returned :attr:`WorkflowList.next_page_token` as
+        ``next_page_token`` on the next call to fetch the following page; the
+        token is ``None`` when there are no more pages.
+        """
         params: dict[str, str] = {}
         if workflow_type is not None:
             params["workflow_type"] = workflow_type
@@ -543,6 +600,7 @@ class Client:
         )
 
     async def get_history(self, workflow_id: str, run_id: str) -> Any:
+        """Fetch the full durable history for one specific run of a workflow."""
         return await self._request(
             "GET", f"/workflows/{workflow_id}/runs/{run_id}/history", context=workflow_id
         )
@@ -550,6 +608,13 @@ class Client:
     async def signal_workflow(
         self, workflow_id: str, signal_name: str, *, args: list[Any] | None = None
     ) -> None:
+        """Deliver an external signal to a running workflow.
+
+        Signals are fire-and-forget: the server records the signal in durable
+        history and returns immediately. They do not wait for the workflow to
+        observe the signal. See the main docs for how to declare the allowed
+        signal names on a workflow type.
+        """
         body: dict[str, Any] = {}
         if args:
             body["input"] = serializer.envelope(args)
@@ -558,6 +623,13 @@ class Client:
     async def query_workflow(
         self, workflow_id: str, query_name: str, *, args: list[Any] | None = None
     ) -> Any:
+        """Execute a named read-only query against a workflow and return the result.
+
+        Queries are synchronous and non-mutating. The server runs the named
+        query handler inside the workflow process and returns the decoded
+        result. Raises :class:`~durable_workflow.errors.QueryFailed` if the
+        query was rejected or the handler errored.
+        """
         body: dict[str, Any] = {}
         if args:
             body["input"] = serializer.envelope(args)
@@ -566,12 +638,23 @@ class Client:
         )
 
     async def cancel_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
+        """Request graceful cancellation of a workflow's current run.
+
+        Cancellation is cooperative: the server delivers a cancellation signal
+        that the workflow can observe and handle (e.g. to roll back via a
+        saga). Compare with :meth:`terminate_workflow`, which is forceful.
+        """
         body: dict[str, Any] = {}
         if reason is not None:
             body["reason"] = reason
         await self._request("POST", f"/workflows/{workflow_id}/cancel", json=body, context=workflow_id)
 
     async def terminate_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
+        """Forcefully stop a workflow without giving it a chance to clean up.
+
+        Prefer :meth:`cancel_workflow` when the workflow code can implement
+        graceful shutdown. Termination is an operator escape hatch.
+        """
         body: dict[str, Any] = {}
         if reason is not None:
             body["reason"] = reason
@@ -587,6 +670,18 @@ class Client:
         wait_timeout_seconds: int | None = None,
         request_id: str | None = None,
     ) -> Any:
+        """Send a synchronous update to a running workflow and wait for the result.
+
+        Updates are request/response calls to a named handler on the workflow;
+        the handler may mutate durable workflow state and return a value.
+        ``wait_for`` selects how long the server waits before returning —
+        typically ``completed`` to block until the handler finishes, or
+        ``accepted`` to return once the validator has approved it.
+
+        ``request_id`` lets the caller deduplicate retries. Raises
+        :class:`~durable_workflow.errors.UpdateRejected` when the workflow's
+        validator rejects the update.
+        """
         body: dict[str, Any] = {}
         if args:
             body["input"] = serializer.envelope(args)
@@ -607,6 +702,14 @@ class Client:
         poll_interval: float = 0.5,
         timeout: float = 30.0,
     ) -> Any:
+        """Poll a workflow until it reaches a terminal state and return its result.
+
+        Raises :class:`~durable_workflow.errors.WorkflowFailed`,
+        :class:`~durable_workflow.errors.WorkflowCancelled`, or
+        :class:`~durable_workflow.errors.WorkflowTerminated` if the workflow
+        ended in a non-success state, or :class:`TimeoutError` if ``timeout``
+        seconds elapse before the workflow terminates.
+        """
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
             desc = await self.describe_workflow(handle.workflow_id)
@@ -647,6 +750,11 @@ class Client:
 
     # ── Schedules ─────────────────────────────────────────────────────
     def get_schedule_handle(self, schedule_id: str) -> ScheduleHandle:
+        """Return a :class:`ScheduleHandle` bound to an existing schedule.
+
+        Does not round-trip to the server. Use :meth:`describe_schedule` via
+        the handle when you need to verify the schedule actually exists.
+        """
         return ScheduleHandle(self, schedule_id=schedule_id)
 
     async def create_schedule(
@@ -663,6 +771,16 @@ class Client:
         paused: bool = False,
         note: str | None = None,
     ) -> ScheduleHandle:
+        """Create a new schedule and return a handle bound to it.
+
+        ``spec`` describes when the schedule fires (cron expressions,
+        intervals, calendars); ``action`` describes what it starts (typically
+        a workflow). ``overlap_policy`` controls what happens when a fire
+        would overlap an already-running action — ``skip``, ``buffer_one``,
+        ``buffer_all``, ``cancel_other``, or ``terminate_other``. Pass
+        ``paused=True`` to create the schedule in a paused state and resume
+        it later with :meth:`resume_schedule`.
+        """
         body: dict[str, Any] = {
             "spec": spec.to_dict(),
             "action": action.to_dict(),
@@ -688,6 +806,7 @@ class Client:
         return ScheduleHandle(self, schedule_id=sid)
 
     async def list_schedules(self) -> ScheduleList:
+        """Return all schedules in the current namespace."""
         data = await self._request("GET", "/schedules")
         items = data.get("schedules", [])
         schedules = [
@@ -710,6 +829,7 @@ class Client:
         )
 
     async def describe_schedule(self, schedule_id: str) -> ScheduleDescription:
+        """Return the server's current view of a schedule, including status and fire counters."""
         data = await self._request("GET", f"/schedules/{schedule_id}", context=schedule_id)
         return ScheduleDescription(
             schedule_id=data.get("schedule_id", schedule_id),
@@ -747,6 +867,11 @@ class Client:
         search_attributes: dict[str, Any] | None = None,
         note: str | None = None,
     ) -> None:
+        """Update one or more fields of an existing schedule.
+
+        Pass ``None`` for any field you don't want to change. Unknown fields
+        are ignored by the server.
+        """
         body: dict[str, Any] = {}
         if spec is not None:
             body["spec"] = spec.to_dict()
@@ -767,12 +892,18 @@ class Client:
         await self._request("PUT", f"/schedules/{schedule_id}", json=body, context=schedule_id)
 
     async def pause_schedule(self, schedule_id: str, *, note: str | None = None) -> None:
+        """Pause a schedule so it stops firing until resumed.
+
+        Optional ``note`` is recorded as operator metadata on the pause
+        event. Pausing does not cancel workflows that are already running.
+        """
         body: dict[str, Any] = {}
         if note is not None:
             body["note"] = note
         await self._request("POST", f"/schedules/{schedule_id}/pause", json=body, context=schedule_id)
 
     async def resume_schedule(self, schedule_id: str, *, note: str | None = None) -> None:
+        """Resume a paused schedule so it begins firing again."""
         body: dict[str, Any] = {}
         if note is not None:
             body["note"] = note
@@ -781,6 +912,12 @@ class Client:
     async def trigger_schedule(
         self, schedule_id: str, *, overlap_policy: str | None = None
     ) -> ScheduleTriggerResult:
+        """Fire a schedule immediately, outside its normal schedule.
+
+        The ``overlap_policy`` override applies only to this one manual fire.
+        The returned :class:`ScheduleTriggerResult` reports whether the fire
+        was accepted or skipped (e.g. due to overlap).
+        """
         body: dict[str, Any] = {}
         if overlap_policy is not None:
             body["overlap_policy"] = overlap_policy
@@ -797,6 +934,7 @@ class Client:
         )
 
     async def delete_schedule(self, schedule_id: str) -> None:
+        """Delete a schedule. Running workflows the schedule already started are unaffected."""
         await self._request("DELETE", f"/schedules/{schedule_id}", context=schedule_id)
 
     async def backfill_schedule(
@@ -807,6 +945,13 @@ class Client:
         end_time: str,
         overlap_policy: str | None = None,
     ) -> ScheduleBackfillResult:
+        """Fire a schedule for every would-have-been moment in ``[start_time, end_time]``.
+
+        Times are ISO-8601 strings. Useful to replay a period the schedule
+        was paused or to seed historical runs. The returned
+        :class:`ScheduleBackfillResult` reports how many fires were attempted
+        and the outcome of each.
+        """
         body: dict[str, Any] = {
             "start_time": start_time,
             "end_time": end_time,
@@ -834,6 +979,12 @@ class Client:
         runtime: str = "python",
         sdk_version: str | None = None,
     ) -> Any:
+        """Register this process with the server as a worker for ``task_queue``.
+
+        Called by :class:`~durable_workflow.Worker` at startup. Most
+        applications should not call this directly — create a
+        :class:`~durable_workflow.Worker` instead.
+        """
         if sdk_version is None:
             sdk_version = DEFAULT_SDK_VERSION
         body: dict[str, Any] = {
@@ -849,6 +1000,12 @@ class Client:
     async def poll_workflow_task(
         self, *, worker_id: str, task_queue: str, timeout: float = 35.0
     ) -> Any:
+        """Long-poll for the next workflow task on ``task_queue``.
+
+        Returns the task payload, or ``None`` on poll timeout. Worker-plane
+        endpoint — most applications use :class:`~durable_workflow.Worker`
+        rather than calling this directly.
+        """
         body: dict[str, Any] = {"worker_id": worker_id, "task_queue": task_queue}
         try:
             data = await self._request(
@@ -866,6 +1023,12 @@ class Client:
         workflow_task_attempt: int,
         commands: list[dict[str, Any]],
     ) -> Any:
+        """Report successful execution of a workflow task with its emitted commands.
+
+        Worker-plane endpoint, called by :class:`~durable_workflow.Worker`.
+        ``commands`` is the list of serialized commands the workflow yielded
+        for this task.
+        """
         body: dict[str, Any] = {
             "lease_owner": lease_owner,
             "workflow_task_attempt": workflow_task_attempt,
@@ -885,6 +1048,11 @@ class Client:
         failure_type: str | None = None,
         stack_trace: str | None = None,
     ) -> Any:
+        """Report a workflow task failure so the server can schedule a retry.
+
+        Worker-plane endpoint. Task failures (e.g. non-determinism) are
+        distinct from workflow failures (``FailWorkflow`` commands).
+        """
         failure: dict[str, Any] = {"message": message}
         if failure_type is not None:
             failure["type"] = failure_type
@@ -907,6 +1075,11 @@ class Client:
         lease_owner: str,
         workflow_task_attempt: int,
     ) -> Any:
+        """Page through extra history events while the worker is executing a long task.
+
+        Worker-plane endpoint. The first page of history is delivered inline
+        with the workflow task; this endpoint fetches subsequent pages.
+        """
         body: dict[str, Any] = {
             "page_token": page_token,
             "lease_owner": lease_owner,
@@ -919,6 +1092,11 @@ class Client:
     async def poll_activity_task(
         self, *, worker_id: str, task_queue: str, timeout: float = 35.0
     ) -> Any:
+        """Long-poll for the next activity task on ``task_queue``.
+
+        Returns the task payload, or ``None`` on poll timeout. Worker-plane
+        endpoint — typically used by :class:`~durable_workflow.Worker`.
+        """
         body: dict[str, Any] = {"worker_id": worker_id, "task_queue": task_queue}
         try:
             data = await self._request(
@@ -937,6 +1115,7 @@ class Client:
         result: Any,
         codec: str = serializer.AVRO_CODEC,
     ) -> Any:
+        """Report successful activity execution and submit the encoded result."""
         body: dict[str, Any] = {
             "activity_attempt_id": activity_attempt_id,
             "lease_owner": lease_owner,
@@ -959,6 +1138,12 @@ class Client:
         details: Any | None = None,
         codec: str = serializer.AVRO_CODEC,
     ) -> Any:
+        """Report a failed activity attempt.
+
+        Pass ``non_retryable=True`` to signal that this class of error will
+        not be fixed by retrying — the server then surfaces the failure to
+        the workflow immediately instead of scheduling another attempt.
+        """
         failure: dict[str, Any] = {"message": message}
         if failure_type is not None:
             failure["type"] = failure_type
@@ -985,6 +1170,13 @@ class Client:
         lease_owner: str,
         details: dict[str, Any] | None = None,
     ) -> Any:
+        """Send a liveness heartbeat for a running activity attempt.
+
+        Worker-plane endpoint. Most code calls
+        :meth:`~durable_workflow.ActivityContext.heartbeat` instead, which
+        additionally raises :class:`~durable_workflow.errors.ActivityCancelled`
+        when the server reports the activity should stop.
+        """
         body: dict[str, Any] = {
             "activity_attempt_id": activity_attempt_id,
             "lease_owner": lease_owner,
