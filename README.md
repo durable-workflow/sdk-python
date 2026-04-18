@@ -63,6 +63,30 @@ multi-activity order workflow against a local server with Docker Compose.
 - **Codec envelopes**: Avro payloads by default, with JSON decode compatibility for existing history
 - **Metrics hooks**: Pluggable counters and histograms, with an optional Prometheus adapter
 
+## Authentication
+
+For local servers that use one shared bearer token, pass `token=`:
+
+```python
+client = Client("http://server:8080", token="shared-token", namespace="default")
+```
+
+For production servers with role-scoped tokens, pass separate credentials for
+control-plane calls and worker-plane polling:
+
+```python
+client = Client(
+    "https://workflow.example.internal",
+    control_token="operator-token",
+    worker_token="worker-token",
+    namespace="orders",
+)
+```
+
+Create one client per namespace when your deployment issues namespace-scoped
+tokens. The SDK sends the configured token as `Authorization: Bearer ...` and
+the namespace as `X-Namespace` on every request.
+
 ## Metrics
 
 Pass a recorder to `Client(metrics=...)` or `Worker(metrics=...)` to collect request, poll, and task metrics. The SDK ships a no-op default, an `InMemoryMetrics` recorder for tests or custom exporter loops, and `PrometheusMetrics` for deployments that install the optional extra:

@@ -271,6 +271,8 @@ class Client:
         base_url: str,
         *,
         token: str | None = None,
+        control_token: str | None = None,
+        worker_token: str | None = None,
         namespace: str = "default",
         timeout: float = 60.0,
         retry_policy: RetryPolicy | None = None,
@@ -278,6 +280,8 @@ class Client:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
+        self.control_token = control_token
+        self.worker_token = worker_token
         self.namespace = namespace
         self.retry_policy = retry_policy or RetryPolicy()
         self.metrics = metrics or NOOP_METRICS
@@ -294,14 +298,20 @@ class Client:
 
     def _headers(self, *, worker: bool = False) -> dict[str, str]:
         h: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self.token:
-            h["Authorization"] = f"Bearer {self.token}"
+        token = self._auth_token(worker=worker)
+        if token:
+            h["Authorization"] = f"Bearer {token}"
         h["X-Namespace"] = self.namespace
         if worker:
             h["X-Durable-Workflow-Protocol-Version"] = PROTOCOL_VERSION
         else:
             h["X-Durable-Workflow-Control-Plane-Version"] = CONTROL_PLANE_VERSION
         return h
+
+    def _auth_token(self, *, worker: bool = False) -> str | None:
+        if worker:
+            return self.worker_token or self.token or self.control_token
+        return self.control_token or self.token or self.worker_token
 
     async def _request(
         self,

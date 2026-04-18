@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Plane-scoped SDK bearer tokens: `Client(..., control_token=..., worker_token=...)`
+  and the sync wrapper now support least-privilege server deployments where
+  operator/admin credentials are separate from worker credentials. The existing
+  `token=` argument remains the shared fallback.
 - `Worker.run_until(workflow_id=..., timeout=...)` for examples, smoke tests,
   and single-workflow scripts that need to run a worker until one workflow
   reaches a terminal state.

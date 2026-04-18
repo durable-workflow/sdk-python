@@ -139,6 +139,8 @@ class Client:
         base_url: str,
         *,
         token: str | None = None,
+        control_token: str | None = None,
+        worker_token: str | None = None,
         namespace: str = "default",
         timeout: float = 60.0,
         retry_policy: RetryPolicy | None = None,
@@ -147,6 +149,8 @@ class Client:
         self._async = AsyncClient(
             base_url,
             token=token,
+            control_token=control_token,
+            worker_token=worker_token,
             namespace=namespace,
             timeout=timeout,
             retry_policy=retry_policy,

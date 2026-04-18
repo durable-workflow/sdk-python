@@ -51,6 +51,29 @@ class TestHeaders:
         h = c._headers()
         assert "Authorization" not in h
 
+    def test_plane_scoped_tokens(self) -> None:
+        c = Client(
+            "http://localhost:8080",
+            token="legacy-token",
+            control_token="operator-token",
+            worker_token="worker-token",
+        )
+
+        control_headers = c._headers(worker=False)
+        worker_headers = c._headers(worker=True)
+
+        assert control_headers["Authorization"] == "Bearer operator-token"
+        assert worker_headers["Authorization"] == "Bearer worker-token"
+
+    def test_single_plane_token_can_fetch_cluster_info(self) -> None:
+        c = Client("http://localhost:8080", worker_token="worker-token")
+
+        control_headers = c._headers(worker=False)
+        worker_headers = c._headers(worker=True)
+
+        assert control_headers["Authorization"] == "Bearer worker-token"
+        assert worker_headers["Authorization"] == "Bearer worker-token"
+
 
 class TestStartWorkflow:
     @pytest.mark.asyncio
