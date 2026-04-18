@@ -46,14 +46,16 @@ from .metrics import (
     NoopMetrics,
     PrometheusMetrics,
 )
+from .retry_policy import RetryPolicy, TransportRetryPolicy
 from .worker import Worker
-from .workflow import ContinueAsNew, StartChildWorkflow
+from .workflow import ActivityRetryPolicy, ContinueAsNew, StartChildWorkflow
 
 __all__ = [
     "__version__",
     "ActivityCancelled",
     "ActivityContext",
     "ActivityInfo",
+    "ActivityRetryPolicy",
     "ChildWorkflowFailed",
     "Client",
     "ContinueAsNew",
@@ -83,7 +85,9 @@ __all__ = [
     "NoopMetrics",
     "QueryFailed",
     "PrometheusMetrics",
+    "RetryPolicy",
     "ServerError",
+    "TransportRetryPolicy",
     "Unauthorized",
     "UpdateRejected",
     "WorkflowAlreadyStarted",

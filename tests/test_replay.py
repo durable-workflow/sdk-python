@@ -3,6 +3,7 @@ from __future__ import annotations
 from durable_workflow import serializer, workflow
 from durable_workflow.errors import ChildWorkflowFailed
 from durable_workflow.workflow import (
+    ActivityRetryPolicy,
     CompleteWorkflow,
     ContinueAsNew,
     FailWorkflow,
@@ -110,6 +111,38 @@ class TestOneActivity:
         server_cmd = cmd.to_server_command("default-queue", payload_codec="json")
         assert server_cmd["arguments"]["codec"] == "json"
         assert serializer.decode(server_cmd["arguments"]["blob"], codec="json") == ["world"]
+
+    def test_schedule_activity_server_command_includes_retry_policy_and_timeouts(self) -> None:
+        cmd = ScheduleActivity(
+            activity_type="charge-card",
+            arguments=[{"order_id": "o-1"}],
+            queue="payments",
+            retry_policy=ActivityRetryPolicy(
+                max_attempts=4,
+                initial_interval_seconds=1,
+                backoff_coefficient=3,
+                maximum_interval_seconds=10,
+                non_retryable_error_types=["ValidationError"],
+            ),
+            start_to_close_timeout=120,
+            schedule_to_start_timeout=10,
+            schedule_to_close_timeout=300,
+            heartbeat_timeout=15,
+        )
+
+        server_cmd = cmd.to_server_command("default-queue")
+
+        assert server_cmd["type"] == "schedule_activity"
+        assert server_cmd["queue"] == "payments"
+        assert server_cmd["retry_policy"] == {
+            "max_attempts": 4,
+            "backoff_seconds": [1, 3, 9],
+            "non_retryable_error_types": ["ValidationError"],
+        }
+        assert server_cmd["start_to_close_timeout"] == 120
+        assert server_cmd["schedule_to_start_timeout"] == 10
+        assert server_cmd["schedule_to_close_timeout"] == 300
+        assert server_cmd["heartbeat_timeout"] == 15
 
 
 class TestTwoActivities:
@@ -367,6 +400,26 @@ class TestWorkflowContext:
             assert len(handler.buffer) == 1
         finally:
             logger.removeHandler(handler)
+
+    def test_schedule_activity_accepts_retry_policy_and_timeouts(self) -> None:
+        ctx = WorkflowContext(run_id="r1")
+        policy = ActivityRetryPolicy(max_attempts=2, backoff_seconds=[7])
+
+        cmd = ctx.schedule_activity(
+            "charge-card",
+            [{"order_id": "o-1"}],
+            retry_policy=policy,
+            start_to_close_timeout=120,
+            schedule_to_start_timeout=10,
+            schedule_to_close_timeout=300,
+            heartbeat_timeout=15,
+        )
+
+        assert cmd.retry_policy is policy
+        assert cmd.start_to_close_timeout == 120
+        assert cmd.schedule_to_start_timeout == 10
+        assert cmd.schedule_to_close_timeout == 300
+        assert cmd.heartbeat_timeout == 15
 
 
 class TestReplayWithRunId:

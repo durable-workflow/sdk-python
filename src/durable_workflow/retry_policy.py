@@ -2,11 +2,11 @@
 
 .. warning::
 
-   This :class:`RetryPolicy` covers **only client-side HTTP retries** for
+   :class:`TransportRetryPolicy` covers **only client-side HTTP retries** for
    transient transport errors (connection failures, timeouts, 5xx responses,
    429 rate-limiting). It is **not** the activity retry policy. Activity-level
-   retry and timeout configuration is tracked in
-   https://github.com/zorporation/durable-workflow/issues/392 and will land on
+   retry and timeout configuration lives on
+   :class:`durable_workflow.workflow.ActivityRetryPolicy` and is passed to
    ``ctx.schedule_activity(..., retry_policy=...)``.
 """
 
@@ -24,9 +24,9 @@ T = TypeVar("T")
 
 
 @dataclass
-class RetryPolicy:
+class TransportRetryPolicy:
     """
-    Retry policy for transient server errors.
+    Retry policy for transient HTTP transport errors.
 
     Retries requests that fail with transient errors (connection errors,
     timeouts, 5xx server errors, 429 rate limit). Does not retry client
@@ -95,3 +95,9 @@ class RetryPolicy:
         if last_exc:
             raise last_exc
         raise RuntimeError("retry loop exhausted with no exception")
+
+
+# Backward-compatible alias for earlier 0.x releases. Prefer
+# TransportRetryPolicy in new code so it is not confused with workflow-level
+# activity retry policy.
+RetryPolicy = TransportRetryPolicy

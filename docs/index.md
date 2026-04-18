@@ -18,10 +18,10 @@ pip install 'durable-workflow[prometheus]'
 
 - **[Client](reference/client.md)** — start workflows, signal, query, update, wait for results, manage schedules.
 - **[Worker](reference/worker.md)** — poll the server for workflow and activity tasks, dispatch to registered handlers.
-- **[Workflow](reference/workflow.md)** — workflow-side primitives: `ContinueAsNew`, `StartChildWorkflow`, and the workflow decorator.
+- **[Workflow](reference/workflow.md)** — workflow-side primitives: `ActivityRetryPolicy`, `ContinueAsNew`, `StartChildWorkflow`, and the workflow decorator.
 - **[Activity](reference/activity.md)** — activity decorator and execution context.
 - **[Errors](reference/errors.md)** — typed exceptions raised by the client and worker.
-- **[Retry policy](reference/retry_policy.md)** — retry configuration for activities and workflows.
+- **[Retry policy](reference/retry_policy.md)** — HTTP transport retry configuration for the client.
 - **[Metrics](reference/metrics.md)** — pluggable recorders, including a Prometheus adapter.
 - **[Serializer](reference/serializer.md)** — payload encoding and decoding helpers.
 - **[Sync helpers](reference/sync.md)** — blocking wrappers around the async client for scripts and tests.

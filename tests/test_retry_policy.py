@@ -3,10 +3,13 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from durable_workflow.retry_policy import RetryPolicy
+from durable_workflow.retry_policy import RetryPolicy, TransportRetryPolicy
 
 
 class TestRetryPolicy:
+    def test_retry_policy_alias_kept_for_backward_compatibility(self) -> None:
+        assert RetryPolicy is TransportRetryPolicy
+
     def test_should_retry_connection_error(self) -> None:
         policy = RetryPolicy(max_attempts=3)
         exc = httpx.ConnectError("connection failed")

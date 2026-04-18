@@ -54,6 +54,29 @@ For a fuller deployable example, see
 [`examples/order_processing`](examples/order_processing), which runs a
 multi-activity order workflow against a local server with Docker Compose.
 
+## Activity retries and timeouts
+
+Configure per-call activity retries and deadlines from workflow code:
+
+```python
+from durable_workflow import ActivityRetryPolicy
+
+result = yield ctx.schedule_activity(
+    "charge-card",
+    [order],
+    retry_policy=ActivityRetryPolicy(
+        max_attempts=4,
+        initial_interval_seconds=1,
+        backoff_coefficient=2,
+        maximum_interval_seconds=30,
+        non_retryable_error_types=["ValidationError"],
+    ),
+    start_to_close_timeout=120,
+    schedule_to_close_timeout=300,
+    heartbeat_timeout=15,
+)
+```
+
 ## Features
 
 - **Async-first**: Built on `httpx` and `asyncio`

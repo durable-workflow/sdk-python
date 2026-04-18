@@ -19,9 +19,10 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import logging
+import math
 import random
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -50,22 +51,96 @@ def registry() -> dict[str, type]:
 
 # ── Commands yielded from a workflow ──────────────────────────────────
 @dataclass
+class ActivityRetryPolicy:
+    """Retry policy applied to one scheduled activity call.
+
+    The policy is snapped onto the durable activity execution when the
+    workflow task completes, so later code deploys do not change the retry
+    budget for an already-scheduled activity.
+    """
+
+    max_attempts: int = 3
+    initial_interval_seconds: float = 1.0
+    backoff_coefficient: float = 2.0
+    maximum_interval_seconds: float | None = None
+    non_retryable_error_types: list[str] = field(default_factory=list)
+    backoff_seconds: list[int] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the server command shape for this activity retry policy."""
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts must be >= 1")
+        if self.initial_interval_seconds < 0:
+            raise ValueError("initial_interval_seconds must be >= 0")
+        if self.backoff_coefficient < 1:
+            raise ValueError("backoff_coefficient must be >= 1")
+        if self.maximum_interval_seconds is not None and self.maximum_interval_seconds < 0:
+            raise ValueError("maximum_interval_seconds must be >= 0")
+
+        return {
+            "max_attempts": self.max_attempts,
+            "backoff_seconds": self._backoff_seconds(),
+            "non_retryable_error_types": [
+                value.strip()
+                for value in self.non_retryable_error_types
+                if isinstance(value, str) and value.strip()
+            ],
+        }
+
+    def _backoff_seconds(self) -> list[int]:
+        if self.backoff_seconds is not None:
+            return [max(0, int(seconds)) for seconds in self.backoff_seconds]
+
+        seconds: list[int] = []
+        current = self.initial_interval_seconds
+        maximum = self.maximum_interval_seconds
+        for _ in range(max(0, self.max_attempts - 1)):
+            value = current if maximum is None else min(current, maximum)
+            seconds.append(max(0, int(math.ceil(value))))
+            current *= self.backoff_coefficient
+        return seconds
+
+
+ActivityRetryPolicyInput = ActivityRetryPolicy | Mapping[str, Any]
+
+
+@dataclass
 class ScheduleActivity:
     """Command requesting an activity task."""
 
     activity_type: str
     arguments: list[Any]
     queue: str | None = None
+    retry_policy: ActivityRetryPolicyInput | None = None
+    start_to_close_timeout: int | None = None
+    schedule_to_start_timeout: int | None = None
+    schedule_to_close_timeout: int | None = None
+    heartbeat_timeout: int | None = None
 
     def to_server_command(
         self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
     ) -> dict[str, Any]:
-        return {
+        command: dict[str, Any] = {
             "type": "schedule_activity",
             "activity_type": self.activity_type,
             "arguments": serializer.envelope(self.arguments, codec=payload_codec),
             "queue": self.queue or task_queue,
         }
+        if self.retry_policy is not None:
+            command["retry_policy"] = (
+                self.retry_policy.to_dict()
+                if isinstance(self.retry_policy, ActivityRetryPolicy)
+                else dict(self.retry_policy)
+            )
+        if self.start_to_close_timeout is not None:
+            command["start_to_close_timeout"] = self.start_to_close_timeout
+        if self.schedule_to_start_timeout is not None:
+            command["schedule_to_start_timeout"] = self.schedule_to_start_timeout
+        if self.schedule_to_close_timeout is not None:
+            command["schedule_to_close_timeout"] = self.schedule_to_close_timeout
+        if self.heartbeat_timeout is not None:
+            command["heartbeat_timeout"] = self.heartbeat_timeout
+        return command
 
 
 @dataclass
@@ -266,9 +341,27 @@ class WorkflowContext:
         self.logger = _ReplayLogger(_REPLAY_LOGGER)
 
     def schedule_activity(
-        self, activity_type: str, arguments: list[Any], *, queue: str | None = None
+        self,
+        activity_type: str,
+        arguments: list[Any],
+        *,
+        queue: str | None = None,
+        retry_policy: ActivityRetryPolicyInput | None = None,
+        start_to_close_timeout: int | None = None,
+        schedule_to_start_timeout: int | None = None,
+        schedule_to_close_timeout: int | None = None,
+        heartbeat_timeout: int | None = None,
     ) -> ScheduleActivity:
-        return ScheduleActivity(activity_type=activity_type, arguments=list(arguments), queue=queue)
+        return ScheduleActivity(
+            activity_type=activity_type,
+            arguments=list(arguments),
+            queue=queue,
+            retry_policy=retry_policy,
+            start_to_close_timeout=start_to_close_timeout,
+            schedule_to_start_timeout=schedule_to_start_timeout,
+            schedule_to_close_timeout=schedule_to_close_timeout,
+            heartbeat_timeout=heartbeat_timeout,
+        )
 
     def start_timer(self, seconds: int) -> StartTimer:
         return StartTimer(delay_seconds=seconds)

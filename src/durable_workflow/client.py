@@ -35,7 +35,7 @@ from .errors import (
     _raise_for_status,
 )
 from .metrics import CLIENT_REQUEST_DURATION_SECONDS, CLIENT_REQUESTS, NOOP_METRICS, MetricsRecorder
-from .retry_policy import RetryPolicy
+from .retry_policy import TransportRetryPolicy
 
 PROTOCOL_VERSION = "1.0"
 CONTROL_PLANE_VERSION = "2"
@@ -330,7 +330,7 @@ class Client:
         worker_token: str | None = None,
         namespace: str = "default",
         timeout: float = 60.0,
-        retry_policy: RetryPolicy | None = None,
+        retry_policy: TransportRetryPolicy | None = None,
         metrics: MetricsRecorder | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -338,7 +338,7 @@ class Client:
         self.control_token = control_token
         self.worker_token = worker_token
         self.namespace = namespace
-        self.retry_policy = retry_policy or RetryPolicy()
+        self.retry_policy = retry_policy or TransportRetryPolicy()
         self.metrics = metrics or NOOP_METRICS
         self._http = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
 
