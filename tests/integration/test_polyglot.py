@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from durable_workflow import Client
+from durable_workflow import Client, serializer
 from durable_workflow.serializer import decode_envelope
 from durable_workflow.workflow import replay
 
@@ -36,7 +36,8 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
     """
     task_queue = f"polyglot-{uuid.uuid4().hex[:8]}"
     wf_id = f"poly-py-wf-{uuid.uuid4().hex[:8]}"
-    worker_id = f"py-worker-{uuid.uuid4().hex[:8]}"
+    py_worker_id = f"py-worker-{uuid.uuid4().hex[:8]}"
+    php_worker_id = f"php-worker-{uuid.uuid4().hex[:8]}"
 
     # Test data with various JSON-serializable types
     test_input = {
@@ -52,12 +53,20 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
     }
 
     async with Client(server_url, token=server_token, namespace="default") as client:
-        # 1. Register Python worker supporting Python workflow and PHP activity
+        # 1. Register a Python workflow worker and PHP-runtime activity worker.
         await client.register_worker(
-            worker_id=worker_id,
+            worker_id=py_worker_id,
             task_queue=task_queue,
             supported_workflow_types=["tests.polyglot.python-workflow"],
+            supported_activity_types=[],
+        )
+        await client.register_worker(
+            worker_id=php_worker_id,
+            task_queue=task_queue,
+            supported_workflow_types=[],
             supported_activity_types=["tests.polyglot.php-activity"],
+            runtime="php",
+            sdk_version="durable-workflow-php/test",
         )
 
         # 2. Start Python workflow
@@ -72,7 +81,7 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
 
         # 3. Poll for workflow task
         wf_task = await client.poll_workflow_task(
-            worker_id=worker_id, task_queue=task_queue, timeout=10.0,
+            worker_id=py_worker_id, task_queue=task_queue, timeout=10.0,
         )
         assert wf_task is not None, "expected workflow task after start"
         task_id = wf_task["task_id"]
@@ -101,7 +110,7 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
         # 5. Complete workflow task
         await client.complete_workflow_task(
             task_id=task_id,
-            lease_owner=worker_id,
+            lease_owner=py_worker_id,
             workflow_task_attempt=attempt,
             commands=[server_cmd],
         )
@@ -111,16 +120,18 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
         # For this test, we simulate the PHP activity execution by manually
         # constructing what the PHP activity would return.
         act_task = await client.poll_activity_task(
-            worker_id=worker_id, task_queue=task_queue, timeout=10.0,
+            worker_id=php_worker_id, task_queue=task_queue, timeout=10.0,
         )
         assert act_task is not None, "expected activity task after schedule_activity"
         assert act_task["activity_type"] == "tests.polyglot.php-activity"
+        assert act_task.get("payload_codec") == "avro"
 
         act_task_id = act_task["task_id"]
         act_attempt_id = act_task.get("activity_attempt_id") or act_task.get("attempt_id", "")
         act_args = decode_envelope(act_task.get("arguments"), codec=act_task.get("payload_codec")) or []
         if not isinstance(act_args, list):
             act_args = [act_args]
+        assert act_args == [test_input]
 
         # 7. Simulate PHP activity execution
         # The PHP activity would receive the test_input and return structured data
@@ -146,13 +157,14 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
         await client.complete_activity_task(
             task_id=act_task_id,
             activity_attempt_id=act_attempt_id,
-            lease_owner=worker_id,
+            lease_owner=php_worker_id,
             result=php_activity_result,
+            codec="avro",
         )
 
         # 9. Poll for next workflow task (activity completed)
         wf_task2 = await client.poll_workflow_task(
-            worker_id=worker_id, task_queue=task_queue, timeout=10.0,
+            worker_id=py_worker_id, task_queue=task_queue, timeout=10.0,
         )
         assert wf_task2 is not None, "expected workflow task after activity completion"
         task_id2 = wf_task2["task_id"]
@@ -168,19 +180,6 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
         cmd2 = outcome2.commands[0]
         codec2 = wf_task2.get("payload_codec")
         server_cmd2 = cmd2.to_server_command(task_queue, payload_codec=codec2)
-
-        # Debug: inspect command before asserting
-        print("\n=== Replay outcome ===")
-        print(f"Command type: {server_cmd2.get('type')}")
-        print(f"Full command: {server_cmd2}")
-        if server_cmd2.get("type") == "fail_workflow":
-            print(f"Failure message: {server_cmd2.get('message', 'N/A')}")
-            print(f"Failure details: {server_cmd2.get('details', 'N/A')}")
-            import json
-            print(f"History events count: {len(history2)}")
-            print("Last few history events:")
-            for evt in history2[-3:]:
-                print(f"  - {evt.get('event_type')}: {json.dumps(evt, indent=2)[:200]}")
 
         assert server_cmd2["type"] == "complete_workflow", (
             f"Expected complete_workflow but got {server_cmd2['type']}: "
@@ -204,7 +203,7 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
         # 11. Complete workflow task
         await client.complete_workflow_task(
             task_id=task_id2,
-            lease_owner=worker_id,
+            lease_owner=py_worker_id,
             workflow_task_attempt=attempt2,
             commands=[server_cmd2],
         )
@@ -226,12 +225,14 @@ async def test_python_activity_called_from_php_workflow(server_url: str, server_
     - Python activity results serialize correctly back to PHP
     - Codec envelopes round-trip across runtimes
 
-    Note: This test requires the PHP workflow to be started and executed server-side,
-    then the Python worker picks up and executes the activity.
+    This drives the PHP side through the same HTTP worker protocol a PHP worker
+    uses in service mode, keeping the contract test independent from server-side
+    fixture autoloading.
     """
     task_queue = f"polyglot-{uuid.uuid4().hex[:8]}"
     wf_id = f"poly-php-wf-{uuid.uuid4().hex[:8]}"
-    worker_id = f"py-worker-{uuid.uuid4().hex[:8]}"
+    php_worker_id = f"php-worker-{uuid.uuid4().hex[:8]}"
+    py_worker_id = f"py-worker-{uuid.uuid4().hex[:8]}"
 
     # Test data with various JSON-serializable types
     test_input = {
@@ -246,17 +247,23 @@ async def test_python_activity_called_from_php_workflow(server_url: str, server_
     }
 
     async with Client(server_url, token=server_token, namespace="default") as client:
-        # 1. Register Python worker supporting Python activity
-        # (PHP workflow will execute server-side)
+        # 1. Register a PHP-runtime workflow worker and Python activity worker.
         await client.register_worker(
-            worker_id=worker_id,
+            worker_id=php_worker_id,
             task_queue=task_queue,
-            supported_workflow_types=[],  # Not handling PHP workflows
+            supported_workflow_types=["tests.polyglot.php-workflow"],
+            supported_activity_types=[],
+            runtime="php",
+            sdk_version="durable-workflow-php/test",
+        )
+        await client.register_worker(
+            worker_id=py_worker_id,
+            task_queue=task_queue,
+            supported_workflow_types=[],
             supported_activity_types=["tests.polyglot.python-activity"],
         )
 
-        # 2. Start PHP workflow through control plane
-        # The PHP workflow will execute and schedule a Python activity
+        # 2. Start PHP workflow through control plane.
         handle = await client.start_workflow(
             workflow_type="tests.polyglot.php-workflow",
             task_queue=task_queue,
@@ -264,19 +271,40 @@ async def test_python_activity_called_from_php_workflow(server_url: str, server_
             input=[test_input],
         )
         assert handle.workflow_id == wf_id
+        assert handle.run_id is not None
 
-        # 3. Poll for Python activity task
-        # The PHP workflow executes server-side and schedules the Python activity
-        act_task = await client.poll_activity_task(
-            worker_id=worker_id, task_queue=task_queue, timeout=15.0,
+        # 3. Poll and complete the PHP workflow task with a schedule_activity
+        # command that targets the Python activity.
+        wf_task = await client.poll_workflow_task(
+            worker_id=php_worker_id, task_queue=task_queue, timeout=10.0,
+        )
+        assert wf_task is not None, "expected PHP workflow task after start"
+        assert wf_task["workflow_type"] == "tests.polyglot.php-workflow"
+        assert wf_task.get("payload_codec") == "avro"
+
+        decoded_start = decode_envelope(wf_task.get("arguments"), codec=wf_task.get("payload_codec"))
+        assert decoded_start == [test_input]
+
+        schedule_python_activity = {
+            "type": "schedule_activity",
+            "activity_type": "tests.polyglot.python-activity",
+            "queue": task_queue,
+            "arguments": serializer.envelope([test_input], codec="avro"),
+        }
+        await client.complete_workflow_task(
+            task_id=wf_task["task_id"],
+            lease_owner=php_worker_id,
+            workflow_task_attempt=wf_task.get("workflow_task_attempt", 1),
+            commands=[schedule_python_activity],
         )
 
-        # If no task is available, the PHP workflow may not be registered server-side
-        # Skip this test in that case (it requires PHP fixtures to be loadable by server)
-        if act_task is None:
-            pytest.skip("PHP workflow not available server-side — requires server with PHP fixtures")
-
+        # 4. Poll for and execute the Python activity task.
+        act_task = await client.poll_activity_task(
+            worker_id=py_worker_id, task_queue=task_queue, timeout=15.0,
+        )
+        assert act_task is not None, "expected Python activity task after PHP workflow command"
         assert act_task["activity_type"] == "tests.polyglot.python-activity"
+        assert act_task.get("payload_codec") == "avro"
 
         act_task_id = act_task["task_id"]
         act_attempt_id = act_task.get("activity_attempt_id") or act_task.get("attempt_id", "")
@@ -291,7 +319,7 @@ async def test_python_activity_called_from_php_workflow(server_url: str, server_
         assert activity_input.get("name") == "php-to-python"
         assert activity_input.get("count") == 100
 
-        # 4. Execute Python activity
+        # 5. Execute Python activity.
         result = await polyglot_python_activity(activity_input)
 
         # Verify Python activity produced expected output
@@ -300,30 +328,58 @@ async def test_python_activity_called_from_php_workflow(server_url: str, server_
         assert result["type_checks"]["has_int"] is True
         assert result["computed"]["count_doubled"] == 200
 
-        # 5. Complete activity task
+        # 6. Complete activity task with the Python result encoded as Avro.
         await client.complete_activity_task(
             task_id=act_task_id,
             activity_attempt_id=act_attempt_id,
-            lease_owner=worker_id,
+            lease_owner=py_worker_id,
             result=result,
+            codec="avro",
         )
 
-        # 6. Wait for PHP workflow to complete
-        # The server-side PHP workflow should receive the activity result and complete
-        import asyncio
-        await asyncio.sleep(2)  # Give server time to process
+        # 7. Poll the follow-up PHP workflow task and verify the activity result
+        # reached the workflow history with an Avro codec tag.
+        wf_task2 = await client.poll_workflow_task(
+            worker_id=php_worker_id, task_queue=task_queue, timeout=10.0,
+        )
+        assert wf_task2 is not None, "expected PHP workflow task after Python activity completion"
+        assert wf_task2.get("payload_codec") == "avro"
 
-        # 7. Verify final workflow state
+        activity_completed = [
+            event for event in wf_task2.get("history_events", [])
+            if event.get("event_type") in ("ActivityCompleted", "activity_completed")
+        ]
+        assert activity_completed, "expected ActivityCompleted in PHP workflow history"
+        completed_payload = activity_completed[-1].get("payload", {})
+        assert completed_payload.get("payload_codec") == "avro"
+        assert decode_envelope(completed_payload.get("result"), codec="avro") == result
+
+        workflow_result = {
+            "workflow_runtime": "php",
+            "python_activity_result": result,
+            "validation": {
+                "called_python_activity": True,
+                "result_is_array": isinstance(result, dict),
+                "result_has_runtime": result.get("runtime") == "python",
+            },
+        }
+        await client.complete_workflow_task(
+            task_id=wf_task2["task_id"],
+            lease_owner=php_worker_id,
+            workflow_task_attempt=wf_task2.get("workflow_task_attempt", 1),
+            commands=[
+                {
+                    "type": "complete_workflow",
+                    "result": serializer.envelope(workflow_result, codec="avro"),
+                },
+            ],
+        )
+
+        # 8. Verify final workflow state.
         desc = await handle.describe()
-
-        # The workflow should be completed with PHP activity result embedded
-        assert desc.status in ("completed", "Completed", "waiting", "pending", "running")
-
-        # If completed, verify the output structure
-        if desc.status in ("completed", "Completed") and desc.output:
-            assert isinstance(desc.output, dict)
-            assert desc.output.get("workflow_runtime") == "php"
-            if "python_activity_result" in desc.output:
-                py_result = desc.output["python_activity_result"]
-                assert py_result.get("runtime") == "python"
-                assert py_result.get("computed", {}).get("count_doubled") == 200
+        assert desc.status in ("completed", "Completed")
+        assert isinstance(desc.output, dict)
+        assert desc.output.get("workflow_runtime") == "php"
+        py_result = desc.output["python_activity_result"]
+        assert py_result.get("runtime") == "python"
+        assert py_result.get("computed", {}).get("count_doubled") == 200
