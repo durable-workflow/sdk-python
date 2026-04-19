@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-04-19
+
 ### Added
 - Plane-scoped SDK bearer tokens: `Client(..., control_token=..., worker_token=...)`
   and the sync wrapper now support least-privilege server deployments where
@@ -17,10 +19,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Docker Compose order-processing example under `examples/order_processing`
   that starts a local server and runs a multi-activity Python workflow
   end-to-end.
+- `ctx.wait_condition(...)` durable primitive with replayer support, for
+  workflows that pause until a signal- or update-driven predicate holds.
+- `@workflow.signal`, `@workflow.query`, and `@workflow.update` decorators
+  with in-workflow dispatch: signals apply during replay, queries execute
+  against a replayed workflow instance, and updates run on a worker with
+  acceptance + application recorded in history.
+- `ctx.sleep(seconds)` sugar over `StartTimer` for readability.
+- In-process `WorkflowEnvironment` testing harness that boots a worker
+  and client against a fake server for unit-style tests without Docker.
+- Activity retry policy support: `ActivityRetryPolicy(...)` on
+  `ctx.schedule_activity(...)` serializes retry bounds onto the
+  server-side command.
+- SDK metrics hooks (`MetricsRecorder` / `PrometheusMetricsRecorder`)
+  for worker-side operational telemetry.
 
 ### Changed
 - Worker compatibility checks now use `/api/cluster/info` protocol manifests
-  as the authority instead of the top-level server app version. SDK 0.2.x
+  as the authority instead of the top-level server app version. SDK 0.3.x
   requires `control_plane.version: "2"`,
   `control_plane.request_contract` schema
   `durable-workflow.v2.control-plane-request.contract` version `1`, and
@@ -28,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compatibility states fail closed.
 - `Client.get_result()` now decodes `WorkflowCompleted` output with the event
   or workflow payload codec instead of assuming JSON.
+- History-event decoding in `client.py` and `workflow.py` now requires the
+  server's canonical PascalCase `event_type` values (`WorkflowCompleted`,
+  `ActivityCompleted`, `TimerFired`, etc.). The prior snake_case fallback
+  and the `output`-or-`result` key fallback on `WorkflowCompleted` have
+  been removed; unknown event-type shapes are ignored instead of silently
+  tolerated. (#432)
 
 ## [0.2.0] — 2026-04-17
 
