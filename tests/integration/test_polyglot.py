@@ -347,7 +347,7 @@ async def test_python_activity_called_from_php_workflow(server_url: str, server_
 
         activity_completed = [
             event for event in wf_task2.get("history_events", [])
-            if event.get("event_type") in ("ActivityCompleted", "activity_completed")
+            if event.get("event_type") == "ActivityCompleted"
         ]
         assert activity_completed, "expected ActivityCompleted in PHP workflow history"
         completed_payload = activity_completed[-1].get("payload", {})

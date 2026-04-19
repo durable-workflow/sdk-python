@@ -917,7 +917,7 @@ def _replay_state(
     workflow_start_time: datetime | None = None
     for ev in events:
         etype = ev.get("event_type")
-        if etype in ("WorkflowStarted", "workflow_started"):
+        if etype == "WorkflowStarted":
             ts = (ev.get("payload") or {}).get("timestamp")
             if ts:
                 with contextlib.suppress(ValueError, TypeError):
@@ -946,9 +946,9 @@ def _replay_state(
     for ev in events:
         etype = ev.get("event_type")
         payload = ev.get("payload") or {}
-        if etype in ("ActivityCompleted", "activity_completed"):
+        if etype == "ActivityCompleted":
             resolved_results.append(_decode_history_result(payload, payload_codec))
-        elif etype in ("TimerFired", "timer_fired"):
+        elif etype == "TimerFired":
             timer_kind = payload.get("timer_kind")
             if timer_kind == "condition_timeout":
                 wait_id = payload.get("condition_wait_id")
@@ -958,32 +958,29 @@ def _replay_state(
             if timer_kind == "signal_timeout":
                 continue
             resolved_results.append(None)
-        elif etype in ("ConditionWaitOpened", "condition_wait_opened"):
+        elif etype == "ConditionWaitOpened":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
                 wait_opened_ids.append(wait_id)
-        elif etype in ("ConditionWaitSatisfied", "condition_wait_satisfied"):
+        elif etype == "ConditionWaitSatisfied":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
                 wait_resolutions[wait_id] = "satisfied"
-        elif etype in ("ConditionWaitTimedOut", "condition_wait_timed_out"):
+        elif etype == "ConditionWaitTimedOut":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
                 wait_resolutions[wait_id] = "timed_out"
-        elif etype in (
-            "SideEffectRecorded", "side_effect_recorded",
-            "ChildRunCompleted", "child_run_completed",
-        ):
+        elif etype in ("SideEffectRecorded", "ChildRunCompleted"):
             resolved_results.append(_decode_history_result(payload, payload_codec))
-        elif etype in ("ChildRunFailed", "child_run_failed"):
+        elif etype == "ChildRunFailed":
             resolved_results.append(ChildWorkflowFailed(
                 payload.get("message", "child workflow failed")
             ))
-        elif etype in ("VersionMarkerRecorded", "version_marker_recorded"):
+        elif etype == "VersionMarkerRecorded":
             resolved_results.append(payload.get("version", 0))
-        elif etype in ("SearchAttributesUpserted", "search_attributes_upserted"):
+        elif etype == "SearchAttributesUpserted":
             resolved_results.append(None)
-        elif etype in ("SignalReceived", "signal_received"):
+        elif etype == "SignalReceived":
             signal_name = payload.get("signal_name")
             if isinstance(signal_name, str) and signal_name:
                 pending_receivers.append(
@@ -994,7 +991,7 @@ def _replay_state(
                         _decode_signal_args(payload, payload_codec),
                     )
                 )
-        elif etype in ("UpdateApplied", "update_applied"):
+        elif etype == "UpdateApplied":
             update_name = payload.get("update_name")
             if isinstance(update_name, str) and update_name:
                 pending_receivers.append(

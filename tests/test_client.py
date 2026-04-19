@@ -462,6 +462,92 @@ class TestGetResult:
 
         assert result == {"greeting": "hello"}
 
+    # Regression guards for #432: the server emits PascalCase event_type
+    # strings and stores the workflow return value under `output`. The SDK
+    # used to accept snake_case event names and fall back to `result` —
+    # both forms of protocol drift are now refused.
+
+    @pytest.mark.asyncio
+    async def test_snake_case_workflow_completed_is_not_accepted(self, client: Client) -> None:
+        handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
+        client.describe_workflow = AsyncMock(
+            return_value=WorkflowExecution(
+                workflow_id="wf-1",
+                run_id="run-1",
+                workflow_type="greeter",
+                status="completed",
+                payload_codec="avro",
+            )
+        )
+        client.get_history = AsyncMock(
+            return_value={
+                "events": [
+                    {
+                        "event_type": "workflow_completed",
+                        "payload": {
+                            "output": serializer.encode({"greeting": "hello"}, codec="avro"),
+                            "payload_codec": "avro",
+                        },
+                    }
+                ]
+            }
+        )
+
+        assert await client.get_result(handle) is None
+
+    @pytest.mark.asyncio
+    async def test_snake_case_workflow_failed_is_not_accepted(self, client: Client) -> None:
+        handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
+        client.describe_workflow = AsyncMock(
+            return_value=WorkflowExecution(
+                workflow_id="wf-1",
+                run_id="run-1",
+                workflow_type="greeter",
+                status="failed",
+                payload_codec="avro",
+            )
+        )
+        client.get_history = AsyncMock(
+            return_value={
+                "events": [
+                    {
+                        "event_type": "workflow_failed",
+                        "payload": {"message": "boom", "exception_class": "RuntimeError"},
+                    }
+                ]
+            }
+        )
+
+        assert await client.get_result(handle) is None
+
+    @pytest.mark.asyncio
+    async def test_result_field_is_not_read_as_output_fallback(self, client: Client) -> None:
+        handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
+        client.describe_workflow = AsyncMock(
+            return_value=WorkflowExecution(
+                workflow_id="wf-1",
+                run_id="run-1",
+                workflow_type="greeter",
+                status="completed",
+                payload_codec="avro",
+            )
+        )
+        client.get_history = AsyncMock(
+            return_value={
+                "events": [
+                    {
+                        "event_type": "WorkflowCompleted",
+                        "payload": {
+                            "result": serializer.encode({"greeting": "hello"}, codec="avro"),
+                            "payload_codec": "avro",
+                        },
+                    }
+                ]
+            }
+        )
+
+        assert await client.get_result(handle) is None
+
 
 class TestRegisterWorker:
     @pytest.mark.asyncio

@@ -941,3 +941,28 @@ class TestWorkflowRegistry:
         assert "version-wf" in reg
         assert "search-attr-wf" in reg
         assert "fan-out-wf" in reg
+
+
+class TestCanonicalEventTypeOnly:
+    # Regression guard for #432. The server's HistoryEventType enum stores
+    # PascalCase values (`case ActivityCompleted = 'ActivityCompleted'`) and
+    # emits `$event->event_type->value` directly on the wire. The SDK used to
+    # accept a snake_case fallback alongside; collapsing to the single
+    # canonical form means a future reintroduction of the fallback fails
+    # these tests loudly instead of passing by tolerance.
+
+    def test_snake_case_activity_completed_is_ignored(self) -> None:
+        history = [{"event_type": "activity_completed", "payload": {"result": '"hello"'}}]
+        outcome = replay(OneActivity, history, ["world"])
+        # Snake_case is not recognized, so the replayer behaves as if the
+        # activity has not yet completed and re-schedules it.
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], ScheduleActivity)
+
+    def test_snake_case_timer_fired_is_ignored(self) -> None:
+        history = [{"event_type": "timer_fired", "payload": {}}]
+        outcome = replay(TimerWorkflow, history, [])
+        # Without recognition of TimerFired, the replayer stays at the
+        # StartTimer command and does not advance to the activity.
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], StartTimer)

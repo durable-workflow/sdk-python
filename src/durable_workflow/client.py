@@ -726,21 +726,21 @@ class Client:
                 for ev in reversed(events):
                     etype = ev.get("event_type")
                     payload = ev.get("payload") or {}
-                    if etype in ("WorkflowCompleted", "workflow_completed"):
+                    if etype == "WorkflowCompleted":
                         return serializer.decode_envelope(
-                            payload.get("output") or payload.get("result"),
+                            payload.get("output"),
                             codec=payload.get("payload_codec") or desc.payload_codec,
                         )
-                    if etype in ("WorkflowFailed", "workflow_failed"):
+                    if etype == "WorkflowFailed":
                         raise WorkflowFailed(
                             payload.get("message", "workflow failed"),
                             payload.get("exception_class"),
                         )
-                    if etype in ("WorkflowTerminated", "workflow_terminated"):
+                    if etype == "WorkflowTerminated":
                         raise WorkflowTerminated(
                             payload.get("reason", "workflow was terminated")
                         )
-                    if etype in ("WorkflowCancelled", "workflow_cancelled", "WorkflowCanceled", "workflow_canceled"):
+                    if etype == "WorkflowCancelled":
                         raise WorkflowCancelled(
                             payload.get("reason", "workflow was cancelled")
                         )
