@@ -469,10 +469,39 @@ class UpsertSearchAttributes:
         }
 
 
+@dataclass
+class WaitCondition:
+    """Command that yields execution until a workflow-defined predicate becomes true.
+
+    The replayer evaluates ``predicate`` locally against in-memory workflow state
+    (typically mutated by signal/update handlers). The server records a
+    ``ConditionWaitOpened`` history event and re-drives the workflow when any
+    signal arrives or, if ``timeout_seconds`` is provided, when the timeout
+    elapses (a ``TimerFired`` history event with ``timer_kind=condition_timeout``).
+    """
+
+    predicate: Callable[[], bool]
+    condition_key: str | None = None
+    condition_definition_fingerprint: str | None = None
+    timeout_seconds: int | None = None
+
+    def to_server_command(
+        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+    ) -> dict[str, Any]:
+        cmd: dict[str, Any] = {"type": "open_condition_wait"}
+        if self.condition_key is not None:
+            cmd["condition_key"] = self.condition_key
+        if self.condition_definition_fingerprint is not None:
+            cmd["condition_definition_fingerprint"] = self.condition_definition_fingerprint
+        if self.timeout_seconds is not None:
+            cmd["timeout_seconds"] = self.timeout_seconds
+        return cmd
+
+
 Command = (
     ScheduleActivity | StartTimer | CompleteWorkflow | FailWorkflow
     | CompleteUpdate | FailUpdate | ContinueAsNew | RecordSideEffect | StartChildWorkflow
-    | RecordVersionMarker | UpsertSearchAttributes
+    | RecordVersionMarker | UpsertSearchAttributes | WaitCondition
 )
 
 
@@ -555,6 +584,32 @@ class WorkflowContext:
         workflow ``run`` method.
         """
         return StartTimer(delay_seconds=max(0, math.ceil(seconds)))
+
+    def wait_condition(
+        self,
+        predicate: Callable[[], bool],
+        *,
+        key: str | None = None,
+        timeout: float | None = None,
+    ) -> WaitCondition:
+        """Yield execution until ``predicate()`` returns truthy.
+
+        The predicate is evaluated against the workflow's in-memory state on
+        every replay tick — typically mutated by ``@signal`` / ``@update``
+        handlers as external events arrive. If ``timeout`` is provided and
+        elapses before the predicate becomes true, the yield resolves to
+        ``False`` (otherwise ``True``). The fractional ``timeout`` is rounded
+        up to the next whole second to match the server's integer-second
+        timer resolution.
+        """
+        timeout_seconds: int | None = None
+        if timeout is not None:
+            timeout_seconds = max(0, math.ceil(timeout))
+        return WaitCondition(
+            predicate=predicate,
+            condition_key=key,
+            timeout_seconds=timeout_seconds,
+        )
 
     def side_effect(self, fn: Callable[[], Any]) -> RecordSideEffect:
         result = fn()
@@ -880,13 +935,41 @@ def _replay_state(
     # external receivers apply before the generator consumes the resolved_result
     # at the stored index, preserving history interleaving with activities.
     pending_receivers: list[tuple[int, str, str, list[Any]]] = []
+    # Ordered list of condition_wait_id strings from ConditionWaitOpened events,
+    # used by ``WaitCondition`` yields to match against their corresponding
+    # opened wait in history (Nth yield ↔ Nth opened).
+    wait_opened_ids: list[str] = []
+    # Map condition_wait_id → resolution: 'satisfied' (from ConditionWaitSatisfied
+    # in history, future server-recorded) or 'timed_out' (from a matching
+    # condition_timeout TimerFired event).
+    wait_resolutions: dict[str, str] = {}
     for ev in events:
         etype = ev.get("event_type")
         payload = ev.get("payload") or {}
         if etype in ("ActivityCompleted", "activity_completed"):
             resolved_results.append(_decode_history_result(payload, payload_codec))
         elif etype in ("TimerFired", "timer_fired"):
+            timer_kind = payload.get("timer_kind")
+            if timer_kind == "condition_timeout":
+                wait_id = payload.get("condition_wait_id")
+                if isinstance(wait_id, str) and wait_id:
+                    wait_resolutions[wait_id] = "timed_out"
+                continue
+            if timer_kind == "signal_timeout":
+                continue
             resolved_results.append(None)
+        elif etype in ("ConditionWaitOpened", "condition_wait_opened"):
+            wait_id = payload.get("condition_wait_id")
+            if isinstance(wait_id, str) and wait_id:
+                wait_opened_ids.append(wait_id)
+        elif etype in ("ConditionWaitSatisfied", "condition_wait_satisfied"):
+            wait_id = payload.get("condition_wait_id")
+            if isinstance(wait_id, str) and wait_id:
+                wait_resolutions[wait_id] = "satisfied"
+        elif etype in ("ConditionWaitTimedOut", "condition_wait_timed_out"):
+            wait_id = payload.get("condition_wait_id")
+            if isinstance(wait_id, str) and wait_id:
+                wait_resolutions[wait_id] = "timed_out"
         elif etype in (
             "SideEffectRecorded", "side_effect_recorded",
             "ChildRunCompleted", "child_run_completed",
@@ -960,6 +1043,7 @@ def _replay_state(
     first = True
     pending: list[Command] = []
     advanced_cmd: Any = None
+    wait_yield_count = 0
     try:
         while True:
             _apply_due_receivers()
@@ -1021,6 +1105,29 @@ def _replay_state(
                 pending.append(cmd)
                 next_value = cmd.version
                 continue
+            if isinstance(cmd, WaitCondition):
+                resolution: str | None = None
+                if wait_yield_count < len(wait_opened_ids):
+                    resolution = wait_resolutions.get(wait_opened_ids[wait_yield_count])
+                if resolution == "timed_out":
+                    next_value = False
+                    wait_yield_count += 1
+                    continue
+                try:
+                    satisfied = bool(cmd.predicate())
+                except Exception as exc:
+                    return _state([FailWorkflow(
+                        message=f"wait_condition predicate raised: {exc}",
+                        exception_type=type(exc).__name__,
+                    )])
+                if satisfied or resolution == "satisfied":
+                    next_value = True
+                    wait_yield_count += 1
+                    continue
+                ctx.logger._set_replaying(False)
+                pending.append(cmd)
+                wait_yield_count += 1
+                return _state(pending)
             if isinstance(cmd, (ScheduleActivity, StartTimer, StartChildWorkflow)):
                 if result_cursor < len(resolved_results):
                     val = resolved_results[result_cursor]
