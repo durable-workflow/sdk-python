@@ -200,6 +200,45 @@ class TestWorkerActivityContext:
         assert call_kwargs["non_retryable"] is True
 
     @pytest.mark.asyncio
+    async def test_cancellation_survives_user_generic_except(self, mock_client: AsyncMock) -> None:
+        """A user activity with ``except Exception:`` must not swallow cancellation.
+
+        Regression guard for zorporation/durable-workflow#441: when the server
+        signals cancellation via the heartbeat response, the activity function
+        may have a broad ``except Exception:`` block (for logging, retry, etc.).
+        That block must *not* catch ``ActivityCancelled``, so the worker still
+        reports the activity as cancelled rather than completing normally.
+        """
+        mock_client.heartbeat_activity_task = AsyncMock(return_value={"cancel_requested": True})
+
+        @activity.defn(name="hb-swallow-act")
+        async def activity_with_broad_except() -> str:
+            ctx = activity.context()
+            try:
+                await ctx.heartbeat()
+            except Exception:  # noqa: BLE001 — intentional: simulates user mistake
+                return "swallowed cancellation"
+            return "no cancel"
+
+        worker = Worker(
+            mock_client, task_queue="q1", workflows=[], activities=[activity_with_broad_except]
+        )
+        task = {
+            "task_id": "at-swallow",
+            "activity_attempt_id": "aa-swallow",
+            "activity_type": "hb-swallow-act",
+            "arguments": "[]",
+            "payload_codec": "json",
+        }
+        outcome = await worker._run_activity_task(task)
+
+        assert outcome == "cancelled"
+        mock_client.fail_activity_task.assert_called_once()
+        call_kwargs = mock_client.fail_activity_task.call_args.kwargs
+        assert call_kwargs["failure_type"] == "ActivityCancelled"
+        mock_client.complete_activity_task.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_non_retryable_error(self, mock_client: AsyncMock) -> None:
         @activity.defn(name="nr-act")
         def non_retryable_activity() -> None:

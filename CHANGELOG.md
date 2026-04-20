@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Breaking (pre-1.0):** `WorkflowCancelled` and `ActivityCancelled` now inherit
+  from `BaseException` (not `DurableWorkflowError` / `Exception`), so a generic
+  `except Exception:` block in activity code or result handlers no longer
+  silently swallows cancellation. Callers that relied on catching cancellation
+  via `except Exception:` or `except DurableWorkflowError:` must now either
+  catch the class by name (e.g. `except (ActivityCancelled, WorkflowCancelled):`)
+  or catch `BaseException`. Mirrors the standard-library precedent set by
+  `asyncio.CancelledError` and `KeyboardInterrupt`. Rationale and upstream
+  lesson: [zorporation/durable-workflow#441](https://github.com/zorporation/durable-workflow/issues/441).
+
 ## [0.3.0] — 2026-04-19
 
 ### Added

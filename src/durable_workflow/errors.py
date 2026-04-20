@@ -1,10 +1,19 @@
 """Typed exceptions raised by the Durable Workflow client and worker.
 
-Every exception inherits from :class:`DurableWorkflowError`, so callers that
-only want to distinguish SDK errors from unrelated failures can catch that
-base. More specific subclasses let callers react to particular outcomes —
-workflow-not-found, update-rejected, schedule-already-exists — without
-parsing server response bodies.
+Every *error* exception inherits from :class:`DurableWorkflowError`, so
+callers that only want to distinguish SDK errors from unrelated failures can
+catch that base. More specific subclasses let callers react to particular
+outcomes — workflow-not-found, update-rejected, schedule-already-exists —
+without parsing server response bodies.
+
+Cancellation is intentionally *not* in that hierarchy. :class:`WorkflowCancelled`
+and :class:`ActivityCancelled` inherit from :class:`BaseException` directly,
+so a generic ``except Exception:`` block cannot accidentally swallow a
+cancellation signal. Callers that want to handle cancellation must name the
+class explicitly (``except (ActivityCancelled, ...):``). This mirrors the way
+:class:`asyncio.CancelledError` and :class:`KeyboardInterrupt` behave in the
+standard library and avoids the historical mistake called out in
+https://github.com/temporalio/sdk-python/issues/1292.
 """
 
 from __future__ import annotations
@@ -140,19 +149,39 @@ class WorkflowTerminated(DurableWorkflowError):
         super().__init__(message)
 
 
-class WorkflowCancelled(DurableWorkflowError):
-    """A workflow was cancelled and finished in the ``cancelled`` state."""
+class WorkflowCancelled(BaseException):
+    """A workflow was cancelled and finished in the ``cancelled`` state.
+
+    Inherits from :class:`BaseException` — not :class:`Exception` — so that a
+    generic ``except Exception:`` block cannot accidentally swallow the
+    cancellation outcome. Callers that want to treat a cancelled workflow
+    differently from a failed one (e.g. to skip alerting) must catch this
+    class by name.
+    """
 
     def __init__(self, message: str = "workflow was cancelled") -> None:
         super().__init__(message)
 
 
-class ActivityCancelled(DurableWorkflowError):
+class ActivityCancelled(BaseException):
     """An in-flight activity was cancelled.
 
     Raised inside :meth:`durable_workflow.ActivityContext.heartbeat` when the
     server reports that the owning workflow has asked for cancellation, so the
     activity can exit cleanly on its next heartbeat.
+
+    Inherits from :class:`BaseException` — not :class:`Exception` — so that a
+    user ``except Exception:`` block inside the activity function cannot
+    accidentally swallow the cancellation signal. Activities that need to run
+    cleanup on cancellation should catch this class by name and re-raise:
+
+    .. code-block:: python
+
+        try:
+            await activity.context().heartbeat()
+        except ActivityCancelled:
+            cleanup()
+            raise
     """
 
     def __init__(self, message: str = "activity was cancelled") -> None:
