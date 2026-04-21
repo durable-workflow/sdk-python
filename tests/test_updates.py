@@ -123,6 +123,13 @@ def _signal_received_event(name: str, args: list[object]) -> dict[str, object]:
     }
 
 
+def _workflow_started_event() -> dict[str, object]:
+    return {
+        "event_type": "WorkflowStarted",
+        "payload": {"timestamp": "2026-04-21T00:00:00Z"},
+    }
+
+
 def _update_accepted_event(
     update_id: str,
     name: str,
@@ -156,6 +163,39 @@ def _update_applied_event(
 
 
 class TestUpdateApplicationReplay:
+    def test_start_boundary_update_applies_after_workflow_initialization(self) -> None:
+        @workflow.defn(name="start-boundary-update-receiver")
+        class StartBoundaryUpdateReceiver:
+            def __init__(self) -> None:
+                self.messages: list[str] = []
+
+            @workflow.update("append")
+            def append(self, value: str) -> list[str]:
+                self.messages.append(value)
+                return list(self.messages)
+
+            @workflow.query("messages")
+            def read_messages(self) -> list[str]:
+                return list(self.messages)
+
+            def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+                self.messages = ["started"]
+                yield ctx.schedule_activity("wait", [])
+                return list(self.messages)
+
+        history = [
+            _workflow_started_event(),
+            _update_applied_event("upd-start", "append", ["after-start"]),
+        ]
+
+        assert query_state(
+            StartBoundaryUpdateReceiver,
+            history,
+            [],
+            "messages",
+            payload_codec="json",
+        ) == ["started", "after-start"]
+
     def test_replay_applies_committed_update_events_to_workflow_state(self) -> None:
         history = [
             _update_applied_event("upd-1", "increment", [3]),

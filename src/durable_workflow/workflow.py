@@ -1681,8 +1681,6 @@ def _replay_state(
             handler(*args)
 
     result_cursor = 0
-    _apply_due_receivers()
-
     gen = instance.run(ctx, *start_input)
     if not hasattr(gen, "__next__"):
         if isinstance(gen, ContinueAsNew):
@@ -1698,13 +1696,19 @@ def _replay_state(
     wait_yield_count = 0
     try:
         while True:
-            _apply_due_receivers()
+            # Cursor-0 receivers are start-boundary events. Enter run() once
+            # before applying them so workflow initialization observes the
+            # same WorkflowStarted-before-Signal/Update ordering the server
+            # records in history.
+            if not first:
+                _apply_due_receivers()
             if advanced_cmd is not None:
                 cmd = advanced_cmd
                 advanced_cmd = None
             else:
                 cmd = gen.send(None) if first else gen.send(next_value)
                 first = False
+            _apply_due_receivers()
             if isinstance(cmd, list):
                 needed = len(cmd)
                 if result_cursor + needed <= len(resolved_results):

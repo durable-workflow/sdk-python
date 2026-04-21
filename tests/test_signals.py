@@ -71,6 +71,20 @@ def _activity_completed_event(result: Any) -> dict[str, Any]:
     }
 
 
+def _json_activity_completed_event(result: Any) -> dict[str, Any]:
+    return {
+        "event_type": "ActivityCompleted",
+        "payload": {"result": serializer.encode(result, codec="json"), "payload_codec": "json"},
+    }
+
+
+def _workflow_started_event() -> dict[str, Any]:
+    return {
+        "event_type": "WorkflowStarted",
+        "payload": {"timestamp": "2026-04-21T00:00:00Z"},
+    }
+
+
 def _signal_received_event(name: str, args: list[Any]) -> dict[str, Any]:
     return {
         "event_type": "SignalReceived",
@@ -82,7 +96,45 @@ def _signal_received_event(name: str, args: list[Any]) -> dict[str, Any]:
     }
 
 
+def _json_signal_received_event(name: str, args: list[Any]) -> dict[str, Any]:
+    return {
+        "event_type": "SignalReceived",
+        "payload": {
+            "signal_name": name,
+            "value": serializer.encode(args, codec="json"),
+            "payload_codec": "json",
+        },
+    }
+
+
 class TestSignalDispatchDuringReplay:
+    def test_start_boundary_signal_applies_after_workflow_initialization(self) -> None:
+        @workflow.defn(name="start-boundary-signal-workflow")
+        class StartBoundarySignalWorkflow:
+            def __init__(self) -> None:
+                self.messages: list[str] = []
+
+            @workflow.signal("message")
+            def on_message(self, value: str) -> None:
+                self.messages.append(value)
+
+            def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+                self.messages = ["started"]
+                yield ctx.schedule_activity("wait", [])
+                return list(self.messages)
+
+        events = [
+            _workflow_started_event(),
+            _json_signal_received_event("message", ["after-start"]),
+            _json_activity_completed_event(None),
+        ]
+
+        outcome = replay(StartBoundarySignalWorkflow, events, [], payload_codec="json")
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == ["started", "after-start"]
+
     def test_signal_mutates_workflow_state_before_completion(self) -> None:
         events = [
             _signal_received_event("approve", ["alice"]),
