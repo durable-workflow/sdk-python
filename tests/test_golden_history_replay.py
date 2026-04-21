@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from durable_workflow import Replayer, workflow
+from durable_workflow.errors import ChildWorkflowFailed
 from durable_workflow.workflow import CompleteWorkflow, ScheduleActivity, WorkflowContext
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "golden_history" / "python-sdk-v0.json"
@@ -60,6 +61,23 @@ class GoldenVersionMarkerWorkflow:
         return (yield ctx.schedule_activity(activity, []))
 
 
+@workflow.defn(name="golden.saga-compensation")
+class GoldenSagaCompensationWorkflow:
+    def run(self, ctx: WorkflowContext, order_id: str):  # type: ignore[no-untyped-def]
+        reservation_id = yield ctx.schedule_activity("golden.reserve-inventory", [order_id])
+        try:
+            charge_id = yield ctx.start_child_workflow("golden.charge-customer", [order_id, reservation_id])
+        except ChildWorkflowFailed as exc:
+            return (
+                yield ctx.schedule_activity(
+                    "golden.release-inventory",
+                    [order_id, reservation_id, str(exc)],
+                )
+            )
+
+        return {"reservation_id": reservation_id, "charge_id": charge_id}
+
+
 def _golden_cases() -> list[dict[str, Any]]:
     with FIXTURE_PATH.open() as handle:
         cases = json.load(handle)
@@ -76,6 +94,7 @@ def test_golden_history_replay_contract(case: dict[str, Any]) -> None:
             GoldenSignalWaitWorkflow,
             GoldenTimeoutWaitWorkflow,
             GoldenVersionMarkerWorkflow,
+            GoldenSagaCompensationWorkflow,
         ],
     )
 

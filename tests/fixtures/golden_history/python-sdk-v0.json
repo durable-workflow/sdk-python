@@ -103,5 +103,29 @@
       "activity_type": "golden.version-new-path",
       "arguments": []
     }
+  },
+  {
+    "name": "saga_compensates_after_child_failure",
+    "workflow_type": "golden.saga-compensation",
+    "start_input": ["order-123"],
+    "history": [
+      {
+        "event_type": "ActivityCompleted",
+        "payload": {
+          "result": "\"reservation-456\""
+        }
+      },
+      {
+        "event_type": "ChildRunFailed",
+        "payload": {
+          "message": "payment declined"
+        }
+      }
+    ],
+    "expected": {
+      "command_type": "ScheduleActivity",
+      "activity_type": "golden.release-inventory",
+      "arguments": ["order-123", "reservation-456", "payment declined"]
+    }
   }
 ]
