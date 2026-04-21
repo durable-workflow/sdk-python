@@ -184,6 +184,19 @@ quiet_client = Client(
 )
 ```
 
+## Avro payload type boundaries
+
+The default Avro codec uses a generic JSON wrapper so PHP, Python, and other
+workers can exchange the same wire format. It preserves JSON-native values:
+`None`, booleans, numbers, strings, lists, and dictionaries with string keys.
+
+Class-carrying values are not encoded with type metadata. Convert pydantic
+models, attrs classes, dataclasses, pendulum values, `datetime` / `date` /
+`time`, `UUID`, `Decimal`, and plain `Enum` values to explicit dictionaries or
+scalars before passing them to the SDK. `IntEnum` and `StrEnum` encode because
+they are JSON scalar subclasses, but they decode as `int` and `str`.
+`OrderedDict` decodes as a plain `dict`.
+
 ## Authentication
 
 For local servers that use one shared bearer token, pass `token=`:

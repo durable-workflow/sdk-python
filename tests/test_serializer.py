@@ -1,4 +1,10 @@
 import logging
+from collections import OrderedDict
+from dataclasses import dataclass
+from datetime import date, datetime, time, timezone
+from decimal import Decimal
+from enum import Enum, IntEnum
+from uuid import UUID
 
 import pytest
 
@@ -15,6 +21,33 @@ except ImportError:
 requires_avro = pytest.mark.skipif(
     not _AVRO_AVAILABLE, reason="avro package not installed"
 )
+
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - Python < 3.11 compatibility
+    StrEnum = None  # type: ignore[assignment,misc]
+
+
+@dataclass
+class SerializerDataclass:
+    name: str
+    count: int
+
+
+class SerializerEnum(Enum):
+    PENDING = "pending"
+
+
+class SerializerIntEnum(IntEnum):
+    LOW = 1
+
+
+if StrEnum is not None:
+
+    class SerializerStrEnum(StrEnum):
+        HIGH = "high"
+else:
+    SerializerStrEnum = None
 
 
 class TestEncode:
@@ -169,6 +202,40 @@ class TestAvroCodec:
         for value in ([], [1, 2, 3], {}, {"a": 1, "b": [2, 3]}, [{"k": "v"}]):
             blob = serializer.encode(value, codec="avro")
             assert serializer.decode(blob, codec="avro") == value
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            SerializerDataclass(name="Ada", count=2),
+            datetime(2026, 4, 21, 10, 30, tzinfo=timezone.utc),
+            date(2026, 4, 21),
+            time(10, 30, tzinfo=timezone.utc),
+            UUID("12345678-1234-5678-1234-567812345678"),
+            Decimal("10.25"),
+            SerializerEnum.PENDING,
+        ],
+    )
+    def test_json_unsupported_user_types_fail_encode(self, value: object) -> None:
+        with pytest.raises(TypeError, match="not JSON serializable"):
+            serializer.encode(value, codec="avro")
+
+    def test_ordered_dict_decodes_as_plain_dict(self) -> None:
+        value = OrderedDict([("first", 1), ("second", 2)])
+        decoded = serializer.decode(serializer.encode(value, codec="avro"), codec="avro")
+        assert decoded == {"first": 1, "second": 2}
+        assert type(decoded) is dict
+
+    def test_int_enum_decodes_as_int(self) -> None:
+        decoded = serializer.decode(serializer.encode(SerializerIntEnum.LOW, codec="avro"), codec="avro")
+        assert decoded == 1
+        assert type(decoded) is int
+
+    @pytest.mark.skipif(StrEnum is None, reason="StrEnum requires Python 3.11+")
+    def test_str_enum_decodes_as_str(self) -> None:
+        assert SerializerStrEnum is not None
+        decoded = serializer.decode(serializer.encode(SerializerStrEnum.HIGH, codec="avro"), codec="avro")
+        assert decoded == "high"
+        assert type(decoded) is str
 
     @pytest.mark.parametrize(
         "name,blob,expected",

@@ -6,9 +6,20 @@ wire when the ``payload_codec`` tag is ``"avro"``.  The wire layout is:
     base64( 0x00 || avro_binary( record{ json: string, version: int } ) )
 
 The ``json`` field carries ``json.dumps(value)``; ``version`` is currently
-``1``.  A ``0x01`` prefix is reserved for typed-schema payloads — those
-are not yet encodeable/decodeable from this SDK because typed schemas
-require a schema registry that is out of scope for the first Avro release.
+``1``. That means the generic wrapper preserves only JSON-native shapes:
+``None``, booleans, numbers, strings, lists, and mappings with string keys.
+Class identity is not carried on the wire. ``OrderedDict`` decodes as a plain
+``dict``; ``IntEnum`` decodes as ``int``; and ``StrEnum`` decodes as ``str``.
+Objects that the standard library JSON encoder does not know how to encode,
+including dataclasses, attrs classes, pydantic models, pendulum values,
+``datetime`` / ``date`` / ``time``, ``uuid.UUID``, ``decimal.Decimal``, and
+plain ``Enum`` values, raise ``TypeError`` during encode. Convert those values
+to explicit JSON-native dictionaries or scalars before passing them to the
+SDK, then rebuild domain objects in workflow or activity code.
+
+A ``0x01`` prefix is reserved for typed-schema payloads — those are not yet
+encodeable/decodeable from this SDK because typed schemas require a schema
+registry that is out of scope for the first Avro release.
 
 The ``avro`` third-party package is a core runtime dependency. If it is
 missing from a broken or partial installation, calling :func:`encode` or
@@ -49,6 +60,8 @@ def encode(value: Any) -> str:
     """Encode a Python value as an Avro generic-wrapper payload blob.
 
     Returns a base64 string the server accepts under ``payload_codec="avro"``.
+    The generic wrapper accepts the same value shapes as ``json.dumps``; adapt
+    domain objects to JSON-native data before encoding.
     """
     try:
         import avro.io

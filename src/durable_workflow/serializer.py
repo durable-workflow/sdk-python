@@ -10,6 +10,11 @@ Supported codecs:
   existing data only, not used for new workflows.
 - ``"avro"`` — the blob is a base64-encoded Avro generic-wrapper payload
   (see :mod:`durable_workflow._avro`). Default for all new v2 workflows.
+  The wrapper carries JSON-native values only. Class-carrying values such as
+  dataclasses, attrs classes, pydantic models, pendulum values, datetimes,
+  UUIDs, ``Decimal``, and plain ``Enum`` values need an explicit adapter to a
+  dictionary or scalar before encode; JSON-subclass values such as ``IntEnum``
+  and ``StrEnum`` round-trip as their JSON scalar, not as the original class.
 """
 from __future__ import annotations
 
