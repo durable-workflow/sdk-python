@@ -90,6 +90,11 @@ PHP_HISTORY_EVENT_EXPECTED_KEYS = {
     ],
     "ConditionWaitSatisfied": [
         "condition_wait_id",
+        "condition_key",
+        "condition_definition_fingerprint",
+        "sequence",
+        "timer_id",
+        "timeout_seconds",
     ],
     "SideEffectRecorded": [
         "sequence",
@@ -135,6 +140,7 @@ PHP_HISTORY_EVENT_EXPECTED_KEYS = {
     "SearchAttributesUpserted": [
         "sequence",
         "attributes",
+        "merged",
     ],
 }
 
@@ -237,6 +243,11 @@ PHP_HISTORY_EVENT_FIXTURES = [
         "event_type": "ConditionWaitSatisfied",
         "payload": {
             "condition_wait_id": "wait-1",
+            "condition_key": "approval",
+            "condition_definition_fingerprint": None,
+            "sequence": 4,
+            "timer_id": None,
+            "timeout_seconds": 30,
         },
     },
     {
@@ -287,6 +298,7 @@ PHP_HISTORY_EVENT_FIXTURES = [
         "payload": {
             "sequence": 9,
             "attributes": {"status": "done"},
+            "merged": True,
         },
     },
 ]
