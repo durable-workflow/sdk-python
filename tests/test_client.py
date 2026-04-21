@@ -305,6 +305,35 @@ class TestSignalWorkflow:
             assert body["input"]["codec"] == "avro"
             assert serializer.decode(body["input"]["blob"], codec="avro") == ["data"]
 
+    @pytest.mark.asyncio
+    async def test_signal_request_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-signal-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        expected = sdk["expected_body"]
+        envelope_contract = sdk["payload_envelope"]
+
+        resp = _mock_response(200, {"ok": True})
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.signal_workflow(**sdk["args"])
+
+        call_args = mock.call_args
+        assert call_args.args[0] == fixture["request"]["method"]
+        assert call_args.args[1] == f"/api{fixture['request']['path']}"
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+
+        for field, value in expected.items():
+            assert body[field] == value
+
+        envelope = body[envelope_contract["field"]]
+        assert envelope["codec"] == envelope_contract["codec"]
+        assert serializer.decode(envelope["blob"], codec=envelope["codec"]) == envelope_contract["decoded"]
+
+        semantic = fixture["semantic_body"]
+        assert sdk["args"]["workflow_id"] == semantic["workflow_id"]
+        assert sdk["args"]["signal_name"] == semantic["signal_name"]
+
 
 class TestCancelWorkflow:
     @pytest.mark.asyncio

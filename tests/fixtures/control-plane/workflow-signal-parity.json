@@ -1,0 +1,61 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow.signal",
+  "request": {
+    "method": "POST",
+    "path": "/workflows/wf-polyglot-231/signal/approval.received"
+  },
+  "semantic_body": {
+    "workflow_id": "wf-polyglot-231",
+    "signal_name": "approval.received",
+    "input": [
+      {
+        "approved_by": "ada",
+        "approved": true,
+        "notes": "ship it"
+      }
+    ]
+  },
+  "cli": {
+    "argv": {
+      "workflow-id": "wf-polyglot-231",
+      "signal-name": "approval.received",
+      "--input": "[{\"approved_by\":\"ada\",\"approved\":true,\"notes\":\"ship it\"}]"
+    },
+    "expected_body": {
+      "input": [
+        {
+          "approved_by": "ada",
+          "approved": true,
+          "notes": "ship it"
+        }
+      ]
+    }
+  },
+  "sdk_python": {
+    "args": {
+      "workflow_id": "wf-polyglot-231",
+      "signal_name": "approval.received",
+      "args": [
+        {
+          "approved_by": "ada",
+          "approved": true,
+          "notes": "ship it"
+        }
+      ]
+    },
+    "expected_body": {},
+    "payload_envelope": {
+      "field": "input",
+      "codec": "avro",
+      "decoded": [
+        {
+          "approved_by": "ada",
+          "approved": true,
+          "notes": "ship it"
+        }
+      ]
+    }
+  }
+}
