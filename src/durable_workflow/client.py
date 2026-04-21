@@ -335,6 +335,9 @@ class Client:
         timeout: float = 60.0,
         retry_policy: TransportRetryPolicy | None = None,
         metrics: MetricsRecorder | None = None,
+        payload_size_limit_bytes: int = serializer.DEFAULT_PAYLOAD_SIZE_BYTES,
+        payload_size_warning_threshold_percent: int = serializer.DEFAULT_WARNING_THRESHOLD_PERCENT,
+        payload_size_warnings: bool = True,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
@@ -343,6 +346,14 @@ class Client:
         self.namespace = namespace
         self.retry_policy = retry_policy or TransportRetryPolicy()
         self.metrics = metrics or NOOP_METRICS
+        self.payload_size_warning_config = (
+            serializer.PayloadSizeWarningConfig(
+                limit_bytes=payload_size_limit_bytes,
+                threshold_percent=payload_size_warning_threshold_percent,
+            )
+            if payload_size_warnings
+            else None
+        )
         self._http = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
 
     async def aclose(self) -> None:
@@ -375,6 +386,84 @@ class Client:
         if worker:
             return self.worker_token or self.token or self.control_token
         return self.control_token or self.token or self.worker_token
+
+    def _payload_context(
+        self,
+        *,
+        kind: str,
+        workflow_id: str | None = None,
+        run_id: str | None = None,
+        activity_name: str | None = None,
+        signal_name: str | None = None,
+        update_name: str | None = None,
+        query_name: str | None = None,
+        schedule_id: str | None = None,
+        task_queue: str | None = None,
+    ) -> serializer.PayloadSizeWarningContext:
+        return serializer.PayloadSizeWarningContext(
+            kind=kind,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            activity_name=activity_name,
+            signal_name=signal_name,
+            update_name=update_name,
+            query_name=query_name,
+            schedule_id=schedule_id,
+            task_queue=task_queue,
+            namespace=self.namespace,
+        )
+
+    def _payload_envelope(
+        self,
+        value: Any,
+        *,
+        kind: str,
+        codec: str = serializer.AVRO_CODEC,
+        workflow_id: str | None = None,
+        run_id: str | None = None,
+        activity_name: str | None = None,
+        signal_name: str | None = None,
+        update_name: str | None = None,
+        query_name: str | None = None,
+        schedule_id: str | None = None,
+        task_queue: str | None = None,
+    ) -> dict[str, str]:
+        return serializer.envelope(
+            value,
+            codec=codec,
+            size_warning=self.payload_size_warning_config,
+            warning_context=self._payload_context(
+                kind=kind,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                activity_name=activity_name,
+                signal_name=signal_name,
+                update_name=update_name,
+                query_name=query_name,
+                schedule_id=schedule_id,
+                task_queue=task_queue,
+            ),
+        )
+
+    def _warn_json_payload_size(
+        self,
+        value: Any,
+        *,
+        kind: str,
+        workflow_id: str | None = None,
+        schedule_id: str | None = None,
+        task_queue: str | None = None,
+    ) -> None:
+        serializer.warn_if_json_payload_near_limit(
+            value,
+            size_warning=self.payload_size_warning_config,
+            warning_context=self._payload_context(
+                kind=kind,
+                workflow_id=workflow_id,
+                schedule_id=schedule_id,
+                task_queue=task_queue,
+            ),
+        )
 
     async def _request(
         self,
@@ -509,7 +598,12 @@ class Client:
             "workflow_id": workflow_id,
             "workflow_type": workflow_type,
             "task_queue": task_queue,
-            "input": serializer.envelope(input if input is not None else []),
+            "input": self._payload_envelope(
+                input if input is not None else [],
+                kind="workflow_input",
+                workflow_id=workflow_id,
+                task_queue=task_queue,
+            ),
             "execution_timeout_seconds": execution_timeout_seconds,
             "run_timeout_seconds": run_timeout_seconds,
         }
@@ -518,6 +612,12 @@ class Client:
         if memo is not None:
             body["memo"] = memo
         if search_attributes is not None:
+            self._warn_json_payload_size(
+                search_attributes,
+                kind="search_attributes",
+                workflow_id=workflow_id,
+                task_queue=task_queue,
+            )
             body["search_attributes"] = search_attributes
         data = await self._request("POST", "/workflows", json=body, context=workflow_id)
         return WorkflowHandle(
@@ -620,7 +720,12 @@ class Client:
         """
         body: dict[str, Any] = {}
         if args:
-            body["input"] = serializer.envelope(args)
+            body["input"] = self._payload_envelope(
+                args,
+                kind="signal",
+                workflow_id=workflow_id,
+                signal_name=signal_name,
+            )
         await self._request("POST", f"/workflows/{workflow_id}/signal/{signal_name}", json=body, context=workflow_id)
 
     async def query_workflow(
@@ -635,7 +740,12 @@ class Client:
         """
         body: dict[str, Any] = {}
         if args:
-            body["input"] = serializer.envelope(args)
+            body["input"] = self._payload_envelope(
+                args,
+                kind="query",
+                workflow_id=workflow_id,
+                query_name=query_name,
+            )
         return await self._request(
             "POST", f"/workflows/{workflow_id}/query/{query_name}", json=body, context=workflow_id
         )
@@ -687,7 +797,12 @@ class Client:
         """
         body: dict[str, Any] = {}
         if args:
-            body["input"] = serializer.envelope(args)
+            body["input"] = self._payload_envelope(
+                args,
+                kind="update",
+                workflow_id=workflow_id,
+                update_name=update_name,
+            )
         if wait_for is not None:
             body["wait_for"] = wait_for
         if wait_timeout_seconds is not None:
@@ -799,6 +914,11 @@ class Client:
         if memo is not None:
             body["memo"] = memo
         if search_attributes is not None:
+            self._warn_json_payload_size(
+                search_attributes,
+                kind="schedule_search_attributes",
+                schedule_id=schedule_id,
+            )
             body["search_attributes"] = search_attributes
         if paused:
             body["paused"] = True
@@ -889,6 +1009,11 @@ class Client:
         if memo is not None:
             body["memo"] = memo
         if search_attributes is not None:
+            self._warn_json_payload_size(
+                search_attributes,
+                kind="schedule_search_attributes",
+                schedule_id=schedule_id,
+            )
             body["search_attributes"] = search_attributes
         if note is not None:
             body["note"] = note
@@ -1117,13 +1242,23 @@ class Client:
         query_task_attempt: int,
         result: Any,
         codec: str = serializer.AVRO_CODEC,
+        workflow_id: str | None = None,
+        run_id: str | None = None,
+        query_name: str | None = None,
     ) -> Any:
         """Submit the successful result for a worker-routed query task."""
         body: dict[str, Any] = {
             "lease_owner": lease_owner,
             "query_task_attempt": query_task_attempt,
             "result": result,
-            "result_envelope": serializer.envelope(result, codec=codec),
+            "result_envelope": self._payload_envelope(
+                result,
+                codec=codec,
+                kind="query_result",
+                workflow_id=workflow_id,
+                run_id=run_id,
+                query_name=query_name,
+            ),
         }
         return await self._request(
             "POST", f"/worker/query-tasks/{query_task_id}/complete", worker=True, json=body
@@ -1180,12 +1315,18 @@ class Client:
         lease_owner: str,
         result: Any,
         codec: str = serializer.AVRO_CODEC,
+        activity_name: str | None = None,
     ) -> Any:
         """Report successful activity execution and submit the encoded result."""
         body: dict[str, Any] = {
             "activity_attempt_id": activity_attempt_id,
             "lease_owner": lease_owner,
-            "result": serializer.envelope(result, codec=codec),
+            "result": self._payload_envelope(
+                result,
+                codec=codec,
+                kind="activity_result",
+                activity_name=activity_name,
+            ),
         }
         return await self._request(
             "POST", f"/worker/activity-tasks/{task_id}/complete", worker=True, json=body
@@ -1203,6 +1344,7 @@ class Client:
         non_retryable: bool = False,
         details: Any | None = None,
         codec: str = serializer.AVRO_CODEC,
+        activity_name: str | None = None,
     ) -> Any:
         """Report a failed activity attempt.
 
@@ -1218,7 +1360,12 @@ class Client:
         if non_retryable:
             failure["non_retryable"] = True
         if details is not None:
-            failure["details"] = serializer.envelope(details, codec=codec)
+            failure["details"] = self._payload_envelope(
+                details,
+                codec=codec,
+                kind="activity_failure_details",
+                activity_name=activity_name,
+            )
         body: dict[str, Any] = {
             "activity_attempt_id": activity_attempt_id,
             "lease_owner": lease_owner,

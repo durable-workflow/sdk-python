@@ -501,6 +501,7 @@ class Worker:
                 lease_owner=self.worker_id,
                 result=result,
                 codec=result_codec,
+                activity_name=activity_type,
             )
         except Exception as e:
             log.warning("failed to complete activity task %s: %s", task_id, e)
@@ -588,6 +589,9 @@ class Worker:
             query_task_attempt=attempt,
             result=result,
             codec=result_codec,
+            workflow_id=task.get("workflow_id"),
+            run_id=task.get("run_id"),
+            query_name=query_name,
         )
         return "completed"
 

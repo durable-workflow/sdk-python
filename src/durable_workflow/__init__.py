@@ -47,6 +47,7 @@ from .metrics import (
     PrometheusMetrics,
 )
 from .retry_policy import RetryPolicy, TransportRetryPolicy
+from .serializer import PayloadSizeWarningConfig, PayloadSizeWarningContext
 from .worker import Worker
 from .workflow import ActivityRetryPolicy, ChildWorkflowRetryPolicy, ContinueAsNew, StartChildWorkflow
 
@@ -87,6 +88,8 @@ __all__ = [
     "NoopMetrics",
     "QueryFailed",
     "PrometheusMetrics",
+    "PayloadSizeWarningConfig",
+    "PayloadSizeWarningContext",
     "RetryPolicy",
     "ServerError",
     "TransportRetryPolicy",

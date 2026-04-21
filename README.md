@@ -140,7 +140,31 @@ advertise support for the target workflow type.
 - **Polyglot**: Works alongside PHP workers on the same task queue
 - **HTTP/JSON protocol**: No gRPC, no protobuf dependencies
 - **Codec envelopes**: Avro payloads by default, with JSON decode compatibility for existing history
+- **Payload-size warnings**: Structured warnings before oversized workflow, activity, signal, update, query, or search-attribute payloads reach the server
 - **Metrics hooks**: Pluggable counters and histograms, with an optional Prometheus adapter
+
+## Payload-size warnings
+
+The SDK logs a structured warning before an encoded payload reaches 80% of the
+default 2 MiB server payload limit. Warnings include context such as
+`workflow_id`, `activity_name`, `signal_name`, `update_name`, `query_name`,
+`payload_size`, `threshold_bytes`, and `limit_bytes` when those fields are
+known at the call site.
+
+Tune or disable the warning threshold on the client:
+
+```python
+client = Client(
+    "https://workflow.example.internal",
+    payload_size_limit_bytes=4 * 1024 * 1024,
+    payload_size_warning_threshold_percent=75,
+)
+
+quiet_client = Client(
+    "https://workflow.example.internal",
+    payload_size_warnings=False,
+)
+```
 
 ## Authentication
 

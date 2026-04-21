@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -100,6 +101,76 @@ class TestStartWorkflow:
             assert body["workflow_type"] == "greeter"
             assert body["input"]["codec"] == "avro"
             assert serializer.decode(body["input"]["blob"], codec="avro") == ["hello"]
+
+    @pytest.mark.asyncio
+    async def test_warns_when_start_input_approaches_payload_limit(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = Client(
+            "http://localhost:8080",
+            token="test-token",
+            namespace="ns1",
+            payload_size_limit_bytes=10,
+            payload_size_warning_threshold_percent=50,
+        )
+        resp = _mock_response(201, {
+            "workflow_id": "wf-1",
+            "run_id": "run-1",
+            "workflow_type": "greeter",
+        })
+
+        with (
+            caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"),
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+        ):
+            await client.start_workflow(
+                workflow_type="greeter",
+                task_queue="q1",
+                workflow_id="wf-1",
+                input=["this payload is intentionally large"],
+            )
+
+        payload = caplog.records[0].durable_workflow_payload
+        assert payload["kind"] == "workflow_input"
+        assert payload["workflow_id"] == "wf-1"
+        assert payload["task_queue"] == "q1"
+        assert payload["namespace"] == "ns1"
+        assert payload["threshold_bytes"] == 5
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_warns_when_search_attributes_approach_payload_limit(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = Client(
+            "http://localhost:8080",
+            namespace="ns1",
+            payload_size_limit_bytes=10,
+            payload_size_warning_threshold_percent=50,
+        )
+        resp = _mock_response(201, {
+            "workflow_id": "wf-1",
+            "run_id": "run-1",
+            "workflow_type": "greeter",
+        })
+
+        with (
+            caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"),
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+        ):
+            await client.start_workflow(
+                workflow_type="greeter",
+                task_queue="q1",
+                workflow_id="wf-1",
+                search_attributes={"CustomerId": "customer-" + ("x" * 20)},
+            )
+
+        payloads = [record.durable_workflow_payload for record in caplog.records]
+        search_payload = next(payload for payload in payloads if payload["kind"] == "search_attributes")
+        assert search_payload["workflow_id"] == "wf-1"
+        assert search_payload["task_queue"] == "q1"
+        assert search_payload["codec"] == "json"
+        await client.aclose()
 
     @pytest.mark.asyncio
     async def test_duplicate_raises(self, client: Client) -> None:

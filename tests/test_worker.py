@@ -315,6 +315,9 @@ class TestWorkflowTaskExecution:
             query_task_attempt=1,
             result={"status": "ready"},
             codec="json",
+            workflow_id=None,
+            run_id=None,
+            query_name="status",
         )
         mock_client.fail_query_task.assert_not_called()
 
