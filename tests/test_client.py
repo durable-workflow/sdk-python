@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -101,6 +102,43 @@ class TestStartWorkflow:
             assert body["workflow_type"] == "greeter"
             assert body["input"]["codec"] == "avro"
             assert serializer.decode(body["input"]["blob"], codec="avro") == ["hello"]
+
+    @pytest.mark.asyncio
+    async def test_start_request_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-start-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        expected = sdk["expected_body"]
+        envelope_contract = sdk["payload_envelope"]
+
+        resp = _mock_response(201, {
+            "workflow_id": fixture["semantic_body"]["workflow_id"],
+            "run_id": "run-polyglot-231",
+            "workflow_type": fixture["semantic_body"]["workflow_type"],
+            "namespace": "ns1",
+            "status": "running",
+        })
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            handle = await client.start_workflow(**sdk["kwargs"])
+
+        assert handle.workflow_id == fixture["semantic_body"]["workflow_id"]
+
+        call_args = mock.call_args
+        assert call_args.args[0] == fixture["request"]["method"]
+        assert call_args.args[1] == f"/api{fixture['request']['path']}"
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+
+        for field, value in expected.items():
+            assert body[field] == value
+
+        envelope = body[envelope_contract["field"]]
+        assert envelope["codec"] == envelope_contract["codec"]
+        assert serializer.decode(envelope["blob"], codec=envelope["codec"]) == envelope_contract["decoded"]
+
+        semantic = fixture["semantic_body"]
+        for field in ["workflow_type", "workflow_id", "task_queue", "memo", "search_attributes", "duplicate_policy"]:
+            assert body[field] == semantic[field]
 
     @pytest.mark.asyncio
     async def test_warns_when_start_input_approaches_payload_limit(

@@ -1,0 +1,115 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow.start",
+  "request": {
+    "method": "POST",
+    "path": "/workflows"
+  },
+  "semantic_body": {
+    "workflow_type": "orders.process",
+    "workflow_id": "wf-polyglot-231",
+    "task_queue": "orders",
+    "input": [
+      {
+        "order_id": 42,
+        "priority": "gold"
+      }
+    ],
+    "memo": {
+      "source": "polyglot-fixture"
+    },
+    "search_attributes": {
+      "CustomerId": "cust-42",
+      "Tier": "gold"
+    },
+    "execution_timeout_seconds": 300,
+    "run_timeout_seconds": 120,
+    "duplicate_policy": "use-existing"
+  },
+  "cli": {
+    "argv": {
+      "--type": "orders.process",
+      "--workflow-id": "wf-polyglot-231",
+      "--task-queue": "orders",
+      "--input": "[{\"order_id\":42,\"priority\":\"gold\"}]",
+      "--memo": "{\"source\":\"polyglot-fixture\"}",
+      "--search-attr": [
+        "CustomerId=cust-42",
+        "Tier=gold"
+      ],
+      "--execution-timeout": "300",
+      "--run-timeout": "120",
+      "--duplicate-policy": "use-existing"
+    },
+    "expected_body": {
+      "workflow_type": "orders.process",
+      "workflow_id": "wf-polyglot-231",
+      "task_queue": "orders",
+      "duplicate_policy": "use-existing",
+      "input": [
+        {
+          "order_id": 42,
+          "priority": "gold"
+        }
+      ],
+      "memo": {
+        "source": "polyglot-fixture"
+      },
+      "execution_timeout_seconds": 300,
+      "run_timeout_seconds": 120,
+      "search_attributes": {
+        "CustomerId": "cust-42",
+        "Tier": "gold"
+      }
+    }
+  },
+  "sdk_python": {
+    "kwargs": {
+      "workflow_type": "orders.process",
+      "workflow_id": "wf-polyglot-231",
+      "task_queue": "orders",
+      "input": [
+        {
+          "order_id": 42,
+          "priority": "gold"
+        }
+      ],
+      "memo": {
+        "source": "polyglot-fixture"
+      },
+      "search_attributes": {
+        "CustomerId": "cust-42",
+        "Tier": "gold"
+      },
+      "execution_timeout_seconds": 300,
+      "run_timeout_seconds": 120,
+      "duplicate_policy": "use-existing"
+    },
+    "expected_body": {
+      "workflow_type": "orders.process",
+      "workflow_id": "wf-polyglot-231",
+      "task_queue": "orders",
+      "duplicate_policy": "use-existing",
+      "memo": {
+        "source": "polyglot-fixture"
+      },
+      "search_attributes": {
+        "CustomerId": "cust-42",
+        "Tier": "gold"
+      },
+      "execution_timeout_seconds": 300,
+      "run_timeout_seconds": 120
+    },
+    "payload_envelope": {
+      "field": "input",
+      "codec": "avro",
+      "decoded": [
+        {
+          "order_id": 42,
+          "priority": "gold"
+        }
+      ]
+    }
+  }
+}
