@@ -144,6 +144,13 @@ server. Query routing and synchronous pre-accept update validator execution are
 still server-side follow-ups; use those paths only with deployments that
 advertise support for the target workflow type.
 
+Use `yield ctx.wait_condition(lambda: self.approved, key="approved",
+timeout=30)` to wait for signal- or update-mutated workflow state without
+polling timers by hand. The SDK sends a stable predicate fingerprint with the
+durable wait command and rejects replay if history records a different wait
+key or predicate fingerprint, so condition changes fail visibly instead of
+silently resolving a different wait.
+
 Workers fingerprint registered workflow class definitions and advertise those
 fingerprints during registration. Re-registering the same `worker_id` with a
 changed class body for an already advertised workflow type raises immediately;

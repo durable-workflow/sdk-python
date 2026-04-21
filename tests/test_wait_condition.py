@@ -3,6 +3,7 @@ from __future__ import annotations
 from durable_workflow import serializer, workflow
 from durable_workflow.workflow import (
     CompleteWorkflow,
+    FailWorkflow,
     WaitCondition,
     WorkflowContext,
     replay,
@@ -67,6 +68,8 @@ class TestCtxWaitCondition:
         assert isinstance(cmd, WaitCondition)
         assert cmd.condition_key == "k"
         assert cmd.timeout_seconds == 5
+        assert cmd.condition_definition_fingerprint is not None
+        assert cmd.condition_definition_fingerprint.startswith("sha256:")
         assert callable(cmd.predicate)
         assert cmd.predicate() is False
 
@@ -95,6 +98,7 @@ class TestWaitConditionToServerCommand:
         cmd = WaitCondition(
             predicate=lambda: True,
             condition_key="order",
+            condition_definition_fingerprint="sha256:condition",
             timeout_seconds=60,
         )
 
@@ -103,6 +107,7 @@ class TestWaitConditionToServerCommand:
         assert server_cmd == {
             "type": "open_condition_wait",
             "condition_key": "order",
+            "condition_definition_fingerprint": "sha256:condition",
             "timeout_seconds": 60,
         }
 
@@ -195,6 +200,70 @@ class TestReplayWaitCondition:
 
         assert len(outcome.commands) == 1
         assert isinstance(outcome.commands[0], WaitCondition)
+
+    def test_replay_rejects_changed_condition_key(self) -> None:
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-1", "condition_key": "old-key"},
+            },
+        ]
+
+        outcome = replay(WaitUntilApproved, history, [])
+
+        assert len(outcome.commands) == 1
+        assert not isinstance(outcome.commands[0], CompleteWorkflow)
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, FailWorkflow)
+        assert cmd.exception_type == "NonDeterministicWaitCondition"
+        assert "key changed" in cmd.message
+
+    def test_replay_rejects_changed_condition_fingerprint(self) -> None:
+        initial = replay(WaitUntilApproved, [], [])
+        assert isinstance(initial.commands[0], WaitCondition)
+        fingerprint = initial.commands[0].condition_definition_fingerprint
+        assert fingerprint is not None
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-1",
+                    "condition_key": "approved",
+                    "condition_definition_fingerprint": "sha256:different",
+                },
+            },
+        ]
+
+        outcome = replay(WaitUntilApproved, history, [])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, FailWorkflow)
+        assert cmd.exception_type == "NonDeterministicWaitCondition"
+        assert "predicate fingerprint changed" in cmd.message
+        assert fingerprint in cmd.message
+
+    def test_replay_accepts_matching_condition_fingerprint(self) -> None:
+        initial = replay(WaitUntilApproved, [], [])
+        assert isinstance(initial.commands[0], WaitCondition)
+        fingerprint = initial.commands[0].condition_definition_fingerprint
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-1",
+                    "condition_key": "approved",
+                    "condition_definition_fingerprint": fingerprint,
+                },
+            },
+            _signal_received_event("approve", []),
+        ]
+
+        outcome = replay(WaitUntilApproved, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == "approved"
 
     def test_condition_timeout_does_not_pollute_start_timer_resolved_results(self) -> None:
         @workflow.defn(name="wait-then-sleep")

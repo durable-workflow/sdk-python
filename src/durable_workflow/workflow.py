@@ -678,6 +678,30 @@ class WaitCondition:
         return cmd
 
 
+def _condition_predicate_fingerprint(predicate: Callable[[], bool]) -> str:
+    h = hashlib.sha256()
+    h.update(b"durable-workflow-python.wait-condition.v1\0")
+    h.update(f"{getattr(predicate, '__module__', '')}\0".encode())
+    h.update(f"{getattr(predicate, '__qualname__', '')}\0".encode())
+
+    code = getattr(predicate, "__code__", None)
+    if code is None:
+        h.update(repr(predicate).encode())
+    else:
+        h.update(repr((
+            code.co_argcount,
+            code.co_posonlyargcount,
+            code.co_kwonlyargcount,
+            code.co_code,
+            code.co_consts,
+            code.co_names,
+            code.co_varnames,
+            code.co_freevars,
+        )).encode())
+
+    return f"sha256:{h.hexdigest()}"
+
+
 Command = (
     ScheduleActivity | StartTimer | CompleteWorkflow | FailWorkflow
     | CompleteUpdate | FailUpdate | ContinueAsNew | RecordSideEffect | StartChildWorkflow
@@ -960,6 +984,7 @@ class WorkflowContext:
         return WaitCondition(
             predicate=predicate,
             condition_key=key,
+            condition_definition_fingerprint=_condition_predicate_fingerprint(predicate),
             timeout_seconds=timeout_seconds,
         )
 
@@ -1551,10 +1576,10 @@ def _replay_state(
     # external receivers apply before the generator consumes the resolved_result
     # at the stored index, preserving history interleaving with activities.
     pending_receivers: list[tuple[int, str, str, list[Any]]] = []
-    # Ordered list of condition_wait_id strings from ConditionWaitOpened events,
-    # used by ``WaitCondition`` yields to match against their corresponding
-    # opened wait in history (Nth yield ↔ Nth opened).
-    wait_opened_ids: list[str] = []
+    # Ordered ``ConditionWaitOpened`` payloads, used by ``WaitCondition`` yields
+    # to match against their corresponding opened wait in history
+    # (Nth yield ↔ Nth opened).
+    wait_opened: list[dict[str, Any]] = []
     # Map condition_wait_id → resolution: 'satisfied' (from ConditionWaitSatisfied
     # in history, future server-recorded) or 'timed_out' (from a matching
     # condition_timeout TimerFired event).
@@ -1577,7 +1602,7 @@ def _replay_state(
         elif etype == "ConditionWaitOpened":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
-                wait_opened_ids.append(wait_id)
+                wait_opened.append(dict(payload))
         elif etype == "ConditionWaitSatisfied":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
@@ -1734,8 +1759,35 @@ def _replay_state(
                 continue
             if isinstance(cmd, WaitCondition):
                 resolution: str | None = None
-                if wait_yield_count < len(wait_opened_ids):
-                    resolution = wait_resolutions.get(wait_opened_ids[wait_yield_count])
+                opened: dict[str, Any] | None = None
+                if wait_yield_count < len(wait_opened):
+                    opened = wait_opened[wait_yield_count]
+                    opened_id = opened.get("condition_wait_id")
+                    if isinstance(opened_id, str):
+                        resolution = wait_resolutions.get(opened_id)
+                    opened_key = opened.get("condition_key")
+                    if isinstance(opened_key, str) and opened_key != (cmd.condition_key or ""):
+                        return _state([FailWorkflow(
+                            message=(
+                                "wait_condition key changed during replay: "
+                                f"history has {opened_key!r}, workflow yielded "
+                                f"{cmd.condition_key!r}"
+                            ),
+                            exception_type="NonDeterministicWaitCondition",
+                        )])
+                    opened_fingerprint = opened.get("condition_definition_fingerprint")
+                    if (
+                        isinstance(opened_fingerprint, str)
+                        and cmd.condition_definition_fingerprint != opened_fingerprint
+                    ):
+                        return _state([FailWorkflow(
+                            message=(
+                                "wait_condition predicate fingerprint changed during replay: "
+                                f"history has {opened_fingerprint!r}, workflow yielded "
+                                f"{cmd.condition_definition_fingerprint!r}"
+                            ),
+                            exception_type="NonDeterministicWaitCondition",
+                        )])
                 if resolution == "timed_out":
                     next_value = False
                     wait_yield_count += 1
