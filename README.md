@@ -198,6 +198,53 @@ scalars before passing them to the SDK. `IntEnum` and `StrEnum` encode because
 they are JSON scalar subclasses, but they decode as `int` and `str`.
 `OrderedDict` decodes as a plain `dict`.
 
+Use `to_avro_payload_value(...)` when a rich value should enter durable
+history through the default Avro envelope:
+
+```python
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from decimal import Decimal
+from enum import Enum
+from uuid import UUID
+
+from durable_workflow import Client, to_avro_payload_value
+
+
+class OrderStatus(Enum):
+    PENDING = "pending"
+
+
+@dataclass
+class OrderInput:
+    order_id: UUID
+    placed_at: datetime
+    amount: Decimal
+    status: OrderStatus
+
+
+order = OrderInput(
+    order_id=UUID("12345678-1234-5678-1234-567812345678"),
+    placed_at=datetime.now(timezone.utc),
+    amount=Decimal("10.25"),
+    status=OrderStatus.PENDING,
+)
+
+client = Client("http://server:8080", token="dev-token-123")
+await client.start_workflow(
+    "order-workflow",
+    task_queue="orders",
+    workflow_id="order-123",
+    input=[to_avro_payload_value(order)],
+)
+```
+
+The helper also accepts pydantic-style models with `model_dump(mode="json")`
+and attrs-style classes. Rebuild domain objects explicitly inside workflows or
+activities, for example `OrderInput(order_id=UUID(data["order_id"]), ...)`.
+Adapter output is part of the durable history contract, so changing that shape
+is a workflow compatibility change.
+
 ## Authentication
 
 For local servers that use one shared bearer token, pass `token=`:

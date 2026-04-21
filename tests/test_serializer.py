@@ -34,6 +34,14 @@ class SerializerDataclass:
     count: int
 
 
+@dataclass
+class SerializerOrder:
+    order_id: UUID
+    placed_at: datetime
+    amount: Decimal
+    status: "SerializerEnum"
+
+
 class SerializerEnum(Enum):
     PENDING = "pending"
 
@@ -48,6 +56,32 @@ if StrEnum is not None:
         HIGH = "high"
 else:
     SerializerStrEnum = None
+
+
+class _AttrsField:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class SerializerAttrsStyle:
+    __attrs_attrs__ = (_AttrsField("sku"), _AttrsField("quantity"))
+
+    def __init__(self, sku: str, quantity: int) -> None:
+        self.sku = sku
+        self.quantity = quantity
+
+
+class SerializerPydanticStyle:
+    __pydantic_fields__ = {"order_id": object()}
+
+    def __init__(self, order_id: UUID, due_on: date) -> None:
+        self.order_id = order_id
+        self.due_on = due_on
+
+    def model_dump(self, *, mode: str = "python") -> dict[str, object]:
+        if mode == "json":
+            return {"order_id": str(self.order_id), "due_on": self.due_on.isoformat()}
+        return {"order_id": self.order_id, "due_on": self.due_on}
 
 
 class TestEncode:
@@ -164,6 +198,66 @@ class TestBatchEncoding:
                 codec="json",
                 warning_context=[serializer.PayloadSizeWarningContext(kind="payload")],
             )
+
+
+class TestAvroPayloadAdapter:
+    def test_adapts_dataclass_datetime_uuid_decimal_and_enum(self) -> None:
+        order = SerializerOrder(
+            order_id=UUID("12345678-1234-5678-1234-567812345678"),
+            placed_at=datetime(2026, 4, 21, 10, 30, tzinfo=timezone.utc),
+            amount=Decimal("10.25"),
+            status=SerializerEnum.PENDING,
+        )
+
+        assert serializer.to_avro_payload_value(order) == {
+            "order_id": "12345678-1234-5678-1234-567812345678",
+            "placed_at": "2026-04-21T10:30:00+00:00",
+            "amount": "10.25",
+            "status": "pending",
+        }
+
+    def test_adapts_pydantic_style_models_through_json_mode_dump(self) -> None:
+        model = SerializerPydanticStyle(
+            UUID("12345678-1234-5678-1234-567812345678"),
+            date(2026, 4, 21),
+        )
+
+        assert serializer.to_avro_payload_value(model) == {
+            "order_id": "12345678-1234-5678-1234-567812345678",
+            "due_on": "2026-04-21",
+        }
+
+    def test_adapts_attrs_style_objects_and_sequences(self) -> None:
+        value = (SerializerAttrsStyle("ABC", 2), time(10, 30, tzinfo=timezone.utc))
+
+        assert serializer.to_avro_payload_value(value) == [
+            {"sku": "ABC", "quantity": 2},
+            "10:30:00+00:00",
+        ]
+
+    @requires_avro
+    def test_adapter_output_round_trips_through_default_avro_codec(self) -> None:
+        value = serializer.to_avro_payload_value(
+            {
+                "model": SerializerDataclass(name="Ada", count=2),
+                "ids": [UUID("12345678-1234-5678-1234-567812345678")],
+            }
+        )
+
+        blob = serializer.encode(value, codec="avro")
+
+        assert serializer.decode(blob, codec="avro") == {
+            "model": {"name": "Ada", "count": 2},
+            "ids": ["12345678-1234-5678-1234-567812345678"],
+        }
+
+    def test_adapter_rejects_non_string_mapping_keys(self) -> None:
+        with pytest.raises(TypeError, match="string keys"):
+            serializer.to_avro_payload_value({1: "one"})
+
+    def test_adapter_rejects_unadapted_objects(self) -> None:
+        with pytest.raises(TypeError, match="not Avro JSON payload safe"):
+            serializer.to_avro_payload_value(object())
 
 
 class TestPayloadSizeWarning:

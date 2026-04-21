@@ -58,7 +58,12 @@ from .metrics import (
     PrometheusMetrics,
 )
 from .retry_policy import RetryPolicy, TransportRetryPolicy
-from .serializer import PayloadSizeWarningConfig, PayloadSizeWarningContext
+from .serializer import (
+    PayloadSizeWarningConfig,
+    PayloadSizeWarningContext,
+    to_avro_payload_value,
+    to_avro_payload_values,
+)
 from .worker import Worker
 from .workflow import ActivityRetryPolicy, ChildWorkflowRetryPolicy, ContinueAsNew, StartChildWorkflow
 
@@ -120,4 +125,6 @@ __all__ = [
     "WorkflowFailed",
     "WorkflowNotFound",
     "WorkflowTerminated",
+    "to_avro_payload_value",
+    "to_avro_payload_values",
 ]

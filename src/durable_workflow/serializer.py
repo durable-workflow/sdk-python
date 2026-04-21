@@ -21,8 +21,12 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
+from datetime import date, datetime, time
+from decimal import Decimal
+from enum import Enum
 from typing import Any, TypeGuard, cast
+from uuid import UUID
 
 from . import _avro
 
@@ -89,6 +93,94 @@ class PayloadSizeWarningContext:
 DEFAULT_PAYLOAD_SIZE_WARNING = PayloadSizeWarningConfig()
 PayloadWarningContext = PayloadSizeWarningContext | Mapping[str, Any] | None
 PayloadWarningContexts = PayloadWarningContext | Sequence[PayloadWarningContext]
+
+
+def to_avro_payload_value(value: Any) -> Any:
+    """Convert common rich Python values to JSON-native Avro wrapper values.
+
+    The SDK's default Avro codec is a language-neutral envelope around a JSON
+    document. This helper is the explicit boundary for class-carrying values:
+    callers opt in before encode and the returned value becomes part of durable
+    history.
+    """
+    if isinstance(value, Enum):
+        return to_avro_payload_value(value.value)
+
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    if isinstance(value, date | time):
+        return value.isoformat()
+
+    if isinstance(value, UUID | Decimal):
+        return str(value)
+
+    if isinstance(value, Mapping):
+        converted: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError("Avro JSON payload dictionaries must use string keys after adaptation")
+            converted[key] = to_avro_payload_value(item)
+        return converted
+
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: to_avro_payload_value(getattr(value, field.name))
+            for field in fields(value)
+        }
+
+    pydantic_dump = _pydantic_model_dump(value)
+    if pydantic_dump is not None:
+        return to_avro_payload_value(pydantic_dump)
+
+    attrs_dump = _attrs_payload_dict(value)
+    if attrs_dump is not None:
+        return attrs_dump
+
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return [to_avro_payload_value(item) for item in value]
+
+    raise TypeError(
+        f"Object of type {type(value).__name__} is not Avro JSON payload safe; "
+        "adapt it to None, bool, int, float, str, list, or dict[str, value] first."
+    )
+
+
+def to_avro_payload_values(values: Sequence[Any]) -> list[Any]:
+    """Convert several values with :func:`to_avro_payload_value`."""
+    return [to_avro_payload_value(value) for value in values]
+
+
+def _pydantic_model_dump(value: Any) -> Any | None:
+    if not (
+        hasattr(value, "__pydantic_fields__")
+        or hasattr(value, "__fields__")
+        or value.__class__.__module__.startswith("pydantic.")
+    ):
+        return None
+
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(mode="json")
+
+    dict_dump = getattr(value, "dict", None)
+    if callable(dict_dump):
+        return dict_dump()
+
+    return None
+
+
+def _attrs_payload_dict(value: Any) -> dict[str, Any] | None:
+    attrs_fields = getattr(value.__class__, "__attrs_attrs__", None)
+    if attrs_fields is None:
+        return None
+    return {
+        field.name: to_avro_payload_value(getattr(value, field.name))
+        for field in attrs_fields
+    }
 
 
 def encode(
