@@ -156,6 +156,11 @@ fingerprints during registration. Re-registering the same `worker_id` with a
 changed class body for an already advertised workflow type raises immediately;
 restart the worker process with a new id before serving changed workflow code.
 
+Workers also advertise their local workflow and activity concurrency limits
+during registration. Tune `max_concurrent_workflow_tasks` and
+`max_concurrent_activity_tasks` on `Worker(...)` to align local semaphores with
+the server's task-queue admission and operator visibility surfaces.
+
 ## Replay captured histories
 
 Use `Replayer` to debug a captured history without connecting to a live server:

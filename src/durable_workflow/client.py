@@ -1134,6 +1134,8 @@ class Client:
         supported_workflow_types: list[str] | None = None,
         workflow_definition_fingerprints: dict[str, str] | None = None,
         supported_activity_types: list[str] | None = None,
+        max_concurrent_workflow_tasks: int | None = None,
+        max_concurrent_activity_tasks: int | None = None,
         runtime: str = "python",
         sdk_version: str | None = None,
     ) -> Any:
@@ -1145,6 +1147,11 @@ class Client:
         """
         if sdk_version is None:
             sdk_version = DEFAULT_SDK_VERSION
+        if max_concurrent_workflow_tasks is not None and max_concurrent_workflow_tasks < 1:
+            raise ValueError("max_concurrent_workflow_tasks must be at least 1")
+        if max_concurrent_activity_tasks is not None and max_concurrent_activity_tasks < 1:
+            raise ValueError("max_concurrent_activity_tasks must be at least 1")
+
         body: dict[str, Any] = {
             "worker_id": worker_id,
             "task_queue": task_queue,
@@ -1155,6 +1162,10 @@ class Client:
         }
         if workflow_definition_fingerprints is not None:
             body["workflow_definition_fingerprints"] = workflow_definition_fingerprints
+        if max_concurrent_workflow_tasks is not None:
+            body["max_concurrent_workflow_tasks"] = max_concurrent_workflow_tasks
+        if max_concurrent_activity_tasks is not None:
+            body["max_concurrent_activity_tasks"] = max_concurrent_activity_tasks
         return await self._request("POST", "/worker/register", worker=True, json=body)
 
     async def poll_workflow_task(

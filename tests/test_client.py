@@ -666,6 +666,36 @@ class TestRegisterWorker:
             assert body["workflow_definition_fingerprints"] == {"greeter": "sha256:abc"}
 
     @pytest.mark.asyncio
+    async def test_register_sends_worker_capacity_when_configured(self, client: Client) -> None:
+        resp = _mock_response(201, {"worker_id": "w1", "registered": True})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.register_worker(
+                worker_id="w1",
+                task_queue="q1",
+                max_concurrent_workflow_tasks=3,
+                max_concurrent_activity_tasks=7,
+            )
+            body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
+            assert body["max_concurrent_workflow_tasks"] == 3
+            assert body["max_concurrent_activity_tasks"] == 7
+
+    @pytest.mark.asyncio
+    async def test_register_rejects_non_positive_worker_capacity(self, client: Client) -> None:
+        with pytest.raises(ValueError, match="max_concurrent_workflow_tasks"):
+            await client.register_worker(
+                worker_id="w1",
+                task_queue="q1",
+                max_concurrent_workflow_tasks=0,
+            )
+
+        with pytest.raises(ValueError, match="max_concurrent_activity_tasks"):
+            await client.register_worker(
+                worker_id="w1",
+                task_queue="q1",
+                max_concurrent_activity_tasks=0,
+            )
+
+    @pytest.mark.asyncio
     async def test_register_advertises_installed_package_version(self, client: Client) -> None:
         from importlib.metadata import version as _pkg_version
 

@@ -241,7 +241,14 @@ class Worker:
         self.activities = {_activity_name(a): a for a in activities}
         self.worker_id = worker_id or f"py-worker-{uuid.uuid4().hex[:8]}"
         _guard_worker_workflow_fingerprints(self.worker_id, self.workflow_definition_fingerprints)
+        if max_concurrent_workflow_tasks < 1:
+            raise ValueError("max_concurrent_workflow_tasks must be at least 1")
+        if max_concurrent_activity_tasks < 1:
+            raise ValueError("max_concurrent_activity_tasks must be at least 1")
+
         self._poll_timeout = poll_timeout
+        self.max_concurrent_workflow_tasks = max_concurrent_workflow_tasks
+        self.max_concurrent_activity_tasks = max_concurrent_activity_tasks
         self._stop = asyncio.Event()
         self._wf_semaphore = asyncio.Semaphore(max_concurrent_workflow_tasks)
         self._act_semaphore = asyncio.Semaphore(max_concurrent_activity_tasks)
@@ -319,6 +326,8 @@ class Worker:
             supported_workflow_types=list(self.workflows),
             workflow_definition_fingerprints=self.workflow_definition_fingerprints,
             supported_activity_types=list(self.activities),
+            max_concurrent_workflow_tasks=self.max_concurrent_workflow_tasks,
+            max_concurrent_activity_tasks=self.max_concurrent_activity_tasks,
         )
         log.info("worker %s registered on %s", self.worker_id, self.task_queue)
 

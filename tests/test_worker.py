@@ -138,6 +138,33 @@ class TestWorkerRegistration:
         assert "test-wf" in call_kwargs["supported_workflow_types"]
         assert call_kwargs["workflow_definition_fingerprints"]["test-wf"].startswith("sha256:")
         assert "test-act" in call_kwargs["supported_activity_types"]
+        assert call_kwargs["max_concurrent_workflow_tasks"] == 10
+        assert call_kwargs["max_concurrent_activity_tasks"] == 10
+
+    @pytest.mark.asyncio
+    async def test_register_advertises_custom_concurrency_limits(self, mock_client: AsyncMock) -> None:
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            worker_id="w-capacity",
+            max_concurrent_workflow_tasks=3,
+            max_concurrent_activity_tasks=7,
+        )
+        await worker._register()
+        call_kwargs = mock_client.register_worker.call_args.kwargs
+        assert call_kwargs["max_concurrent_workflow_tasks"] == 3
+        assert call_kwargs["max_concurrent_activity_tasks"] == 7
+
+    def test_constructor_rejects_non_positive_concurrency_limits(
+        self, mock_client: AsyncMock
+    ) -> None:
+        with pytest.raises(ValueError, match="max_concurrent_workflow_tasks"):
+            Worker(mock_client, task_queue="q1", max_concurrent_workflow_tasks=0)
+
+        with pytest.raises(ValueError, match="max_concurrent_activity_tasks"):
+            Worker(mock_client, task_queue="q1", max_concurrent_activity_tasks=0)
 
     def test_constructor_rejects_changed_workflow_definition_for_same_worker_id(
         self, mock_client: AsyncMock
