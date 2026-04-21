@@ -383,6 +383,15 @@ class TestTaskQueues:
                             "server_max_active_leases_per_queue": 1,
                             "server_active_lease_count": 1,
                             "server_remaining_active_lease_capacity": 0,
+                            "server_max_active_leases_per_namespace": 8,
+                            "server_namespace_active_lease_count": 7,
+                            "server_remaining_namespace_active_lease_capacity": 1,
+                            "server_max_dispatches_per_minute": 60,
+                            "server_dispatch_count_this_minute": 60,
+                            "server_remaining_dispatch_capacity": 0,
+                            "server_max_dispatches_per_minute_per_namespace": 240,
+                            "server_namespace_dispatch_count_this_minute": 200,
+                            "server_remaining_namespace_dispatch_capacity": 40,
                             "server_lock_required": True,
                             "server_lock_supported": True,
                         },
@@ -412,6 +421,15 @@ class TestTaskQueues:
             assert queue.admission.workflow_tasks is not None
             assert queue.admission.workflow_tasks.status == "throttled"
             assert queue.admission.workflow_tasks.server_remaining_active_lease_capacity == 0
+            assert queue.admission.workflow_tasks.server_max_active_leases_per_namespace == 8
+            assert queue.admission.workflow_tasks.server_namespace_active_lease_count == 7
+            assert queue.admission.workflow_tasks.server_remaining_namespace_active_lease_capacity == 1
+            assert queue.admission.workflow_tasks.server_max_dispatches_per_minute == 60
+            assert queue.admission.workflow_tasks.server_dispatch_count_this_minute == 60
+            assert queue.admission.workflow_tasks.server_remaining_dispatch_capacity == 0
+            assert queue.admission.workflow_tasks.server_max_dispatches_per_minute_per_namespace == 240
+            assert queue.admission.workflow_tasks.server_namespace_dispatch_count_this_minute == 200
+            assert queue.admission.workflow_tasks.server_remaining_namespace_dispatch_capacity == 40
             assert queue.admission.activity_tasks is not None
             assert queue.admission.activity_tasks.configured_slot_count == 5
             assert queue.admission.query_tasks is not None

@@ -171,6 +171,11 @@ for queue in queues.task_queues:
     print(queue.name, workflow_admission.status if workflow_admission else "unknown")
 ```
 
+The workflow and activity admission objects expose both queue-level and
+namespace-level server budgets, including active lease caps and per-minute
+dispatch-rate limits, so automation can detect whether local worker slots,
+queue caps, or namespace caps are constraining throughput.
+
 ## Replay captured histories
 
 Use `Replayer` to debug a captured history without connecting to a live server:

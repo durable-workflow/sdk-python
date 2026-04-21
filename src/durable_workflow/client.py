@@ -118,6 +118,15 @@ class TaskQueueTaskAdmission:
     server_max_active_leases_per_queue: int | None = None
     server_active_lease_count: int | None = None
     server_remaining_active_lease_capacity: int | None = None
+    server_max_active_leases_per_namespace: int | None = None
+    server_namespace_active_lease_count: int | None = None
+    server_remaining_namespace_active_lease_capacity: int | None = None
+    server_max_dispatches_per_minute: int | None = None
+    server_dispatch_count_this_minute: int | None = None
+    server_remaining_dispatch_capacity: int | None = None
+    server_max_dispatches_per_minute_per_namespace: int | None = None
+    server_namespace_dispatch_count_this_minute: int | None = None
+    server_remaining_namespace_dispatch_capacity: int | None = None
     server_lock_required: bool | None = None
     server_lock_supported: bool | None = None
 
@@ -137,6 +146,19 @@ class TaskQueueTaskAdmission:
             server_max_active_leases_per_queue=data.get("server_max_active_leases_per_queue"),
             server_active_lease_count=data.get("server_active_lease_count"),
             server_remaining_active_lease_capacity=data.get("server_remaining_active_lease_capacity"),
+            server_max_active_leases_per_namespace=data.get("server_max_active_leases_per_namespace"),
+            server_namespace_active_lease_count=data.get("server_namespace_active_lease_count"),
+            server_remaining_namespace_active_lease_capacity=data.get(
+                "server_remaining_namespace_active_lease_capacity"
+            ),
+            server_max_dispatches_per_minute=data.get("server_max_dispatches_per_minute"),
+            server_dispatch_count_this_minute=data.get("server_dispatch_count_this_minute"),
+            server_remaining_dispatch_capacity=data.get("server_remaining_dispatch_capacity"),
+            server_max_dispatches_per_minute_per_namespace=data.get(
+                "server_max_dispatches_per_minute_per_namespace"
+            ),
+            server_namespace_dispatch_count_this_minute=data.get("server_namespace_dispatch_count_this_minute"),
+            server_remaining_namespace_dispatch_capacity=data.get("server_remaining_namespace_dispatch_capacity"),
             server_lock_required=data.get("server_lock_required"),
             server_lock_supported=data.get("server_lock_supported"),
         )
