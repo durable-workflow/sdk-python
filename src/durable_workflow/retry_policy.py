@@ -32,6 +32,13 @@ class TransportRetryPolicy:
     timeouts, 5xx server errors, 429 rate limit). Does not retry client
     errors (4xx except 429).
 
+    This policy runs inside :class:`~durable_workflow.Client` around HTTP
+    requests. It does not retry workflow runs, workflow tasks, activity
+    executions, child workflows, or any user code. Configure durable activity
+    retries with :class:`durable_workflow.workflow.ActivityRetryPolicy` and
+    child workflow retries with
+    :class:`durable_workflow.workflow.ChildWorkflowRetryPolicy`.
+
     Uses exponential backoff with jitter to avoid thundering herd.
     """
 

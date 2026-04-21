@@ -169,7 +169,12 @@ class ActivityRetryPolicy:
 
     The policy is snapped onto the durable activity execution when the
     workflow task completes, so later code deploys do not change the retry
-    budget for an already-scheduled activity.
+    budget for an already-scheduled activity. It is a server-side durable
+    retry policy, not the SDK HTTP transport retry policy.
+
+    ``non_retryable_error_types`` names failure types that should bypass this
+    retry budget. An activity worker can also report ``non_retryable=True`` on
+    a failure to stop retrying that activity execution.
     """
 
     max_attempts: int = 3
@@ -249,7 +254,12 @@ def _payload_warning_context(
 
 @dataclass
 class ChildWorkflowRetryPolicy(ActivityRetryPolicy):
-    """Retry policy applied to one started child workflow call."""
+    """Retry policy applied to one started child workflow call.
+
+    This is recorded with the child workflow command and controls durable
+    server-side child attempts. It is separate from SDK HTTP transport retry
+    and from activity retry.
+    """
 
 
 ChildWorkflowRetryPolicyInput = ChildWorkflowRetryPolicy | ActivityRetryPolicy | Mapping[str, Any]
@@ -257,7 +267,15 @@ ChildWorkflowRetryPolicyInput = ChildWorkflowRetryPolicy | ActivityRetryPolicy |
 
 @dataclass
 class ScheduleActivity:
-    """Command requesting an activity task."""
+    """Command requesting an activity task.
+
+    Timeout fields are activity budgets, not HTTP request timeouts:
+    ``start_to_close_timeout`` limits one activity attempt,
+    ``schedule_to_start_timeout`` limits queue wait before an attempt starts,
+    ``schedule_to_close_timeout`` limits the whole activity execution including
+    retries, and ``heartbeat_timeout`` limits the gap between activity
+    heartbeats.
+    """
 
     activity_type: str
     arguments: list[Any]
@@ -512,7 +530,12 @@ class RecordSideEffect:
 
 @dataclass
 class StartChildWorkflow:
-    """Command requesting a child workflow run."""
+    """Command requesting a child workflow run.
+
+    ``execution_timeout_seconds`` limits the overall child workflow execution.
+    ``run_timeout_seconds`` limits one child run. These budgets are durable
+    server-side workflow budgets and are separate from client HTTP timeouts.
+    """
 
     workflow_type: str
     arguments: list[Any] = field(default_factory=list)

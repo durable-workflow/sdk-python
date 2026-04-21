@@ -54,6 +54,17 @@ For a fuller deployable example, see
 [`examples/order_processing`](examples/order_processing), which runs a
 multi-activity order workflow against a local server with Docker Compose.
 
+## Retry policy scopes
+
+Retry and timeout settings are scoped to the layer where you configure them:
+
+- `TransportRetryPolicy` on `Client(...)` retries SDK HTTP requests only. It handles transient connection failures, request timeouts, 5xx responses, and 429 rate limits. It does not retry workflow code, activity code, child workflows, or failed workflow runs.
+- `ActivityRetryPolicy` on `ctx.schedule_activity(...)` is recorded into durable history with that activity command. It controls server-side attempts for that one activity execution.
+- `ChildWorkflowRetryPolicy` on `ctx.start_child_workflow(...)` is recorded with that child-start command. It controls server-side attempts for that child workflow execution.
+- `non_retryable_error_types` belongs to durable activity/child retry policies. `non_retryable=True` on an activity failure bypasses the activity retry budget and surfaces the failure to the workflow.
+
+Timeout names are also layer-specific. `start_to_close_timeout` limits one activity attempt, `schedule_to_start_timeout` limits queue wait before an activity starts, `schedule_to_close_timeout` limits the whole activity execution including retries, and `heartbeat_timeout` limits the gap between activity heartbeats. For child workflows, `execution_timeout_seconds` covers the overall child workflow execution and `run_timeout_seconds` covers one run.
+
 ## Activity retries and timeouts
 
 Configure per-call activity retries and deadlines from workflow code:
