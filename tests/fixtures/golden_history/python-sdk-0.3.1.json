@@ -1,0 +1,146 @@
+{
+  "fixture_schema": "durable-workflow.golden-history.v1",
+  "source": {
+    "runtime": "sdk-python",
+    "package": "durable-workflow",
+    "version": "0.3.1",
+    "worker_protocol_version": "1.0",
+    "control_plane_version": "2"
+  },
+  "cases": [
+    {
+      "name": "single_activity_completion",
+      "family": "activity",
+      "workflow_type": "golden.single-activity",
+      "start_input": ["Ada"],
+      "history": [
+        {
+          "event_type": "ActivityCompleted",
+          "payload": {
+            "result": "\"hello Ada\""
+          }
+        }
+      ],
+      "expected": {
+        "command_type": "CompleteWorkflow",
+        "result": "hello Ada"
+      }
+    },
+    {
+      "name": "signal_satisfies_wait_condition",
+      "family": "signal-update",
+      "workflow_type": "golden.signal-wait",
+      "start_input": [],
+      "history": [
+        {
+          "event_type": "ConditionWaitOpened",
+          "payload": {
+            "condition_wait_id": "wait-approval-1",
+            "condition_key": "approval",
+            "timeout_seconds": 30
+          }
+        },
+        {
+          "event_type": "SignalReceived",
+          "payload": {
+            "signal_name": "approve",
+            "arguments": "[\"alice\"]"
+          }
+        },
+        {
+          "event_type": "ConditionWaitSatisfied",
+          "payload": {
+            "condition_wait_id": "wait-approval-1"
+          }
+        },
+        {
+          "event_type": "ActivityCompleted",
+          "payload": {
+            "result": "\"notified\""
+          }
+        }
+      ],
+      "expected": {
+        "command_type": "CompleteWorkflow",
+        "result": {
+          "approved_by": "alice",
+          "activity_result": "notified"
+        }
+      }
+    },
+    {
+      "name": "wait_condition_timeout",
+      "family": "wait-condition",
+      "workflow_type": "golden.timeout-wait",
+      "start_input": [],
+      "history": [
+        {
+          "event_type": "ConditionWaitOpened",
+          "payload": {
+            "condition_wait_id": "wait-timeout-1",
+            "condition_key": "approval",
+            "timeout_seconds": 5
+          }
+        },
+        {
+          "event_type": "ConditionWaitTimedOut",
+          "payload": {
+            "condition_wait_id": "wait-timeout-1"
+          }
+        }
+      ],
+      "expected": {
+        "command_type": "CompleteWorkflow",
+        "result": "timed-out"
+      }
+    },
+    {
+      "name": "version_marker_new_path",
+      "family": "version-marker",
+      "workflow_type": "golden.version-marker",
+      "start_input": [],
+      "history": [
+        {
+          "event_type": "VersionMarkerRecorded",
+          "payload": {
+            "sequence": 1,
+            "change_id": "golden-version",
+            "version": 2,
+            "min_supported": 1,
+            "max_supported": 2
+          }
+        }
+      ],
+      "expected": {
+        "command_type": "ScheduleActivity",
+        "activity_type": "golden.version-new-path",
+        "arguments": []
+      }
+    },
+    {
+      "name": "saga_compensates_after_child_failure",
+      "family": "saga-compensation",
+      "workflow_type": "golden.saga-compensation",
+      "start_input": ["order-123"],
+      "history": [
+        {
+          "event_type": "ActivityCompleted",
+          "payload": {
+            "result": "\"reservation-456\""
+          }
+        },
+        {
+          "event_type": "ChildRunFailed",
+          "payload": {
+            "message": "payment declined"
+          }
+        }
+      ],
+      "expected": {
+        "command_type": "ScheduleActivity",
+        "activity_type": "golden.release-inventory",
+        "arguments": ["order-123", "reservation-456", "payment declined"]
+      }
+    }
+  ]
+}
