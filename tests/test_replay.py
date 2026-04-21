@@ -23,6 +23,8 @@ from durable_workflow.workflow import (
     replay,
 )
 from tests.integration.polyglot_fixtures import (
+    PHP_HISTORY_EVENT_EXPECTED_KEYS,
+    PHP_HISTORY_EVENT_FIXTURES,
     PHP_VERSION_MARKER_EXPECTED_KEYS,
     PHP_VERSION_MARKER_RECORDED_EVENT,
     PolyglotVersionMarkerWorkflow,
@@ -161,9 +163,7 @@ class TestOneActivity:
         assert server_cmd["arguments"]["codec"] == "json"
         assert serializer.decode(server_cmd["arguments"]["blob"], codec="json") == ["world"]
 
-    def test_server_command_accepts_payload_warning_context(
-        self, caplog
-    ) -> None:
+    def test_server_command_accepts_payload_warning_context(self, caplog) -> None:
         cmd = ScheduleActivity(activity_type="charge-card", arguments=["x" * 20], queue="payments")
         config = serializer.PayloadSizeWarningConfig(limit_bytes=10, threshold_percent=50)
         context = serializer.PayloadSizeWarningContext(
@@ -477,6 +477,7 @@ class TestWorkflowContext:
     def test_logger_silent_during_replay(self) -> None:
         import logging
         import logging.handlers
+
         ctx = WorkflowContext(run_id="r1")
         ctx.logger._set_replaying(True)
         logger = logging.getLogger("durable_workflow.workflow.replay")
@@ -492,6 +493,7 @@ class TestWorkflowContext:
     def test_logger_active_when_not_replaying(self) -> None:
         import logging
         import logging.handlers
+
         ctx = WorkflowContext(run_id="r1")
         ctx.logger._set_replaying(False)
         logger = logging.getLogger("durable_workflow.workflow.replay")
@@ -624,6 +626,37 @@ class SearchAttrWorkflow:
         return result
 
 
+@workflow.defn(name="tests.polyglot.history-contract")
+class PolyglotHistoryContractWorkflow:
+    def __init__(self) -> None:
+        self.approved_by: str | None = None
+        self.name = "original"
+
+    @workflow.signal("approve")
+    def approve(self, approved_by: str) -> None:
+        self.approved_by = approved_by
+
+    @workflow.update("rename")
+    def rename(self, name: str) -> None:
+        self.name = name
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        activity = yield ctx.schedule_activity("tests.polyglot.activity", [])
+        yield ctx.start_timer(5)
+        yield ctx.wait_condition(lambda: self.approved_by is not None, key="approval", timeout=30)
+        side_effect = yield ctx.side_effect(lambda: {"side_effect": "unstable"})
+        child = yield ctx.start_child_workflow("tests.polyglot.child", [])
+        yield ctx.upsert_search_attributes({"status": "processing"})
+
+        return {
+            "activity": activity,
+            "approved_by": self.approved_by,
+            "name": self.name,
+            "side_effect": side_effect,
+            "child": child,
+        }
+
+
 class TestChildWorkflow:
     def test_first_replay_starts_child(self) -> None:
         outcome = replay(ChildWorkflow, [], ["alice"])
@@ -706,6 +739,42 @@ class TestChildWorkflow:
 
 
 class TestVersionMarker:
+    def test_replays_php_history_event_wire_fixtures(self) -> None:
+        events_by_type = {event["event_type"]: event for event in PHP_HISTORY_EVENT_FIXTURES}
+
+        for event_type, expected_keys in PHP_HISTORY_EVENT_EXPECTED_KEYS.items():
+            if event_type == "VersionMarkerRecorded":
+                payload = PHP_VERSION_MARKER_RECORDED_EVENT["payload"]
+            else:
+                payload = events_by_type[event_type]["payload"]
+
+            assert sorted(payload) == sorted(expected_keys)
+
+        replay_events = [
+            events_by_type["ActivityCompleted"],
+            events_by_type["TimerFired"],
+            events_by_type["SignalReceived"],
+            events_by_type["UpdateApplied"],
+            events_by_type["ConditionWaitOpened"],
+            events_by_type["ConditionWaitSatisfied"],
+            events_by_type["SideEffectRecorded"],
+            events_by_type["ChildRunCompleted"],
+            events_by_type["SearchAttributesUpserted"],
+        ]
+
+        outcome = replay(PolyglotHistoryContractWorkflow, replay_events, [])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {
+            "activity": {"activity": "ok"},
+            "approved_by": "alice",
+            "name": "new-name",
+            "side_effect": {"side_effect": "stable"},
+            "child": {"child": "ok"},
+        }
+
     def test_replays_php_emitted_version_marker_wire_fixture(self) -> None:
         payload = PHP_VERSION_MARKER_RECORDED_EVENT["payload"]
 
@@ -1059,6 +1128,7 @@ class TestFanOutChildFailure:
 @workflow.defn(name="nontrivial-wf")
 class NontrivialWorkflow:
     """Fan-out activities, timer, child workflow, and sequential combine."""
+
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
         results = yield [
             ctx.schedule_activity("fetch-a", []),
