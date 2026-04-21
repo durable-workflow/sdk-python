@@ -215,6 +215,36 @@ class ActivityRetryPolicy:
 
 
 ActivityRetryPolicyInput = ActivityRetryPolicy | Mapping[str, Any]
+PayloadWarningContext = serializer.PayloadSizeWarningContext | Mapping[str, Any] | None
+
+
+def _payload_warning_context(
+    base: PayloadWarningContext,
+    *,
+    kind: str,
+    task_queue: str | None = None,
+    activity_name: str | None = None,
+    update_name: str | None = None,
+) -> dict[str, str]:
+    if isinstance(base, serializer.PayloadSizeWarningContext):
+        context: dict[str, str] = base.to_log_context()
+    elif base is None:
+        context = {}
+    else:
+        context = {
+            str(key): str(value)
+            for key, value in base.items()
+            if value is not None
+        }
+
+    context["kind"] = kind
+    if task_queue is not None:
+        context["task_queue"] = task_queue
+    if activity_name is not None:
+        context["activity_name"] = activity_name
+    if update_name is not None:
+        context["update_name"] = update_name
+    return context
 
 
 @dataclass
@@ -239,12 +269,27 @@ class ScheduleActivity:
     heartbeat_timeout: int | None = None
 
     def to_server_command(
-        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
         command: dict[str, Any] = {
             "type": "schedule_activity",
             "activity_type": self.activity_type,
-            "arguments": serializer.envelope(self.arguments, codec=payload_codec),
+            "arguments": serializer.envelope(
+                self.arguments,
+                codec=payload_codec,
+                size_warning=size_warning,
+                warning_context=_payload_warning_context(
+                    warning_context,
+                    kind="activity_input",
+                    task_queue=self.queue or task_queue,
+                    activity_name=self.activity_type,
+                ),
+            ),
             "queue": self.queue or task_queue,
         }
         if self.retry_policy is not None:
@@ -271,7 +316,12 @@ class StartTimer:
     delay_seconds: int
 
     def to_server_command(
-        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
         return {
             "type": "start_timer",
@@ -286,11 +336,25 @@ class CompleteWorkflow:
     result: Any
 
     def to_server_command(
-        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
         return {
             "type": "complete_workflow",
-            "result": serializer.envelope(self.result, codec=payload_codec),
+            "result": serializer.envelope(
+                self.result,
+                codec=payload_codec,
+                size_warning=size_warning,
+                warning_context=_payload_warning_context(
+                    warning_context,
+                    kind="workflow_result",
+                    task_queue=task_queue,
+                ),
+            ),
         }
 
 
@@ -303,7 +367,12 @@ class FailWorkflow:
     non_retryable: bool = False
 
     def to_server_command(
-        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
         cmd: dict[str, Any] = {
             "type": "fail_workflow",
@@ -324,12 +393,26 @@ class CompleteUpdate:
     result: Any
 
     def to_server_command(
-        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
         return {
             "type": "complete_update",
             "update_id": self.update_id,
-            "result": serializer.envelope(self.result, codec=payload_codec),
+            "result": serializer.envelope(
+                self.result,
+                codec=payload_codec,
+                size_warning=size_warning,
+                warning_context=_payload_warning_context(
+                    warning_context,
+                    kind="update_result",
+                    task_queue=task_queue,
+                ),
+            ),
         }
 
 
@@ -344,7 +427,12 @@ class FailUpdate:
     non_retryable: bool = True
 
     def to_server_command(
-        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
         cmd: dict[str, Any] = {
             "type": "fail_update",
@@ -369,12 +457,26 @@ class ContinueAsNew:
     task_queue: str | None = None
 
     def to_server_command(
-        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
         cmd: dict[str, Any] = {"type": "continue_as_new"}
         if self.workflow_type is not None:
             cmd["workflow_type"] = self.workflow_type
-        cmd["arguments"] = serializer.envelope(self.arguments, codec=payload_codec)
+        cmd["arguments"] = serializer.envelope(
+            self.arguments,
+            codec=payload_codec,
+            size_warning=size_warning,
+            warning_context=_payload_warning_context(
+                warning_context,
+                kind="continue_as_new_input",
+                task_queue=self.task_queue or task_queue,
+            ),
+        )
         cmd["queue"] = self.task_queue or task_queue
         return cmd
 
@@ -386,11 +488,25 @@ class RecordSideEffect:
     result: Any
 
     def to_server_command(
-        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
         return {
             "type": "record_side_effect",
-            "result": serializer.encode(self.result, codec=payload_codec),
+            "result": serializer.encode(
+                self.result,
+                codec=payload_codec,
+                size_warning=size_warning,
+                warning_context=_payload_warning_context(
+                    warning_context,
+                    kind="side_effect_result",
+                    task_queue=task_queue,
+                ),
+            ),
         }
 
 
@@ -407,12 +523,26 @@ class StartChildWorkflow:
     run_timeout_seconds: int | None = None
 
     def to_server_command(
-        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
         cmd: dict[str, Any] = {
             "type": "start_child_workflow",
             "workflow_type": self.workflow_type,
-            "arguments": serializer.envelope(self.arguments, codec=payload_codec),
+            "arguments": serializer.envelope(
+                self.arguments,
+                codec=payload_codec,
+                size_warning=size_warning,
+                warning_context=_payload_warning_context(
+                    warning_context,
+                    kind="child_workflow_input",
+                    task_queue=self.task_queue or task_queue,
+                ),
+            ),
         }
         if self.task_queue is not None:
             cmd["queue"] = self.task_queue
@@ -443,7 +573,12 @@ class RecordVersionMarker:
     max_supported: int
 
     def to_server_command(
-        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
         return {
             "type": "record_version_marker",
@@ -461,8 +596,22 @@ class UpsertSearchAttributes:
     attributes: dict[str, Any]
 
     def to_server_command(
-        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
+        serializer.warn_if_json_payload_near_limit(
+            self.attributes,
+            size_warning=size_warning,
+            warning_context=_payload_warning_context(
+                warning_context,
+                kind="search_attributes",
+                task_queue=task_queue,
+            ),
+        )
         return {
             "type": "upsert_search_attributes",
             "attributes": self.attributes,
@@ -486,7 +635,12 @@ class WaitCondition:
     timeout_seconds: int | None = None
 
     def to_server_command(
-        self, task_queue: str, *, payload_codec: str = serializer.AVRO_CODEC
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
         cmd: dict[str, Any] = {"type": "open_condition_wait"}
         if self.condition_key is not None:

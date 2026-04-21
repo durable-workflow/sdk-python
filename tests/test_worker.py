@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -211,6 +212,59 @@ class TestWorkflowTaskExecution:
         assert commands[0]["activity_type"] == "test-act"
         assert commands[0]["arguments"]["codec"] == "json"
         assert serializer.decode(commands[0]["arguments"]["blob"], codec="json") == ["hello"]
+
+    @pytest.mark.asyncio
+    async def test_workflow_command_payload_warning_uses_client_policy(
+        self, mock_client: AsyncMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_client.namespace = "ns1"
+        mock_client.payload_size_warning_config = serializer.PayloadSizeWarningConfig(
+            limit_bytes=10,
+            threshold_percent=50,
+        )
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        task = {
+            "task_id": "t-large",
+            "workflow_id": "wf-1",
+            "run_id": "run-1",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": '["this payload is intentionally large"]',
+            "payload_codec": "json",
+        }
+
+        with caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"):
+            await worker._run_workflow_task(task)
+
+        payload = caplog.records[0].durable_workflow_payload
+        assert payload["kind"] == "activity_input"
+        assert payload["workflow_id"] == "wf-1"
+        assert payload["run_id"] == "run-1"
+        assert payload["activity_name"] == "test-act"
+        assert payload["task_queue"] == "q1"
+        assert payload["namespace"] == "ns1"
+        assert payload["threshold_bytes"] == 5
+
+    @pytest.mark.asyncio
+    async def test_workflow_command_payload_warning_can_be_disabled(
+        self, mock_client: AsyncMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_client.payload_size_warning_config = None
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        task = {
+            "task_id": "t-large-disabled",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": '["this payload is intentionally large"]',
+            "payload_codec": "json",
+        }
+
+        with caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"):
+            await worker._run_workflow_task(task)
+
+        assert caplog.records == []
 
     @pytest.mark.asyncio
     async def test_complete_on_resolved_activity(self, mock_client: AsyncMock) -> None:

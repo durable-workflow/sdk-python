@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from durable_workflow import serializer, workflow
 from durable_workflow.errors import ChildWorkflowFailed
 from durable_workflow.workflow import (
@@ -112,6 +114,33 @@ class TestOneActivity:
         server_cmd = cmd.to_server_command("default-queue", payload_codec="json")
         assert server_cmd["arguments"]["codec"] == "json"
         assert serializer.decode(server_cmd["arguments"]["blob"], codec="json") == ["world"]
+
+    def test_server_command_accepts_payload_warning_context(
+        self, caplog
+    ) -> None:
+        cmd = ScheduleActivity(activity_type="charge-card", arguments=["x" * 20], queue="payments")
+        config = serializer.PayloadSizeWarningConfig(limit_bytes=10, threshold_percent=50)
+        context = serializer.PayloadSizeWarningContext(
+            kind="workflow_command",
+            workflow_id="wf-1",
+            run_id="run-1",
+            task_queue="payments",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"):
+            cmd.to_server_command(
+                "default-queue",
+                payload_codec="json",
+                size_warning=config,
+                warning_context=context,
+            )
+
+        payload = caplog.records[0].durable_workflow_payload
+        assert payload["kind"] == "activity_input"
+        assert payload["workflow_id"] == "wf-1"
+        assert payload["run_id"] == "run-1"
+        assert payload["activity_name"] == "charge-card"
+        assert payload["task_queue"] == "payments"
 
     def test_schedule_activity_server_command_includes_retry_policy_and_timeouts(self) -> None:
         cmd = ScheduleActivity(

@@ -68,6 +68,10 @@ def _workflow_name(cls: type) -> str:
     return getattr(cls, "__workflow_name__", cls.__name__)
 
 
+def _string_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
 def _manifest_version(manifest: Any) -> str:
     if isinstance(manifest, dict):
         value = manifest.get("version")
@@ -184,6 +188,42 @@ class Worker:
         tags = {"task_kind": task_kind, "task_queue": self.task_queue, "outcome": outcome}
         self.metrics.increment(WORKER_TASKS, tags=tags)
         self.metrics.record(WORKER_TASK_DURATION_SECONDS, duration, tags=tags)
+
+    def _payload_size_warning_config(self) -> serializer.PayloadSizeWarningConfig | None:
+        config = getattr(self.client, "payload_size_warning_config", serializer.DEFAULT_PAYLOAD_SIZE_WARNING)
+        if config is None or isinstance(config, serializer.PayloadSizeWarningConfig):
+            return config
+        return serializer.DEFAULT_PAYLOAD_SIZE_WARNING
+
+    def _workflow_payload_warning_context(
+        self,
+        task: dict[str, Any],
+        *,
+        kind: str,
+        update_name: str | None = None,
+    ) -> serializer.PayloadSizeWarningContext:
+        namespace = getattr(self.client, "namespace", None)
+        return serializer.PayloadSizeWarningContext(
+            kind=kind,
+            workflow_id=_string_or_none(task.get("workflow_id")),
+            run_id=_string_or_none(task.get("run_id")),
+            update_name=update_name,
+            task_queue=self.task_queue,
+            namespace=namespace if isinstance(namespace, str) else None,
+        )
+
+    def _update_name_for_id(self, history: list[dict[str, Any]], update_id: str | None) -> str | None:
+        if not update_id:
+            return None
+        for event in reversed(history):
+            if event.get("event_type") not in {"UpdateAccepted", "UpdateApplied"}:
+                continue
+            payload = event.get("payload")
+            if not isinstance(payload, dict) or payload.get("update_id") != update_id:
+                continue
+            update_name = payload.get("update_name")
+            return update_name if isinstance(update_name, str) and update_name else None
+        return None
 
     async def _register(self) -> None:
         try:
@@ -335,6 +375,12 @@ class Worker:
             command = update_command.to_server_command(
                 self.task_queue,
                 payload_codec=command_codec,
+                size_warning=self._payload_size_warning_config(),
+                warning_context=self._workflow_payload_warning_context(
+                    task,
+                    kind="workflow_command",
+                    update_name=self._update_name_for_id(history, update_id),
+                ),
             )
             log.info(
                 "completing workflow update task %s for update %s with %s",
@@ -388,7 +434,15 @@ class Worker:
             return None
 
         commands = [
-            c.to_server_command(self.task_queue, payload_codec=command_codec)
+            c.to_server_command(
+                self.task_queue,
+                payload_codec=command_codec,
+                size_warning=self._payload_size_warning_config(),
+                warning_context=self._workflow_payload_warning_context(
+                    task,
+                    kind="workflow_command",
+                ),
+            )
             for c in outcome.commands
         ]
         log.info(
