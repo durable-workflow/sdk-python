@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -111,6 +112,59 @@ class TestCreateSchedule:
             action_input = body["action"]["input"]
             assert action_input["codec"] == "avro"
             assert serializer.decode(action_input["blob"], codec="avro") == ["Alice", 42]
+
+    @pytest.mark.asyncio
+    async def test_action_input_warning_uses_client_policy(
+        self, client: Client, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client.payload_size_warning_config = serializer.PayloadSizeWarningConfig(
+            limit_bytes=10,
+            threshold_percent=50,
+        )
+        resp = _mock_response(201, {"schedule_id": "sched-large", "outcome": "created"})
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"),
+        ):
+            await client.create_schedule(
+                schedule_id="sched-large",
+                spec=ScheduleSpec(cron_expressions=["0 * * * *"]),
+                action=ScheduleAction(
+                    workflow_type="greeter",
+                    task_queue="q1",
+                    input=["this payload is intentionally large"],
+                ),
+            )
+
+        payload = caplog.records[0].durable_workflow_payload
+        assert payload["kind"] == "schedule_input"
+        assert payload["workflow_type"] == "greeter"
+        assert payload["schedule_id"] == "sched-large"
+        assert payload["task_queue"] == "q1"
+        assert payload["namespace"] == "ns1"
+        assert payload["threshold_bytes"] == 5
+
+    @pytest.mark.asyncio
+    async def test_action_input_warning_can_be_disabled(
+        self, client: Client, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client.payload_size_warning_config = None
+        resp = _mock_response(201, {"schedule_id": "sched-quiet", "outcome": "created"})
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"),
+        ):
+            await client.create_schedule(
+                schedule_id="sched-quiet",
+                spec=ScheduleSpec(cron_expressions=["0 * * * *"]),
+                action=ScheduleAction(
+                    workflow_type="greeter",
+                    task_queue="q1",
+                    input=["this payload is intentionally large"],
+                ),
+            )
+
+        assert caplog.records == []
 
     @pytest.mark.asyncio
     async def test_minimal(self, client: Client) -> None:
@@ -254,6 +308,34 @@ class TestUpdateSchedule:
             await client.update_schedule("sched-1", note="Updated note")
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["note"] == "Updated note"
+
+    @pytest.mark.asyncio
+    async def test_update_action_input_warning_uses_schedule_id(
+        self, client: Client, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client.payload_size_warning_config = serializer.PayloadSizeWarningConfig(
+            limit_bytes=10,
+            threshold_percent=50,
+        )
+        resp = _mock_response(200, {"schedule_id": "sched-1", "outcome": "updated"})
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"),
+        ):
+            await client.update_schedule(
+                "sched-1",
+                action=ScheduleAction(
+                    workflow_type="ticker",
+                    task_queue="q2",
+                    input=["this update payload is intentionally large"],
+                ),
+            )
+
+        payload = caplog.records[0].durable_workflow_payload
+        assert payload["kind"] == "schedule_input"
+        assert payload["workflow_type"] == "ticker"
+        assert payload["schedule_id"] == "sched-1"
+        assert payload["task_queue"] == "q2"
 
     @pytest.mark.asyncio
     async def test_not_found(self, client: Client) -> None:

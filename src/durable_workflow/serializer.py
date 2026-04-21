@@ -54,6 +54,7 @@ class PayloadSizeWarningContext:
 
     kind: str
     workflow_id: str | None = None
+    workflow_type: str | None = None
     run_id: str | None = None
     activity_name: str | None = None
     signal_name: str | None = None
@@ -67,6 +68,7 @@ class PayloadSizeWarningContext:
         values = {
             "kind": self.kind,
             "workflow_id": self.workflow_id,
+            "workflow_type": self.workflow_type,
             "run_id": self.run_id,
             "activity_name": self.activity_name,
             "signal_name": self.signal_name,

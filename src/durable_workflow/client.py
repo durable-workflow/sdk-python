@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -130,12 +131,16 @@ class ScheduleAction:
     execution_timeout_seconds: int | None = None
     run_timeout_seconds: int | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(
+        self,
+        *,
+        input_encoder: Callable[[list[Any]], dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
         d: dict[str, Any] = {"workflow_type": self.workflow_type}
         if self.task_queue is not None:
             d["task_queue"] = self.task_queue
         if self.input is not None:
-            d["input"] = serializer.envelope(self.input)
+            d["input"] = input_encoder(self.input) if input_encoder else serializer.envelope(self.input)
         if self.execution_timeout_seconds is not None:
             d["execution_timeout_seconds"] = self.execution_timeout_seconds
         if self.run_timeout_seconds is not None:
@@ -392,6 +397,7 @@ class Client:
         *,
         kind: str,
         workflow_id: str | None = None,
+        workflow_type: str | None = None,
         run_id: str | None = None,
         activity_name: str | None = None,
         signal_name: str | None = None,
@@ -403,6 +409,7 @@ class Client:
         return serializer.PayloadSizeWarningContext(
             kind=kind,
             workflow_id=workflow_id,
+            workflow_type=workflow_type,
             run_id=run_id,
             activity_name=activity_name,
             signal_name=signal_name,
@@ -420,6 +427,7 @@ class Client:
         kind: str,
         codec: str = serializer.AVRO_CODEC,
         workflow_id: str | None = None,
+        workflow_type: str | None = None,
         run_id: str | None = None,
         activity_name: str | None = None,
         signal_name: str | None = None,
@@ -435,6 +443,7 @@ class Client:
             warning_context=self._payload_context(
                 kind=kind,
                 workflow_id=workflow_id,
+                workflow_type=workflow_type,
                 run_id=run_id,
                 activity_name=activity_name,
                 signal_name=signal_name,
@@ -901,7 +910,15 @@ class Client:
         """
         body: dict[str, Any] = {
             "spec": spec.to_dict(),
-            "action": action.to_dict(),
+            "action": action.to_dict(
+                input_encoder=lambda value: self._payload_envelope(
+                    value,
+                    kind="schedule_input",
+                    workflow_type=action.workflow_type,
+                    schedule_id=schedule_id,
+                    task_queue=action.task_queue,
+                )
+            ),
         }
         if schedule_id is not None:
             body["schedule_id"] = schedule_id
@@ -999,7 +1016,15 @@ class Client:
         if spec is not None:
             body["spec"] = spec.to_dict()
         if action is not None:
-            body["action"] = action.to_dict()
+            body["action"] = action.to_dict(
+                input_encoder=lambda value: self._payload_envelope(
+                    value,
+                    kind="schedule_input",
+                    workflow_type=action.workflow_type,
+                    schedule_id=schedule_id,
+                    task_queue=action.task_queue,
+                )
+            )
         if overlap_policy is not None:
             body["overlap_policy"] = overlap_policy
         if jitter_seconds is not None:
