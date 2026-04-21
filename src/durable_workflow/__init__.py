@@ -65,7 +65,15 @@ from .serializer import (
     to_avro_payload_values,
 )
 from .worker import Worker
-from .workflow import ActivityRetryPolicy, ChildWorkflowRetryPolicy, ContinueAsNew, StartChildWorkflow
+from .workflow import (
+    ActivityRetryPolicy,
+    ChildWorkflowRetryPolicy,
+    ContinueAsNew,
+    Replayer,
+    ReplayOutcome,
+    StartChildWorkflow,
+    replay,
+)
 
 __all__ = [
     "__version__",
@@ -80,6 +88,8 @@ __all__ = [
     "Client",
     "ContinueAsNew",
     "NonRetryableError",
+    "ReplayOutcome",
+    "Replayer",
     "ScheduleAction",
     "ScheduleAlreadyExists",
     "ScheduleBackfillResult",
@@ -127,4 +137,5 @@ __all__ = [
     "WorkflowTerminated",
     "to_avro_payload_value",
     "to_avro_payload_values",
+    "replay",
 ]

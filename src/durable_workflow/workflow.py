@@ -1069,6 +1069,65 @@ class ReplayOutcome:
     commands: list[Command]
 
 
+class Replayer:
+    """Replay captured workflow history without a live server.
+
+    Register one or more workflow classes, then call :meth:`replay` with a
+    server-exported history list or a dictionary containing an ``events`` key.
+    If the history includes a ``WorkflowStarted`` event, the replayer can infer
+    the workflow type and start input from that event.
+    """
+
+    def __init__(self, *, workflows: Iterable[type]) -> None:
+        self._workflows: dict[str, type] = {}
+        for workflow_cls in workflows:
+            workflow_type = str(getattr(workflow_cls, "__workflow_name__", workflow_cls.__name__))
+            if workflow_type in self._workflows:
+                raise ValueError(f"duplicate workflow type registered with Replayer: {workflow_type!r}")
+            self._workflows[workflow_type] = workflow_cls
+        if not self._workflows:
+            raise ValueError("Replayer requires at least one workflow class")
+
+    def replay(
+        self,
+        history: Iterable[dict[str, Any]] | Mapping[str, Any],
+        start_input: list[Any] | None = None,
+        *,
+        workflow_type: str | None = None,
+        workflow_id: str | None = None,
+        run_id: str = "",
+        payload_codec: str | None = None,
+    ) -> ReplayOutcome:
+        events = _history_events_from_export(history)
+        selected_workflow_type = workflow_type or _workflow_type_from_history(events)
+        workflow_cls = self._workflow_cls(selected_workflow_type)
+        replay_input = (
+            list(start_input)
+            if start_input is not None
+            else _start_input_from_history(events, payload_codec=payload_codec)
+        )
+        return replay(
+            workflow_cls,
+            events,
+            replay_input,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            payload_codec=payload_codec,
+        )
+
+    def _workflow_cls(self, workflow_type: str | None) -> type:
+        if workflow_type is not None:
+            workflow_cls = self._workflows.get(workflow_type)
+            if workflow_cls is None:
+                registered = ", ".join(sorted(self._workflows))
+                raise ValueError(f"workflow type {workflow_type!r} is not registered; registered: {registered}")
+            return workflow_cls
+        if len(self._workflows) == 1:
+            return next(iter(self._workflows.values()))
+        registered = ", ".join(sorted(self._workflows))
+        raise ValueError(f"workflow_type is required when multiple workflows are registered: {registered}")
+
+
 @dataclass
 class _ReplayState:
     outcome: ReplayOutcome
@@ -1146,6 +1205,64 @@ def _workflow_id_from_history(events: Iterable[dict[str, Any]]) -> str | None:
         if workflow_id is not None:
             return str(workflow_id)
     return None
+
+
+def _history_events_from_export(history: Iterable[dict[str, Any]] | Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_events: Any = history
+    if isinstance(history, Mapping):
+        if "events" in history:
+            raw_events = history["events"]
+        elif "history_events" in history:
+            raw_events = history["history_events"]
+        elif "history" in history:
+            raw_events = history["history"]
+        else:
+            raise ValueError("history export must contain an events, history_events, or history list")
+
+    events: list[dict[str, Any]] = []
+    for event in raw_events:
+        if not isinstance(event, Mapping):
+            raise ValueError("history events must be dictionaries")
+        events.append(dict(event))
+    return events
+
+
+def _workflow_type_from_history(events: Iterable[dict[str, Any]]) -> str | None:
+    for event in events:
+        payload = event.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            payload = {}
+        workflow_type = payload.get("workflow_type") or event.get("workflow_type")
+        if workflow_type is not None:
+            return str(workflow_type)
+    return None
+
+
+def _start_input_from_history(events: Iterable[dict[str, Any]], *, payload_codec: str | None) -> list[Any]:
+    for event in events:
+        if event.get("event_type") != "WorkflowStarted":
+            continue
+        payload = event.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            return []
+        codec = payload.get("payload_codec") or payload_codec
+        for key in ("input_envelope", "input", "arguments"):
+            raw = payload.get(key)
+            if raw is None:
+                continue
+            if isinstance(raw, Mapping) and "codec" in raw and "blob" in raw:
+                decoded = serializer.decode_envelope(raw)
+            elif isinstance(raw, str):
+                decoded = serializer.decode(raw, codec=codec)
+            else:
+                decoded = raw
+            if decoded is None:
+                return []
+            if isinstance(decoded, list):
+                return decoded
+            return [decoded]
+        return []
+    return []
 
 
 def _decode_receiver_args(

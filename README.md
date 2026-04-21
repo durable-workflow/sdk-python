@@ -149,6 +149,27 @@ fingerprints during registration. Re-registering the same `worker_id` with a
 changed class body for an already advertised workflow type raises immediately;
 restart the worker process with a new id before serving changed workflow code.
 
+## Replay captured histories
+
+Use `Replayer` to debug a captured history without connecting to a live server:
+
+```python
+from durable_workflow import Replayer
+
+replayer = Replayer(workflows=[ApprovalWorkflow])
+outcome = replayer.replay(history_export)
+
+for command in outcome.commands:
+    print(command)
+```
+
+`history_export` can be the server's event list or a dictionary with an
+`events` key. When the history contains a `WorkflowStarted` event, the replayer
+infers the workflow type and input from that event; otherwise pass
+`workflow_type=` and `start_input=` explicitly. The returned `ReplayOutcome`
+contains the commands the workflow would emit next, including determinism
+failures surfaced as workflow failure commands.
+
 ## Features
 
 - **Async-first**: Built on `httpx` and `asyncio`

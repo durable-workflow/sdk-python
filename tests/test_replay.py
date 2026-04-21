@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from durable_workflow import serializer, workflow
+import pytest
+
+from durable_workflow import Replayer, ReplayOutcome, serializer, workflow
 from durable_workflow.errors import ChildWorkflowFailed
 from durable_workflow.workflow import (
     ActivityRetryPolicy,
@@ -65,6 +67,44 @@ class TestSimpleReturn:
         cmd = outcome.commands[0]
         assert isinstance(cmd, CompleteWorkflow)
         assert cmd.result == "done"
+
+
+class TestPublicReplayer:
+    def test_replays_registered_workflow_with_explicit_input(self) -> None:
+        outcome = Replayer(workflows=[OneActivity]).replay([], ["world"])
+
+        assert isinstance(outcome, ReplayOutcome)
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, ScheduleActivity)
+        assert cmd.arguments == ["world"]
+
+    def test_infers_workflow_type_and_input_from_workflow_started_event(self) -> None:
+        history = {
+            "events": [
+                {
+                    "event_type": "WorkflowStarted",
+                    "payload": {
+                        "workflow_type": "one-activity",
+                        "input": serializer.envelope(["Ada"], codec="json"),
+                    },
+                },
+            ],
+        }
+
+        outcome = Replayer(workflows=[OneActivity]).replay(history)
+
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, ScheduleActivity)
+        assert cmd.arguments == ["Ada"]
+
+    def test_rejects_unknown_workflow_type(self) -> None:
+        history = [
+            {"event_type": "WorkflowStarted", "payload": {"workflow_type": "missing"}},
+        ]
+
+        with pytest.raises(ValueError, match="not registered"):
+            Replayer(workflows=[OneActivity]).replay(history)
 
 
 class TestOneActivity:
