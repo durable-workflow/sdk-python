@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import pytest
+
 from durable_workflow import serializer, workflow
+from durable_workflow.errors import WorkflowPayloadDecodeError
 from durable_workflow.workflow import (
     CompleteWorkflow,
     ScheduleActivity,
@@ -156,3 +160,44 @@ class TestSignalDispatchDuringReplay:
 
         assert isinstance(outcome.commands[0], CompleteWorkflow)
         assert outcome.commands[0].result == 2
+
+    def test_signal_payload_decode_failure_logs_workflow_context(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        events = [
+            {
+                "event_id": "evt-7",
+                "event_type": "SignalReceived",
+                "payload": {
+                    "signal_name": "approve",
+                    "value": "{not valid json",
+                    "payload_codec": "json",
+                },
+            },
+        ]
+
+        with (
+            caplog.at_level(logging.ERROR, logger="durable_workflow.workflow.replay"),
+            pytest.raises(WorkflowPayloadDecodeError) as exc_info,
+        ):
+            replay(ApprovalWorkflow, events, [], workflow_id="wf-1", run_id="run-1", payload_codec="json")
+
+        err = exc_info.value
+        assert err.workflow_id == "wf-1"
+        assert err.run_id == "run-1"
+        assert err.event_id == "evt-7"
+        assert err.receiver_kind == "signal"
+        assert err.receiver_name == "approve"
+        assert err.codec == "json"
+        assert err.payload_head == "{not valid json"
+        assert err.exception_type == "ValueError"
+
+        assert len(caplog.records) == 1
+        payload = caplog.records[0].durable_workflow_payload_decode
+        assert payload["workflow_id"] == "wf-1"
+        assert payload["run_id"] == "run-1"
+        assert payload["event_id"] == "evt-7"
+        assert payload["signal_name"] == "approve"
+        assert payload["codec"] == "json"
+        assert payload["payload_head"] == "{not valid json"
+        assert payload["exception_type"] == "ValueError"

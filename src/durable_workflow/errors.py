@@ -123,6 +123,33 @@ class QueryFailed(DurableWorkflowError):
     """A workflow query was rejected or the workflow raised while handling it."""
 
 
+class WorkflowPayloadDecodeError(DurableWorkflowError):
+    """A committed workflow history payload could not be decoded during replay."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        workflow_id: str | None = None,
+        run_id: str | None = None,
+        event_id: str | None = None,
+        receiver_kind: str | None = None,
+        receiver_name: str | None = None,
+        codec: str | None = None,
+        payload_head: str | None = None,
+        exception_type: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.workflow_id = workflow_id
+        self.run_id = run_id
+        self.event_id = event_id
+        self.receiver_kind = receiver_kind
+        self.receiver_name = receiver_name
+        self.codec = codec
+        self.payload_head = payload_head
+        self.exception_type = exception_type
+
+
 class UpdateRejected(DurableWorkflowError):
     """A workflow update was rejected by the workflow's validator."""
 

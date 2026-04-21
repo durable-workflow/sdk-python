@@ -369,6 +369,7 @@ class Worker:
                 history,
                 start_input,
                 update_id,
+                workflow_id=task.get("workflow_id"),
                 run_id=run_id,
                 payload_codec=codec,
             )
@@ -400,7 +401,14 @@ class Worker:
             return [command]
 
         try:
-            outcome = replay(cls, history, start_input, run_id=run_id, payload_codec=codec)
+            outcome = replay(
+                cls,
+                history,
+                start_input,
+                workflow_id=task.get("workflow_id"),
+                run_id=run_id,
+                payload_codec=codec,
+            )
         except AvroNotInstalledError as e:
             log.exception("replay failed: Avro dependency unavailable")
             try:
@@ -699,6 +707,7 @@ class Worker:
                 start_input,
                 query_name,
                 query_args,
+                workflow_id=task.get("workflow_id"),
                 run_id=task.get("run_id", ""),
                 payload_codec=codec,
             )

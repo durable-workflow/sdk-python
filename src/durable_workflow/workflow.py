@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import serializer
-from .errors import ChildWorkflowFailed, QueryFailed
+from .errors import ChildWorkflowFailed, QueryFailed, WorkflowPayloadDecodeError
 
 _REGISTRY: dict[str, type] = {}
 
@@ -865,11 +865,93 @@ def _decode_update_args(payload: dict[str, Any], fallback_codec: str | None) -> 
     return [decoded]
 
 
+def _event_id(event: Mapping[str, Any]) -> str | None:
+    for key in ("event_id", "id", "sequence"):
+        value = event.get(key)
+        if value is not None:
+            return str(value)
+    return None
+
+
+def _history_payload_head(payload: Mapping[str, Any], receiver_kind: str) -> str | None:
+    raw = payload.get("arguments")
+    if receiver_kind == "signal":
+        raw = payload.get("value")
+        if raw is None:
+            raw = payload.get("input")
+        if raw is None:
+            raw = payload.get("arguments")
+    if isinstance(raw, Mapping):
+        blob = raw.get("blob")
+        if blob is not None:
+            raw = blob
+    if raw is None:
+        return None
+    return str(raw)[:128]
+
+
+def _workflow_id_from_history(events: Iterable[dict[str, Any]]) -> str | None:
+    for event in events:
+        payload = event.get("payload") or {}
+        workflow_id = payload.get("workflow_id") or event.get("workflow_id")
+        if workflow_id is not None:
+            return str(workflow_id)
+    return None
+
+
+def _decode_receiver_args(
+    event: Mapping[str, Any],
+    *,
+    receiver_kind: str,
+    receiver_name: str,
+    workflow_id: str | None,
+    run_id: str,
+    payload_codec: str | None,
+) -> list[Any]:
+    payload = event.get("payload") or {}
+    if not isinstance(payload, Mapping):
+        payload = {}
+    codec = payload.get("payload_codec") or payload_codec
+    try:
+        if receiver_kind == "signal":
+            return _decode_signal_args(dict(payload), payload_codec)
+        return _decode_update_args(dict(payload), payload_codec)
+    except Exception as exc:
+        payload_head = _history_payload_head(payload, receiver_kind)
+        context = {
+            "workflow_id": workflow_id,
+            "run_id": run_id or None,
+            "event_id": _event_id(event),
+            f"{receiver_kind}_name": receiver_name,
+            "codec": str(codec) if codec is not None else None,
+            "payload_head": payload_head,
+            "exception_type": type(exc).__name__,
+        }
+        clean_context = {key: value for key, value in context.items() if value is not None}
+        _REPLAY_LOGGER.exception(
+            "workflow %s payload decode failed during replay",
+            receiver_kind,
+            extra={"durable_workflow_payload_decode": clean_context},
+        )
+        raise WorkflowPayloadDecodeError(
+            f"{receiver_kind} {receiver_name!r} payload decode failed: {exc}",
+            workflow_id=workflow_id,
+            run_id=run_id or None,
+            event_id=_event_id(event),
+            receiver_kind=receiver_kind,
+            receiver_name=receiver_name,
+            codec=str(codec) if codec is not None else None,
+            payload_head=payload_head,
+            exception_type=type(exc).__name__,
+        ) from exc
+
+
 def replay(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
     start_input: list[Any],
     *,
+    workflow_id: str | None = None,
     run_id: str = "",
     payload_codec: str | None = None,
 ) -> ReplayOutcome:
@@ -877,6 +959,7 @@ def replay(
         workflow_cls,
         history_events,
         start_input,
+        workflow_id=workflow_id,
         run_id=run_id,
         payload_codec=payload_codec,
     ).outcome
@@ -889,6 +972,7 @@ def query_state(
     query_name: str,
     args: list[Any] | None = None,
     *,
+    workflow_id: str | None = None,
     run_id: str = "",
     payload_codec: str | None = None,
 ) -> Any:
@@ -903,6 +987,7 @@ def query_state(
             workflow_cls,
             history_events,
             start_input,
+            workflow_id=workflow_id,
             run_id=run_id,
             payload_codec=payload_codec,
         )
@@ -935,6 +1020,7 @@ def apply_update(
     start_input: list[Any],
     update_id: str,
     *,
+    workflow_id: str | None = None,
     run_id: str = "",
     payload_codec: str | None = None,
 ) -> CompleteUpdate | FailUpdate:
@@ -952,6 +1038,7 @@ def apply_update(
             workflow_cls,
             events,
             start_input,
+            workflow_id=workflow_id,
             run_id=run_id,
             payload_codec=payload_codec,
         )
@@ -987,7 +1074,14 @@ def apply_update(
         )
 
     try:
-        args = _decode_update_args(accepted, payload_codec)
+        args = _decode_receiver_args(
+            {"event_type": "UpdateAccepted", "payload": accepted},
+            receiver_kind="update",
+            receiver_name=update_name,
+            workflow_id=workflow_id or _workflow_id_from_history(events),
+            run_id=run_id,
+            payload_codec=payload_codec,
+        )
     except Exception as exc:
         return _fail_update_from_exception(update_id, "update argument decode failed", exc)
 
@@ -1063,10 +1157,12 @@ def _replay_state(
     history_events: Iterable[dict[str, Any]],
     start_input: list[Any],
     *,
+    workflow_id: str | None = None,
     run_id: str = "",
     payload_codec: str | None = None,
 ) -> _ReplayState:
     events = list(history_events)
+    workflow_id = workflow_id or _workflow_id_from_history(events)
 
     workflow_start_time: datetime | None = None
     for ev in events:
@@ -1142,7 +1238,14 @@ def _replay_state(
                         len(resolved_results),
                         "signal",
                         signal_name,
-                        _decode_signal_args(payload, payload_codec),
+                        _decode_receiver_args(
+                            ev,
+                            receiver_kind="signal",
+                            receiver_name=signal_name,
+                            workflow_id=workflow_id,
+                            run_id=run_id,
+                            payload_codec=payload_codec,
+                        ),
                     )
                 )
         elif etype == "UpdateApplied":
@@ -1153,7 +1256,14 @@ def _replay_state(
                         len(resolved_results),
                         "update",
                         update_name,
-                        _decode_update_args(payload, payload_codec),
+                        _decode_receiver_args(
+                            ev,
+                            receiver_kind="update",
+                            receiver_name=update_name,
+                            workflow_id=workflow_id,
+                            run_id=run_id,
+                            payload_codec=payload_codec,
+                        ),
                     )
                 )
 

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from durable_workflow import serializer, workflow
+from durable_workflow.errors import WorkflowPayloadDecodeError
 from durable_workflow.workflow import (
     CompleteUpdate,
     FailUpdate,
     WorkflowContext,
     apply_update,
     query_state,
+    replay,
 )
 
 
@@ -223,3 +229,72 @@ class TestUpdateApplicationReplay:
         assert command.update_id == "upd-5"
         assert command.exception_type == "RuntimeError"
         assert "update exploded" in command.message
+
+    def test_replay_update_payload_decode_failure_logs_workflow_context(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        history = [
+            {
+                "event_id": "evt-8",
+                "event_type": "UpdateApplied",
+                "payload": {
+                    "update_id": "upd-bad",
+                    "update_name": "increment",
+                    "arguments": "{not valid json",
+                    "payload_codec": "json",
+                },
+            },
+        ]
+
+        with (
+            caplog.at_level(logging.ERROR, logger="durable_workflow.workflow.replay"),
+            pytest.raises(WorkflowPayloadDecodeError) as exc_info,
+        ):
+            replay(StatefulUpdateReceiver, history, [], workflow_id="wf-2", run_id="run-2", payload_codec="json")
+
+        err = exc_info.value
+        assert err.workflow_id == "wf-2"
+        assert err.run_id == "run-2"
+        assert err.event_id == "evt-8"
+        assert err.receiver_kind == "update"
+        assert err.receiver_name == "increment"
+        assert err.codec == "json"
+        assert err.payload_head == "{not valid json"
+        assert err.exception_type == "ValueError"
+
+        assert len(caplog.records) == 1
+        payload = caplog.records[0].durable_workflow_payload_decode
+        assert payload["workflow_id"] == "wf-2"
+        assert payload["run_id"] == "run-2"
+        assert payload["event_id"] == "evt-8"
+        assert payload["update_name"] == "increment"
+        assert payload["codec"] == "json"
+        assert payload["payload_head"] == "{not valid json"
+        assert payload["exception_type"] == "ValueError"
+
+    def test_apply_update_decode_failure_uses_typed_error_context(self) -> None:
+        command = apply_update(
+            StatefulUpdateReceiver,
+            [
+                {
+                    "event_id": "evt-9",
+                    "event_type": "UpdateAccepted",
+                    "payload": {
+                        "update_id": "upd-bad",
+                        "update_name": "increment",
+                        "arguments": "{not valid json",
+                        "payload_codec": "json",
+                    },
+                },
+            ],
+            [],
+            "upd-bad",
+            workflow_id="wf-3",
+            run_id="run-3",
+            payload_codec="json",
+        )
+
+        assert isinstance(command, FailUpdate)
+        assert command.update_id == "upd-bad"
+        assert command.exception_type == "WorkflowPayloadDecodeError"
+        assert "update 'increment' payload decode failed" in command.message

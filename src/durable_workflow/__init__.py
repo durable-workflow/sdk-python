@@ -38,6 +38,7 @@ from .errors import (
     WorkflowCancelled,
     WorkflowFailed,
     WorkflowNotFound,
+    WorkflowPayloadDecodeError,
     WorkflowTerminated,
 )
 from .interceptors import (
@@ -91,6 +92,7 @@ __all__ = [
     "WorkflowTaskInterceptorContext",
     "WorkflowHandle",
     "WorkflowList",
+    "WorkflowPayloadDecodeError",
     "activity",
     "sync",
     "testing",
