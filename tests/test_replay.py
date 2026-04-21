@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from durable_workflow import serializer, workflow
 from durable_workflow.errors import ChildWorkflowFailed
@@ -376,7 +377,6 @@ class TestSideEffect:
 
 class TestWorkflowContext:
     def test_now_returns_deterministic_time(self) -> None:
-        from datetime import datetime, timezone
         t = datetime(2026, 1, 1, tzinfo=timezone.utc)
         ctx = WorkflowContext(run_id="r1", current_time=t)
         assert ctx.now() == t
@@ -400,6 +400,34 @@ class TestWorkflowContext:
         ctx = WorkflowContext(run_id="run-y")
         u = ctx.uuid4()
         assert u.version == 4
+
+    def test_uuid7_deterministic(self) -> None:
+        t = datetime(2026, 1, 1, 12, 30, 15, 123000, tzinfo=timezone.utc)
+        ctx1 = WorkflowContext(run_id="run-v7", current_time=t)
+        ctx2 = WorkflowContext(run_id="run-v7", current_time=t)
+
+        assert ctx1.uuid7() == ctx2.uuid7()
+        assert ctx1.uuid7() == ctx2.uuid7()
+
+    def test_uuid7_is_version_7_and_uses_context_time(self) -> None:
+        t = datetime(2026, 1, 1, 12, 30, 15, 123000, tzinfo=timezone.utc)
+        ctx = WorkflowContext(run_id="run-v7", current_time=t)
+
+        u = ctx.uuid7()
+
+        assert u.version == 7
+        assert (u.int >> 80) == int(t.timestamp() * 1000)
+
+    def test_uuid7_orders_same_tick_calls_by_sequence(self) -> None:
+        t = datetime(2026, 1, 1, 12, 30, 15, 123000, tzinfo=timezone.utc)
+        ctx = WorkflowContext(run_id="run-v7", current_time=t)
+
+        first = ctx.uuid7()
+        second = ctx.uuid7()
+
+        assert first < second
+        assert ((first.int >> 64) & 0xFFF) == 0
+        assert ((second.int >> 64) & 0xFFF) == 1
 
     def test_logger_silent_during_replay(self) -> None:
         import logging

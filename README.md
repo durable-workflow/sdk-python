@@ -158,6 +158,7 @@ restart the worker process with a new id before serving changed workflow code.
 - **Codec envelopes**: Avro payloads by default, with JSON decode compatibility for existing history
 - **Payload-size warnings**: Structured warnings before oversized workflow, activity, schedule, signal, update, query, or search-attribute payloads reach the server
 - **Workflow definition guard**: Worker registration refuses same-id hot reloads when a workflow class definition changed
+- **Deterministic workflow helpers**: `ctx.now()`, `ctx.random()`, `ctx.uuid4()`, and `ctx.uuid7()` replay from workflow state
 - **Worker interceptors**: Typed hooks around workflow tasks, activity calls, and query tasks for tracing, logging, and custom metrics
 - **Metrics hooks**: Pluggable counters and histograms, with an optional Prometheus adapter
 

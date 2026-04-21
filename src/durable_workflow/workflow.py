@@ -9,10 +9,11 @@ parallel.
 
 Determinism-sensitive helpers live on the :class:`WorkflowContext` passed to
 ``run``: :meth:`WorkflowContext.random`, :meth:`WorkflowContext.uuid4`,
-:meth:`WorkflowContext.now`, :meth:`WorkflowContext.patched`,
-:meth:`WorkflowContext.deprecate_patch`, and :meth:`WorkflowContext.side_effect` all
-produce values that are recorded on first execution and replayed verbatim
-on every subsequent replay of the same history.
+:meth:`WorkflowContext.uuid7`, :meth:`WorkflowContext.now`,
+:meth:`WorkflowContext.patched`, :meth:`WorkflowContext.deprecate_patch`, and
+:meth:`WorkflowContext.side_effect` all produce values that are recorded on
+first execution and replayed verbatim on every subsequent replay of the same
+history.
 """
 
 from __future__ import annotations
@@ -724,6 +725,7 @@ class WorkflowContext:
         self._current_time = current_time or datetime.now(timezone.utc)
         seed = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16)
         self._rng = random.Random(seed)
+        self._uuid7_counter = 0
         self.logger = _ReplayLogger(_REPLAY_LOGGER)
 
     def schedule_activity(
@@ -870,6 +872,24 @@ class WorkflowContext:
     def uuid4(self) -> uuid.UUID:
         rand_bytes = self._rng.getrandbits(128).to_bytes(16, "big")
         return uuid.UUID(bytes=rand_bytes, version=4)
+
+    def uuid7(self) -> uuid.UUID:
+        timestamp_ms = int(self._current_time.timestamp() * 1000)
+        if timestamp_ms < 0 or timestamp_ms >= (1 << 48):
+            raise ValueError("ctx.uuid7() requires ctx.now() within the UUIDv7 timestamp range")
+
+        rand_a = self._uuid7_counter & 0xFFF
+        self._uuid7_counter += 1
+        rand_b = self._rng.getrandbits(62)
+
+        value = (
+            (timestamp_ms << 80)
+            | (0x7 << 76)
+            | (rand_a << 64)
+            | (0x2 << 62)
+            | rand_b
+        )
+        return uuid.UUID(int=value)
 
 
 # ── Replay ───────────────────────────────────────────────────────────
