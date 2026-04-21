@@ -1,4 +1,5 @@
 """Synchronous facade over the async Client, for scripts and Jupyter."""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +14,8 @@ from .client import (
     ScheduleList,
     ScheduleSpec,
     ScheduleTriggerResult,
+    TaskQueueDescription,
+    TaskQueueList,
     WorkflowExecution,
     WorkflowHandle,
     WorkflowList,
@@ -72,12 +75,15 @@ class SyncWorkflowHandle:
         wait_timeout_seconds: int | None = None,
         request_id: str | None = None,
     ) -> Any:
-        return _run(self._handle.update(
-            update_name, args=args,
-            wait_for=wait_for,
-            wait_timeout_seconds=wait_timeout_seconds,
-            request_id=request_id,
-        ))
+        return _run(
+            self._handle.update(
+                update_name,
+                args=args,
+                wait_for=wait_for,
+                wait_timeout_seconds=wait_timeout_seconds,
+                request_id=request_id,
+            )
+        )
 
 
 class SyncScheduleHandle:
@@ -103,11 +109,18 @@ class SyncScheduleHandle:
         search_attributes: dict[str, Any] | None = None,
         note: str | None = None,
     ) -> None:
-        _run(self._handle.update(
-            spec=spec, action=action, overlap_policy=overlap_policy,
-            jitter_seconds=jitter_seconds, max_runs=max_runs,
-            memo=memo, search_attributes=search_attributes, note=note,
-        ))
+        _run(
+            self._handle.update(
+                spec=spec,
+                action=action,
+                overlap_policy=overlap_policy,
+                jitter_seconds=jitter_seconds,
+                max_runs=max_runs,
+                memo=memo,
+                search_attributes=search_attributes,
+                note=note,
+            )
+        )
 
     def pause(self, *, note: str | None = None) -> None:
         _run(self._handle.pause(note=note))
@@ -129,9 +142,13 @@ class SyncScheduleHandle:
         end_time: str,
         overlap_policy: str | None = None,
     ) -> ScheduleBackfillResult:
-        result: ScheduleBackfillResult = _run(self._handle.backfill(
-            start_time=start_time, end_time=end_time, overlap_policy=overlap_policy,
-        ))
+        result: ScheduleBackfillResult = _run(
+            self._handle.backfill(
+                start_time=start_time,
+                end_time=end_time,
+                overlap_policy=overlap_policy,
+            )
+        )
         return result
 
 
@@ -192,17 +209,19 @@ class Client:
         memo: dict[str, Any] | None = None,
         search_attributes: dict[str, Any] | None = None,
     ) -> SyncWorkflowHandle:
-        handle = _run(self._async.start_workflow(
-            workflow_type=workflow_type,
-            task_queue=task_queue,
-            workflow_id=workflow_id,
-            input=input,
-            execution_timeout_seconds=execution_timeout_seconds,
-            run_timeout_seconds=run_timeout_seconds,
-            duplicate_policy=duplicate_policy,
-            memo=memo,
-            search_attributes=search_attributes,
-        ))
+        handle = _run(
+            self._async.start_workflow(
+                workflow_type=workflow_type,
+                task_queue=task_queue,
+                workflow_id=workflow_id,
+                input=input,
+                execution_timeout_seconds=execution_timeout_seconds,
+                run_timeout_seconds=run_timeout_seconds,
+                duplicate_policy=duplicate_policy,
+                memo=memo,
+                search_attributes=search_attributes,
+            )
+        )
         return SyncWorkflowHandle(handle)
 
     def describe_workflow(self, workflow_id: str) -> WorkflowExecution:
@@ -218,26 +237,32 @@ class Client:
         page_size: int | None = None,
         next_page_token: str | None = None,
     ) -> WorkflowList:
-        result: WorkflowList = _run(self._async.list_workflows(
-            workflow_type=workflow_type,
-            status=status,
-            query=query,
-            page_size=page_size,
-            next_page_token=next_page_token,
-        ))
+        result: WorkflowList = _run(
+            self._async.list_workflows(
+                workflow_type=workflow_type,
+                status=status,
+                query=query,
+                page_size=page_size,
+                next_page_token=next_page_token,
+            )
+        )
+        return result
+
+    def list_task_queues(self) -> TaskQueueList:
+        result: TaskQueueList = _run(self._async.list_task_queues())
+        return result
+
+    def describe_task_queue(self, name: str) -> TaskQueueDescription:
+        result: TaskQueueDescription = _run(self._async.describe_task_queue(name))
         return result
 
     def get_history(self, workflow_id: str, run_id: str) -> Any:
         return _run(self._async.get_history(workflow_id, run_id))
 
-    def signal_workflow(
-        self, workflow_id: str, signal_name: str, *, args: list[Any] | None = None
-    ) -> None:
+    def signal_workflow(self, workflow_id: str, signal_name: str, *, args: list[Any] | None = None) -> None:
         _run(self._async.signal_workflow(workflow_id, signal_name, args=args))
 
-    def query_workflow(
-        self, workflow_id: str, query_name: str, *, args: list[Any] | None = None
-    ) -> Any:
+    def query_workflow(self, workflow_id: str, query_name: str, *, args: list[Any] | None = None) -> Any:
         return _run(self._async.query_workflow(workflow_id, query_name, args=args))
 
     def cancel_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
@@ -256,13 +281,16 @@ class Client:
         wait_timeout_seconds: int | None = None,
         request_id: str | None = None,
     ) -> Any:
-        return _run(self._async.update_workflow(
-            workflow_id, update_name,
-            args=args,
-            wait_for=wait_for,
-            wait_timeout_seconds=wait_timeout_seconds,
-            request_id=request_id,
-        ))
+        return _run(
+            self._async.update_workflow(
+                workflow_id,
+                update_name,
+                args=args,
+                wait_for=wait_for,
+                wait_timeout_seconds=wait_timeout_seconds,
+                request_id=request_id,
+            )
+        )
 
     def get_result(
         self,
@@ -271,9 +299,7 @@ class Client:
         poll_interval: float = 0.5,
         timeout: float = 30.0,
     ) -> Any:
-        return _run(self._async.get_result(
-            handle._handle, poll_interval=poll_interval, timeout=timeout
-        ))
+        return _run(self._async.get_result(handle._handle, poll_interval=poll_interval, timeout=timeout))
 
     # ── Schedules ─────────────────────────────────────────────────────
     def get_schedule_handle(self, schedule_id: str) -> SyncScheduleHandle:
@@ -293,12 +319,20 @@ class Client:
         paused: bool = False,
         note: str | None = None,
     ) -> SyncScheduleHandle:
-        handle = _run(self._async.create_schedule(
-            schedule_id=schedule_id, spec=spec, action=action,
-            overlap_policy=overlap_policy, jitter_seconds=jitter_seconds,
-            max_runs=max_runs, memo=memo, search_attributes=search_attributes,
-            paused=paused, note=note,
-        ))
+        handle = _run(
+            self._async.create_schedule(
+                schedule_id=schedule_id,
+                spec=spec,
+                action=action,
+                overlap_policy=overlap_policy,
+                jitter_seconds=jitter_seconds,
+                max_runs=max_runs,
+                memo=memo,
+                search_attributes=search_attributes,
+                paused=paused,
+                note=note,
+            )
+        )
         return SyncScheduleHandle(handle)
 
     def list_schedules(self) -> ScheduleList:
@@ -322,12 +356,19 @@ class Client:
         search_attributes: dict[str, Any] | None = None,
         note: str | None = None,
     ) -> None:
-        _run(self._async.update_schedule(
-            schedule_id, spec=spec, action=action,
-            overlap_policy=overlap_policy, jitter_seconds=jitter_seconds,
-            max_runs=max_runs, memo=memo, search_attributes=search_attributes,
-            note=note,
-        ))
+        _run(
+            self._async.update_schedule(
+                schedule_id,
+                spec=spec,
+                action=action,
+                overlap_policy=overlap_policy,
+                jitter_seconds=jitter_seconds,
+                max_runs=max_runs,
+                memo=memo,
+                search_attributes=search_attributes,
+                note=note,
+            )
+        )
 
     def pause_schedule(self, schedule_id: str, *, note: str | None = None) -> None:
         _run(self._async.pause_schedule(schedule_id, note=note))
@@ -335,12 +376,8 @@ class Client:
     def resume_schedule(self, schedule_id: str, *, note: str | None = None) -> None:
         _run(self._async.resume_schedule(schedule_id, note=note))
 
-    def trigger_schedule(
-        self, schedule_id: str, *, overlap_policy: str | None = None
-    ) -> ScheduleTriggerResult:
-        result: ScheduleTriggerResult = _run(
-            self._async.trigger_schedule(schedule_id, overlap_policy=overlap_policy)
-        )
+    def trigger_schedule(self, schedule_id: str, *, overlap_policy: str | None = None) -> ScheduleTriggerResult:
+        result: ScheduleTriggerResult = _run(self._async.trigger_schedule(schedule_id, overlap_policy=overlap_policy))
         return result
 
     def delete_schedule(self, schedule_id: str) -> None:
@@ -354,8 +391,12 @@ class Client:
         end_time: str,
         overlap_policy: str | None = None,
     ) -> ScheduleBackfillResult:
-        result: ScheduleBackfillResult = _run(self._async.backfill_schedule(
-            schedule_id, start_time=start_time, end_time=end_time,
-            overlap_policy=overlap_policy,
-        ))
+        result: ScheduleBackfillResult = _run(
+            self._async.backfill_schedule(
+                schedule_id,
+                start_time=start_time,
+                end_time=end_time,
+                overlap_policy=overlap_policy,
+            )
+        )
         return result

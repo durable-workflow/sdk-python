@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -9,7 +10,7 @@ import pytest
 from durable_workflow.sync import Client, SyncWorkflowHandle
 
 
-def _mock_response(status: int = 200, json_data: dict | None = None) -> httpx.Response:
+def _mock_response(status: int = 200, json_data: dict[str, Any] | None = None) -> httpx.Response:
     content = json.dumps(json_data).encode() if json_data is not None else b""
     return httpx.Response(
         status_code=status,
@@ -31,11 +32,14 @@ class TestSyncClientHealth:
 class TestSyncClientStartWorkflow:
     def test_start_returns_sync_handle(self) -> None:
         client = Client("http://localhost:8080")
-        resp = _mock_response(200, {
-            "workflow_id": "wf-1",
-            "run_id": "run-1",
-            "workflow_type": "greeter",
-        })
+        resp = _mock_response(
+            200,
+            {
+                "workflow_id": "wf-1",
+                "run_id": "run-1",
+                "workflow_type": "greeter",
+            },
+        )
         with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
             handle = client.start_workflow(
                 workflow_type="greeter",
@@ -50,12 +54,15 @@ class TestSyncClientStartWorkflow:
 class TestSyncClientDescribe:
     def test_describe(self) -> None:
         client = Client("http://localhost:8080")
-        resp = _mock_response(200, {
-            "workflow_id": "wf-1",
-            "run_id": "run-1",
-            "workflow_type": "greeter",
-            "status": "running",
-        })
+        resp = _mock_response(
+            200,
+            {
+                "workflow_id": "wf-1",
+                "run_id": "run-1",
+                "workflow_type": "greeter",
+                "status": "running",
+            },
+        )
         with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
             desc = client.describe_workflow("wf-1")
             assert desc.status == "running"
@@ -97,12 +104,61 @@ class TestSyncClientQuery:
 class TestSyncClientList:
     def test_list(self) -> None:
         client = Client("http://localhost:8080")
-        resp = _mock_response(200, {
-            "workflows": [{"workflow_id": "wf-1", "run_id": "r1", "workflow_type": "g", "status": "running"}],
-        })
+        resp = _mock_response(
+            200,
+            {
+                "workflows": [{"workflow_id": "wf-1", "run_id": "r1", "workflow_type": "g", "status": "running"}],
+            },
+        )
         with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
             result = client.list_workflows(workflow_type="g")
             assert len(result.executions) == 1
+
+    def test_list_task_queues(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            200,
+            {
+                "namespace": "ns1",
+                "task_queues": [
+                    {
+                        "name": "orders",
+                        "admission": {"workflow_tasks": {"status": "accepting"}},
+                    }
+                ],
+            },
+        )
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = client.list_task_queues()
+            assert result.namespace == "ns1"
+            assert result.task_queues[0].name == "orders"
+            admission = result.task_queues[0].admission
+            assert admission is not None
+            assert admission.workflow_tasks is not None
+            assert admission.workflow_tasks.status == "accepting"
+            assert mock.call_args.args[:2] == ("GET", "/api/task-queues")
+
+    def test_describe_task_queue(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            200,
+            {
+                "name": "orders/high priority",
+                "namespace": "ns1",
+                "pollers": [{"worker_id": "w1"}],
+                "current_leases": [{"task_id": "t1"}],
+                "admission": {"activity_tasks": {"status": "no_slots"}},
+            },
+        )
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = client.describe_task_queue("orders/high priority")
+            assert result.name == "orders/high priority"
+            assert result.pollers == [{"worker_id": "w1"}]
+            assert result.current_leases == [{"task_id": "t1"}]
+            assert result.admission is not None
+            assert result.admission.activity_tasks is not None
+            assert result.admission.activity_tasks.status == "no_slots"
+            assert mock.call_args.args[:2] == ("GET", "/api/task-queues/orders%2Fhigh%20priority")
 
 
 class TestSyncClientUpdate:
@@ -120,8 +176,10 @@ class TestSyncHandleUpdate:
         resp_start = _mock_response(200, {"workflow_id": "wf-1", "run_id": "r1", "workflow_type": "g"})
         resp_update = _mock_response(200, {"outcome": "completed"})
         mock = patch.object(
-            client._async._http, "request",
-            new_callable=AsyncMock, side_effect=[resp_start, resp_update],
+            client._async._http,
+            "request",
+            new_callable=AsyncMock,
+            side_effect=[resp_start, resp_update],
         )
         with mock:
             handle = client.start_workflow(workflow_type="g", task_queue="q1", workflow_id="wf-1")
