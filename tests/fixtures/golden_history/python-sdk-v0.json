@@ -1,0 +1,107 @@
+[
+  {
+    "name": "single_activity_completion",
+    "workflow_type": "golden.single-activity",
+    "start_input": ["Ada"],
+    "history": [
+      {
+        "event_type": "ActivityCompleted",
+        "payload": {
+          "result": "\"hello Ada\""
+        }
+      }
+    ],
+    "expected": {
+      "command_type": "CompleteWorkflow",
+      "result": "hello Ada"
+    }
+  },
+  {
+    "name": "signal_satisfies_wait_condition",
+    "workflow_type": "golden.signal-wait",
+    "start_input": [],
+    "history": [
+      {
+        "event_type": "ConditionWaitOpened",
+        "payload": {
+          "condition_wait_id": "wait-approval-1",
+          "condition_key": "approval",
+          "timeout_seconds": 30
+        }
+      },
+      {
+        "event_type": "SignalReceived",
+        "payload": {
+          "signal_name": "approve",
+          "arguments": "[\"alice\"]"
+        }
+      },
+      {
+        "event_type": "ConditionWaitSatisfied",
+        "payload": {
+          "condition_wait_id": "wait-approval-1"
+        }
+      },
+      {
+        "event_type": "ActivityCompleted",
+        "payload": {
+          "result": "\"notified\""
+        }
+      }
+    ],
+    "expected": {
+      "command_type": "CompleteWorkflow",
+      "result": {
+        "approved_by": "alice",
+        "activity_result": "notified"
+      }
+    }
+  },
+  {
+    "name": "wait_condition_timeout",
+    "workflow_type": "golden.timeout-wait",
+    "start_input": [],
+    "history": [
+      {
+        "event_type": "ConditionWaitOpened",
+        "payload": {
+          "condition_wait_id": "wait-timeout-1",
+          "condition_key": "approval",
+          "timeout_seconds": 5
+        }
+      },
+      {
+        "event_type": "ConditionWaitTimedOut",
+        "payload": {
+          "condition_wait_id": "wait-timeout-1"
+        }
+      }
+    ],
+    "expected": {
+      "command_type": "CompleteWorkflow",
+      "result": "timed-out"
+    }
+  },
+  {
+    "name": "version_marker_new_path",
+    "workflow_type": "golden.version-marker",
+    "start_input": [],
+    "history": [
+      {
+        "event_type": "VersionMarkerRecorded",
+        "payload": {
+          "sequence": 1,
+          "change_id": "golden-version",
+          "version": 2,
+          "min_supported": 1,
+          "max_supported": 2
+        }
+      }
+    ],
+    "expected": {
+      "command_type": "ScheduleActivity",
+      "activity_type": "golden.version-new-path",
+      "arguments": []
+    }
+  }
+]
