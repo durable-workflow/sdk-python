@@ -22,6 +22,11 @@ from durable_workflow.workflow import (
     WorkflowContext,
     replay,
 )
+from tests.integration.polyglot_fixtures import (
+    PHP_VERSION_MARKER_EXPECTED_KEYS,
+    PHP_VERSION_MARKER_RECORDED_EVENT,
+    PolyglotVersionMarkerWorkflow,
+)
 
 
 @workflow.defn(name="simple-return")
@@ -701,6 +706,25 @@ class TestChildWorkflow:
 
 
 class TestVersionMarker:
+    def test_replays_php_emitted_version_marker_wire_fixture(self) -> None:
+        payload = PHP_VERSION_MARKER_RECORDED_EVENT["payload"]
+
+        assert sorted(payload) == sorted(PHP_VERSION_MARKER_EXPECTED_KEYS)
+        assert payload == {
+            "sequence": 1,
+            "change_id": "polyglot-version-marker",
+            "version": 2,
+            "min_supported": 1,
+            "max_supported": 2,
+        }
+
+        outcome = replay(PolyglotVersionMarkerWorkflow, [PHP_VERSION_MARKER_RECORDED_EVENT], [])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, ScheduleActivity)
+        assert cmd.activity_type == "tests.polyglot.version-marker-new-path"
+
     def test_first_replay_records_marker_and_continues(self) -> None:
         outcome = replay(VersionWorkflow, [], [])
         assert len(outcome.commands) == 2

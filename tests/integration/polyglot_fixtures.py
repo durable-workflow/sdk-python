@@ -10,6 +10,25 @@ from __future__ import annotations
 
 from durable_workflow import activity, workflow
 
+PHP_VERSION_MARKER_RECORDED_EVENT = {
+    "event_type": "VersionMarkerRecorded",
+    "payload": {
+        "sequence": 1,
+        "change_id": "polyglot-version-marker",
+        "version": 2,
+        "min_supported": 1,
+        "max_supported": 2,
+    },
+}
+
+PHP_VERSION_MARKER_EXPECTED_KEYS = [
+    "sequence",
+    "change_id",
+    "version",
+    "min_supported",
+    "max_supported",
+]
+
 
 @activity.defn(name="tests.polyglot.python-activity")
 async def polyglot_python_activity(input_data: dict) -> dict:
@@ -62,3 +81,15 @@ class PolyglotPythonWorkflow:
                 "result_has_runtime": php_result.get("runtime") == "php" if isinstance(php_result, dict) else False,
             },
         }
+
+
+@workflow.defn(name="tests.polyglot.version-marker-python-workflow")
+class PolyglotVersionMarkerWorkflow:
+    """Python replay fixture for PHP-emitted VersionMarkerRecorded history."""
+
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        version = yield ctx.get_version("polyglot-version-marker", 1, 2)
+        if version >= 2:
+            return (yield ctx.schedule_activity("tests.polyglot.version-marker-new-path", []))
+
+        return (yield ctx.schedule_activity("tests.polyglot.version-marker-old-path", []))
