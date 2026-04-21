@@ -644,16 +644,20 @@ class Client:
         ``output`` envelopes when present.
         """
         data = await self._request("GET", f"/workflows/{workflow_id}", context=workflow_id)
-        input_val = None
-        output_val = None
+        input_val = data.get("input")
+        output_val = data.get("output")
+        envelope_jobs: list[tuple[str, Any]] = []
         if data.get("input_envelope"):
-            input_val = serializer.decode_envelope(data["input_envelope"])
-        elif data.get("input") is not None:
-            input_val = data["input"]
+            envelope_jobs.append(("input", data["input_envelope"]))
         if data.get("output_envelope"):
-            output_val = serializer.decode_envelope(data["output_envelope"])
-        elif data.get("output") is not None:
-            output_val = data["output"]
+            envelope_jobs.append(("output", data["output_envelope"]))
+        if envelope_jobs:
+            decoded = serializer.decode_envelopes([envelope for _, envelope in envelope_jobs])
+            for (field, _), value in zip(envelope_jobs, decoded, strict=True):
+                if field == "input":
+                    input_val = value
+                else:
+                    output_val = value
         return WorkflowExecution(
             workflow_id=data.get("workflow_id", workflow_id),
             run_id=data.get("run_id"),

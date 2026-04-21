@@ -199,6 +199,104 @@ class TestBatchEncoding:
                 warning_context=[serializer.PayloadSizeWarningContext(kind="payload")],
             )
 
+    def test_encode_many_routes_avro_through_codec_batch_hook(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = []
+
+        def encode_many(values: list[object]) -> list[str]:
+            calls.append(values)
+            return [f"blob-{index}" for index, _ in enumerate(values)]
+
+        monkeypatch.setattr(serializer._avro, "encode_many", encode_many)
+
+        assert serializer.encode_many(["a", "b"], codec="avro", size_warning=None) == [
+            "blob-0",
+            "blob-1",
+        ]
+        assert calls == [["a", "b"]]
+
+    def test_encode_many_preserves_warning_contexts_through_avro_batch_hook(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            serializer._avro,
+            "encode_many",
+            lambda values: ["x" * 10 for _ in values],
+        )
+        config = serializer.PayloadSizeWarningConfig(limit_bytes=10, threshold_percent=50)
+
+        with caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"):
+            serializer.encode_many(
+                ["a", "b"],
+                codec="avro",
+                size_warning=config,
+                warning_context=[
+                    serializer.PayloadSizeWarningContext(kind="signal", signal_name="one"),
+                    serializer.PayloadSizeWarningContext(kind="signal", signal_name="two"),
+                ],
+            )
+
+        assert [record.durable_workflow_payload["signal_name"] for record in caplog.records] == [
+            "one",
+            "two",
+        ]
+
+
+class TestBatchDecoding:
+    def test_decode_many_preserves_json_order_and_none_passthrough(self) -> None:
+        assert serializer.decode_many(['"a"', None, '{"b":2}'], codec="json") == [
+            "a",
+            None,
+            {"b": 2},
+        ]
+
+    def test_decode_many_routes_avro_through_codec_batch_hook(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = []
+
+        def decode_many(blobs: list[str]) -> list[object]:
+            calls.append(blobs)
+            return [{"index": index} for index, _ in enumerate(blobs)]
+
+        monkeypatch.setattr(serializer._avro, "decode_many", decode_many)
+
+        assert serializer.decode_many(["blob-a", "", "blob-b"], codec="avro") == [
+            {"index": 0},
+            None,
+            {"index": 1},
+        ]
+        assert calls == [["blob-a", "blob-b"]]
+
+    def test_decode_envelopes_groups_by_codec_and_preserves_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            serializer._avro,
+            "decode_many",
+            lambda blobs: [f"avro:{blob}" for blob in blobs],
+        )
+
+        assert serializer.decode_envelopes(
+            [
+                {"codec": "json", "blob": '"json-a"'},
+                {"codec": "avro", "blob": "a"},
+                None,
+                {"codec": "avro", "blob": "b"},
+                '"json-b"',
+            ],
+            codec="json",
+        ) == ["json-a", "avro:a", None, "avro:b", "json-b"]
+
+    def test_decode_many_propagates_first_codec_error(self) -> None:
+        good = serializer.encode({"ok": True}, codec="avro")
+
+        with pytest.raises(ValueError, match="look like JSON"):
+            serializer.decode_many([good, '{"bad":true}'], codec="avro")
+
 
 class TestAvroPayloadAdapter:
     def test_adapts_dataclass_datetime_uuid_decimal_and_enum(self) -> None:
@@ -330,6 +428,60 @@ _PHP_AVRO_FIXTURES: dict[str, tuple[str, object]] = {
 
 @requires_avro
 class TestAvroCodec:
+    def test_encode_many_reuses_one_datum_writer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import avro.io
+
+        created = 0
+        written_json: list[str] = []
+        original_writer = avro.io.DatumWriter
+
+        class CountingWriter:
+            def __init__(self, schema: object) -> None:
+                nonlocal created
+                created += 1
+                self._inner = original_writer(schema)
+
+            def write(self, datum: dict[str, object], encoder: object) -> None:
+                written_json.append(str(datum["json"]))
+                self._inner.write(datum, encoder)
+
+        monkeypatch.setattr(avro.io, "DatumWriter", CountingWriter)
+
+        blobs = serializer.encode_many([{"i": 1}, {"i": 2}], codec="avro")
+
+        assert serializer.decode_many(blobs, codec="avro") == [{"i": 1}, {"i": 2}]
+        assert created == 1
+        assert written_json == ['{"i":1}', '{"i":2}']
+
+    def test_decode_many_reuses_one_datum_reader(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import avro.io
+
+        created = 0
+        read_count = 0
+        original_reader = avro.io.DatumReader
+
+        class CountingReader:
+            def __init__(self, schema: object) -> None:
+                nonlocal created
+                created += 1
+                self._inner = original_reader(schema)
+
+            def read(self, decoder: object) -> object:
+                nonlocal read_count
+                read_count += 1
+                return self._inner.read(decoder)
+
+        blobs = serializer.encode_many([{"i": 1}, {"i": 2}], codec="avro")
+        monkeypatch.setattr(avro.io, "DatumReader", CountingReader)
+
+        assert serializer.decode_many(blobs, codec="avro") == [{"i": 1}, {"i": 2}]
+        assert created == 1
+        assert read_count == 2
+
     def test_round_trip_primitives(self) -> None:
         for value in (None, True, False, 0, -1, 42, 3.14, "hello"):
             blob = serializer.encode(value, codec="avro")

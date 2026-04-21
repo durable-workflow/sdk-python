@@ -65,6 +65,19 @@ def encode(value: Any) -> str:
     The generic wrapper accepts the same value shapes as ``json.dumps``; adapt
     domain objects to JSON-native data before encoding.
     """
+    return encode_many([value])[0]
+
+
+def encode_many(values: list[Any]) -> list[str]:
+    """Encode several Avro generic-wrapper payloads through one codec visit.
+
+    The Avro runtime does not provide a useful vectorized API for independent
+    payload blobs, but batching here still avoids repeated import/schema/writer
+    setup at high fan-out command boundaries.
+    """
+    if not values:
+        return []
+
     try:
         import avro.io
     except ImportError as exc:
@@ -74,9 +87,41 @@ def encode(value: Any) -> str:
         ) from exc
 
     schema = _load_avro_schema()
-    buf = io.BytesIO()
-    encoder = avro.io.BinaryEncoder(buf)
     writer = avro.io.DatumWriter(schema)
+    return [_encode_with_writer(value, writer, avro.io.BinaryEncoder) for value in values]
+
+
+def decode(blob: str) -> Any:
+    """Decode an Avro ``payload_codec="avro"`` blob into a Python value.
+
+    Accepts the server's generic-wrapper format (prefix ``0x00``).  Typed
+    schemas (prefix ``0x01``) raise :class:`ValueError` because the SDK
+    has no schema registry.
+    """
+    return decode_many([blob])[0]
+
+
+def decode_many(blobs: list[str]) -> list[Any]:
+    """Decode several Avro payload blobs through one codec visit."""
+    if not blobs:
+        return []
+
+    try:
+        import avro.io
+    except ImportError as exc:
+        raise AvroNotInstalledError(
+            "The 'avro' package is required to decode payloads with the 'avro' "
+            "codec. Reinstall durable-workflow with its runtime dependencies."
+        ) from exc
+
+    schema = _load_avro_schema()
+    reader = avro.io.DatumReader(schema)
+    return [_decode_with_reader(blob, reader, avro.io.BinaryDecoder) for blob in blobs]
+
+
+def _encode_with_writer(value: Any, writer: Any, encoder_cls: Any) -> str:
+    buf = io.BytesIO()
+    encoder = encoder_cls(buf)
     writer.write(
         {
             "json": json.dumps(value, separators=(",", ":"), ensure_ascii=False),
@@ -87,21 +132,7 @@ def encode(value: Any) -> str:
     return base64.b64encode(_PREFIX_GENERIC_WRAPPER + buf.getvalue()).decode("ascii")
 
 
-def decode(blob: str) -> Any:
-    """Decode an Avro ``payload_codec="avro"`` blob into a Python value.
-
-    Accepts the server's generic-wrapper format (prefix ``0x00``).  Typed
-    schemas (prefix ``0x01``) raise :class:`ValueError` because the SDK
-    has no schema registry.
-    """
-    try:
-        import avro.io
-    except ImportError as exc:
-        raise AvroNotInstalledError(
-            "The 'avro' package is required to decode payloads with the 'avro' "
-            "codec. Reinstall durable-workflow with its runtime dependencies."
-        ) from exc
-
+def _decode_with_reader(blob: str, reader: Any, decoder_cls: Any) -> Any:
     try:
         raw = base64.b64decode(blob, validate=True)
     except (ValueError, TypeError) as exc:
@@ -124,9 +155,7 @@ def decode(blob: str) -> Any:
             f"These bytes were not produced by a Durable Workflow Avro serializer."
         )
 
-    schema = _load_avro_schema()
-    reader = avro.io.DatumReader(schema)
-    decoder = avro.io.BinaryDecoder(io.BytesIO(raw[1:]))
+    decoder = decoder_cls(io.BytesIO(raw[1:]))
     try:
         record = reader.read(decoder)
     except Exception as exc:

@@ -218,6 +218,34 @@ class TestDescribeWorkflow:
             assert desc.payload_codec == "json"
 
     @pytest.mark.asyncio
+    async def test_envelope_fields_decode_in_one_batch(self, client: Client) -> None:
+        resp = _mock_response(200, {
+            "workflow_id": "wf-1",
+            "run_id": "run-1",
+            "workflow_type": "greeter",
+            "status": "completed",
+            "input_envelope": {"codec": "json", "blob": '["Ada"]'},
+            "output_envelope": {"codec": "json", "blob": '{"greeting":"Hello, Ada!"}'},
+        })
+
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            patch.object(
+                serializer,
+                "decode_envelopes",
+                return_value=[["Ada"], {"greeting": "Hello, Ada!"}],
+            ) as decode_envelopes,
+        ):
+            desc = await client.describe_workflow("wf-1")
+
+        decode_envelopes.assert_called_once_with([
+            {"codec": "json", "blob": '["Ada"]'},
+            {"codec": "json", "blob": '{"greeting":"Hello, Ada!"}'},
+        ])
+        assert desc.input == ["Ada"]
+        assert desc.output == {"greeting": "Hello, Ada!"}
+
+    @pytest.mark.asyncio
     async def test_not_found(self, client: Client) -> None:
         resp = _mock_response(404, {"reason": "workflow_not_found", "message": "not found"})
         with (

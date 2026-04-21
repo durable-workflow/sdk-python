@@ -228,15 +228,26 @@ def encode_many(
     call sites.
     """
     contexts = _warning_contexts_for_values(values, warning_context)
-    return [
-        encode(
-            value,
+    if codec == JSON_CODEC:
+        blobs = [
+            json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+            for value in values
+        ]
+    elif codec == AVRO_CODEC:
+        blobs = _avro.encode_many(list(values))
+    else:
+        raise ValueError(
+            f"Unsupported payload codec {codec!r}; this SDK supports {SUPPORTED_CODECS!r}."
+        )
+
+    for index, blob in enumerate(blobs):
+        warn_if_payload_near_limit(
+            blob,
             codec=codec,
             size_warning=size_warning,
             warning_context=contexts[index],
         )
-        for index, value in enumerate(values)
-    ]
+    return blobs
 
 
 def envelope(
@@ -375,6 +386,60 @@ def decode_envelope(value: Any, codec: str | None = None) -> Any:
     if isinstance(value, dict) and "codec" in value and "blob" in value:
         return decode(value["blob"], codec=value["codec"])
     return decode(value, codec=codec)
+
+
+def decode_envelopes(values: Sequence[Any], codec: str | None = None) -> list[Any]:
+    """Decode several raw blobs or ``{codec, blob}`` envelopes in order."""
+    jobs: list[tuple[str | None, str | None]] = []
+    passthroughs: dict[int, Any] = {}
+    for index, value in enumerate(values):
+        if isinstance(value, dict) and "codec" in value and "blob" in value:
+            jobs.append((value["blob"], value["codec"]))
+        elif value is None or value == "":
+            passthroughs[index] = None
+            jobs.append((None, None))
+        else:
+            jobs.append((value, codec))
+
+    results: list[Any] = [None] * len(values)
+    grouped: dict[str | None, list[tuple[int, str | None]]] = {}
+    for index, (blob, item_codec) in enumerate(jobs):
+        if index in passthroughs:
+            continue
+        grouped.setdefault(item_codec, []).append((index, blob))
+
+    for item_codec, group in grouped.items():
+        decoded = decode_many([blob for _, blob in group], codec=item_codec)
+        for (index, _), value in zip(group, decoded, strict=True):
+            results[index] = value
+
+    return results
+
+
+def decode_many(blobs: Sequence[str | None], codec: str | None = None) -> list[Any]:
+    """Decode several payload blobs with one codec visit when possible."""
+    if codec is None or codec == JSON_CODEC:
+        return [decode(blob, codec=codec) for blob in blobs]
+
+    if codec == AVRO_CODEC:
+        decoded: list[Any] = [None] * len(blobs)
+        avro_jobs: list[tuple[int, str]] = []
+        for index, blob in enumerate(blobs):
+            if blob is None or blob == "":
+                continue
+            avro_jobs.append((index, blob))
+        if not avro_jobs:
+            return decoded
+        avro_values = _avro.decode_many([blob for _, blob in avro_jobs])
+        for (index, _), value in zip(avro_jobs, avro_values, strict=True):
+            decoded[index] = value
+        return decoded
+
+    raise ValueError(
+        f"Cannot decode payload with codec {codec!r}: this SDK supports "
+        f"{SUPPORTED_CODECS!r}. Ensure the workflow was started with a "
+        f"compatible codec or an explicit {{'codec': '<codec>', 'blob': '...'}} envelope."
+    )
 
 
 def decode(blob: str | None, codec: str | None = None) -> Any:
