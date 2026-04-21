@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+from functools import lru_cache
 from typing import Any
 
 from .errors import AvroNotInstalledError
@@ -44,6 +45,7 @@ _PREFIX_GENERIC_WRAPPER = b"\x00"
 _PREFIX_TYPED_SCHEMA = b"\x01"
 
 
+@lru_cache(maxsize=1)
 def _load_avro_schema() -> Any:
     try:
         import avro.schema

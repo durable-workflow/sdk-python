@@ -35,6 +35,15 @@ class TestWorkflow:
         return result
 
 
+@workflow.defn(name="fanout-wf")
+class FanOutWorkflow:
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        yield [
+            ctx.schedule_activity("first", ["a"]),
+            ctx.schedule_activity("second", ["b"]),
+        ]
+
+
 @workflow.defn(name="update-wf")
 class UpdateWorkflow:
     def __init__(self) -> None:
@@ -314,6 +323,36 @@ class TestWorkflowTaskExecution:
             await worker._run_workflow_task(task)
 
         assert caplog.records == []
+
+    @pytest.mark.asyncio
+    async def test_fanout_workflow_commands_use_batch_payload_envelopes(
+        self, mock_client: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[object]] = []
+        original = serializer.envelope_many
+
+        def spy_envelope_many(values, *args, **kwargs):  # type: ignore[no-untyped-def]
+            captured = list(values)
+            calls.append(captured)
+            return original(captured, *args, **kwargs)
+
+        monkeypatch.setattr(serializer, "envelope_many", spy_envelope_many)
+
+        worker = Worker(mock_client, task_queue="q1", workflows=[FanOutWorkflow], activities=[])
+        task = {
+            "task_id": "t-fanout",
+            "workflow_type": "fanout-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": "[]",
+            "payload_codec": "json",
+        }
+
+        await worker._run_workflow_task(task)
+
+        commands = mock_client.complete_workflow_task.call_args.kwargs["commands"]
+        assert [command["activity_type"] for command in commands] == ["first", "second"]
+        assert calls == [[["a"], ["b"]]]
 
     @pytest.mark.asyncio
     async def test_complete_on_resolved_activity(self, mock_client: AsyncMock) -> None:

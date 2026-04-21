@@ -24,7 +24,7 @@ import logging
 import math
 import random
 import uuid
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -683,6 +683,177 @@ Command = (
     | CompleteUpdate | FailUpdate | ContinueAsNew | RecordSideEffect | StartChildWorkflow
     | RecordVersionMarker | UpsertSearchAttributes | WaitCondition
 )
+
+
+def commands_to_server_commands(
+    commands: Sequence[Command],
+    task_queue: str,
+    *,
+    payload_codec: str = serializer.AVRO_CODEC,
+    size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+    warning_context: PayloadWarningContext = None,
+) -> list[dict[str, Any]]:
+    """Convert workflow commands to the server wire shape with batched payload encoding."""
+    server_commands: list[dict[str, Any]] = []
+    envelope_jobs: list[tuple[int, str, Any, dict[str, str]]] = []
+    encode_jobs: list[tuple[int, str, Any, dict[str, str]]] = []
+
+    for command in commands:
+        if isinstance(command, ScheduleActivity):
+            queue = command.queue or task_queue
+            server_command: dict[str, Any] = {
+                "type": "schedule_activity",
+                "activity_type": command.activity_type,
+                "queue": queue,
+            }
+            envelope_jobs.append((
+                len(server_commands),
+                "arguments",
+                command.arguments,
+                _payload_warning_context(
+                    warning_context,
+                    kind="activity_input",
+                    task_queue=queue,
+                    activity_name=command.activity_type,
+                ),
+            ))
+            if command.retry_policy is not None:
+                server_command["retry_policy"] = (
+                    command.retry_policy.to_dict()
+                    if isinstance(command.retry_policy, ActivityRetryPolicy)
+                    else dict(command.retry_policy)
+                )
+            if command.start_to_close_timeout is not None:
+                server_command["start_to_close_timeout"] = command.start_to_close_timeout
+            if command.schedule_to_start_timeout is not None:
+                server_command["schedule_to_start_timeout"] = command.schedule_to_start_timeout
+            if command.schedule_to_close_timeout is not None:
+                server_command["schedule_to_close_timeout"] = command.schedule_to_close_timeout
+            if command.heartbeat_timeout is not None:
+                server_command["heartbeat_timeout"] = command.heartbeat_timeout
+            server_commands.append(server_command)
+            continue
+
+        if isinstance(command, CompleteWorkflow):
+            server_commands.append({"type": "complete_workflow"})
+            envelope_jobs.append((
+                len(server_commands) - 1,
+                "result",
+                command.result,
+                _payload_warning_context(
+                    warning_context,
+                    kind="workflow_result",
+                    task_queue=task_queue,
+                ),
+            ))
+            continue
+
+        if isinstance(command, CompleteUpdate):
+            server_commands.append({"type": "complete_update", "update_id": command.update_id})
+            envelope_jobs.append((
+                len(server_commands) - 1,
+                "result",
+                command.result,
+                _payload_warning_context(
+                    warning_context,
+                    kind="update_result",
+                    task_queue=task_queue,
+                ),
+            ))
+            continue
+
+        if isinstance(command, ContinueAsNew):
+            queue = command.task_queue or task_queue
+            server_command = {"type": "continue_as_new", "queue": queue}
+            if command.workflow_type is not None:
+                server_command["workflow_type"] = command.workflow_type
+            server_commands.append(server_command)
+            envelope_jobs.append((
+                len(server_commands) - 1,
+                "arguments",
+                command.arguments,
+                _payload_warning_context(
+                    warning_context,
+                    kind="continue_as_new_input",
+                    task_queue=queue,
+                ),
+            ))
+            continue
+
+        if isinstance(command, RecordSideEffect):
+            server_commands.append({"type": "record_side_effect"})
+            encode_jobs.append((
+                len(server_commands) - 1,
+                "result",
+                command.result,
+                _payload_warning_context(
+                    warning_context,
+                    kind="side_effect_result",
+                    task_queue=task_queue,
+                ),
+            ))
+            continue
+
+        if isinstance(command, StartChildWorkflow):
+            queue = command.task_queue or task_queue
+            server_command = {
+                "type": "start_child_workflow",
+                "workflow_type": command.workflow_type,
+                "queue": queue,
+            }
+            envelope_jobs.append((
+                len(server_commands),
+                "arguments",
+                command.arguments,
+                _payload_warning_context(
+                    warning_context,
+                    kind="child_workflow_input",
+                    task_queue=queue,
+                ),
+            ))
+            if command.parent_close_policy is not None:
+                server_command["parent_close_policy"] = command.parent_close_policy
+            if command.retry_policy is not None:
+                server_command["retry_policy"] = (
+                    command.retry_policy.to_dict()
+                    if isinstance(command.retry_policy, ActivityRetryPolicy)
+                    else dict(command.retry_policy)
+                )
+            if command.execution_timeout_seconds is not None:
+                server_command["execution_timeout_seconds"] = command.execution_timeout_seconds
+            if command.run_timeout_seconds is not None:
+                server_command["run_timeout_seconds"] = command.run_timeout_seconds
+            server_commands.append(server_command)
+            continue
+
+        server_commands.append(command.to_server_command(
+            task_queue,
+            payload_codec=payload_codec,
+            size_warning=size_warning,
+            warning_context=warning_context,
+        ))
+
+    if envelope_jobs:
+        envelopes = serializer.envelope_many(
+            [value for _, _, value, _ in envelope_jobs],
+            codec=payload_codec,
+            size_warning=size_warning,
+            warning_context=[context for _, _, _, context in envelope_jobs],
+        )
+        for (index, key, _, _), envelope_value in zip(envelope_jobs, envelopes, strict=True):
+            server_commands[index][key] = envelope_value
+
+    if encode_jobs:
+        blobs = serializer.encode_many(
+            [value for _, _, value, _ in encode_jobs],
+            codec=payload_codec,
+            size_warning=size_warning,
+            warning_context=[context for _, _, _, context in encode_jobs],
+        )
+        for (index, key, _, _), blob in zip(encode_jobs, blobs, strict=True):
+            server_commands[index][key] = blob
+
+    return server_commands
 
 
 # ── Context passed to the workflow's run() ───────────────────────────

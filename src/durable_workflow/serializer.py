@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeGuard, cast
 
 from . import _avro
 
@@ -87,6 +87,8 @@ class PayloadSizeWarningContext:
 
 
 DEFAULT_PAYLOAD_SIZE_WARNING = PayloadSizeWarningConfig()
+PayloadWarningContext = PayloadSizeWarningContext | Mapping[str, Any] | None
+PayloadWarningContexts = PayloadWarningContext | Sequence[PayloadWarningContext]
 
 
 def encode(
@@ -119,6 +121,32 @@ def encode(
     return blob
 
 
+def encode_many(
+    values: Sequence[Any],
+    codec: str = AVRO_CODEC,
+    *,
+    size_warning: PayloadSizeWarningConfig | None = DEFAULT_PAYLOAD_SIZE_WARNING,
+    warning_context: PayloadWarningContexts = None,
+) -> list[str]:
+    """Encode several payload blobs through one codec hook.
+
+    The default implementation intentionally preserves the single-value
+    encoder semantics and warning behavior. Codecs that can safely batch or
+    parallelize work can specialize behind this boundary without changing
+    call sites.
+    """
+    contexts = _warning_contexts_for_values(values, warning_context)
+    return [
+        encode(
+            value,
+            codec=codec,
+            size_warning=size_warning,
+            warning_context=contexts[index],
+        )
+        for index, value in enumerate(values)
+    ]
+
+
 def envelope(
     value: Any,
     codec: str = AVRO_CODEC,
@@ -136,6 +164,25 @@ def envelope(
             warning_context=warning_context,
         ),
     }
+
+
+def envelope_many(
+    values: Sequence[Any],
+    codec: str = AVRO_CODEC,
+    *,
+    size_warning: PayloadSizeWarningConfig | None = DEFAULT_PAYLOAD_SIZE_WARNING,
+    warning_context: PayloadWarningContexts = None,
+) -> list[dict[str, str]]:
+    """Wrap several values in ``{codec, blob}`` payload envelopes."""
+    return [
+        {"codec": codec, "blob": blob}
+        for blob in encode_many(
+            values,
+            codec=codec,
+            size_warning=size_warning,
+            warning_context=warning_context,
+        )
+    ]
 
 
 def warn_if_json_payload_near_limit(
@@ -203,6 +250,27 @@ def _normalize_warning_context(
     if "kind" not in normalized:
         normalized["kind"] = "payload"
     return normalized
+
+
+def _warning_contexts_for_values(
+    values: Sequence[Any],
+    context: PayloadWarningContexts,
+) -> list[PayloadWarningContext]:
+    if not _is_context_sequence(context):
+        single_context = cast(PayloadWarningContext, context)
+        return [single_context] * len(values)
+    if len(context) != len(values):
+        raise ValueError("payload warning context count must match value count")
+    return list(context)
+
+
+def _is_context_sequence(
+    context: PayloadWarningContexts,
+) -> TypeGuard[Sequence[PayloadWarningContext]]:
+    return isinstance(context, Sequence) and not isinstance(
+        context,
+        (str, bytes, bytearray, PayloadSizeWarningContext, Mapping),
+    )
 
 
 def decode_envelope(value: Any, codec: str | None = None) -> Any:

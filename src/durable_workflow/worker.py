@@ -52,7 +52,7 @@ from .metrics import (
     WORKER_TASKS,
     MetricsRecorder,
 )
-from .workflow import apply_update, query_state, replay
+from .workflow import apply_update, commands_to_server_commands, query_state, replay
 
 log = logging.getLogger("durable_workflow.worker")
 
@@ -515,18 +515,16 @@ class Worker:
                 log.warning("failed to report replay failure: %s", fe)
             return None
 
-        commands = [
-            c.to_server_command(
-                self.task_queue,
-                payload_codec=command_codec,
-                size_warning=self._payload_size_warning_config(),
-                warning_context=self._workflow_payload_warning_context(
-                    task,
-                    kind="workflow_command",
-                ),
-            )
-            for c in outcome.commands
-        ]
+        commands = commands_to_server_commands(
+            outcome.commands,
+            self.task_queue,
+            payload_codec=command_codec,
+            size_warning=self._payload_size_warning_config(),
+            warning_context=self._workflow_payload_warning_context(
+                task,
+                kind="workflow_command",
+            ),
+        )
         log.info(
             "completing workflow task %s with %d command(s): %s",
             task_id,

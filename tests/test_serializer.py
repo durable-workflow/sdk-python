@@ -123,6 +123,49 @@ class TestEnvelope:
         assert serializer.decode(env["blob"], codec="avro") is None
 
 
+class TestBatchEncoding:
+    def test_encode_many_preserves_order(self) -> None:
+        blobs = serializer.encode_many([["a"], ["b"]], codec="json")
+        assert blobs == ['["a"]', '["b"]']
+
+    def test_envelope_many_wraps_each_value(self) -> None:
+        envelopes = serializer.envelope_many([["a"], ["b"]], codec="json")
+        assert envelopes == [
+            {"codec": "json", "blob": '["a"]'},
+            {"codec": "json", "blob": '["b"]'},
+        ]
+
+    def test_encode_many_accepts_per_payload_warning_context(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        config = serializer.PayloadSizeWarningConfig(limit_bytes=10, threshold_percent=50)
+        contexts = [
+            serializer.PayloadSizeWarningContext(kind="signal", signal_name="one"),
+            serializer.PayloadSizeWarningContext(kind="signal", signal_name="two"),
+        ]
+
+        with caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"):
+            serializer.encode_many(
+                ["abcdef", "ghijkl"],
+                codec="json",
+                size_warning=config,
+                warning_context=contexts,
+            )
+
+        assert [record.durable_workflow_payload["signal_name"] for record in caplog.records] == [
+            "one",
+            "two",
+        ]
+
+    def test_encode_many_rejects_context_count_mismatch(self) -> None:
+        with pytest.raises(ValueError, match="context count"):
+            serializer.encode_many(
+                ["a", "b"],
+                codec="json",
+                warning_context=[serializer.PayloadSizeWarningContext(kind="payload")],
+            )
+
+
 class TestPayloadSizeWarning:
     def test_encode_warns_with_structured_context(self, caplog: pytest.LogCaptureFixture) -> None:
         config = serializer.PayloadSizeWarningConfig(limit_bytes=10, threshold_percent=50)
