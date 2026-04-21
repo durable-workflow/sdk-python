@@ -524,6 +524,24 @@ class VersionWorkflow:
         return result
 
 
+@workflow.defn(name="patched-wf")
+class PatchedWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        if (yield ctx.patched("patch-1")):
+            result = yield ctx.schedule_activity("patched-path", [])
+        else:
+            result = yield ctx.schedule_activity("legacy-path", [])
+        return result
+
+
+@workflow.defn(name="deprecated-patch-wf")
+class DeprecatedPatchWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.deprecate_patch("patch-1")
+        result = yield ctx.schedule_activity("patched-path", [])
+        return result
+
+
 @workflow.defn(name="search-attr-wf")
 class SearchAttrWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -663,6 +681,69 @@ class TestVersionMarker:
         assert sc["type"] == "record_version_marker"
         assert sc["change_id"] == "c1"
         assert sc["version"] == 3
+
+    def test_patched_records_marker_and_resolves_true_for_new_runs(self) -> None:
+        outcome = replay(PatchedWorkflow, [], [])
+
+        assert len(outcome.commands) == 2
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, RecordVersionMarker)
+        assert cmd.change_id == "patch-1"
+        assert cmd.version == 1
+        assert cmd.min_supported == -1
+        assert cmd.max_supported == 1
+        assert cmd.to_server_command("q") == {
+            "type": "record_version_marker",
+            "change_id": "patch-1",
+            "version": 1,
+            "min_supported": -1,
+            "max_supported": 1,
+        }
+        assert isinstance(outcome.commands[1], ScheduleActivity)
+        assert outcome.commands[1].activity_type == "patched-path"
+
+    def test_patched_uses_recorded_marker_for_existing_patched_runs(self) -> None:
+        history = [
+            {"event_type": "VersionMarkerRecorded", "payload": {"version": 1}},
+        ]
+
+        outcome = replay(PatchedWorkflow, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], ScheduleActivity)
+        assert outcome.commands[0].activity_type == "patched-path"
+
+    def test_patched_uses_legacy_default_for_existing_unpatched_runs(self) -> None:
+        history = [
+            {"event_type": "VersionMarkerRecorded", "payload": {"version": -1}},
+        ]
+
+        outcome = replay(PatchedWorkflow, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], ScheduleActivity)
+        assert outcome.commands[0].activity_type == "legacy-path"
+
+    def test_deprecate_patch_consumes_or_records_marker_without_branching(self) -> None:
+        first = replay(DeprecatedPatchWorkflow, [], [])
+        assert len(first.commands) == 2
+        marker = first.commands[0]
+        assert isinstance(marker, RecordVersionMarker)
+        assert marker.change_id == "patch-1"
+        assert marker.version == 1
+        assert marker.min_supported == -1
+        assert marker.max_supported == 1
+        assert isinstance(first.commands[1], ScheduleActivity)
+        assert first.commands[1].activity_type == "patched-path"
+
+        replayed = replay(
+            DeprecatedPatchWorkflow,
+            [{"event_type": "VersionMarkerRecorded", "payload": {"version": 1}}],
+            [],
+        )
+        assert len(replayed.commands) == 1
+        assert isinstance(replayed.commands[0], ScheduleActivity)
+        assert replayed.commands[0].activity_type == "patched-path"
 
 
 class TestSearchAttributeUpsert:

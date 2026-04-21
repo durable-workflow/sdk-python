@@ -9,7 +9,8 @@ parallel.
 
 Determinism-sensitive helpers live on the :class:`WorkflowContext` passed to
 ``run``: :meth:`WorkflowContext.random`, :meth:`WorkflowContext.uuid4`,
-:meth:`WorkflowContext.now`, and :meth:`WorkflowContext.side_effect` all
+:meth:`WorkflowContext.now`, :meth:`WorkflowContext.patched`,
+:meth:`WorkflowContext.deprecate_patch`, and :meth:`WorkflowContext.side_effect` all
 produce values that are recorded on first execution and replayed verbatim
 on every subsequent replay of the same history.
 """
@@ -594,6 +595,7 @@ class RecordVersionMarker:
     version: int
     min_supported: int
     max_supported: int
+    result_kind: str = "version"
 
     def to_server_command(
         self,
@@ -823,6 +825,31 @@ class WorkflowContext:
             max_supported=max_supported,
         )
 
+    def patched(self, change_id: str) -> RecordVersionMarker:
+        """Record or read a patch marker and resolve to ``True`` for patched runs.
+
+        New runs record version ``1`` for ``change_id`` and replay as ``True``.
+        Older runs that reached this code without a marker resolve the legacy
+        default version ``-1`` and replay as ``False``.
+        """
+        return RecordVersionMarker(
+            change_id=change_id,
+            version=1,
+            min_supported=-1,
+            max_supported=1,
+            result_kind="patched",
+        )
+
+    def deprecate_patch(self, change_id: str) -> RecordVersionMarker:
+        """Keep a patch marker alive after the old branch has been removed."""
+        return RecordVersionMarker(
+            change_id=change_id,
+            version=1,
+            min_supported=-1,
+            max_supported=1,
+            result_kind="deprecate_patch",
+        )
+
     def upsert_search_attributes(self, attributes: dict[str, Any]) -> UpsertSearchAttributes:
         return UpsertSearchAttributes(attributes=dict(attributes))
 
@@ -860,6 +887,14 @@ class _ReplayState:
 def _decode_history_result(payload: dict[str, Any], fallback_codec: str | None) -> Any:
     codec = payload.get("payload_codec") or fallback_codec
     return serializer.decode_envelope(payload.get("result"), codec=codec)
+
+
+def _version_marker_result(cmd: RecordVersionMarker, version: Any) -> Any:
+    if cmd.result_kind == "patched":
+        return int(version) == 1
+    if cmd.result_kind == "deprecate_patch":
+        return None
+    return version
 
 
 def _decode_signal_args(payload: dict[str, Any], fallback_codec: str | None) -> list[Any]:
@@ -1383,11 +1418,11 @@ def _replay_state(
                 if result_cursor < len(resolved_results):
                     val = resolved_results[result_cursor]
                     result_cursor += 1
-                    next_value = val
+                    next_value = _version_marker_result(cmd, val)
                     continue
                 ctx.logger._set_replaying(False)
                 pending.append(cmd)
-                next_value = cmd.version
+                next_value = _version_marker_result(cmd, cmd.version)
                 continue
             if isinstance(cmd, WaitCondition):
                 resolution: str | None = None
