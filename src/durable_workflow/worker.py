@@ -21,7 +21,7 @@ import logging
 import time
 import traceback
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from . import serializer
@@ -35,6 +35,12 @@ from .client import (
     WorkflowExecution,
 )
 from .errors import ActivityCancelled, AvroNotInstalledError, NonRetryableError, QueryFailed
+from .interceptors import (
+    ActivityInterceptorContext,
+    QueryTaskInterceptorContext,
+    WorkerInterceptor,
+    WorkflowTaskInterceptorContext,
+)
 from .metrics import (
     NOOP_METRICS,
     WORKER_POLL_DURATION_SECONDS,
@@ -151,6 +157,7 @@ class Worker:
         max_concurrent_activity_tasks: int = 10,
         shutdown_timeout: float = 30.0,
         metrics: MetricsRecorder | None = None,
+        interceptors: Iterable[WorkerInterceptor] = (),
     ) -> None:
         self.client = client
         self.task_queue = task_queue
@@ -166,6 +173,7 @@ class Worker:
         self._query_tasks_supported = False
         configured_metrics = metrics if metrics is not None else getattr(client, "metrics", NOOP_METRICS)
         self.metrics: MetricsRecorder = configured_metrics or NOOP_METRICS
+        self.interceptors = tuple(interceptors)
 
     def _record_poll_metrics(self, task_kind: str, outcome: str, duration: float) -> None:
         tags = {"task_kind": task_kind, "task_queue": self.task_queue, "outcome": outcome}
@@ -201,6 +209,35 @@ class Worker:
         log.info("worker %s registered on %s", self.worker_id, self.task_queue)
 
     async def _run_workflow_task(self, task: dict[str, Any]) -> list[dict[str, Any]] | None:
+        context = WorkflowTaskInterceptorContext(
+            worker_id=self.worker_id,
+            task_queue=self.task_queue,
+            task=task,
+        )
+
+        async def call_core(ctx: WorkflowTaskInterceptorContext) -> list[dict[str, Any]] | None:
+            return await self._run_workflow_task_core(ctx.task)
+
+        handler = call_core
+        for interceptor in reversed(self.interceptors):
+            next_handler = handler
+
+            async def call_interceptor(
+                ctx: WorkflowTaskInterceptorContext,
+                *,
+                interceptor: WorkerInterceptor = interceptor,
+                next_handler: Callable[
+                    [WorkflowTaskInterceptorContext],
+                    Awaitable[list[dict[str, Any]] | None],
+                ] = next_handler,
+            ) -> list[dict[str, Any]] | None:
+                return await interceptor.execute_workflow_task(ctx, next_handler)
+
+            handler = call_interceptor
+
+        return await handler(context)
+
+    async def _run_workflow_task_core(self, task: dict[str, Any]) -> list[dict[str, Any]] | None:
         import json as _json
 
         log.debug("workflow task payload: %s", _json.dumps(task, default=str)[:2000])
@@ -446,7 +483,7 @@ class Worker:
         )
         _set_context(act_ctx)
         try:
-            result = fn(*args) if not asyncio.iscoroutinefunction(fn) else await fn(*args)
+            result = await self._execute_activity_callable(task, activity_type, tuple(args), fn)
         except ActivityCancelled:
             log.info("activity %s cancelled via heartbeat", task_id)
             try:
@@ -508,7 +545,70 @@ class Worker:
             return "complete_error"
         return "completed"
 
+    async def _execute_activity_callable(
+        self,
+        task: dict[str, Any],
+        activity_type: str,
+        args: tuple[Any, ...],
+        fn: Callable[..., Any],
+    ) -> Any:
+        context = ActivityInterceptorContext(
+            worker_id=self.worker_id,
+            task_queue=self.task_queue,
+            task=task,
+            activity_type=activity_type,
+            args=args,
+        )
+
+        async def call_activity(ctx: ActivityInterceptorContext) -> Any:
+            result = fn(*ctx.args)
+            if asyncio.iscoroutine(result):
+                return await result
+            return result
+
+        handler = call_activity
+        for interceptor in reversed(self.interceptors):
+            next_handler = handler
+
+            async def call_interceptor(
+                ctx: ActivityInterceptorContext,
+                *,
+                interceptor: WorkerInterceptor = interceptor,
+                next_handler: Callable[[ActivityInterceptorContext], Awaitable[Any]] = next_handler,
+            ) -> Any:
+                return await interceptor.execute_activity(ctx, next_handler)
+
+            handler = call_interceptor
+
+        return await handler(context)
+
     async def _run_query_task(self, task: dict[str, Any]) -> str:
+        context = QueryTaskInterceptorContext(
+            worker_id=self.worker_id,
+            task_queue=self.task_queue,
+            task=task,
+        )
+
+        async def call_core(ctx: QueryTaskInterceptorContext) -> str:
+            return await self._run_query_task_core(ctx.task)
+
+        handler = call_core
+        for interceptor in reversed(self.interceptors):
+            next_handler = handler
+
+            async def call_interceptor(
+                ctx: QueryTaskInterceptorContext,
+                *,
+                interceptor: WorkerInterceptor = interceptor,
+                next_handler: Callable[[QueryTaskInterceptorContext], Awaitable[str]] = next_handler,
+            ) -> str:
+                return await interceptor.execute_query_task(ctx, next_handler)
+
+            handler = call_interceptor
+
+        return await handler(context)
+
+    async def _run_query_task_core(self, task: dict[str, Any]) -> str:
         query_task_id: str = task["query_task_id"]
         attempt: int = task.get("query_task_attempt", 1)
         wf_type: str = task.get("workflow_type", "")

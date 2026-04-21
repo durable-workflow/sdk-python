@@ -15,6 +15,15 @@ from durable_workflow.client import (
     Client,
     WorkflowExecution,
 )
+from durable_workflow.interceptors import (
+    ActivityHandler,
+    ActivityInterceptorContext,
+    PassthroughWorkerInterceptor,
+    QueryTaskHandler,
+    QueryTaskInterceptorContext,
+    WorkflowTaskHandler,
+    WorkflowTaskInterceptorContext,
+)
 from durable_workflow.worker import Worker
 
 
@@ -428,6 +437,150 @@ class TestActivityTaskExecution:
         call_kwargs = mock_client.fail_activity_task.call_args.kwargs
         assert "boom" in call_kwargs["message"]
         assert call_kwargs["failure_type"] == "RuntimeError"
+
+
+class TestWorkerInterceptors:
+    @pytest.mark.asyncio
+    async def test_workflow_task_interceptors_wrap_in_order(self, mock_client: AsyncMock) -> None:
+        events: list[str] = []
+
+        class Recorder(PassthroughWorkerInterceptor):
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            async def execute_workflow_task(
+                self,
+                context: WorkflowTaskInterceptorContext,
+                next: WorkflowTaskHandler,
+            ) -> list[dict[str, object]] | None:
+                events.append(f"{self.name}:before:{context.task['task_id']}")
+                result = await next(context)
+                events.append(f"{self.name}:after:{len(result or [])}")
+                return result
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[],
+            interceptors=[Recorder("outer"), Recorder("inner")],
+        )
+        task = {
+            "task_id": "t-intercept",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": '["hello"]',
+            "payload_codec": "json",
+        }
+
+        await worker._run_workflow_task(task)
+
+        assert events == [
+            "outer:before:t-intercept",
+            "inner:before:t-intercept",
+            "inner:after:1",
+            "outer:after:1",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_activity_interceptor_observes_result_and_exception(
+        self, mock_client: AsyncMock
+    ) -> None:
+        events: list[str] = []
+
+        @activity.defn(name="boom-act")
+        def boom_activity() -> None:
+            raise RuntimeError("boom")
+
+        class Recorder(PassthroughWorkerInterceptor):
+            async def execute_activity(
+                self,
+                context: ActivityInterceptorContext,
+                next: ActivityHandler,
+            ) -> object:
+                events.append(f"before:{context.activity_type}:{context.args!r}")
+                try:
+                    result = await next(context)
+                except Exception as e:
+                    events.append(f"exception:{type(e).__name__}:{e}")
+                    raise
+                events.append(f"after:{result}")
+                return result
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[],
+            activities=[echo_activity, boom_activity],
+            interceptors=[Recorder()],
+        )
+
+        await worker._run_activity_task(
+            {
+                "task_id": "at-intercept-ok",
+                "activity_attempt_id": "aa-intercept-ok",
+                "activity_type": "test-act",
+                "arguments": '["hello"]',
+                "payload_codec": "json",
+            }
+        )
+        await worker._run_activity_task(
+            {
+                "task_id": "at-intercept-boom",
+                "activity_attempt_id": "aa-intercept-boom",
+                "activity_type": "boom-act",
+                "arguments": "[]",
+                "payload_codec": "json",
+            }
+        )
+
+        assert events == [
+            "before:test-act:('hello',)",
+            "after:result-hello",
+            "before:boom-act:()",
+            "exception:RuntimeError:boom",
+        ]
+        assert mock_client.complete_activity_task.call_count == 1
+        assert mock_client.fail_activity_task.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_query_task_interceptor_can_wrap_query_execution(self, mock_client: AsyncMock) -> None:
+        events: list[str] = []
+
+        class Recorder(PassthroughWorkerInterceptor):
+            async def execute_query_task(
+                self,
+                context: QueryTaskInterceptorContext,
+                next: QueryTaskHandler,
+            ) -> str:
+                events.append(f"before:{context.task['query_task_id']}")
+                outcome = await next(context)
+                events.append(f"after:{outcome}")
+                return outcome
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[QueryWorkflow],
+            activities=[],
+            interceptors=[Recorder()],
+        )
+
+        await worker._run_query_task(
+            {
+                "query_task_id": "qt-intercept",
+                "query_task_attempt": 1,
+                "workflow_type": "query-wf",
+                "query_name": "status",
+                "history_events": [],
+                "workflow_arguments": serializer.envelope([], codec="json"),
+                "query_arguments": serializer.envelope([], codec="json"),
+                "payload_codec": "json",
+            }
+        )
+
+        assert events == ["before:qt-intercept", "after:completed"]
 
 
 class TestEnvelopeArguments:

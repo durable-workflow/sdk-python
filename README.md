@@ -141,6 +141,7 @@ advertise support for the target workflow type.
 - **HTTP/JSON protocol**: No gRPC, no protobuf dependencies
 - **Codec envelopes**: Avro payloads by default, with JSON decode compatibility for existing history
 - **Payload-size warnings**: Structured warnings before oversized workflow, activity, signal, update, query, or search-attribute payloads reach the server
+- **Worker interceptors**: Typed hooks around workflow tasks, activity calls, and query tasks for tracing, logging, and custom metrics
 - **Metrics hooks**: Pluggable counters and histograms, with an optional Prometheus adapter
 
 ## Payload-size warnings
@@ -206,6 +207,44 @@ client = Client("http://server:8080", token="dev-token-123", metrics=metrics)
 ```
 
 Custom recorders implement `increment(name, value=1.0, tags=None)` and `record(name, value, tags=None)`.
+
+## Worker interceptors
+
+Use `Worker(interceptors=[...])` when instrumentation needs the task payload,
+result, or exception around worker execution instead of only aggregate counters.
+Interceptors run in list order; the first interceptor is the outermost wrapper.
+
+```python
+from durable_workflow import (
+    ActivityInterceptorContext,
+    ActivityHandler,
+    PassthroughWorkerInterceptor,
+    Worker,
+)
+
+class LoggingInterceptor(PassthroughWorkerInterceptor):
+    async def execute_activity(
+        self,
+        context: ActivityInterceptorContext,
+        next: ActivityHandler,
+    ) -> object:
+        print("activity started", context.activity_type)
+        try:
+            result = await next(context)
+        except Exception:
+            print("activity failed", context.activity_type)
+            raise
+        print("activity completed", context.activity_type)
+        return result
+
+worker = Worker(
+    client,
+    task_queue="python-workers",
+    workflows=[GreeterWorkflow],
+    activities=[greet],
+    interceptors=[LoggingInterceptor()],
+)
+```
 
 ## Documentation
 
