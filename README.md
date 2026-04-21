@@ -133,6 +133,11 @@ server. Query routing and synchronous pre-accept update validator execution are
 still server-side follow-ups; use those paths only with deployments that
 advertise support for the target workflow type.
 
+Workers fingerprint registered workflow class definitions and advertise those
+fingerprints during registration. Re-registering the same `worker_id` with a
+changed class body for an already advertised workflow type raises immediately;
+restart the worker process with a new id before serving changed workflow code.
+
 ## Features
 
 - **Async-first**: Built on `httpx` and `asyncio`
@@ -141,6 +146,7 @@ advertise support for the target workflow type.
 - **HTTP/JSON protocol**: No gRPC, no protobuf dependencies
 - **Codec envelopes**: Avro payloads by default, with JSON decode compatibility for existing history
 - **Payload-size warnings**: Structured warnings before oversized workflow, activity, signal, update, query, or search-attribute payloads reach the server
+- **Workflow definition guard**: Worker registration refuses same-id hot reloads when a workflow class definition changed
 - **Worker interceptors**: Typed hooks around workflow tasks, activity calls, and query tasks for tracing, logging, and custom metrics
 - **Metrics hooks**: Pluggable counters and histograms, with an optional Prometheus adapter
 

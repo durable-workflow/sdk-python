@@ -17,11 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import inspect
 import logging
 import time
 import traceback
 import uuid
 from collections.abc import Awaitable, Callable, Iterable
+from types import FunctionType
 from typing import Any
 
 from . import serializer
@@ -54,6 +57,7 @@ from .workflow import apply_update, query_state, replay
 log = logging.getLogger("durable_workflow.worker")
 
 _TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
+_WORKER_WORKFLOW_FINGERPRINTS: dict[tuple[str, str], str] = {}
 
 
 def _command_payload_codec(codec: object) -> str:
@@ -70,6 +74,70 @@ def _workflow_name(cls: type) -> str:
 
 def _string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _callable_fingerprint_payload(value: object) -> str:
+    if isinstance(value, staticmethod | classmethod):
+        value = value.__func__
+    if not isinstance(value, FunctionType):
+        return repr(value)
+
+    try:
+        return inspect.getsource(value)
+    except (OSError, TypeError):
+        code = value.__code__
+        return repr(
+            (
+                code.co_argcount,
+                code.co_posonlyargcount,
+                code.co_kwonlyargcount,
+                code.co_code,
+                code.co_consts,
+                code.co_names,
+                code.co_varnames,
+            )
+        )
+
+
+def _workflow_definition_fingerprint(cls: type) -> str:
+    h = hashlib.sha256()
+    h.update(b"durable-workflow-python.workflow-definition.v1\0")
+    h.update(f"{cls.__module__}.{cls.__qualname__}\0".encode())
+    h.update(f"{_workflow_name(cls)}\0".encode())
+
+    for registry_name in (
+        "__workflow_signals__",
+        "__workflow_queries__",
+        "__workflow_updates__",
+        "__workflow_update_validators__",
+    ):
+        registry = getattr(cls, registry_name, {}) or {}
+        h.update(registry_name.encode())
+        h.update(repr(sorted(registry.items())).encode())
+
+    try:
+        h.update(inspect.getsource(cls).encode())
+    except (OSError, TypeError):
+        for attr, value in sorted(cls.__dict__.items()):
+            if attr.startswith("__") and attr.endswith("__"):
+                continue
+            h.update(attr.encode())
+            h.update(_callable_fingerprint_payload(value).encode())
+
+    return f"sha256:{h.hexdigest()}"
+
+
+def _guard_worker_workflow_fingerprints(worker_id: str, fingerprints: dict[str, str]) -> None:
+    for workflow_type, fingerprint in fingerprints.items():
+        key = (worker_id, workflow_type)
+        previous = _WORKER_WORKFLOW_FINGERPRINTS.get(key)
+        if previous is not None and previous != fingerprint:
+            raise RuntimeError(
+                "Workflow definition changed for worker "
+                f"{worker_id!r} and workflow type {workflow_type!r}; "
+                "restart the worker process before re-registering this workflow type."
+            )
+        _WORKER_WORKFLOW_FINGERPRINTS[key] = fingerprint
 
 
 def _manifest_version(manifest: Any) -> str:
@@ -166,8 +234,13 @@ class Worker:
         self.client = client
         self.task_queue = task_queue
         self.workflows = {_workflow_name(w): w for w in workflows}
+        self.workflow_definition_fingerprints = {
+            workflow_type: _workflow_definition_fingerprint(workflow_cls)
+            for workflow_type, workflow_cls in self.workflows.items()
+        }
         self.activities = {_activity_name(a): a for a in activities}
         self.worker_id = worker_id or f"py-worker-{uuid.uuid4().hex[:8]}"
+        _guard_worker_workflow_fingerprints(self.worker_id, self.workflow_definition_fingerprints)
         self._poll_timeout = poll_timeout
         self._stop = asyncio.Event()
         self._wf_semaphore = asyncio.Semaphore(max_concurrent_workflow_tasks)
@@ -244,6 +317,7 @@ class Worker:
             worker_id=self.worker_id,
             task_queue=self.task_queue,
             supported_workflow_types=list(self.workflows),
+            workflow_definition_fingerprints=self.workflow_definition_fingerprints,
             supported_activity_types=list(self.activities),
         )
         log.info("worker %s registered on %s", self.worker_id, self.task_queue)

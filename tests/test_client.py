@@ -629,11 +629,13 @@ class TestRegisterWorker:
                 worker_id="w1",
                 task_queue="q1",
                 supported_workflow_types=["greeter"],
+                workflow_definition_fingerprints={"greeter": "sha256:abc"},
                 supported_activity_types=["greet"],
             )
             assert result["registered"] is True
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["runtime"] == "python"
+            assert body["workflow_definition_fingerprints"] == {"greeter": "sha256:abc"}
 
     @pytest.mark.asyncio
     async def test_register_advertises_installed_package_version(self, client: Client) -> None:

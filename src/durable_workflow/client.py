@@ -1103,6 +1103,7 @@ class Client:
         worker_id: str,
         task_queue: str,
         supported_workflow_types: list[str] | None = None,
+        workflow_definition_fingerprints: dict[str, str] | None = None,
         supported_activity_types: list[str] | None = None,
         runtime: str = "python",
         sdk_version: str | None = None,
@@ -1123,6 +1124,8 @@ class Client:
             "supported_workflow_types": supported_workflow_types or [],
             "supported_activity_types": supported_activity_types or [],
         }
+        if workflow_definition_fingerprints is not None:
+            body["workflow_definition_fingerprints"] = workflow_definition_fingerprints
         return await self._request("POST", "/worker/register", worker=True, json=body)
 
     async def poll_workflow_task(

@@ -127,7 +127,56 @@ class TestWorkerRegistration:
         call_kwargs = mock_client.register_worker.call_args.kwargs
         assert call_kwargs["task_queue"] == "q1"
         assert "test-wf" in call_kwargs["supported_workflow_types"]
+        assert call_kwargs["workflow_definition_fingerprints"]["test-wf"].startswith("sha256:")
         assert "test-act" in call_kwargs["supported_activity_types"]
+
+    def test_constructor_rejects_changed_workflow_definition_for_same_worker_id(
+        self, mock_client: AsyncMock
+    ) -> None:
+        @workflow.defn(name="reloadable-wf")
+        class ReloadableWorkflowV1:
+            def run(self, ctx):  # type: ignore[no-untyped-def]
+                return "v1"
+
+        @workflow.defn(name="reloadable-wf")
+        class ReloadableWorkflowV2:
+            def run(self, ctx):  # type: ignore[no-untyped-def]
+                return "v2"
+
+        Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[ReloadableWorkflowV1],
+            activities=[],
+            worker_id="reload-worker",
+        )
+
+        with pytest.raises(RuntimeError, match="Workflow definition changed"):
+            Worker(
+                mock_client,
+                task_queue="q1",
+                workflows=[ReloadableWorkflowV2],
+                activities=[],
+                worker_id="reload-worker",
+            )
+
+    def test_constructor_allows_same_workflow_definition_for_same_worker_id(
+        self, mock_client: AsyncMock
+    ) -> None:
+        Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[],
+            worker_id="stable-worker",
+        )
+        Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[],
+            worker_id="stable-worker",
+        )
 
     @pytest.mark.asyncio
     async def test_register_calls_cluster_info(self, mock_client: AsyncMock) -> None:
