@@ -159,7 +159,17 @@ restart the worker process with a new id before serving changed workflow code.
 Workers also advertise their local workflow and activity concurrency limits
 during registration. Tune `max_concurrent_workflow_tasks` and
 `max_concurrent_activity_tasks` on `Worker(...)` to align local semaphores with
-the server's task-queue admission and operator visibility surfaces.
+the server's task-queue admission and operator visibility surfaces. Use
+`Client.list_task_queues()` or `Client.describe_task_queue("orders")` to read
+the server-side workflow, activity, and query-task admission status before
+tuning those local limits:
+
+```python
+queues = await client.list_task_queues()
+for queue in queues.task_queues:
+    workflow_admission = queue.admission.workflow_tasks if queue.admission else None
+    print(queue.name, workflow_admission.status if workflow_admission else "unknown")
+```
 
 ## Replay captured histories
 

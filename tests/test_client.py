@@ -361,6 +361,103 @@ class TestListWorkflows:
             assert result.executions[0].workflow_id == "wf-1"
 
 
+class TestTaskQueues:
+    @pytest.mark.asyncio
+    async def test_list_task_queues_parses_admission(self, client: Client) -> None:
+        resp = _mock_response(200, {
+            "namespace": "ns1",
+            "task_queues": [
+                {
+                    "name": "orders",
+                    "stats": {"approximate_backlog_count": 2},
+                    "admission": {
+                        "workflow_tasks": {
+                            "status": "throttled",
+                            "budget_source": "worker_registration.max_concurrent_workflow_tasks",
+                            "active_worker_count": 2,
+                            "configured_slot_count": 10,
+                            "leased_count": 1,
+                            "ready_count": 2,
+                            "available_slot_count": 9,
+                            "server_budget_source": "server.admission.workflow_tasks.max_active_leases_per_queue",
+                            "server_max_active_leases_per_queue": 1,
+                            "server_active_lease_count": 1,
+                            "server_remaining_active_lease_capacity": 0,
+                            "server_lock_required": True,
+                            "server_lock_supported": True,
+                        },
+                        "activity_tasks": {"status": "accepting", "configured_slot_count": 5},
+                        "query_tasks": {
+                            "status": "full",
+                            "budget_source": "server.query_tasks.max_pending_per_queue",
+                            "max_pending_per_queue": 10,
+                            "approximate_pending_count": 10,
+                            "remaining_pending_capacity": 0,
+                            "lock_required": True,
+                            "lock_supported": True,
+                        },
+                    },
+                }
+            ],
+        })
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.list_task_queues()
+
+            assert result.namespace == "ns1"
+            assert len(result.task_queues) == 1
+            queue = result.task_queues[0]
+            assert queue.name == "orders"
+            assert queue.stats == {"approximate_backlog_count": 2}
+            assert queue.admission is not None
+            assert queue.admission.workflow_tasks is not None
+            assert queue.admission.workflow_tasks.status == "throttled"
+            assert queue.admission.workflow_tasks.server_remaining_active_lease_capacity == 0
+            assert queue.admission.activity_tasks is not None
+            assert queue.admission.activity_tasks.configured_slot_count == 5
+            assert queue.admission.query_tasks is not None
+            assert queue.admission.query_tasks.status == "full"
+            assert queue.admission.query_tasks.lock_supported is True
+            assert queue.admission.raw is not None
+            assert queue.admission.raw["query_tasks"]["max_pending_per_queue"] == 10
+            assert mock.call_args.args[:2] == ("GET", "/api/task-queues")
+
+    @pytest.mark.asyncio
+    async def test_describe_task_queue_parses_details_and_escapes_name(self, client: Client) -> None:
+        resp = _mock_response(200, {
+            "name": "orders/high priority",
+            "namespace": "ns1",
+            "stats": {"pollers": {"active_count": 1}},
+            "pollers": [{"worker_id": "w1", "status": "active"}],
+            "current_leases": [{"task_id": "t1", "task_type": "workflow"}],
+            "admission": {"workflow_tasks": {"status": "accepting"}},
+        })
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.describe_task_queue("orders/high priority")
+
+            assert result.name == "orders/high priority"
+            assert result.namespace == "ns1"
+            assert result.pollers == [{"worker_id": "w1", "status": "active"}]
+            assert result.current_leases == [{"task_id": "t1", "task_type": "workflow"}]
+            assert result.admission is not None
+            assert result.admission.workflow_tasks is not None
+            assert result.admission.workflow_tasks.status == "accepting"
+            assert mock.call_args.args[:2] == ("GET", "/api/task-queues/orders%2Fhigh%20priority")
+
+    @pytest.mark.asyncio
+    async def test_describe_task_queue_rejects_non_object_response(self, client: Client) -> None:
+        resp = httpx.Response(
+            status_code=200,
+            content=b"[]",
+            headers={"content-type": "application/json"},
+            request=httpx.Request("GET", "http://test"),
+        )
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(ServerError, match="invalid_task_queue_response"),
+        ):
+            await client.describe_task_queue("orders")
+
+
 class TestErrorMapping:
     @pytest.mark.asyncio
     async def test_401_unauthorized(self, client: Client) -> None:

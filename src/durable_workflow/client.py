@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -100,6 +101,127 @@ class WorkflowList:
 
     executions: list[WorkflowExecution]
     next_page_token: str | None = None
+
+
+@dataclass
+class TaskQueueTaskAdmission:
+    """Workflow/activity admission state for one task queue."""
+
+    status: str | None = None
+    budget_source: str | None = None
+    server_budget_source: str | None = None
+    active_worker_count: int | None = None
+    configured_slot_count: int | None = None
+    leased_count: int | None = None
+    ready_count: int | None = None
+    available_slot_count: int | None = None
+    server_max_active_leases_per_queue: int | None = None
+    server_active_lease_count: int | None = None
+    server_remaining_active_lease_capacity: int | None = None
+    server_lock_required: bool | None = None
+    server_lock_supported: bool | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> TaskQueueTaskAdmission | None:
+        if data is None:
+            return None
+        return cls(
+            status=data.get("status"),
+            budget_source=data.get("budget_source"),
+            server_budget_source=data.get("server_budget_source"),
+            active_worker_count=data.get("active_worker_count"),
+            configured_slot_count=data.get("configured_slot_count"),
+            leased_count=data.get("leased_count"),
+            ready_count=data.get("ready_count"),
+            available_slot_count=data.get("available_slot_count"),
+            server_max_active_leases_per_queue=data.get("server_max_active_leases_per_queue"),
+            server_active_lease_count=data.get("server_active_lease_count"),
+            server_remaining_active_lease_capacity=data.get("server_remaining_active_lease_capacity"),
+            server_lock_required=data.get("server_lock_required"),
+            server_lock_supported=data.get("server_lock_supported"),
+        )
+
+
+@dataclass
+class TaskQueueQueryAdmission:
+    """Worker-routed query-task admission state for one task queue."""
+
+    status: str | None = None
+    budget_source: str | None = None
+    max_pending_per_queue: int | None = None
+    approximate_pending_count: int | None = None
+    remaining_pending_capacity: int | None = None
+    lock_required: bool | None = None
+    lock_supported: bool | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> TaskQueueQueryAdmission | None:
+        if data is None:
+            return None
+        return cls(
+            status=data.get("status"),
+            budget_source=data.get("budget_source"),
+            max_pending_per_queue=data.get("max_pending_per_queue"),
+            approximate_pending_count=data.get("approximate_pending_count"),
+            remaining_pending_capacity=data.get("remaining_pending_capacity"),
+            lock_required=data.get("lock_required"),
+            lock_supported=data.get("lock_supported"),
+        )
+
+
+@dataclass
+class TaskQueueAdmission:
+    """Server-side admission budgets for workflow, activity, and query tasks."""
+
+    workflow_tasks: TaskQueueTaskAdmission | None = None
+    activity_tasks: TaskQueueTaskAdmission | None = None
+    query_tasks: TaskQueueQueryAdmission | None = None
+    raw: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> TaskQueueAdmission:
+        payload = data or {}
+        return cls(
+            workflow_tasks=TaskQueueTaskAdmission.from_dict(payload.get("workflow_tasks")),
+            activity_tasks=TaskQueueTaskAdmission.from_dict(payload.get("activity_tasks")),
+            query_tasks=TaskQueueQueryAdmission.from_dict(payload.get("query_tasks")),
+            raw=payload,
+        )
+
+
+@dataclass
+class TaskQueueDescription:
+    """Current server visibility and admission state for one task queue."""
+
+    name: str
+    namespace: str | None = None
+    stats: dict[str, Any] | None = None
+    admission: TaskQueueAdmission | None = None
+    pollers: list[dict[str, Any]] | None = None
+    current_leases: list[dict[str, Any]] | None = None
+    raw: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TaskQueueDescription:
+        pollers = data.get("pollers")
+        current_leases = data.get("current_leases")
+        return cls(
+            name=data.get("name", ""),
+            namespace=data.get("namespace"),
+            stats=data.get("stats"),
+            admission=TaskQueueAdmission.from_dict(data.get("admission")),
+            pollers=pollers if isinstance(pollers, list) else None,
+            current_leases=current_leases if isinstance(current_leases, list) else None,
+            raw=data,
+        )
+
+
+@dataclass
+class TaskQueueList:
+    """One task-queue visibility page returned by the server."""
+
+    namespace: str | None
+    task_queues: list[TaskQueueDescription]
 
 
 @dataclass
@@ -570,6 +692,38 @@ class Client:
                 {"reason": "invalid_health_response", "message": f"expected JSON object, got {type(result).__name__}"},
             )
         return result
+
+    # ── Task queues ────────────────────────────────────────────────────
+    async def list_task_queues(self) -> TaskQueueList:
+        """List task queues with server-side admission status.
+
+        Admission data describes server budgets and observed backlog. Worker
+        constructor limits remain local semaphores that are advertised during
+        registration.
+        """
+        data = await self._request("GET", "/task-queues")
+        items = data.get("task_queues", []) if isinstance(data, dict) else []
+        return TaskQueueList(
+            namespace=data.get("namespace") if isinstance(data, dict) else None,
+            task_queues=[
+                TaskQueueDescription.from_dict(item)
+                for item in items
+                if isinstance(item, dict)
+            ],
+        )
+
+    async def describe_task_queue(self, name: str) -> TaskQueueDescription:
+        """Return backlog, poller, lease, and admission detail for ``name``."""
+        data = await self._request("GET", f"/task-queues/{quote(name, safe='')}", context=name)
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_task_queue_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return TaskQueueDescription.from_dict(data)
 
     # ── Workflows ──────────────────────────────────────────────────────
     async def start_workflow(
