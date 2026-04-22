@@ -259,6 +259,9 @@ class Client:
     def get_history(self, workflow_id: str, run_id: str) -> Any:
         return _run(self._async.get_history(workflow_id, run_id))
 
+    def export_history(self, workflow_id: str, run_id: str) -> Any:
+        return _run(self._async.export_history(workflow_id, run_id))
+
     def signal_workflow(self, workflow_id: str, signal_name: str, *, args: list[Any] | None = None) -> None:
         _run(self._async.signal_workflow(workflow_id, signal_name, args=args))
 

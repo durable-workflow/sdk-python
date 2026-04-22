@@ -1,0 +1,59 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow.history_export",
+  "request": {
+    "method": "GET",
+    "path": "/workflows/wf-polyglot-231/runs/run-polyglot-231/history/export"
+  },
+  "semantic_body": {
+    "workflow_id": "wf-polyglot-231",
+    "run_id": "run-polyglot-231",
+    "schema": "durable-workflow.v2.history-export",
+    "event_count": 2
+  },
+  "response_body": {
+    "schema": "durable-workflow.v2.history-export",
+    "workflow": {
+      "instance_id": "wf-polyglot-231",
+      "run_id": "run-polyglot-231",
+      "workflow_type": "orders.process"
+    },
+    "events": [
+      {
+        "sequence": 1,
+        "event_type": "WorkflowStarted",
+        "timestamp": "2026-04-22T06:24:00Z",
+        "payload": {
+          "workflow_type": "orders.process",
+          "task_queue": "orders"
+        }
+      },
+      {
+        "sequence": 2,
+        "event_type": "ActivityCompleted",
+        "timestamp": "2026-04-22T06:24:05Z",
+        "payload": {
+          "activity_type": "reserve_inventory"
+        }
+      }
+    ],
+    "metadata": {
+      "exported_at": "2026-04-22T06:25:00Z",
+      "format_version": 1
+    }
+  },
+  "cli": {
+    "argv": {
+      "workflow-id": "wf-polyglot-231",
+      "run-id": "run-polyglot-231"
+    }
+  },
+  "sdk_python": {
+    "method": "export_history",
+    "args": {
+      "workflow_id": "wf-polyglot-231",
+      "run_id": "run-polyglot-231"
+    }
+  }
+}

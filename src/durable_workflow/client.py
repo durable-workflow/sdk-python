@@ -1117,6 +1117,12 @@ class Client:
             "GET", f"/workflows/{workflow_id}/runs/{run_id}/history", context=workflow_id
         )
 
+    async def export_history(self, workflow_id: str, run_id: str) -> Any:
+        """Export one workflow run history as a replay bundle."""
+        return await self._request(
+            "GET", f"/workflows/{workflow_id}/runs/{run_id}/history/export", context=workflow_id
+        )
+
     async def list_workflow_runs(self, workflow_id: str) -> WorkflowRunList:
         """List all durable runs in one workflow execution chain, oldest first."""
         data = await self._request("GET", f"/workflows/{workflow_id}/runs", context=workflow_id)

@@ -344,6 +344,31 @@ class TestGetHistory:
         assert sdk["args"]["run_id"] == semantic["run_id"]
         assert history == fixture["response_body"]
 
+    @pytest.mark.asyncio
+    async def test_history_export_request_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-history-export-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            bundle = await client.export_history(**sdk["args"])
+
+        call_args = mock.call_args
+        assert call_args.args[0] == fixture["request"]["method"]
+        assert call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert call_args.kwargs.get("json") is None
+
+        semantic = fixture["semantic_body"]
+        assert sdk["args"]["workflow_id"] == semantic["workflow_id"]
+        assert sdk["args"]["run_id"] == semantic["run_id"]
+        assert bundle["schema"] == semantic["schema"]
+        assert bundle["workflow"]["instance_id"] == semantic["workflow_id"]
+        assert bundle["workflow"]["run_id"] == semantic["run_id"]
+        assert len(bundle["events"]) == semantic["event_count"]
+        assert bundle == fixture["response_body"]
+
 
 class TestWorkflowRunVisibility:
     @pytest.mark.asyncio
