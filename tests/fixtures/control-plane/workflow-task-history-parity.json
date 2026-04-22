@@ -16,11 +16,11 @@
     "lease_owner": "polyglot-worker-231",
     "workflow_task_attempt": 2,
     "next_history_page_token": "history-page-2",
-    "last_sequence": 4,
-    "next_page_token": "history-page-3"
+    "total_history_events": 4,
+    "next_history_page_token_response": "history-page-3"
   },
   "response_body": {
-    "events": [
+    "history_events": [
       {
         "event_id": 2,
         "event_type": "ActivityScheduled",
@@ -36,8 +36,8 @@
         }
       }
     ],
-    "last_sequence": 4,
-    "next_page_token": "history-page-3"
+    "total_history_events": 4,
+    "next_history_page_token": "history-page-3"
   },
   "cli": {
     "argv": {

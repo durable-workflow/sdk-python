@@ -1485,7 +1485,7 @@ class TestFailWorkflowTask:
             page = await client.workflow_task_history(**fixture["sdk_python"]["kwargs"])
 
         assert page == fixture["response_body"]
-        assert page["next_page_token"] == fixture["semantic_body"]["next_page_token"]
+        assert page["next_history_page_token"] == fixture["semantic_body"]["next_history_page_token_response"]
         assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
         assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
 
