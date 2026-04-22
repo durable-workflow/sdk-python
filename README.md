@@ -396,6 +396,7 @@ manifests from `GET /api/cluster/info`:
 - `control_plane.request_contract.schema: durable-workflow.v2.control-plane-request.contract` version `1`
 - `worker_protocol.version: "1.0"`
 - `worker_protocol.external_task_input_contract.schema: durable-workflow.v2.external-task-input.contract` version `1`
+- `worker_protocol.external_task_result_contract.schema: durable-workflow.v2.external-task-result.contract` version `1`
 
 The top-level server `version` is build identity only. The worker checks these
 protocol manifests at startup and fails closed when compatibility is missing,
@@ -405,6 +406,14 @@ External task carriers can validate fixture artifacts from
 `worker_protocol.external_task_input_contract.fixtures` with
 `parse_external_task_input_artifact()` and parse leased task envelopes with
 `parse_external_task_input()`.
+
+They can also validate result fixture artifacts from
+`worker_protocol.external_task_result_contract.fixtures` with
+`parse_external_task_result_artifact()` and parse result envelopes with
+`parse_external_task_result()`. The result parser exposes stable carrier
+decisions for success, retryability, malformed output, cancellation, deadline
+exceeded, handler crash, decode failure, and unsupported payload
+codec/reference states without treating stderr as a machine signal.
 
 ## Development
 

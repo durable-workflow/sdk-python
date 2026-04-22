@@ -67,6 +67,8 @@ from .external_task_input import (
     parse_external_task_input_artifact,
 )
 from .external_task_result import (
+    EXTERNAL_TASK_RESULT_CONTRACT_SCHEMA,
+    EXTERNAL_TASK_RESULT_MEDIA_TYPE,
     EXTERNAL_TASK_RESULT_SCHEMA,
     EXTERNAL_TASK_RESULT_VERSION,
     ExternalTaskFailure,
@@ -74,6 +76,7 @@ from .external_task_result import (
     ExternalTaskResult,
     ExternalTaskResultError,
     parse_external_task_result,
+    parse_external_task_result_artifact,
 )
 from .interceptors import (
     ActivityHandler,
@@ -162,10 +165,13 @@ __all__ = [
     "ExternalTaskInputIdentity",
     "ExternalTaskLease",
     "ExternalTaskWorkflowContext",
+    "EXTERNAL_TASK_RESULT_CONTRACT_SCHEMA",
+    "EXTERNAL_TASK_RESULT_MEDIA_TYPE",
     "ExternalTaskFailure",
     "ExternalTaskIdentity",
     "ExternalTaskResult",
     "ExternalTaskResultError",
+    "parse_external_task_result_artifact",
     "InvalidArgument",
     "InMemoryMetrics",
     "LocalFilesystemExternalStorage",

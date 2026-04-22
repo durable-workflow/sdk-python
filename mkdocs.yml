@@ -72,6 +72,7 @@ nav:
       - Serializer: reference/serializer.md
       - External storage: reference/external_storage.md
       - External task input: reference/external_task_input.md
+      - External task result: reference/external_task_result.md
       - Metrics: reference/metrics.md
       - Sync helpers: reference/sync.md
       - Testing: reference/testing.md

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
 EXTERNAL_TASK_RESULT_SCHEMA = "durable-workflow.v2.external-task-result"
+EXTERNAL_TASK_RESULT_CONTRACT_SCHEMA = "durable-workflow.v2.external-task-result.contract"
+EXTERNAL_TASK_RESULT_MEDIA_TYPE = "application/vnd.durable-workflow.external-task-result+json"
 EXTERNAL_TASK_RESULT_VERSION = 1
 
 ExternalTaskResultKind = Literal["success", "failure", "malformed_output"]
@@ -108,6 +112,30 @@ class ExternalTaskResult:
     def cancelled(self) -> bool:
         return self.failure.cancelled if self.failure is not None else False
 
+    @property
+    def deadline_exceeded(self) -> bool:
+        return self.failure.deadline_exceeded if self.failure is not None else False
+
+    @property
+    def handler_crash(self) -> bool:
+        return self.failure.handler_crash if self.failure is not None else False
+
+    @property
+    def decode_failure(self) -> bool:
+        return self.failure.decode_failure if self.failure is not None else False
+
+    @property
+    def unsupported_payload(self) -> bool:
+        return self.failure.unsupported_payload if self.failure is not None else False
+
+    @property
+    def failure_kind(self) -> str | None:
+        return self.failure.kind if self.failure is not None else None
+
+    @property
+    def failure_classification(self) -> str | None:
+        return self.failure.classification if self.failure is not None else None
+
 
 def parse_external_task_result(envelope: Mapping[str, Any]) -> ExternalTaskResult:
     """Parse and validate a v1 external task result envelope.
@@ -161,6 +189,29 @@ def parse_external_task_result(envelope: Mapping[str, Any]) -> ExternalTaskResul
     )
 
 
+def parse_external_task_result_artifact(artifact: Mapping[str, Any]) -> ExternalTaskResult:
+    """Validate a cluster-info fixture artifact and parse its embedded example."""
+
+    artifact_name = _require_str(artifact, "artifact")
+    if not artifact_name.startswith("durable-workflow.v2.external-task-result."):
+        raise ExternalTaskResultError(f"Unsupported external task result artifact [{artifact_name}].")
+
+    _require_value(artifact, "media_type", EXTERNAL_TASK_RESULT_MEDIA_TYPE)
+    _require_value(artifact, "schema", EXTERNAL_TASK_RESULT_SCHEMA)
+    _require_value(artifact, "version", EXTERNAL_TASK_RESULT_VERSION)
+
+    example = _require_mapping(artifact, "example")
+    expected_sha = _require_str(artifact, "sha256")
+    actual_sha = _sha256_json(example)
+    if actual_sha != expected_sha:
+        raise ExternalTaskResultError(
+            f"External task result artifact [{artifact_name}] sha256 mismatch: "
+            f"expected {expected_sha}, got {actual_sha}."
+        )
+
+    return parse_external_task_result(example)
+
+
 def _parse_task(task: Mapping[str, Any]) -> ExternalTaskIdentity:
     attempt = _require_int(task, "attempt")
     if attempt < 1:
@@ -199,6 +250,11 @@ def _parse_failure(failure: Mapping[str, Any]) -> ExternalTaskFailure:
         cancelled=cancelled,
         details=_require_nullable_mapping(failure, "details"),
     )
+
+
+def _sha256_json(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _require_mapping(value: Mapping[str, Any], key: str) -> Mapping[str, Any]:
