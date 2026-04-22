@@ -34,6 +34,23 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: pytest tests/ -m "not integration" -q
 
+  cli-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: sdk-python
+      - uses: actions/checkout@v6
+        with:
+          repository: durable-workflow/cli
+          path: cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Compare shared control-plane parity fixtures
+        working-directory: sdk-python
+        run: python scripts/check-cli-parity.py --cli ../cli
+
   integration:
     runs-on: ubuntu-latest
     needs: [lint, test]

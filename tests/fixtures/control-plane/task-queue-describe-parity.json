@@ -90,7 +90,7 @@
         "task_id": "task-polyglot-231-001",
         "task_type": "workflow",
         "workflow_id": "wf-polyglot-231",
-        "lease_owner": "python-worker-1",
+        "lease_owner": "worker-alpha",
         "lease_expires_at": "2026-04-22T07:05:00Z",
         "is_expired": false,
         "workflow_task_attempt": 2
@@ -98,24 +98,24 @@
     ],
     "pollers": [
       {
-        "worker_id": "python-worker-1",
-        "runtime": "python",
+        "worker_id": "worker-alpha",
+        "runtime": "runtime-alpha",
         "build_id": "build-2026-04-22",
         "last_heartbeat_at": "2026-04-22T07:00:00Z",
         "status": "active",
         "is_stale": false
       },
       {
-        "worker_id": "php-worker-1",
-        "runtime": "php",
+        "worker_id": "worker-beta",
+        "runtime": "runtime-beta",
         "build_id": "build-2026-04-22",
         "last_heartbeat_at": "2026-04-22T06:59:30Z",
         "status": "active",
         "is_stale": false
       },
       {
-        "worker_id": "python-worker-old",
-        "runtime": "python",
+        "worker_id": "worker-gamma-old",
+        "runtime": "runtime-gamma",
         "build_id": "build-2026-04-21",
         "last_heartbeat_at": "2026-04-22T06:40:00Z",
         "status": "stale",
