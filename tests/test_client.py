@@ -1462,6 +1462,34 @@ class TestFailWorkflowTask:
         assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
 
     @pytest.mark.asyncio
+    async def test_fail_workflow_task_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-task-fail-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.fail_workflow_task(**fixture["sdk_python"]["kwargs"])
+
+        assert result == fixture["response_body"]
+        assert result["outcome"] == fixture["semantic_body"]["outcome"]
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+
+    @pytest.mark.asyncio
+    async def test_workflow_task_history_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-task-history-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            page = await client.workflow_task_history(**fixture["sdk_python"]["kwargs"])
+
+        assert page == fixture["response_body"]
+        assert page["next_page_token"] == fixture["semantic_body"]["next_page_token"]
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+
+    @pytest.mark.asyncio
     async def test_body_shape(self, client: Client) -> None:
         resp = _mock_response(200, {"task_id": "t1", "outcome": "failed"})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:

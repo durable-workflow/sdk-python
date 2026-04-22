@@ -1,0 +1,60 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow-task.history",
+  "request": {
+    "method": "POST",
+    "path": "/worker/workflow-tasks/workflow-task-231/history",
+    "body": {
+      "page_token": "history-page-2",
+      "lease_owner": "polyglot-worker-231",
+      "workflow_task_attempt": 2
+    }
+  },
+  "semantic_body": {
+    "task_id": "workflow-task-231",
+    "lease_owner": "polyglot-worker-231",
+    "workflow_task_attempt": 2,
+    "page_token": "history-page-2",
+    "last_sequence": 4,
+    "next_page_token": "history-page-3"
+  },
+  "response_body": {
+    "events": [
+      {
+        "event_id": 2,
+        "event_type": "ActivityScheduled",
+        "payload": {
+          "activity_type": "inventory.sync-page"
+        }
+      },
+      {
+        "event_id": 3,
+        "event_type": "ActivityCompleted",
+        "payload": {
+          "activity_id": "activity-231"
+        }
+      }
+    ],
+    "last_sequence": 4,
+    "next_page_token": "history-page-3"
+  },
+  "cli": {
+    "argv": {
+      "task-id": "workflow-task-231",
+      "page-token": "history-page-2",
+      "--lease-owner": "polyglot-worker-231",
+      "--attempt": "2",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "workflow_task_history",
+    "kwargs": {
+      "task_id": "workflow-task-231",
+      "page_token": "history-page-2",
+      "lease_owner": "polyglot-worker-231",
+      "workflow_task_attempt": 2
+    }
+  }
+}

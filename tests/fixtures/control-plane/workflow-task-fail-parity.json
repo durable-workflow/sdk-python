@@ -1,0 +1,53 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow-task.fail",
+  "request": {
+    "method": "POST",
+    "path": "/worker/workflow-tasks/workflow-task-231/fail",
+    "body": {
+      "lease_owner": "polyglot-worker-231",
+      "workflow_task_attempt": 2,
+      "failure": {
+        "message": "non-deterministic command sequence",
+        "type": "NonDeterminism",
+        "stack_trace": "command 3 replay mismatch"
+      }
+    }
+  },
+  "semantic_body": {
+    "task_id": "workflow-task-231",
+    "lease_owner": "polyglot-worker-231",
+    "workflow_task_attempt": 2,
+    "message": "non-deterministic command sequence",
+    "outcome": "failed"
+  },
+  "response_body": {
+    "task_id": "workflow-task-231",
+    "workflow_task_attempt": 2,
+    "outcome": "failed",
+    "run_status": "running"
+  },
+  "cli": {
+    "argv": {
+      "task-id": "workflow-task-231",
+      "attempt": "2",
+      "--lease-owner": "polyglot-worker-231",
+      "--message": "non-deterministic command sequence",
+      "--type": "NonDeterminism",
+      "--stack-trace": "command 3 replay mismatch",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "fail_workflow_task",
+    "kwargs": {
+      "task_id": "workflow-task-231",
+      "lease_owner": "polyglot-worker-231",
+      "workflow_task_attempt": 2,
+      "message": "non-deterministic command sequence",
+      "failure_type": "NonDeterminism",
+      "stack_trace": "command 3 replay mismatch"
+    }
+  }
+}
