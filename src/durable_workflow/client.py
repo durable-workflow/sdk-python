@@ -70,6 +70,8 @@ def _route_for_metrics(path: str) -> str:
             parts[3] = "{run_id}"
     elif parts[0] == "schedules" and len(parts) >= 2:
         parts[1] = "{schedule_id}"
+    elif parts[:2] == ["bridge-adapters", "webhook"] and len(parts) >= 3:
+        parts[2] = "{adapter}"
     elif (
         parts[:2] == ["worker", "workflow-tasks"]
         or parts[:2] == ["worker", "activity-tasks"]
@@ -360,6 +362,47 @@ class ScheduleBackfillResult:
     outcome: str
     fires_attempted: int = 0
     results: list[dict[str, Any]] | None = None
+
+
+@dataclass
+class BridgeAdapterOutcome:
+    """Machine-readable result returned by a bridge adapter event."""
+
+    schema: str
+    version: int
+    adapter: str
+    action: str | None
+    accepted: bool
+    outcome: str
+    idempotency_key: str | None = None
+    reason: str | None = None
+    target: dict[str, Any] | None = None
+    correlation: dict[str, Any] | None = None
+    workflow_id: str | None = None
+    run_id: str | None = None
+    workflow_type: str | None = None
+    control_plane_outcome: str | None = None
+    raw: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BridgeAdapterOutcome:
+        return cls(
+            schema=str(data.get("schema", "")),
+            version=int(data.get("version", 0)),
+            adapter=str(data.get("adapter", "")),
+            action=data.get("action"),
+            accepted=bool(data.get("accepted", False)),
+            outcome=str(data.get("outcome", "")),
+            idempotency_key=data.get("idempotency_key"),
+            reason=data.get("reason"),
+            target=data.get("target") if isinstance(data.get("target"), dict) else None,
+            correlation=data.get("correlation") if isinstance(data.get("correlation"), dict) else None,
+            workflow_id=data.get("workflow_id"),
+            run_id=data.get("run_id"),
+            workflow_type=data.get("workflow_type"),
+            control_plane_outcome=data.get("control_plane_outcome"),
+            raw=data,
+        )
 
 
 class WorkflowHandle:
@@ -696,6 +739,68 @@ class Client:
             self.metrics.increment(CLIENT_REQUESTS, tags=tags)
             self.metrics.record(CLIENT_REQUEST_DURATION_SECONDS, time.perf_counter() - start, tags=tags)
 
+    async def _request_bridge_outcome(self, path: str, *, json: Any = None, context: str = "") -> dict[str, Any]:
+        start = time.perf_counter()
+        route = _route_for_metrics(path)
+        status_code = "none"
+        outcome = "pending"
+
+        async def _do_request() -> httpx.Response:
+            resp = await self._http.request(
+                "POST",
+                f"/api{path}",
+                headers=self._headers(worker=False),
+                json=json,
+            )
+            if resp.status_code != 422:
+                resp.raise_for_status()
+            return resp
+
+        try:
+            try:
+                resp = await self.retry_policy.execute(_do_request)
+            except httpx.HTTPStatusError as exc:
+                status_code = str(exc.response.status_code)
+                outcome = "http_error"
+                try:
+                    body = exc.response.json()
+                except ValueError:
+                    body = exc.response.text
+                _raise_for_status(exc.response.status_code, body, context=context)
+                raise
+
+            status_code = str(resp.status_code)
+            if not resp.content:
+                raise ServerError(
+                    resp.status_code,
+                    {"reason": "invalid_bridge_outcome", "message": "expected JSON object, got empty response"},
+                )
+            data = resp.json()
+            if not isinstance(data, dict):
+                raise ServerError(
+                    resp.status_code,
+                    {
+                        "reason": "invalid_bridge_outcome",
+                        "message": f"expected JSON object, got {type(data).__name__}",
+                    },
+                )
+            outcome = "bridge_rejected" if resp.status_code == 422 else "ok"
+            return data
+        except Exception as exc:
+            if outcome == "pending":
+                outcome = type(exc).__name__
+            raise
+        finally:
+            tags = {
+                "method": "POST",
+                "route": route,
+                "plane": "control",
+                "status_code": status_code,
+                "outcome": outcome,
+            }
+            self.metrics.increment(CLIENT_REQUESTS, tags=tags)
+            self.metrics.record(CLIENT_REQUEST_DURATION_SECONDS, time.perf_counter() - start, tags=tags)
+
     async def get_cluster_info(self) -> dict[str, Any]:
         """Fetch server build identity, capabilities, and protocol manifests."""
         result = await self._request("GET", "/cluster/info", worker=False, context="get_cluster_info")
@@ -910,6 +1015,40 @@ class Client:
         return await self._request(
             "GET", f"/workflows/{workflow_id}/runs/{run_id}/history", context=workflow_id
         )
+
+    async def send_webhook_bridge_event(
+        self,
+        adapter: str,
+        *,
+        action: str,
+        idempotency_key: str,
+        target: dict[str, Any],
+        input: dict[str, Any] | None = None,
+        correlation: dict[str, Any] | None = None,
+    ) -> BridgeAdapterOutcome:
+        """Send one bounded webhook bridge event and return its contract outcome.
+
+        The bridge endpoint intentionally returns machine-readable rejected
+        outcomes as HTTP 422. This method returns those outcomes instead of
+        raising :class:`InvalidArgument`, while auth and unexpected server
+        failures still use the normal SDK exception mapping.
+        """
+        body: dict[str, Any] = {
+            "action": action,
+            "idempotency_key": idempotency_key,
+            "target": target,
+        }
+        if input is not None:
+            body["input"] = input
+        if correlation is not None:
+            body["correlation"] = correlation
+
+        data = await self._request_bridge_outcome(
+            f"/bridge-adapters/webhook/{quote(adapter, safe='._:-')}",
+            json=body,
+            context=f"bridge adapter {adapter}",
+        )
+        return BridgeAdapterOutcome.from_dict(data)
 
     async def signal_workflow(
         self, workflow_id: str, signal_name: str, *, args: list[Any] | None = None

@@ -335,6 +335,145 @@ class TestSignalWorkflow:
         assert sdk["args"]["signal_name"] == semantic["signal_name"]
 
 
+class TestWebhookBridgeAdapters:
+    @pytest.mark.asyncio
+    async def test_start_workflow_bridge_event_returns_accepted_outcome(self, client: Client) -> None:
+        resp = _mock_response(202, {
+            "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+            "version": 1,
+            "adapter": "stripe",
+            "action": "start_workflow",
+            "accepted": True,
+            "outcome": "accepted",
+            "idempotency_key": "stripe-event-1001",
+            "target": {
+                "workflow_id": "bridge-stripe-derived",
+                "workflow_type": "orders.fulfillment",
+                "task_queue": "external-workflows",
+                "business_key": "order-1001",
+            },
+            "correlation": {
+                "provider": "stripe",
+                "event_type": "checkout.session.completed",
+            },
+            "workflow_id": "bridge-stripe-derived",
+            "run_id": "run-bridge-1",
+            "workflow_type": "orders.fulfillment",
+            "control_plane_outcome": "started_new",
+        })
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            outcome = await client.send_webhook_bridge_event(
+                "stripe",
+                action="start_workflow",
+                idempotency_key="stripe-event-1001",
+                target={
+                    "workflow_type": "orders.fulfillment",
+                    "task_queue": "external-workflows",
+                    "business_key": "order-1001",
+                    "duplicate_policy": "use_existing",
+                },
+                input={"order_id": "order-1001"},
+                correlation={
+                    "provider": "stripe",
+                    "event_type": "checkout.session.completed",
+                },
+            )
+
+        assert outcome.accepted is True
+        assert outcome.outcome == "accepted"
+        assert outcome.workflow_id == "bridge-stripe-derived"
+        assert outcome.control_plane_outcome == "started_new"
+        assert outcome.target is not None
+        assert outcome.target["business_key"] == "order-1001"
+
+        call_args = mock.call_args
+        assert call_args.args[0] == "POST"
+        assert call_args.args[1] == "/api/bridge-adapters/webhook/stripe"
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert body == {
+            "action": "start_workflow",
+            "idempotency_key": "stripe-event-1001",
+            "target": {
+                "workflow_type": "orders.fulfillment",
+                "task_queue": "external-workflows",
+                "business_key": "order-1001",
+                "duplicate_policy": "use_existing",
+            },
+            "input": {"order_id": "order-1001"},
+            "correlation": {
+                "provider": "stripe",
+                "event_type": "checkout.session.completed",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_signal_bridge_event_returns_rejected_outcome_for_422(self, client: Client) -> None:
+        resp = _mock_response(422, {
+            "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+            "version": 1,
+            "adapter": "pagerduty",
+            "action": "signal_workflow",
+            "accepted": False,
+            "outcome": "rejected",
+            "reason": "unknown_target",
+            "idempotency_key": "pagerduty-event-3003",
+            "target": {
+                "workflow_id": "wf-remediation-42",
+                "signal_name": "incident_escalated",
+            },
+            "correlation": {
+                "provider": "pagerduty",
+                "event_type": "incident.triggered",
+            },
+        })
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
+            outcome = await client.send_webhook_bridge_event(
+                "pagerduty",
+                action="signal_workflow",
+                idempotency_key="pagerduty-event-3003",
+                target={
+                    "workflow_id": "wf-remediation-42",
+                    "signal_name": "incident_escalated",
+                },
+                input={
+                    "severity": "critical",
+                    "service": "checkout",
+                },
+                correlation={
+                    "provider": "pagerduty",
+                    "event_type": "incident.triggered",
+                },
+            )
+
+        assert outcome.accepted is False
+        assert outcome.outcome == "rejected"
+        assert outcome.reason == "unknown_target"
+        assert outcome.idempotency_key == "pagerduty-event-3003"
+
+    @pytest.mark.asyncio
+    async def test_bridge_adapter_path_escapes_adapter_segment(self, client: Client) -> None:
+        resp = _mock_response(202, {
+            "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+            "version": 1,
+            "adapter": "ops/foo",
+            "action": "update_workflow",
+            "accepted": True,
+            "outcome": "accepted",
+        })
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.send_webhook_bridge_event(
+                "ops/foo",
+                action="update_workflow",
+                idempotency_key="evt-1",
+                target={"workflow_id": "wf-1", "update_name": "acknowledge"},
+            )
+
+        assert mock.call_args.args[1] == "/api/bridge-adapters/webhook/ops%2Ffoo"
+
+
 class TestCancelWorkflow:
     @pytest.mark.asyncio
     async def test_cancel(self, client: Client) -> None:

@@ -17,6 +17,7 @@ from .auth_composition import (
     parse_auth_composition_contract,
 )
 from .client import (
+    BridgeAdapterOutcome,
     Client,
     ScheduleAction,
     ScheduleBackfillResult,
@@ -130,6 +131,7 @@ __all__ = [
     "ActivityInfo",
     "ActivityInterceptorContext",
     "ActivityRetryPolicy",
+    "BridgeAdapterOutcome",
     "ChildWorkflowRetryPolicy",
     "ChildWorkflowFailed",
     "Client",

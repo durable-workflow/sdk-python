@@ -420,6 +420,27 @@ decisions for success, retryability, malformed output, cancellation, deadline
 exceeded, handler crash, decode failure, and unsupported payload
 codec/reference states without treating stderr as a machine signal.
 
+Bridge adapters can hand bounded webhook ingress into the server through
+`Client.send_webhook_bridge_event()`. The method returns the server's typed
+bridge outcome for accepted, duplicate, and rejected events, including
+machine-readable HTTP 422 rejection outcomes:
+
+```python
+outcome = await client.send_webhook_bridge_event(
+    "pagerduty",
+    action="signal_workflow",
+    idempotency_key="pagerduty-event-3003",
+    target={"workflow_id": "wf-remediation-42", "signal_name": "incident_escalated"},
+    input={"severity": "critical", "service": "checkout"},
+    correlation={"provider": "pagerduty", "event_type": "incident.triggered"},
+)
+
+if outcome.accepted:
+    print(outcome.workflow_id, outcome.control_plane_outcome)
+else:
+    print(outcome.outcome, outcome.reason)
+```
+
 ## Development
 
 ```bash

@@ -83,6 +83,44 @@ async def test_client_records_normalized_error_route_metrics() -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_records_bridge_rejected_outcome_metrics() -> None:
+    metrics = InMemoryMetrics()
+    client = Client("http://localhost:8080", metrics=metrics)
+    try:
+        client._http.request = AsyncMock(  # type: ignore[method-assign]
+            return_value=_mock_response(422, {
+                "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+                "version": 1,
+                "adapter": "pagerduty",
+                "action": "signal_workflow",
+                "accepted": False,
+                "outcome": "rejected",
+                "reason": "unknown_target",
+            })
+        )
+
+        outcome = await client.send_webhook_bridge_event(
+            "pagerduty",
+            action="signal_workflow",
+            idempotency_key="evt-1",
+            target={"workflow_id": "wf-1", "signal_name": "incident_escalated"},
+        )
+
+        assert outcome.reason == "unknown_target"
+        tags = {
+            "method": "POST",
+            "route": "/bridge-adapters/webhook/{adapter}",
+            "plane": "control",
+            "status_code": "422",
+            "outcome": "bridge_rejected",
+        }
+        assert metrics.counter_value(CLIENT_REQUESTS, tags) == 1
+        assert len(metrics.observations(CLIENT_REQUEST_DURATION_SECONDS, tags)) == 1
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_worker_records_activity_task_metrics() -> None:
     metrics = InMemoryMetrics()
     mock_client = AsyncMock(spec=Client)
