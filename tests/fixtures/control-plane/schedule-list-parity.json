@@ -1,0 +1,86 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "schedule.list",
+  "request": {
+    "method": "GET",
+    "path": "/schedules"
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "schedule_ids": [
+      "daily-order-rollup",
+      "inventory-refresh"
+    ],
+    "workflow_types": [
+      "orders.rollup",
+      "inventory.refresh"
+    ],
+    "statuses": {
+      "daily-order-rollup": "active",
+      "inventory-refresh": "paused"
+    },
+    "next_page_token": "sched-page-2"
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "schedules": [
+      {
+        "schedule_id": "daily-order-rollup",
+        "workflow_type": "orders.rollup",
+        "status": "active",
+        "paused": false,
+        "spec": {
+          "cron_expressions": [
+            "0 6 * * *"
+          ],
+          "timezone": "UTC"
+        },
+        "action": {
+          "workflow_type": "orders.rollup",
+          "task_queue": "orders-critical"
+        },
+        "overlap_policy": "skip",
+        "fires_count": 42,
+        "next_fire": "2026-04-22T06:00:00Z",
+        "last_fire": "2026-04-21T06:00:00Z",
+        "next_fire_at": "2026-04-22T06:00:00Z",
+        "last_fired_at": "2026-04-21T06:00:00Z"
+      },
+      {
+        "schedule_id": "inventory-refresh",
+        "workflow_type": "inventory.refresh",
+        "status": "paused",
+        "paused": true,
+        "spec": {
+          "intervals": [
+            {
+              "every": "PT30M"
+            }
+          ],
+          "timezone": "UTC"
+        },
+        "action": {
+          "workflow_type": "inventory.refresh",
+          "task_queue": "inventory-standard"
+        },
+        "overlap_policy": "buffer_one",
+        "fires_count": 17,
+        "next_fire": null,
+        "last_fire": "2026-04-21T23:30:00Z",
+        "next_fire_at": null,
+        "last_fired_at": "2026-04-21T23:30:00Z"
+      }
+    ],
+    "next_page_token": "sched-page-2"
+  },
+  "cli": {
+    "argv": {
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "list_schedules",
+    "args": {}
+  }
+}

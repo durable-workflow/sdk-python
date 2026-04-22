@@ -1,0 +1,71 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "schedule.describe",
+  "request": {
+    "method": "GET",
+    "path": "/schedules/daily-order-rollup"
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-order-rollup",
+    "workflow_type": "orders.rollup",
+    "task_queue": "orders-critical",
+    "status": "active",
+    "overlap_policy": "skip",
+    "fires_count": 42,
+    "remaining_actions": 8
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-order-rollup",
+    "status": "active",
+    "paused": false,
+    "spec": {
+      "cron_expressions": [
+        "0 6 * * *"
+      ],
+      "timezone": "UTC"
+    },
+    "action": {
+      "workflow_type": "orders.rollup",
+      "task_queue": "orders-critical",
+      "execution_timeout_seconds": 600,
+      "run_timeout_seconds": 300
+    },
+    "overlap_policy": "skip",
+    "memo": {
+      "team": "orders"
+    },
+    "search_attributes": {
+      "CustomerTier": "enterprise"
+    },
+    "jitter_seconds": 30,
+    "max_runs": 50,
+    "remaining_actions": 8,
+    "fires_count": 42,
+    "failures_count": 1,
+    "next_fire_at": "2026-04-22T06:00:00Z",
+    "last_fired_at": "2026-04-21T06:00:00Z",
+    "latest_workflow_instance_id": "wf-orders-rollup-20260421",
+    "created_at": "2026-04-01T00:00:00Z",
+    "updated_at": "2026-04-21T06:01:00Z",
+    "info": {
+      "buffered_actions": [],
+      "skipped_trigger_count": 1,
+      "last_skip_reason": "overlap_policy_skip"
+    }
+  },
+  "cli": {
+    "argv": {
+      "schedule-id": "daily-order-rollup",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "describe_schedule",
+    "args": {
+      "schedule_id": "daily-order-rollup"
+    }
+  }
+}

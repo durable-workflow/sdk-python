@@ -1066,6 +1066,52 @@ class TestTaskQueues:
             await client.describe_task_queue("orders")
 
 
+class TestSchedules:
+    @pytest.mark.asyncio
+    async def test_list_schedules_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-list-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.list_schedules(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+
+        semantic = fixture["semantic_body"]
+        assert [schedule.schedule_id for schedule in result.schedules] == semantic["schedule_ids"]
+        assert [schedule.action["workflow_type"] for schedule in result.schedules] == semantic["workflow_types"]
+        assert result.next_page_token == semantic["next_page_token"]
+
+        statuses = {schedule.schedule_id: schedule.status for schedule in result.schedules}
+        assert statuses == semantic["statuses"]
+
+    @pytest.mark.asyncio
+    async def test_describe_schedule_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-describe-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.describe_schedule(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+
+        semantic = fixture["semantic_body"]
+        assert result.schedule_id == semantic["schedule_id"]
+        assert result.status == semantic["status"]
+        assert result.action is not None
+        assert result.action["workflow_type"] == semantic["workflow_type"]
+        assert result.action["task_queue"] == semantic["task_queue"]
+        assert result.overlap_policy == semantic["overlap_policy"]
+        assert result.fires_count == semantic["fires_count"]
+        assert result.remaining_actions == semantic["remaining_actions"]
+
+
 class TestErrorMapping:
     @pytest.mark.asyncio
     async def test_401_unauthorized(self, client: Client) -> None:
