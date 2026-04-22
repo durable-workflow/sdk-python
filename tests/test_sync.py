@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from durable_workflow.client import WorkflowHandle
 from durable_workflow.sync import Client, SyncWorkflowHandle
 
 
@@ -161,6 +162,101 @@ class TestSyncClientList:
             assert mock.call_args.args[:2] == ("GET", "/api/task-queues/orders%2Fhigh%20priority")
 
 
+class TestSyncClientRunVisibility:
+    def test_list_workflow_runs(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            200,
+            {
+                "workflow_id": "wf-1",
+                "run_count": 2,
+                "runs": [
+                    {"workflow_id": "wf-1", "run_id": "r1", "workflow_type": "greeter", "status": "completed"},
+                    {
+                        "workflow_id": "wf-1",
+                        "run_id": "r2",
+                        "workflow_type": "greeter",
+                        "status": "running",
+                        "is_current_run": True,
+                    },
+                ],
+            },
+        )
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = client.list_workflow_runs("wf-1")
+
+        assert result.workflow_id == "wf-1"
+        assert result.run_count == 2
+        assert [run.run_id for run in result.runs] == ["r1", "r2"]
+        assert result.runs[1].is_current_run is True
+        assert mock.call_args.args[:2] == ("GET", "/api/workflows/wf-1/runs")
+
+    def test_describe_workflow_run(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            200,
+            {
+                "workflow_id": "wf-1",
+                "run_id": "r1",
+                "workflow_type": "greeter",
+                "status": "completed",
+                "status_bucket": "terminal",
+                "actions": {"archive": {"enabled": True}},
+            },
+        )
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            run = client.describe_workflow_run("wf-1", "r1")
+
+        assert run.workflow_id == "wf-1"
+        assert run.run_id == "r1"
+        assert run.status_bucket == "terminal"
+        assert run.actions == {"archive": {"enabled": True}}
+        assert mock.call_args.args[:2] == ("GET", "/api/workflows/wf-1/runs/r1")
+
+
+class TestSyncClientMaintenance:
+    def test_repair_workflow(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            200,
+            {
+                "workflow_id": "wf-1",
+                "outcome": "accepted",
+                "command_status": "queued",
+                "command_id": "cmd-1",
+            },
+        )
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = client.repair_workflow("wf-1")
+
+        assert result.workflow_id == "wf-1"
+        assert result.outcome == "accepted"
+        assert result.command_status == "queued"
+        assert result.command_id == "cmd-1"
+        assert mock.call_args.args[:2] == ("POST", "/api/workflows/wf-1/repair")
+
+    def test_archive_workflow(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            200,
+            {
+                "workflow_id": "wf-1",
+                "outcome": "accepted",
+                "command_status": "completed",
+                "command_id": "cmd-2",
+            },
+        )
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = client.archive_workflow("wf-1", reason="retention policy")
+
+        assert result.workflow_id == "wf-1"
+        assert result.outcome == "accepted"
+        assert result.command_status == "completed"
+        assert result.command_id == "cmd-2"
+        assert mock.call_args.args[:2] == ("POST", "/api/workflows/wf-1/archive")
+        assert mock.call_args.kwargs["json"] == {"reason": "retention policy"}
+
+
 class TestSyncClientUpdate:
     def test_update(self) -> None:
         client = Client("http://localhost:8080")
@@ -185,6 +281,26 @@ class TestSyncHandleUpdate:
             handle = client.start_workflow(workflow_type="g", task_queue="q1", workflow_id="wf-1")
             result = handle.update("my-update", ["data"])
             assert result["outcome"] == "completed"
+
+
+class TestSyncWorkflowHandleControlPlane:
+    def test_run_visibility_and_maintenance_delegate_to_async_handle(self) -> None:
+        async_handle = WorkflowHandle(AsyncMock(), workflow_id="wf-1", run_id="r1", workflow_type="greeter")
+        async_handle.get_history = AsyncMock(return_value={"events": []})  # type: ignore[method-assign]
+        async_handle.export_history = AsyncMock(return_value={"schema": "durable.workflow.history.v2"})  # type: ignore[method-assign]
+        async_handle.list_runs = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        async_handle.describe_run = AsyncMock(return_value={"run_id": "r1"})  # type: ignore[method-assign]
+        async_handle.repair = AsyncMock(return_value={"outcome": "accepted"})  # type: ignore[method-assign]
+        async_handle.archive = AsyncMock(return_value={"outcome": "completed"})  # type: ignore[method-assign]
+        handle = SyncWorkflowHandle(async_handle)
+
+        assert handle.get_history() == {"events": []}
+        assert handle.export_history() == {"schema": "durable.workflow.history.v2"}
+        assert handle.list_runs() == []
+        assert handle.describe_run() == {"run_id": "r1"}
+        assert handle.repair() == {"outcome": "accepted"}
+        assert handle.archive(reason="retention") == {"outcome": "completed"}
+        async_handle.archive.assert_awaited_once_with(reason="retention")
 
 
 class TestSyncClientContextManager:

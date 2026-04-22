@@ -16,9 +16,12 @@ from .client import (
     ScheduleTriggerResult,
     TaskQueueDescription,
     TaskQueueList,
+    WorkflowCommandResult,
     WorkflowExecution,
     WorkflowHandle,
     WorkflowList,
+    WorkflowRun,
+    WorkflowRunList,
 )
 from .metrics import MetricsRecorder
 from .retry_policy import TransportRetryPolicy
@@ -54,6 +57,20 @@ class SyncWorkflowHandle:
         result: WorkflowExecution = _run(self._handle.describe())
         return result
 
+    def get_history(self) -> Any:
+        return _run(self._handle.get_history())
+
+    def export_history(self) -> Any:
+        return _run(self._handle.export_history())
+
+    def list_runs(self) -> WorkflowRunList:
+        result: WorkflowRunList = _run(self._handle.list_runs())
+        return result
+
+    def describe_run(self, run_id: str | None = None) -> WorkflowRun:
+        result: WorkflowRun = _run(self._handle.describe_run(run_id))
+        return result
+
     def signal(self, signal_name: str, args: list[Any] | None = None) -> None:
         _run(self._handle.signal(signal_name, args=args))
 
@@ -65,6 +82,14 @@ class SyncWorkflowHandle:
 
     def terminate(self, *, reason: str | None = None) -> None:
         _run(self._handle.terminate(reason=reason))
+
+    def repair(self) -> WorkflowCommandResult:
+        result: WorkflowCommandResult = _run(self._handle.repair())
+        return result
+
+    def archive(self, *, reason: str | None = None) -> WorkflowCommandResult:
+        result: WorkflowCommandResult = _run(self._handle.archive(reason=reason))
+        return result
 
     def update(
         self,
@@ -262,6 +287,14 @@ class Client:
     def export_history(self, workflow_id: str, run_id: str) -> Any:
         return _run(self._async.export_history(workflow_id, run_id))
 
+    def list_workflow_runs(self, workflow_id: str) -> WorkflowRunList:
+        result: WorkflowRunList = _run(self._async.list_workflow_runs(workflow_id))
+        return result
+
+    def describe_workflow_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
+        result: WorkflowRun = _run(self._async.describe_workflow_run(workflow_id, run_id))
+        return result
+
     def signal_workflow(self, workflow_id: str, signal_name: str, *, args: list[Any] | None = None) -> None:
         _run(self._async.signal_workflow(workflow_id, signal_name, args=args))
 
@@ -273,6 +306,14 @@ class Client:
 
     def terminate_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
         _run(self._async.terminate_workflow(workflow_id, reason=reason))
+
+    def repair_workflow(self, workflow_id: str) -> WorkflowCommandResult:
+        result: WorkflowCommandResult = _run(self._async.repair_workflow(workflow_id))
+        return result
+
+    def archive_workflow(self, workflow_id: str, *, reason: str | None = None) -> WorkflowCommandResult:
+        result: WorkflowCommandResult = _run(self._async.archive_workflow(workflow_id, reason=reason))
+        return result
 
     def update_workflow(
         self,

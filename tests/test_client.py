@@ -426,6 +426,57 @@ class TestWorkflowRunVisibility:
         assert run.actions == response["actions"]
 
 
+class TestWorkflowHandleControlPlane:
+    @pytest.mark.asyncio
+    async def test_run_visibility_delegates_to_client(self, client: Client) -> None:
+        handle = WorkflowHandle(client, workflow_id="wf-1", run_id="r1", workflow_type="greeter")
+        client.get_history = AsyncMock(return_value={"events": []})
+        client.export_history = AsyncMock(return_value={"schema": "durable.workflow.history.v2"})
+        client.list_workflow_runs = AsyncMock(return_value="runs")
+        client.describe_workflow_run = AsyncMock(return_value="run")
+
+        assert await handle.get_history() == {"events": []}
+        assert await handle.export_history() == {"schema": "durable.workflow.history.v2"}
+        assert await handle.list_runs() == "runs"
+        assert await handle.describe_run() == "run"
+
+        client.get_history.assert_awaited_once_with("wf-1", "r1")
+        client.export_history.assert_awaited_once_with("wf-1", "r1")
+        client.list_workflow_runs.assert_awaited_once_with("wf-1")
+        client.describe_workflow_run.assert_awaited_once_with("wf-1", "r1")
+
+    @pytest.mark.asyncio
+    async def test_run_specific_methods_require_run_id(self, client: Client) -> None:
+        handle = WorkflowHandle(client, workflow_id="wf-1")
+
+        with pytest.raises(ValueError, match="run_id is required"):
+            await handle.get_history()
+        with pytest.raises(ValueError, match="run_id is required"):
+            await handle.export_history()
+        with pytest.raises(ValueError, match="run_id is required"):
+            await handle.describe_run()
+
+    @pytest.mark.asyncio
+    async def test_describe_run_accepts_explicit_run_id(self, client: Client) -> None:
+        handle = WorkflowHandle(client, workflow_id="wf-1")
+        client.describe_workflow_run = AsyncMock(return_value="run")
+
+        assert await handle.describe_run("r2") == "run"
+        client.describe_workflow_run.assert_awaited_once_with("wf-1", "r2")
+
+    @pytest.mark.asyncio
+    async def test_maintenance_delegates_to_client(self, client: Client) -> None:
+        handle = WorkflowHandle(client, workflow_id="wf-1", run_id="r1", workflow_type="greeter")
+        client.repair_workflow = AsyncMock(return_value="repair")
+        client.archive_workflow = AsyncMock(return_value="archive")
+
+        assert await handle.repair() == "repair"
+        assert await handle.archive(reason="retention") == "archive"
+
+        client.repair_workflow.assert_awaited_once_with("wf-1")
+        client.archive_workflow.assert_awaited_once_with("wf-1", reason="retention")
+
+
 class TestSignalWorkflow:
     @pytest.mark.asyncio
     async def test_signal(self, client: Client) -> None:

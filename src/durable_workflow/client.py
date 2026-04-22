@@ -523,6 +523,29 @@ class WorkflowHandle:
         """Return the server's current view of this workflow. See :meth:`Client.describe_workflow`."""
         return await self._client.describe_workflow(self.workflow_id)
 
+    async def get_history(self) -> Any:
+        """Fetch this run's durable history. See :meth:`Client.get_history`."""
+        if self.run_id is None:
+            raise ValueError("run_id is required to fetch workflow history from a handle")
+        return await self._client.get_history(self.workflow_id, self.run_id)
+
+    async def export_history(self) -> Any:
+        """Export this run's history as a replay bundle. See :meth:`Client.export_history`."""
+        if self.run_id is None:
+            raise ValueError("run_id is required to export workflow history from a handle")
+        return await self._client.export_history(self.workflow_id, self.run_id)
+
+    async def list_runs(self) -> WorkflowRunList:
+        """List all runs in this workflow execution chain. See :meth:`Client.list_workflow_runs`."""
+        return await self._client.list_workflow_runs(self.workflow_id)
+
+    async def describe_run(self, run_id: str | None = None) -> WorkflowRun:
+        """Return one run's detailed status. See :meth:`Client.describe_workflow_run`."""
+        selected_run_id = run_id or self.run_id
+        if selected_run_id is None:
+            raise ValueError("run_id is required to describe a workflow run from a handle")
+        return await self._client.describe_workflow_run(self.workflow_id, selected_run_id)
+
     async def signal(self, signal_name: str, args: list[Any] | None = None) -> None:
         """Deliver an external signal to this workflow. See :meth:`Client.signal_workflow`."""
         await self._client.signal_workflow(self.workflow_id, signal_name, args=args)
@@ -538,6 +561,14 @@ class WorkflowHandle:
     async def terminate(self, *, reason: str | None = None) -> None:
         """Forcefully stop this workflow. See :meth:`Client.terminate_workflow`."""
         await self._client.terminate_workflow(self.workflow_id, reason=reason)
+
+    async def repair(self) -> WorkflowCommandResult:
+        """Ask the server to repair this workflow. See :meth:`Client.repair_workflow`."""
+        return await self._client.repair_workflow(self.workflow_id)
+
+    async def archive(self, *, reason: str | None = None) -> WorkflowCommandResult:
+        """Move this terminal workflow into the archive tier. See :meth:`Client.archive_workflow`."""
+        return await self._client.archive_workflow(self.workflow_id, reason=reason)
 
     async def update(
         self,
