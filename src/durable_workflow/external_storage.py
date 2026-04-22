@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote, unquote, urlparse
@@ -37,16 +38,20 @@ class ExternalPayloadReference:
     sha256: str
     size_bytes: int
     codec: str
+    expires_at: str | None = None
     schema: str = EXTERNAL_PAYLOAD_REFERENCE_SCHEMA
 
     def to_dict(self) -> dict[str, str | int]:
-        return {
+        data: dict[str, str | int] = {
             "schema": self.schema,
             "uri": self.uri,
             "sha256": self.sha256,
             "size_bytes": self.size_bytes,
             "codec": self.codec,
         }
+        if self.expires_at is not None:
+            data["expires_at"] = self.expires_at
+        return data
 
     @classmethod
     def from_dict(cls, data: object) -> ExternalPayloadReference:
@@ -58,6 +63,7 @@ class ExternalPayloadReference:
         sha256 = data.get("sha256")
         size_bytes = data.get("size_bytes")
         codec = data.get("codec")
+        expires_at = data.get("expires_at")
 
         if schema != EXTERNAL_PAYLOAD_REFERENCE_SCHEMA:
             raise ValueError("unsupported external payload reference schema")
@@ -73,8 +79,19 @@ class ExternalPayloadReference:
             raise ValueError("external payload reference size_bytes must be a non-negative integer")
         if not isinstance(codec, str) or not codec:
             raise ValueError("external payload reference codec must be a non-empty string")
+        if expires_at is not None:
+            if not isinstance(expires_at, str) or not expires_at:
+                raise ValueError("external payload reference expires_at must be a non-empty RFC3339 string")
+            _validate_rfc3339(expires_at)
 
-        return cls(uri=uri, sha256=sha256, size_bytes=size_bytes, codec=codec, schema=schema)
+        return cls(
+            uri=uri,
+            sha256=sha256,
+            size_bytes=size_bytes,
+            codec=codec,
+            expires_at=expires_at,
+            schema=schema,
+        )
 
 
 class ExternalPayloadCache:
@@ -303,8 +320,11 @@ def store_external_payload(
     data: bytes,
     *,
     codec: str,
+    expires_at: str | None = None,
 ) -> ExternalPayloadReference:
     """Store encoded payload bytes and return their reference envelope."""
+    if expires_at is not None:
+        _validate_rfc3339(expires_at)
     sha256 = hashlib.sha256(data).hexdigest()
     uri = driver.put(data, sha256=sha256, codec=codec)
     return ExternalPayloadReference(
@@ -312,6 +332,7 @@ def store_external_payload(
         sha256=sha256,
         size_bytes=len(data),
         codec=codec,
+        expires_at=expires_at,
     )
 
 
@@ -346,6 +367,16 @@ def _validate_sha256(sha256: str) -> None:
         int(sha256, 16)
     except ValueError as exc:
         raise ValueError("sha256 must be a hex digest") from exc
+
+
+def _validate_rfc3339(value: str) -> None:
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError("external payload reference expires_at must be an RFC3339 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("external payload reference expires_at must include a timezone")
 
 
 def _safe_codec_segment(codec: str) -> str:

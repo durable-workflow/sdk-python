@@ -203,8 +203,9 @@ failures surfaced as workflow failure commands.
 Large payload offload is opt-in. `serializer.external_storage_envelope(...)`
 keeps small encoded payloads inline and stores larger bytes through an
 `ExternalStorageDriver`, returning a stable reference envelope with URI, codec,
-size, and SHA-256 integrity metadata. `serializer.decode_envelope(...)` fetches
-referenced bytes through the same driver and verifies size/hash before decode.
+size, optional expiry, and SHA-256 integrity metadata.
+`serializer.decode_envelope(...)` fetches referenced bytes through the same
+driver and verifies size/hash before decode.
 
 The SDK includes a local filesystem driver for development plus dependency-free
 S3, GCS, and Azure Blob adapters. Cloud SDKs stay application-owned: pass an

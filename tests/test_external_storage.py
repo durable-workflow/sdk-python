@@ -194,10 +194,13 @@ def test_reference_from_dict_validates_schema_and_hash() -> None:
             "sha256": good_hash,
             "size_bytes": 7,
             "codec": "avro",
+            "expires_at": "2026-04-23T12:00:00Z",
         }
     )
 
     assert reference.sha256 == good_hash
+    assert reference.expires_at == "2026-04-23T12:00:00Z"
+    assert reference.to_dict()["expires_at"] == "2026-04-23T12:00:00Z"
 
     with pytest.raises(ValueError, match="schema"):
         ExternalPayloadReference.from_dict(
@@ -209,6 +212,37 @@ def test_reference_from_dict_validates_schema_and_hash() -> None:
                 "codec": "avro",
             }
         )
+
+
+def test_reference_from_dict_validates_optional_expiry() -> None:
+    good_hash = hashlib.sha256(b"payload").hexdigest()
+
+    with pytest.raises(ValueError, match="expires_at"):
+        ExternalPayloadReference.from_dict(
+            {
+                "schema": EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
+                "uri": "s3://bucket/key",
+                "sha256": good_hash,
+                "size_bytes": 7,
+                "codec": "avro",
+                "expires_at": "2026-04-23T12:00:00",
+            }
+        )
+
+
+def test_store_external_payload_round_trips_optional_expiry(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+
+    reference = store_external_payload(
+        storage,
+        b'{"large":true}',
+        codec="json",
+        expires_at="2026-04-23T12:00:00+00:00",
+    )
+
+    assert reference.expires_at == "2026-04-23T12:00:00+00:00"
+    assert ExternalPayloadReference.from_dict(reference.to_dict()).expires_at == "2026-04-23T12:00:00+00:00"
+    assert fetch_external_payload(storage, reference) == b'{"large":true}'
 
 
 class FakeS3Client:

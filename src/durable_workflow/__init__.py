@@ -68,6 +68,8 @@ from .external_storage import (
     GCSExternalStorage,
     LocalFilesystemExternalStorage,
     S3ExternalStorage,
+    fetch_external_payload,
+    store_external_payload,
 )
 from .external_task_input import (
     EXTERNAL_TASK_INPUT_CONTRACT_SCHEMA,
@@ -234,10 +236,12 @@ __all__ = [
     "EXTERNAL_TASK_RESULT_SCHEMA",
     "EXTERNAL_TASK_RESULT_VERSION",
     "external_storage_envelope",
+    "fetch_external_payload",
     "parse_external_task_input",
     "parse_external_task_input_artifact",
     "parse_external_task_result",
     "handle_invocable_activity",
+    "store_external_payload",
     "to_avro_payload_value",
     "to_avro_payload_values",
     "replay",
