@@ -459,6 +459,10 @@ class TestTaskQueues:
                             "server_max_dispatches_per_minute_per_namespace": 240,
                             "server_namespace_dispatch_count_this_minute": 200,
                             "server_remaining_namespace_dispatch_capacity": 40,
+                            "server_dispatch_budget_group": "downstream-openai",
+                            "server_max_dispatches_per_minute_per_budget_group": 75,
+                            "server_budget_group_dispatch_count_this_minute": 75,
+                            "server_remaining_budget_group_dispatch_capacity": 0,
                             "server_lock_required": True,
                             "server_lock_supported": True,
                         },
@@ -497,6 +501,10 @@ class TestTaskQueues:
             assert queue.admission.workflow_tasks.server_max_dispatches_per_minute_per_namespace == 240
             assert queue.admission.workflow_tasks.server_namespace_dispatch_count_this_minute == 200
             assert queue.admission.workflow_tasks.server_remaining_namespace_dispatch_capacity == 40
+            assert queue.admission.workflow_tasks.server_dispatch_budget_group == "downstream-openai"
+            assert queue.admission.workflow_tasks.server_max_dispatches_per_minute_per_budget_group == 75
+            assert queue.admission.workflow_tasks.server_budget_group_dispatch_count_this_minute == 75
+            assert queue.admission.workflow_tasks.server_remaining_budget_group_dispatch_capacity == 0
             assert queue.admission.activity_tasks is not None
             assert queue.admission.activity_tasks.configured_slot_count == 5
             assert queue.admission.query_tasks is not None

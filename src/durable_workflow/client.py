@@ -127,6 +127,10 @@ class TaskQueueTaskAdmission:
     server_max_dispatches_per_minute_per_namespace: int | None = None
     server_namespace_dispatch_count_this_minute: int | None = None
     server_remaining_namespace_dispatch_capacity: int | None = None
+    server_dispatch_budget_group: str | None = None
+    server_max_dispatches_per_minute_per_budget_group: int | None = None
+    server_budget_group_dispatch_count_this_minute: int | None = None
+    server_remaining_budget_group_dispatch_capacity: int | None = None
     server_lock_required: bool | None = None
     server_lock_supported: bool | None = None
 
@@ -159,6 +163,16 @@ class TaskQueueTaskAdmission:
             ),
             server_namespace_dispatch_count_this_minute=data.get("server_namespace_dispatch_count_this_minute"),
             server_remaining_namespace_dispatch_capacity=data.get("server_remaining_namespace_dispatch_capacity"),
+            server_dispatch_budget_group=data.get("server_dispatch_budget_group"),
+            server_max_dispatches_per_minute_per_budget_group=data.get(
+                "server_max_dispatches_per_minute_per_budget_group"
+            ),
+            server_budget_group_dispatch_count_this_minute=data.get(
+                "server_budget_group_dispatch_count_this_minute"
+            ),
+            server_remaining_budget_group_dispatch_capacity=data.get(
+                "server_remaining_budget_group_dispatch_capacity"
+            ),
             server_lock_required=data.get("server_lock_required"),
             server_lock_supported=data.get("server_lock_supported"),
         )

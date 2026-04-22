@@ -174,7 +174,8 @@ for queue in queues.task_queues:
 The workflow and activity admission objects expose both queue-level and
 namespace-level server budgets, including active lease caps and per-minute
 dispatch-rate limits, so automation can detect whether local worker slots,
-queue caps, or namespace caps are constraining throughput.
+queue caps, namespace caps, or downstream dispatch budget groups are
+constraining throughput.
 
 ## Replay captured histories
 
