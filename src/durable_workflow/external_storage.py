@@ -134,6 +134,12 @@ class ExternalPayloadCache:
         self.current_bytes += len(data)
         self._evict()
 
+    def discard(self, reference: ExternalPayloadReference) -> None:
+        """Remove verified bytes for *reference* after external retention cleanup."""
+        data = self._entries.pop(self._key(reference), None)
+        if data is not None:
+            self.current_bytes -= len(data)
+
     def clear(self) -> None:
         self._entries.clear()
         self.current_bytes = 0
@@ -358,6 +364,18 @@ def fetch_external_payload(
     if cache is not None:
         cache.put(reference, data)
     return data
+
+
+def delete_external_payload(
+    driver: ExternalStorageDriver,
+    reference: ExternalPayloadReference,
+    *,
+    cache: ExternalPayloadCache | None = None,
+) -> None:
+    """Delete referenced payload bytes and evict any verified replay cache entry."""
+    driver.delete(reference.uri)
+    if cache is not None:
+        cache.discard(reference)
 
 
 def _validate_sha256(sha256: str) -> None:

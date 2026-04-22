@@ -13,6 +13,7 @@ from durable_workflow.external_storage import (
     GCSExternalStorage,
     LocalFilesystemExternalStorage,
     S3ExternalStorage,
+    delete_external_payload,
     fetch_external_payload,
     store_external_payload,
 )
@@ -118,6 +119,29 @@ def test_fetch_external_payload_cache_reuses_verified_bytes(tmp_path: Path) -> N
 
     assert fetch_external_payload(storage, reference, cache=cache) == b'{"stable":true}'
     assert len(cache) == 1
+
+
+def test_delete_external_payload_removes_blob_and_cache_entry(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    cache = ExternalPayloadCache(max_entries=2, max_bytes=1024)
+    reference = store_external_payload(storage, b'{"retained":false}', codec="json")
+    path = Path(reference.uri.removeprefix("file://"))
+
+    assert fetch_external_payload(storage, reference, cache=cache) == b'{"retained":false}'
+    assert cache.get(reference) == b'{"retained":false}'
+
+    delete_external_payload(storage, reference, cache=cache)
+
+    assert not path.exists()
+    assert cache.get(reference) is None
+
+
+def test_delete_external_payload_is_idempotent_for_local_retention_cleanup(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    reference = store_external_payload(storage, b"old-history", codec="json")
+
+    delete_external_payload(storage, reference)
+    delete_external_payload(storage, reference)
 
 
 def test_fetch_external_payload_does_not_cache_failed_integrity_check(tmp_path: Path) -> None:

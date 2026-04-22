@@ -68,6 +68,7 @@ from .external_storage import (
     GCSExternalStorage,
     LocalFilesystemExternalStorage,
     S3ExternalStorage,
+    delete_external_payload,
     fetch_external_payload,
     store_external_payload,
 )
@@ -235,6 +236,7 @@ __all__ = [
     "EXTERNAL_TASK_INPUT_VERSION",
     "EXTERNAL_TASK_RESULT_SCHEMA",
     "EXTERNAL_TASK_RESULT_VERSION",
+    "delete_external_payload",
     "external_storage_envelope",
     "fetch_external_payload",
     "parse_external_task_input",

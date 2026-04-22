@@ -212,6 +212,9 @@ S3, GCS, and Azure Blob adapters. Cloud SDKs stay application-owned: pass an
 already-configured boto3-compatible S3 client, google-cloud-storage client, or
 azure-storage-blob container client when your deployment enables external
 payload storage.
+Retention cleanup should delete by typed reference rather than by raw URI:
+`delete_external_payload(storage, reference, cache=cache)` calls the configured
+driver and evicts any verified replay-cache entry for the same reference.
 
 ```python
 from durable_workflow import S3ExternalStorage, serializer
