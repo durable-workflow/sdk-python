@@ -1,0 +1,40 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "schedule.pause",
+  "request": {
+    "method": "POST",
+    "path": "/schedules/daily-order-rollup/pause",
+    "body": {
+      "note": "operator maintenance window"
+    }
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-order-rollup",
+    "outcome": "paused",
+    "note": "operator maintenance window"
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-order-rollup",
+    "outcome": "paused",
+    "paused": true,
+    "note": "operator maintenance window",
+    "paused_at": "2026-04-22T07:00:00Z"
+  },
+  "cli": {
+    "argv": {
+      "schedule-id": "daily-order-rollup",
+      "--note": "operator maintenance window",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "pause_schedule",
+    "args": {
+      "schedule_id": "daily-order-rollup",
+      "note": "operator maintenance window"
+    }
+  }
+}

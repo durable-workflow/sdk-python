@@ -1,0 +1,32 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "schedule.delete",
+  "request": {
+    "method": "DELETE",
+    "path": "/schedules/inventory-refresh"
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "inventory-refresh",
+    "outcome": "deleted"
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "inventory-refresh",
+    "outcome": "deleted",
+    "deleted_at": "2026-04-22T07:30:00Z"
+  },
+  "cli": {
+    "argv": {
+      "schedule-id": "inventory-refresh",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "delete_schedule",
+    "args": {
+      "schedule_id": "inventory-refresh"
+    }
+  }
+}

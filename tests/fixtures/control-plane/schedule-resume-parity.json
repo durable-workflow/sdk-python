@@ -1,0 +1,40 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "schedule.resume",
+  "request": {
+    "method": "POST",
+    "path": "/schedules/daily-order-rollup/resume",
+    "body": {
+      "note": "maintenance complete"
+    }
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-order-rollup",
+    "outcome": "resumed",
+    "note": "maintenance complete"
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-order-rollup",
+    "outcome": "resumed",
+    "paused": false,
+    "note": "maintenance complete",
+    "resumed_at": "2026-04-22T07:15:00Z"
+  },
+  "cli": {
+    "argv": {
+      "schedule-id": "daily-order-rollup",
+      "--note": "maintenance complete",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "resume_schedule",
+    "args": {
+      "schedule_id": "daily-order-rollup",
+      "note": "maintenance complete"
+    }
+  }
+}

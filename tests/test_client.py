@@ -1111,6 +1111,48 @@ class TestSchedules:
         assert result.fires_count == semantic["fires_count"]
         assert result.remaining_actions == semantic["remaining_actions"]
 
+    @pytest.mark.asyncio
+    async def test_pause_schedule_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-pause-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.pause_schedule(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+
+    @pytest.mark.asyncio
+    async def test_resume_schedule_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-resume-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.resume_schedule(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+
+    @pytest.mark.asyncio
+    async def test_delete_schedule_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-delete-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.delete_schedule(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert mock.call_args.kwargs.get("json") is None
+
 
 class TestErrorMapping:
     @pytest.mark.asyncio
