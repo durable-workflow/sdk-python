@@ -1,0 +1,52 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow.history",
+  "request": {
+    "method": "GET",
+    "path": "/workflows/wf-polyglot-231/runs/run-polyglot-231/history"
+  },
+  "semantic_body": {
+    "workflow_id": "wf-polyglot-231",
+    "run_id": "run-polyglot-231"
+  },
+  "response_body": {
+    "workflow_id": "wf-polyglot-231",
+    "run_id": "run-polyglot-231",
+    "events": [
+      {
+        "sequence": 1,
+        "event_type": "WorkflowStarted",
+        "timestamp": "2026-04-22T04:30:00Z",
+        "payload": {
+          "workflow_type": "orders.process",
+          "task_queue": "orders"
+        }
+      },
+      {
+        "sequence": 2,
+        "event_type": "ActivityScheduled",
+        "timestamp": "2026-04-22T04:30:01Z",
+        "payload": {
+          "activity_type": "reserve_inventory"
+        }
+      }
+    ]
+  },
+  "cli": {
+    "argv": {
+      "workflow-id": "wf-polyglot-231",
+      "run-id": "run-polyglot-231",
+      "--json": true
+    },
+    "expected_query": {
+      "wait_new_event": false
+    }
+  },
+  "sdk_python": {
+    "args": {
+      "workflow_id": "wf-polyglot-231",
+      "run_id": "run-polyglot-231"
+    }
+  }
+}
