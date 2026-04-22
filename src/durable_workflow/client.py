@@ -535,6 +535,36 @@ class TaskQueueBuildIdRollout:
 
 
 @dataclass
+class TaskQueueBuildIdRolloutState:
+    """Operator-recorded drain intent for one ``(task_queue, build_id)`` cohort.
+
+    Returned by ``drain_task_queue_build_id`` and ``resume_task_queue_build_id``.
+    ``build_id`` is ``None`` for the unversioned cohort (workers registered
+    without a build identifier). ``drain_intent`` is ``"active"`` or
+    ``"draining"``. ``drained_at`` is set only when ``drain_intent`` is
+    ``"draining"``; repeated drains do not shift the timestamp.
+    """
+
+    namespace: str | None
+    task_queue: str
+    build_id: str | None
+    drain_intent: str
+    drained_at: str | None
+    raw: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TaskQueueBuildIdRolloutState:
+        return cls(
+            namespace=data.get("namespace"),
+            task_queue=str(data.get("task_queue") or ""),
+            build_id=data.get("build_id") if isinstance(data.get("build_id"), str) else None,
+            drain_intent=str(data.get("drain_intent") or ""),
+            drained_at=data.get("drained_at") if isinstance(data.get("drained_at"), str) else None,
+            raw=data,
+        )
+
+
+@dataclass
 class WorkerDescription:
     """Current server view of one registered worker."""
 
@@ -1391,6 +1421,67 @@ class Client:
                 },
             )
         return TaskQueueBuildIdRollout.from_dict(data)
+
+    async def drain_task_queue_build_id(
+        self,
+        task_queue: str,
+        build_id: str | None,
+    ) -> TaskQueueBuildIdRolloutState:
+        """Mark a build-id cohort as draining so it stops claiming new tasks.
+
+        Workers registered under ``build_id`` keep running their in-flight
+        work but are blocked from claiming fresh tasks, and future workers
+        that heartbeat under the same ``build_id`` land as draining too.
+        Pass ``None`` to drain the unversioned cohort (workers registered
+        without a build identifier). Idempotent: repeated drains do not
+        shift the recorded ``drained_at`` timestamp.
+        """
+        return await self._mutate_task_queue_build_id_rollout(
+            task_queue,
+            build_id,
+            action="drain",
+        )
+
+    async def resume_task_queue_build_id(
+        self,
+        task_queue: str,
+        build_id: str | None,
+    ) -> TaskQueueBuildIdRolloutState:
+        """Revert a previous drain so a build-id cohort can claim work again.
+
+        Resuming clears both ``drain_intent`` and ``drained_at`` for the
+        cohort and flips any still-running workers back to ``active``.
+        Pass ``None`` to resume the unversioned cohort. Idempotent:
+        resuming an already-active cohort is a no-op.
+        """
+        return await self._mutate_task_queue_build_id_rollout(
+            task_queue,
+            build_id,
+            action="resume",
+        )
+
+    async def _mutate_task_queue_build_id_rollout(
+        self,
+        task_queue: str,
+        build_id: str | None,
+        *,
+        action: str,
+    ) -> TaskQueueBuildIdRolloutState:
+        data = await self._request(
+            "POST",
+            f"/task-queues/{quote(task_queue, safe='')}/build-ids/{action}",
+            json={"build_id": build_id},
+            context=task_queue,
+        )
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": f"invalid_task_queue_build_id_{action}_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return TaskQueueBuildIdRolloutState.from_dict(data)
 
     # ── Search attributes ─────────────────────────────────────────────
     async def list_search_attributes(self) -> SearchAttributeList:

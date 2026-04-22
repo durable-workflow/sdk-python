@@ -1112,6 +1112,116 @@ class TestTaskQueues:
         assert unversioned.first_seen_at is None
 
     @pytest.mark.asyncio
+    async def test_drain_task_queue_build_id_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = (
+            Path(__file__).parent
+            / "fixtures"
+            / "control-plane"
+            / "task-queue-build-id-drain-parity.json"
+        )
+        fixture = json.loads(fixture_path.read_text())
+        assert fixture["operation"] == "task_queue.build_id.drain"
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.drain_task_queue_build_id(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        body = mock.call_args.kwargs.get("json")
+        assert body == fixture["request"]["body"]
+
+        semantic = fixture["semantic_body"]
+        assert result.namespace == semantic["namespace"]
+        assert result.task_queue == semantic["task_queue"]
+        assert result.build_id == semantic["build_id"]
+        assert result.drain_intent == semantic["drain_intent"]
+        assert result.drained_at == semantic["drained_at"]
+
+    @pytest.mark.asyncio
+    async def test_resume_task_queue_build_id_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = (
+            Path(__file__).parent
+            / "fixtures"
+            / "control-plane"
+            / "task-queue-build-id-resume-parity.json"
+        )
+        fixture = json.loads(fixture_path.read_text())
+        assert fixture["operation"] == "task_queue.build_id.resume"
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.resume_task_queue_build_id(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        body = mock.call_args.kwargs.get("json")
+        assert body == fixture["request"]["body"]
+
+        semantic = fixture["semantic_body"]
+        assert result.namespace == semantic["namespace"]
+        assert result.task_queue == semantic["task_queue"]
+        assert result.build_id == semantic["build_id"]
+        assert result.drain_intent == semantic["drain_intent"]
+        assert result.drained_at is None
+
+    @pytest.mark.asyncio
+    async def test_drain_task_queue_build_id_targets_unversioned_cohort_with_null_body(
+        self, client: Client
+    ) -> None:
+        resp = _mock_response(
+            200,
+            {
+                "namespace": "default",
+                "task_queue": "orders",
+                "build_id": None,
+                "drain_intent": "draining",
+                "drained_at": "2026-04-22T09:50:00Z",
+            },
+        )
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.drain_task_queue_build_id("orders", None)
+
+        assert mock.call_args.args[0] == "POST"
+        assert mock.call_args.args[1] == "/api/task-queues/orders/build-ids/drain"
+        assert mock.call_args.kwargs.get("json") == {"build_id": None}
+        assert result.build_id is None
+        assert result.drain_intent == "draining"
+        assert result.drained_at == "2026-04-22T09:50:00Z"
+
+    @pytest.mark.asyncio
+    async def test_resume_task_queue_build_id_clears_drained_at(self, client: Client) -> None:
+        resp = _mock_response(
+            200,
+            {
+                "namespace": "default",
+                "task_queue": "orders",
+                "build_id": "build-alpha",
+                "drain_intent": "active",
+                "drained_at": None,
+            },
+        )
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.resume_task_queue_build_id("orders", "build-alpha")
+
+        assert mock.call_args.args[1] == "/api/task-queues/orders/build-ids/resume"
+        assert mock.call_args.kwargs.get("json") == {"build_id": "build-alpha"}
+        assert result.drain_intent == "active"
+        assert result.drained_at is None
+
+    @pytest.mark.asyncio
     async def test_list_task_queues_parses_admission(self, client: Client) -> None:
         resp = _mock_response(200, {
             "namespace": "ns1",

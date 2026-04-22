@@ -198,6 +198,56 @@ class TestSyncClientList:
             assert cohort.total_worker_count == 2
             assert mock.call_args.args[:2] == ("GET", "/api/task-queues/orders/build-ids")
 
+    def test_drain_task_queue_build_id(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            200,
+            {
+                "namespace": "default",
+                "task_queue": "orders",
+                "build_id": "build-alpha",
+                "drain_intent": "draining",
+                "drained_at": "2026-04-22T09:45:00Z",
+            },
+        )
+        with patch.object(
+            client._async._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = client.drain_task_queue_build_id("orders", "build-alpha")
+            assert result.drain_intent == "draining"
+            assert result.drained_at == "2026-04-22T09:45:00Z"
+            assert result.build_id == "build-alpha"
+            assert mock.call_args.args[:2] == (
+                "POST",
+                "/api/task-queues/orders/build-ids/drain",
+            )
+            assert mock.call_args.kwargs.get("json") == {"build_id": "build-alpha"}
+
+    def test_resume_task_queue_build_id_for_unversioned_cohort(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            200,
+            {
+                "namespace": "default",
+                "task_queue": "orders",
+                "build_id": None,
+                "drain_intent": "active",
+                "drained_at": None,
+            },
+        )
+        with patch.object(
+            client._async._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = client.resume_task_queue_build_id("orders", None)
+            assert result.drain_intent == "active"
+            assert result.drained_at is None
+            assert result.build_id is None
+            assert mock.call_args.args[:2] == (
+                "POST",
+                "/api/task-queues/orders/build-ids/resume",
+            )
+            assert mock.call_args.kwargs.get("json") == {"build_id": None}
+
 
 class TestSyncClientRunVisibility:
     def test_list_workflow_runs(self) -> None:

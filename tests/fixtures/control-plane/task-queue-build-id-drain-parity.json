@@ -1,0 +1,40 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "task_queue.build_id.drain",
+  "request": {
+    "method": "POST",
+    "path": "/task-queues/orders-critical/build-ids/drain",
+    "body": {
+      "build_id": "build-2026.04.21-z9"
+    }
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "task_queue": "orders-critical",
+    "build_id": "build-2026.04.21-z9",
+    "drain_intent": "draining",
+    "drained_at": "2026-04-22T09:45:00Z"
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "task_queue": "orders-critical",
+    "build_id": "build-2026.04.21-z9",
+    "drain_intent": "draining",
+    "drained_at": "2026-04-22T09:45:00Z"
+  },
+  "cli": {
+    "argv": {
+      "task-queue": "orders-critical",
+      "--build-id": "build-2026.04.21-z9",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "drain_task_queue_build_id",
+    "args": {
+      "task_queue": "orders-critical",
+      "build_id": "build-2026.04.21-z9"
+    }
+  }
+}

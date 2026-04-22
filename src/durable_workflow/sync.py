@@ -18,6 +18,7 @@ from .client import (
     ScheduleTriggerResult,
     StorageTestResult,
     TaskQueueBuildIdRollout,
+    TaskQueueBuildIdRolloutState,
     TaskQueueDescription,
     TaskQueueList,
     WorkflowCommandResult,
@@ -288,6 +289,26 @@ class Client:
     def list_task_queue_build_ids(self, task_queue: str) -> TaskQueueBuildIdRollout:
         result: TaskQueueBuildIdRollout = _run(
             self._async.list_task_queue_build_ids(task_queue)
+        )
+        return result
+
+    def drain_task_queue_build_id(
+        self,
+        task_queue: str,
+        build_id: str | None,
+    ) -> TaskQueueBuildIdRolloutState:
+        result: TaskQueueBuildIdRolloutState = _run(
+            self._async.drain_task_queue_build_id(task_queue, build_id)
+        )
+        return result
+
+    def resume_task_queue_build_id(
+        self,
+        task_queue: str,
+        build_id: str | None,
+    ) -> TaskQueueBuildIdRolloutState:
+        result: TaskQueueBuildIdRolloutState = _run(
+            self._async.resume_task_queue_build_id(task_queue, build_id)
         )
         return result
 
