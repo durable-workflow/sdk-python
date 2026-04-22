@@ -395,10 +395,16 @@ manifests from `GET /api/cluster/info`:
 - `control_plane.version: "2"`
 - `control_plane.request_contract.schema: durable-workflow.v2.control-plane-request.contract` version `1`
 - `worker_protocol.version: "1.0"`
+- `worker_protocol.external_task_input_contract.schema: durable-workflow.v2.external-task-input.contract` version `1`
 
 The top-level server `version` is build identity only. The worker checks these
 protocol manifests at startup and fails closed when compatibility is missing,
 unknown, or undiscoverable.
+
+External task carriers can validate fixture artifacts from
+`worker_protocol.external_task_input_contract.fixtures` with
+`parse_external_task_input_artifact()` and parse leased task envelopes with
+`parse_external_task_input()`.
 
 ## Development
 
