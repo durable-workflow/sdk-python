@@ -1,0 +1,106 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "schedule.create",
+  "request": {
+    "method": "POST",
+    "path": "/schedules",
+    "body": {
+      "schedule_id": "daily-inventory-check",
+      "spec": {
+        "cron_expressions": [
+          "15 7 * * *"
+        ],
+        "timezone": "UTC"
+      },
+      "action": {
+        "workflow_type": "inventory.check",
+        "task_queue": "inventory-standard",
+        "input": [
+          {
+            "warehouse": "west-1",
+            "threshold": 25
+          }
+        ],
+        "execution_timeout_seconds": 900,
+        "run_timeout_seconds": 600
+      },
+      "overlap_policy": "buffer_one",
+      "jitter_seconds": 45,
+      "max_runs": 30,
+      "paused": true,
+      "note": "created from parity fixture"
+    }
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-inventory-check",
+    "workflow_type": "inventory.check",
+    "task_queue": "inventory-standard",
+    "overlap_policy": "buffer_one",
+    "outcome": "created"
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-inventory-check",
+    "outcome": "created",
+    "status": "paused",
+    "created_at": "2026-04-22T07:45:00Z"
+  },
+  "cli": {
+    "argv": {
+      "--schedule-id": "daily-inventory-check",
+      "--workflow-type": "inventory.check",
+      "--cron": "15 7 * * *",
+      "--task-queue": "inventory-standard",
+      "--input": "[{\"warehouse\":\"west-1\",\"threshold\":25}]",
+      "--execution-timeout": "900",
+      "--run-timeout": "600",
+      "--overlap-policy": "buffer_one",
+      "--jitter": "45",
+      "--max-runs": "30",
+      "--paused": true,
+      "--note": "created from parity fixture",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "create_schedule",
+    "kwargs": {
+      "schedule_id": "daily-inventory-check",
+      "spec": {
+        "cron_expressions": [
+          "15 7 * * *"
+        ],
+        "timezone": "UTC"
+      },
+      "action": {
+        "workflow_type": "inventory.check",
+        "task_queue": "inventory-standard",
+        "input": [
+          {
+            "warehouse": "west-1",
+            "threshold": 25
+          }
+        ],
+        "execution_timeout_seconds": 900,
+        "run_timeout_seconds": 600
+      },
+      "overlap_policy": "buffer_one",
+      "jitter_seconds": 45,
+      "max_runs": 30,
+      "paused": true,
+      "note": "created from parity fixture"
+    },
+    "payload_envelope": {
+      "field": "action.input",
+      "codec": "avro",
+      "decoded": [
+        {
+          "warehouse": "west-1",
+          "threshold": 25
+        }
+      ]
+    }
+  }
+}

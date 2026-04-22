@@ -1,0 +1,40 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "schedule.trigger",
+  "request": {
+    "method": "POST",
+    "path": "/schedules/daily-inventory-check/trigger",
+    "body": {
+      "overlap_policy": "allow_all"
+    }
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-inventory-check",
+    "outcome": "triggered",
+    "workflow_id": "wf-inventory-check-20260422-manual",
+    "run_id": "run-inventory-check-20260422-manual"
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-inventory-check",
+    "outcome": "triggered",
+    "workflow_id": "wf-inventory-check-20260422-manual",
+    "run_id": "run-inventory-check-20260422-manual"
+  },
+  "cli": {
+    "argv": {
+      "schedule-id": "daily-inventory-check",
+      "--overlap-policy": "allow_all",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "trigger_schedule",
+    "args": {
+      "schedule_id": "daily-inventory-check",
+      "overlap_policy": "allow_all"
+    }
+  }
+}

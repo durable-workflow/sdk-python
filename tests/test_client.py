@@ -10,7 +10,15 @@ import httpx
 import pytest
 
 from durable_workflow import serializer
-from durable_workflow.client import CONTROL_PLANE_VERSION, PROTOCOL_VERSION, Client, WorkflowExecution, WorkflowHandle
+from durable_workflow.client import (
+    CONTROL_PLANE_VERSION,
+    PROTOCOL_VERSION,
+    Client,
+    ScheduleAction,
+    ScheduleSpec,
+    WorkflowExecution,
+    WorkflowHandle,
+)
 from durable_workflow.errors import (
     InvalidArgument,
     QueryFailed,
@@ -1068,6 +1076,35 @@ class TestTaskQueues:
 
 class TestSchedules:
     @pytest.mark.asyncio
+    async def test_create_schedule_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-create-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(201, fixture["response_body"])
+
+        kwargs = sdk["kwargs"].copy()
+        kwargs["spec"] = self._schedule_spec(kwargs["spec"])
+        kwargs["action"] = self._schedule_action(kwargs["action"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            handle = await client.create_schedule(**kwargs)
+
+        assert handle.schedule_id == fixture["semantic_body"]["schedule_id"]
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+
+        body = mock.call_args.kwargs["json"]
+        expected = fixture["request"]["body"]
+        assert body["schedule_id"] == expected["schedule_id"]
+        assert body["spec"] == expected["spec"]
+        assert body["overlap_policy"] == expected["overlap_policy"]
+        assert body["jitter_seconds"] == expected["jitter_seconds"]
+        assert body["max_runs"] == expected["max_runs"]
+        assert body["paused"] == expected["paused"]
+        assert body["note"] == expected["note"]
+        self._assert_schedule_action_matches_fixture(body["action"], expected["action"], sdk["payload_envelope"])
+
+    @pytest.mark.asyncio
     async def test_list_schedules_matches_polyglot_fixture(self, client: Client) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-list-parity.json"
         fixture = json.loads(fixture_path.read_text())
@@ -1112,6 +1149,32 @@ class TestSchedules:
         assert result.remaining_actions == semantic["remaining_actions"]
 
     @pytest.mark.asyncio
+    async def test_update_schedule_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-update-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        kwargs = sdk["kwargs"].copy()
+        kwargs["spec"] = self._schedule_spec(kwargs["spec"])
+        kwargs["action"] = self._schedule_action(kwargs["action"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.update_schedule(**kwargs)
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+
+        body = mock.call_args.kwargs["json"]
+        expected = fixture["request"]["body"]
+        assert body["spec"] == expected["spec"]
+        assert body["overlap_policy"] == expected["overlap_policy"]
+        assert body["jitter_seconds"] == expected["jitter_seconds"]
+        assert body["max_runs"] == expected["max_runs"]
+        assert body["note"] == expected["note"]
+        self._assert_schedule_action_matches_fixture(body["action"], expected["action"], sdk["payload_envelope"])
+
+    @pytest.mark.asyncio
     async def test_pause_schedule_matches_polyglot_fixture(self, client: Client) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-pause-parity.json"
         fixture = json.loads(fixture_path.read_text())
@@ -1140,6 +1203,45 @@ class TestSchedules:
         assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
 
     @pytest.mark.asyncio
+    async def test_trigger_schedule_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-trigger-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.trigger_schedule(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+
+        semantic = fixture["semantic_body"]
+        assert result.schedule_id == semantic["schedule_id"]
+        assert result.outcome == semantic["outcome"]
+        assert result.workflow_id == semantic["workflow_id"]
+        assert result.run_id == semantic["run_id"]
+
+    @pytest.mark.asyncio
+    async def test_backfill_schedule_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-backfill-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.backfill_schedule(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+
+        semantic = fixture["semantic_body"]
+        assert result.schedule_id == semantic["schedule_id"]
+        assert result.outcome == semantic["outcome"]
+        assert result.fires_attempted == semantic["fires_attempted"]
+
+    @pytest.mark.asyncio
     async def test_delete_schedule_matches_polyglot_fixture(self, client: Client) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-delete-parity.json"
         fixture = json.loads(fixture_path.read_text())
@@ -1152,6 +1254,37 @@ class TestSchedules:
         assert mock.call_args.args[0] == fixture["request"]["method"]
         assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
         assert mock.call_args.kwargs.get("json") is None
+
+    @staticmethod
+    def _schedule_spec(data: dict) -> ScheduleSpec:
+        return ScheduleSpec(
+            cron_expressions=data.get("cron_expressions"),
+            intervals=data.get("intervals"),
+            timezone=data.get("timezone"),
+        )
+
+    @staticmethod
+    def _schedule_action(data: dict) -> ScheduleAction:
+        return ScheduleAction(
+            workflow_type=data["workflow_type"],
+            task_queue=data.get("task_queue"),
+            input=data.get("input"),
+            execution_timeout_seconds=data.get("execution_timeout_seconds"),
+            run_timeout_seconds=data.get("run_timeout_seconds"),
+        )
+
+    @staticmethod
+    def _assert_schedule_action_matches_fixture(
+        actual: dict,
+        expected: dict,
+        envelope_contract: dict,
+    ) -> None:
+        for field in ("workflow_type", "task_queue", "execution_timeout_seconds", "run_timeout_seconds"):
+            assert actual[field] == expected[field]
+
+        envelope = actual["input"]
+        assert envelope["codec"] == envelope_contract["codec"]
+        assert serializer.decode(envelope["blob"], codec=envelope["codec"]) == envelope_contract["decoded"]
 
 
 class TestErrorMapping:

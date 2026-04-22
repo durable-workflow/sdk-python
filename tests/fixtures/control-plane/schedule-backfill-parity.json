@@ -1,0 +1,56 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "schedule.backfill",
+  "request": {
+    "method": "POST",
+    "path": "/schedules/daily-inventory-check/backfill",
+    "body": {
+      "start_time": "2026-04-20T00:00:00Z",
+      "end_time": "2026-04-20T03:00:00Z",
+      "overlap_policy": "buffer_all"
+    }
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-inventory-check",
+    "outcome": "accepted",
+    "fires_attempted": 6
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-inventory-check",
+    "outcome": "accepted",
+    "fires_attempted": 6,
+    "results": [
+      {
+        "fire_time": "2026-04-20T00:00:00Z",
+        "outcome": "triggered",
+        "workflow_id": "wf-inventory-check-20260420-0000"
+      },
+      {
+        "fire_time": "2026-04-20T00:30:00Z",
+        "outcome": "buffered",
+        "buffer_depth": 1
+      }
+    ]
+  },
+  "cli": {
+    "argv": {
+      "schedule-id": "daily-inventory-check",
+      "--start-time": "2026-04-20T00:00:00Z",
+      "--end-time": "2026-04-20T03:00:00Z",
+      "--overlap-policy": "buffer_all",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "backfill_schedule",
+    "args": {
+      "schedule_id": "daily-inventory-check",
+      "start_time": "2026-04-20T00:00:00Z",
+      "end_time": "2026-04-20T03:00:00Z",
+      "overlap_policy": "buffer_all"
+    }
+  }
+}

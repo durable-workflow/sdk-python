@@ -1,0 +1,103 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "schedule.update",
+  "request": {
+    "method": "PUT",
+    "path": "/schedules/daily-inventory-check",
+    "body": {
+      "spec": {
+        "intervals": [
+          {
+            "every": "PT30M"
+          }
+        ]
+      },
+      "action": {
+        "workflow_type": "inventory.check",
+        "task_queue": "inventory-priority",
+        "input": [
+          {
+            "warehouse": "west-1",
+            "threshold": 10
+          }
+        ],
+        "execution_timeout_seconds": 1200,
+        "run_timeout_seconds": 900
+      },
+      "overlap_policy": "skip",
+      "jitter_seconds": 15,
+      "max_runs": 100,
+      "note": "tighten inventory threshold"
+    }
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-inventory-check",
+    "workflow_type": "inventory.check",
+    "task_queue": "inventory-priority",
+    "overlap_policy": "skip",
+    "outcome": "updated"
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-inventory-check",
+    "outcome": "updated",
+    "updated_at": "2026-04-22T07:50:00Z"
+  },
+  "cli": {
+    "argv": {
+      "schedule-id": "daily-inventory-check",
+      "--interval": "PT30M",
+      "--workflow-type": "inventory.check",
+      "--task-queue": "inventory-priority",
+      "--input": "[{\"warehouse\":\"west-1\",\"threshold\":10}]",
+      "--execution-timeout": "1200",
+      "--run-timeout": "900",
+      "--overlap-policy": "skip",
+      "--jitter": "15",
+      "--max-runs": "100",
+      "--note": "tighten inventory threshold",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "update_schedule",
+    "kwargs": {
+      "schedule_id": "daily-inventory-check",
+      "spec": {
+        "intervals": [
+          {
+            "every": "PT30M"
+          }
+        ]
+      },
+      "action": {
+        "workflow_type": "inventory.check",
+        "task_queue": "inventory-priority",
+        "input": [
+          {
+            "warehouse": "west-1",
+            "threshold": 10
+          }
+        ],
+        "execution_timeout_seconds": 1200,
+        "run_timeout_seconds": 900
+      },
+      "overlap_policy": "skip",
+      "jitter_seconds": 15,
+      "max_runs": 100,
+      "note": "tighten inventory threshold"
+    },
+    "payload_envelope": {
+      "field": "action.input",
+      "codec": "avro",
+      "decoded": [
+        {
+          "warehouse": "west-1",
+          "threshold": 10
+        }
+      ]
+    }
+  }
+}
