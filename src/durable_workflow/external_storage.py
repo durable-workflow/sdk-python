@@ -50,14 +50,18 @@ class ExternalPayloadStoragePolicy:
         """Parse a server namespace or Cloud organization storage policy."""
         policy = _extract_policy(data)
         driver = _optional_string(policy.get("driver"), "external payload storage driver")
-        enabled = bool(policy.get("enabled", driver is not None))
+        enabled = _optional_bool(policy.get("enabled"), "enabled", default=driver is not None)
         threshold_bytes = _optional_positive_int(policy.get("threshold_bytes"), "threshold_bytes")
         config = _optional_mapping(policy.get("config"), "config")
         prefix = _optional_string(policy.get("prefix"), "prefix") or _optional_string(
             config.get("prefix"),
             "config.prefix",
         )
-        integrity_required = bool(policy.get("integrity_required", True))
+        integrity_required = _optional_bool(
+            policy.get("integrity_required"),
+            "integrity_required",
+            default=True,
+        )
 
         return cls(
             enabled=enabled,
@@ -520,10 +524,18 @@ def _optional_string(data: object, field_name: str) -> str | None:
     return data
 
 
+def _optional_bool(data: object, field_name: str, *, default: bool) -> bool:
+    if data is None:
+        return default
+    if not isinstance(data, bool):
+        raise ValueError(f"external payload storage policy {field_name} must be a boolean")
+    return data
+
+
 def _optional_positive_int(data: object, field_name: str) -> int | None:
     if data is None:
         return None
-    if not isinstance(data, int) or data < 1:
+    if type(data) is not int or data < 1:
         raise ValueError(f"external payload storage policy {field_name} must be a positive integer")
     return data
 

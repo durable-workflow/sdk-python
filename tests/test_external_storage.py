@@ -515,5 +515,23 @@ def test_external_storage_policy_validates_threshold_and_config_shape() -> None:
     with pytest.raises(ValueError, match="threshold_bytes"):
         ExternalPayloadStoragePolicy.from_dict({"driver": "local", "threshold_bytes": 0})
 
+    with pytest.raises(ValueError, match="threshold_bytes"):
+        ExternalPayloadStoragePolicy.from_dict({"driver": "local", "threshold_bytes": True})
+
     with pytest.raises(ValueError, match="config"):
         ExternalPayloadStoragePolicy.from_dict({"driver": "local", "config": "file:///tmp/payloads"})
+
+
+def test_external_storage_policy_validates_boolean_fields() -> None:
+    with pytest.raises(ValueError, match="enabled"):
+        ExternalPayloadStoragePolicy.from_dict({"driver": "local", "enabled": "false"})
+
+    with pytest.raises(ValueError, match="integrity_required"):
+        ExternalPayloadStoragePolicy.from_dict({"driver": "local", "integrity_required": 1})
+
+    policy = ExternalPayloadStoragePolicy.from_dict(
+        {"driver": "local", "enabled": False, "integrity_required": False}
+    )
+
+    assert policy.enabled is False
+    assert policy.integrity_required is False
