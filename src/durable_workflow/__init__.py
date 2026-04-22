@@ -53,6 +53,15 @@ from .external_storage import (
     ExternalStorageDriver,
     LocalFilesystemExternalStorage,
 )
+from .external_task_result import (
+    EXTERNAL_TASK_RESULT_SCHEMA,
+    EXTERNAL_TASK_RESULT_VERSION,
+    ExternalTaskFailure,
+    ExternalTaskIdentity,
+    ExternalTaskResult,
+    ExternalTaskResultError,
+    parse_external_task_result,
+)
 from .interceptors import (
     ActivityHandler,
     ActivityInterceptorContext,
@@ -135,6 +144,10 @@ __all__ = [
     "ExternalPayloadIntegrityError",
     "ExternalPayloadReference",
     "ExternalStorageDriver",
+    "ExternalTaskFailure",
+    "ExternalTaskIdentity",
+    "ExternalTaskResult",
+    "ExternalTaskResultError",
     "InvalidArgument",
     "InMemoryMetrics",
     "LocalFilesystemExternalStorage",
@@ -158,7 +171,10 @@ __all__ = [
     "WorkflowFailed",
     "WorkflowNotFound",
     "WorkflowTerminated",
+    "EXTERNAL_TASK_RESULT_SCHEMA",
+    "EXTERNAL_TASK_RESULT_VERSION",
     "external_storage_envelope",
+    "parse_external_task_result",
     "to_avro_payload_value",
     "to_avro_payload_values",
     "replay",
