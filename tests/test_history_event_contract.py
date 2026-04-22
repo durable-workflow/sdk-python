@@ -53,6 +53,16 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "declared_entry_method",
         "declared_entry_mode",
         "declared_entry_declaring_class",
+        "parent_workflow_instance_id",
+        "parent_workflow_run_id",
+        "parent_sequence",
+        "workflow_link_id",
+        "child_call_id",
+        "retry_policy",
+        "timeout_policy",
+        "continued_from_run_id",
+        "retry_attempt",
+        "retry_of_child_workflow_run_id",
     ),
     "WorkflowContinuedAsNew": (
         "sequence",
@@ -67,6 +77,12 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "activity_type",
         "sequence",
         "activity",
+        "parallel_group_id",
+        "parallel_group_kind",
+        "parallel_group_base_sequence",
+        "parallel_group_size",
+        "parallel_group_index",
+        "parallel_group_path",
     ),
     "ActivityStarted": (
         "activity_execution_id",
@@ -76,6 +92,11 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "sequence",
         "attempt_number",
         "activity",
+        "parallel_group_id",
+        "parallel_group_kind",
+        "parallel_group_base_sequence",
+        "parallel_group_size",
+        "parallel_group_index",
         "parallel_group_path",
     ),
     "ActivityHeartbeatRecorded": (
@@ -112,6 +133,11 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "code",
         "exception",
         "activity",
+        "parallel_group_id",
+        "parallel_group_kind",
+        "parallel_group_base_sequence",
+        "parallel_group_size",
+        "parallel_group_index",
         "parallel_group_path",
     ),
     "ActivityCompleted": (
@@ -124,6 +150,11 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "result",
         "payload_codec",
         "activity",
+        "parallel_group_id",
+        "parallel_group_kind",
+        "parallel_group_base_sequence",
+        "parallel_group_size",
+        "parallel_group_index",
         "parallel_group_path",
     ),
     "ActivityFailed": (
@@ -142,6 +173,11 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "code",
         "exception",
         "activity",
+        "parallel_group_id",
+        "parallel_group_kind",
+        "parallel_group_base_sequence",
+        "parallel_group_size",
+        "parallel_group_index",
         "parallel_group_path",
         "structural_limit_kind",
         "structural_limit_value",
@@ -176,6 +212,11 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "schedule_to_close_deadline_at",
         "heartbeat_deadline_at",
         "activity",
+        "parallel_group_id",
+        "parallel_group_kind",
+        "parallel_group_base_sequence",
+        "parallel_group_size",
+        "parallel_group_index",
         "parallel_group_path",
     ),
     "TimerScheduled": (
@@ -194,6 +235,7 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "timer_id",
         "sequence",
         "delay_seconds",
+        "fire_at",
         "fired_at",
         "timer_kind",
         "condition_wait_id",
@@ -294,6 +336,9 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "sequence",
         "timer_id",
         "timeout_seconds",
+        "workflow_signal_id",
+        "signal_name",
+        "signal_wait_id",
     ),
     "ConditionWaitTimedOut": (
         "condition_wait_id",
@@ -322,9 +367,16 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "child_workflow_run_id",
         "child_workflow_class",
         "child_workflow_type",
+        "child_run_number",
         "parent_close_policy",
         "retry_policy",
         "timeout_policy",
+        "parallel_group_id",
+        "parallel_group_kind",
+        "parallel_group_base_sequence",
+        "parallel_group_size",
+        "parallel_group_index",
+        "parallel_group_path",
     ),
     "ChildRunStarted": (
         "sequence",
@@ -335,12 +387,22 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "child_workflow_class",
         "child_workflow_type",
         "child_run_number",
+        "child_status",
         "retry_policy",
         "timeout_policy",
         "execution_timeout_seconds",
         "run_timeout_seconds",
         "execution_deadline_at",
         "run_deadline_at",
+        "retry_attempt",
+        "retry_of_child_workflow_run_id",
+        "retry_backoff_seconds",
+        "parallel_group_id",
+        "parallel_group_kind",
+        "parallel_group_base_sequence",
+        "parallel_group_size",
+        "parallel_group_index",
+        "parallel_group_path",
     ),
     "ChildRunCompleted": (
         "sequence",
@@ -355,6 +417,11 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "closed_reason",
         "closed_at",
         "output",
+        "parallel_group_id",
+        "parallel_group_kind",
+        "parallel_group_base_sequence",
+        "parallel_group_size",
+        "parallel_group_index",
         "parallel_group_path",
     ),
     "ChildRunFailed": (
@@ -375,6 +442,12 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "exception_class",
         "message",
         "exception",
+        "code",
+        "parallel_group_id",
+        "parallel_group_kind",
+        "parallel_group_base_sequence",
+        "parallel_group_size",
+        "parallel_group_index",
         "parallel_group_path",
     ),
     "ChildRunCancelled": (
@@ -389,6 +462,15 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "child_status",
         "closed_reason",
         "closed_at",
+        "failure_id",
+        "failure_category",
+        "exception_class",
+        "message",
+        "parallel_group_id",
+        "parallel_group_kind",
+        "parallel_group_base_sequence",
+        "parallel_group_size",
+        "parallel_group_index",
         "parallel_group_path",
     ),
     "ChildRunTerminated": (
@@ -403,6 +485,15 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
         "child_status",
         "closed_reason",
         "closed_at",
+        "failure_id",
+        "failure_category",
+        "exception_class",
+        "message",
+        "parallel_group_id",
+        "parallel_group_kind",
+        "parallel_group_base_sequence",
+        "parallel_group_size",
+        "parallel_group_index",
         "parallel_group_path",
     ),
     "SearchAttributesUpserted": (
@@ -604,6 +695,18 @@ SDK_INTERPRETED_HISTORY_EVENTS = frozenset(
 
 SDK_PRESERVED_ONLY_HISTORY_EVENTS = frozenset(DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS) - SDK_INTERPRETED_HISTORY_EVENTS
 
+SCHEDULE_HISTORY_EVENTS = frozenset(
+    {
+        "ScheduleCreated",
+        "SchedulePaused",
+        "ScheduleResumed",
+        "ScheduleUpdated",
+        "ScheduleTriggered",
+        "ScheduleDeleted",
+        "ScheduleTriggerSkipped",
+    }
+)
+
 SDK_TOLERATED_FIXTURE_EXTRA_KEYS = {
     "SignalReceived": frozenset({"arguments", "payload_codec"}),
     "UpdateApplied": frozenset({"payload_codec"}),
@@ -619,6 +722,12 @@ def test_every_documented_history_event_has_an_sdk_classification() -> None:
     assert set(
         DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS
     ) == SDK_INTERPRETED_HISTORY_EVENTS | SDK_PRESERVED_ONLY_HISTORY_EVENTS
+
+
+def test_schedule_history_events_are_preserved_only() -> None:
+    assert set(DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS) >= SCHEDULE_HISTORY_EVENTS
+    assert SDK_PRESERVED_ONLY_HISTORY_EVENTS >= SCHEDULE_HISTORY_EVENTS
+    assert SCHEDULE_HISTORY_EVENTS.isdisjoint(SDK_INTERPRETED_HISTORY_EVENTS)
 
 
 def test_php_history_fixture_key_expectations_match_documented_contract() -> None:
