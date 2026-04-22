@@ -56,6 +56,7 @@ from .errors import (
 )
 from .external_storage import (
     EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
+    ExternalPayloadCache,
     ExternalPayloadIntegrityError,
     ExternalPayloadReference,
     ExternalStorageDriver,
@@ -171,6 +172,7 @@ __all__ = [
     "workflow",
     "DurableWorkflowError",
     "EXTERNAL_PAYLOAD_REFERENCE_SCHEMA",
+    "ExternalPayloadCache",
     "ExternalPayloadIntegrityError",
     "ExternalPayloadReference",
     "ExternalStorageDriver",

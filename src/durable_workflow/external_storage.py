@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -76,6 +77,63 @@ class ExternalPayloadReference:
         return cls(uri=uri, sha256=sha256, size_bytes=size_bytes, codec=codec, schema=schema)
 
 
+class ExternalPayloadCache:
+    """Bounded cache for verified external payload bytes during replay.
+
+    Cache entries are keyed by the complete reference identity. Bytes are
+    inserted only by :func:`fetch_external_payload` after size and sha256
+    verification has succeeded, so cache hits preserve the same integrity
+    contract as a fresh driver fetch.
+    """
+
+    def __init__(self, *, max_entries: int = 128, max_bytes: int = 16 * 1024 * 1024) -> None:
+        if max_entries < 1:
+            raise ValueError("external payload cache max_entries must be at least 1")
+        if max_bytes < 1:
+            raise ValueError("external payload cache max_bytes must be at least 1")
+        self.max_entries = max_entries
+        self.max_bytes = max_bytes
+        self.current_bytes = 0
+        self._entries: OrderedDict[tuple[str, str, int, str], bytes] = OrderedDict()
+
+    def get(self, reference: ExternalPayloadReference) -> bytes | None:
+        key = self._key(reference)
+        data = self._entries.get(key)
+        if data is None:
+            return None
+        self._entries.move_to_end(key)
+        return data
+
+    def put(self, reference: ExternalPayloadReference, data: bytes) -> None:
+        if len(data) > self.max_bytes:
+            return
+
+        key = self._key(reference)
+        existing = self._entries.pop(key, None)
+        if existing is not None:
+            self.current_bytes -= len(existing)
+
+        self._entries[key] = data
+        self.current_bytes += len(data)
+        self._evict()
+
+    def clear(self) -> None:
+        self._entries.clear()
+        self.current_bytes = 0
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    @staticmethod
+    def _key(reference: ExternalPayloadReference) -> tuple[str, str, int, str]:
+        return (reference.uri, reference.sha256, reference.size_bytes, reference.codec)
+
+    def _evict(self) -> None:
+        while len(self._entries) > self.max_entries or self.current_bytes > self.max_bytes:
+            _, data = self._entries.popitem(last=False)
+            self.current_bytes -= len(data)
+
+
 class LocalFilesystemExternalStorage:
     """Dependency-free external storage driver for development and tests."""
 
@@ -136,8 +194,15 @@ def store_external_payload(
 def fetch_external_payload(
     driver: ExternalStorageDriver,
     reference: ExternalPayloadReference,
+    *,
+    cache: ExternalPayloadCache | None = None,
 ) -> bytes:
     """Fetch payload bytes and verify size/hash before replay or decode."""
+    if cache is not None:
+        cached = cache.get(reference)
+        if cached is not None:
+            return cached
+
     data = driver.get(reference.uri)
     if len(data) != reference.size_bytes:
         raise ExternalPayloadIntegrityError("external payload size does not match its reference")
@@ -145,6 +210,8 @@ def fetch_external_payload(
     actual_sha256 = hashlib.sha256(data).hexdigest()
     if actual_sha256 != reference.sha256:
         raise ExternalPayloadIntegrityError("external payload hash does not match its reference")
+    if cache is not None:
+        cache.put(reference, data)
     return data
 
 

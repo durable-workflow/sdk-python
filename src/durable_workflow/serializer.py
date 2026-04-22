@@ -30,6 +30,7 @@ from uuid import UUID
 
 from . import _avro
 from .external_storage import (
+    ExternalPayloadCache,
     ExternalPayloadReference,
     ExternalStorageDriver,
     fetch_external_payload,
@@ -423,6 +424,7 @@ def decode_envelope(
     codec: str | None = None,
     *,
     external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
 ) -> Any:
     """Decode a value that may be a ``{codec, blob}`` envelope or a raw blob.
 
@@ -440,7 +442,7 @@ def decode_envelope(
         envelope_codec = value.get("codec")
         if envelope_codec is not None and envelope_codec != reference.codec:
             raise ValueError("external payload reference codec does not match envelope codec")
-        blob = fetch_external_payload(external_storage, reference).decode("utf-8")
+        blob = fetch_external_payload(external_storage, reference, cache=external_storage_cache).decode("utf-8")
         return decode(blob, codec=reference.codec)
     return decode(value, codec=codec)
 
@@ -450,13 +452,19 @@ def decode_envelopes(
     codec: str | None = None,
     *,
     external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
 ) -> list[Any]:
     """Decode several raw blobs or ``{codec, blob}`` envelopes in order."""
     if external_storage is not None or any(
         isinstance(value, dict) and "external_storage" in value for value in values
     ):
         return [
-            decode_envelope(value, codec=codec, external_storage=external_storage)
+            decode_envelope(
+                value,
+                codec=codec,
+                external_storage=external_storage,
+                external_storage_cache=external_storage_cache,
+            )
             for value in values
         ]
 

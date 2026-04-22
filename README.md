@@ -205,7 +205,7 @@ failures surfaced as workflow failure commands.
 - **Polyglot**: Works alongside PHP workers on the same task queue
 - **HTTP/JSON protocol**: No gRPC, no protobuf dependencies
 - **Codec envelopes**: Avro payloads by default, with JSON decode compatibility for existing history
-- **External payload references**: opt-in reference envelopes and a local filesystem driver for large-payload offload experiments
+- **External payload references**: opt-in reference envelopes, a local filesystem driver, and a bounded verified-byte cache for large-payload offload experiments
 - **Payload-size warnings**: Structured warnings before oversized workflow, activity, schedule, signal, update, query, or search-attribute payloads reach the server
 - **Workflow definition guard**: Worker registration refuses same-id hot reloads when a workflow class definition changed
 - **Deterministic workflow helpers**: `ctx.now()`, `ctx.random()`, `ctx.uuid4()`, and `ctx.uuid7()` replay from workflow state
