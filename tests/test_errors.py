@@ -89,7 +89,7 @@ class TestCancellationContract:
     Guards the pre-1.0 design decision that ``WorkflowCancelled`` and
     ``ActivityCancelled`` inherit from :class:`BaseException` directly, so that
     user worker/activity code cannot accidentally swallow a cancellation signal
-    in a catch-all. See zorporation/durable-workflow#441.
+    in a catch-all.
     """
 
     def test_workflow_cancelled_not_caught_by_exception(self) -> None:

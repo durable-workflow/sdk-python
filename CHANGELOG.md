@@ -16,8 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   via `except Exception:` or `except DurableWorkflowError:` must now either
   catch the class by name (e.g. `except (ActivityCancelled, WorkflowCancelled):`)
   or catch `BaseException`. Mirrors the standard-library precedent set by
-  `asyncio.CancelledError` and `KeyboardInterrupt`. Rationale and upstream
-  lesson: [zorporation/durable-workflow#441](https://github.com/zorporation/durable-workflow/issues/441).
+  `asyncio.CancelledError` and `KeyboardInterrupt`.
 
 ## [0.3.0] — 2026-04-19
 

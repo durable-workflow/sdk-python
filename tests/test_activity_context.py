@@ -203,11 +203,11 @@ class TestWorkerActivityContext:
     async def test_cancellation_survives_user_generic_except(self, mock_client: AsyncMock) -> None:
         """A user activity with ``except Exception:`` must not swallow cancellation.
 
-        Regression guard for zorporation/durable-workflow#441: when the server
-        signals cancellation via the heartbeat response, the activity function
-        may have a broad ``except Exception:`` block (for logging, retry, etc.).
-        That block must *not* catch ``ActivityCancelled``, so the worker still
-        reports the activity as cancelled rather than completing normally.
+        Regression guard: when the server signals cancellation via the heartbeat
+        response, the activity function may have a broad ``except Exception:``
+        block (for logging, retry, etc.). That block must *not* catch
+        ``ActivityCancelled``, so the worker still reports the activity as
+        cancelled rather than completing normally.
         """
         mock_client.heartbeat_activity_task = AsyncMock(return_value={"cancel_requested": True})
 

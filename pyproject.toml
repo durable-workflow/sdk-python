@@ -54,7 +54,7 @@ docs = [
 Homepage = "https://github.com/durable-workflow/sdk-python"
 Documentation = "https://durable-workflow.github.io/docs/2.0/polyglot/python"
 Repository = "https://github.com/durable-workflow/sdk-python"
-Issues = "https://github.com/zorporation/durable-workflow/issues"
+Issues = "https://github.com/durable-workflow/sdk-python/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
