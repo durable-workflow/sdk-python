@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- PyPI/TestPyPI publish builds now run the installed-package smoke before
+  uploading artifacts, so release candidates verify the wheel and source
+  distribution import from site-packages and replay the README quickstart.
+
 ## [0.3.1] — 2026-04-21
 
 ### Changed
