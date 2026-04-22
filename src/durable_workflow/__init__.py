@@ -57,11 +57,14 @@ from .errors import (
 )
 from .external_storage import (
     EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
+    AzureBlobExternalStorage,
     ExternalPayloadCache,
     ExternalPayloadIntegrityError,
     ExternalPayloadReference,
     ExternalStorageDriver,
+    GCSExternalStorage,
     LocalFilesystemExternalStorage,
+    S3ExternalStorage,
 )
 from .external_task_input import (
     EXTERNAL_TASK_INPUT_CONTRACT_SCHEMA,
@@ -175,6 +178,7 @@ __all__ = [
     "workflow",
     "DurableWorkflowError",
     "EXTERNAL_PAYLOAD_REFERENCE_SCHEMA",
+    "AzureBlobExternalStorage",
     "ExternalPayloadCache",
     "ExternalPayloadIntegrityError",
     "ExternalPayloadReference",
@@ -194,6 +198,7 @@ __all__ = [
     "InvalidArgument",
     "InMemoryMetrics",
     "InvocableActivityHandler",
+    "GCSExternalStorage",
     "LocalFilesystemExternalStorage",
     "MetricsRecorder",
     "NamespaceNotFound",
@@ -206,6 +211,7 @@ __all__ = [
     "QueryTaskHandler",
     "QueryTaskInterceptorContext",
     "RetryPolicy",
+    "S3ExternalStorage",
     "ServerError",
     "TransportRetryPolicy",
     "Unauthorized",

@@ -6,8 +6,8 @@ import hashlib
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
-from urllib.parse import unquote, urlparse
+from typing import Any, Protocol
+from urllib.parse import quote, unquote, urlparse
 
 EXTERNAL_PAYLOAD_REFERENCE_SCHEMA = "durable-workflow.v2.external-payload-reference.v1"
 
@@ -174,6 +174,130 @@ class LocalFilesystemExternalStorage:
         return path
 
 
+class S3ExternalStorage:
+    """External storage driver backed by a boto3-compatible S3 client.
+
+    The SDK does not depend on boto3. Applications that need S3 pass an
+    already-configured client exposing ``put_object``, ``get_object``, and
+    ``delete_object``.
+    """
+
+    def __init__(self, client: Any, *, bucket: str, prefix: str = "") -> None:
+        if not bucket:
+            raise ValueError("s3 external storage bucket must be non-empty")
+        self.client = client
+        self.bucket = bucket
+        self.prefix = _normalize_object_prefix(prefix)
+
+    def put(self, data: bytes, *, sha256: str, codec: str) -> str:
+        key = _object_key(self.prefix, sha256=sha256, codec=codec)
+        self.client.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=data,
+            ContentType="application/octet-stream",
+            Metadata={"sha256": sha256, "codec": codec},
+        )
+        return _object_uri("s3", self.bucket, key)
+
+    def get(self, uri: str) -> bytes:
+        bucket, key = _parse_object_uri(uri, scheme="s3", expected_bucket=self.bucket, expected_prefix=self.prefix)
+        response = self.client.get_object(Bucket=bucket, Key=key)
+        body = response["Body"]
+        data = body.read() if hasattr(body, "read") else body
+        if not isinstance(data, bytes):
+            raise ValueError("s3 external storage client returned non-bytes payload")
+        return data
+
+    def delete(self, uri: str) -> None:
+        bucket, key = _parse_object_uri(uri, scheme="s3", expected_bucket=self.bucket, expected_prefix=self.prefix)
+        self.client.delete_object(Bucket=bucket, Key=key)
+
+
+class GCSExternalStorage:
+    """External storage driver backed by a google-cloud-storage client.
+
+    The SDK does not depend on google-cloud-storage. Applications pass a
+    configured client exposing ``bucket(name).blob(key)``.
+    """
+
+    def __init__(self, client: Any, *, bucket: str, prefix: str = "") -> None:
+        if not bucket:
+            raise ValueError("gcs external storage bucket must be non-empty")
+        self.client = client
+        self.bucket = bucket
+        self.prefix = _normalize_object_prefix(prefix)
+
+    def put(self, data: bytes, *, sha256: str, codec: str) -> str:
+        key = _object_key(self.prefix, sha256=sha256, codec=codec)
+        blob = self.client.bucket(self.bucket).blob(key)
+        blob.metadata = {"sha256": sha256, "codec": codec}
+        blob.upload_from_string(data, content_type="application/octet-stream")
+        return _object_uri("gs", self.bucket, key)
+
+    def get(self, uri: str) -> bytes:
+        bucket, key = _parse_object_uri(uri, scheme="gs", expected_bucket=self.bucket, expected_prefix=self.prefix)
+        data = self.client.bucket(bucket).blob(key).download_as_bytes()
+        if not isinstance(data, bytes):
+            raise ValueError("gcs external storage client returned non-bytes payload")
+        return data
+
+    def delete(self, uri: str) -> None:
+        bucket, key = _parse_object_uri(uri, scheme="gs", expected_bucket=self.bucket, expected_prefix=self.prefix)
+        self.client.bucket(bucket).blob(key).delete()
+
+
+class AzureBlobExternalStorage:
+    """External storage driver backed by an azure-storage-blob container client.
+
+    The SDK does not depend on azure-storage-blob. Applications pass a
+    configured container client exposing ``upload_blob``, ``download_blob``,
+    and ``delete_blob``.
+    """
+
+    def __init__(self, container_client: Any, *, container: str, prefix: str = "") -> None:
+        if not container:
+            raise ValueError("azure external storage container must be non-empty")
+        self.container_client = container_client
+        self.container = container
+        self.prefix = _normalize_object_prefix(prefix)
+
+    def put(self, data: bytes, *, sha256: str, codec: str) -> str:
+        key = _object_key(self.prefix, sha256=sha256, codec=codec)
+        self.container_client.upload_blob(
+            name=key,
+            data=data,
+            overwrite=True,
+            metadata={"sha256": sha256, "codec": codec},
+        )
+        return _object_uri("azure-blob", self.container, key)
+
+    def get(self, uri: str) -> bytes:
+        container, key = _parse_object_uri(
+            uri,
+            scheme="azure-blob",
+            expected_bucket=self.container,
+            expected_prefix=self.prefix,
+        )
+        data = self.container_client.download_blob(key).readall()
+        if not isinstance(data, bytes):
+            raise ValueError("azure external storage client returned non-bytes payload")
+        if container != self.container:
+            raise ValueError("azure external storage URI uses a different container")
+        return data
+
+    def delete(self, uri: str) -> None:
+        container, key = _parse_object_uri(
+            uri,
+            scheme="azure-blob",
+            expected_bucket=self.container,
+            expected_prefix=self.prefix,
+        )
+        if container != self.container:
+            raise ValueError("azure external storage URI uses a different container")
+        self.container_client.delete_blob(key)
+
+
 def store_external_payload(
     driver: ExternalStorageDriver,
     data: bytes,
@@ -230,3 +354,46 @@ def _safe_codec_segment(codec: str) -> str:
     if not all(char.isalnum() or char in {"-", "_", "."} for char in codec):
         raise ValueError("codec contains characters that are unsafe for local storage paths")
     return codec
+
+
+def _normalize_object_prefix(prefix: str) -> str:
+    cleaned = prefix.strip("/")
+    if not cleaned:
+        return ""
+    parts = cleaned.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("external storage prefix contains an unsafe path segment")
+    return "/".join(quote(part, safe="-_.~") for part in parts)
+
+
+def _object_key(prefix: str, *, sha256: str, codec: str) -> str:
+    _validate_sha256(sha256)
+    codec_segment = quote(_safe_codec_segment(codec), safe="-_.~")
+    key = f"{codec_segment}/{sha256[:2]}/{sha256}"
+    return f"{prefix}/{key}" if prefix else key
+
+
+def _object_uri(scheme: str, bucket: str, key: str) -> str:
+    return f"{scheme}://{bucket}/{key}"
+
+
+def _parse_object_uri(
+    uri: str,
+    *,
+    scheme: str,
+    expected_bucket: str,
+    expected_prefix: str,
+) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    if parsed.scheme != scheme or parsed.netloc != expected_bucket:
+        raise ValueError(f"{scheme} external storage URI uses a different bucket or container")
+
+    key = parsed.path.lstrip("/")
+    if not key:
+        raise ValueError(f"{scheme} external storage URI must include an object key")
+    parts = key.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError(f"{scheme} external storage URI contains an unsafe object key")
+    if expected_prefix and not (key == expected_prefix or key.startswith(f"{expected_prefix}/")):
+        raise ValueError(f"{scheme} external storage URI is outside the configured prefix")
+    return parsed.netloc, key

@@ -198,6 +198,31 @@ infers the workflow type and input from that event; otherwise pass
 contains the commands the workflow would emit next, including determinism
 failures surfaced as workflow failure commands.
 
+## External payload storage
+
+Large payload offload is opt-in. `serializer.external_storage_envelope(...)`
+keeps small encoded payloads inline and stores larger bytes through an
+`ExternalStorageDriver`, returning a stable reference envelope with URI, codec,
+size, and SHA-256 integrity metadata. `serializer.decode_envelope(...)` fetches
+referenced bytes through the same driver and verifies size/hash before decode.
+
+The SDK includes a local filesystem driver for development plus dependency-free
+S3, GCS, and Azure Blob adapters. Cloud SDKs stay application-owned: pass an
+already-configured boto3-compatible S3 client, google-cloud-storage client, or
+azure-storage-blob container client when your deployment enables external
+payload storage.
+
+```python
+from durable_workflow import S3ExternalStorage, serializer
+
+storage = S3ExternalStorage(s3_client, bucket="workflow-payloads", prefix="prod")
+payload = serializer.external_storage_envelope(
+    {"large": "value"},
+    external_storage=storage,
+    threshold_bytes=2 * 1024 * 1024,
+)
+```
+
 ## Features
 
 - **Async-first**: Built on `httpx` and `asyncio`
@@ -205,7 +230,7 @@ failures surfaced as workflow failure commands.
 - **Polyglot**: Works alongside PHP workers on the same task queue
 - **HTTP/JSON protocol**: No gRPC, no protobuf dependencies
 - **Codec envelopes**: Avro payloads by default, with JSON decode compatibility for existing history
-- **External payload references**: opt-in reference envelopes, a local filesystem driver, and a bounded verified-byte cache for large-payload offload experiments
+- **External payload references**: opt-in reference envelopes, local filesystem/S3/GCS/Azure Blob drivers, and a bounded verified-byte cache for large-payload offload experiments
 - **Payload-size warnings**: Structured warnings before oversized workflow, activity, schedule, signal, update, query, or search-attribute payloads reach the server
 - **Workflow definition guard**: Worker registration refuses same-id hot reloads when a workflow class definition changed
 - **Deterministic workflow helpers**: `ctx.now()`, `ctx.random()`, `ctx.uuid4()`, and `ctx.uuid7()` replay from workflow state

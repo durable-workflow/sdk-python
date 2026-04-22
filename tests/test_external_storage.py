@@ -6,10 +6,13 @@ import pytest
 from durable_workflow import serializer
 from durable_workflow.external_storage import (
     EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
+    AzureBlobExternalStorage,
     ExternalPayloadCache,
     ExternalPayloadIntegrityError,
     ExternalPayloadReference,
+    GCSExternalStorage,
     LocalFilesystemExternalStorage,
+    S3ExternalStorage,
     fetch_external_payload,
     store_external_payload,
 )
@@ -206,3 +209,155 @@ def test_reference_from_dict_validates_schema_and_hash() -> None:
                 "codec": "avro",
             }
         )
+
+
+class FakeS3Client:
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], bytes] = {}
+
+    def put_object(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        Body: bytes,
+        ContentType: str,
+        Metadata: dict[str, str],
+    ) -> None:
+        assert ContentType == "application/octet-stream"
+        assert Metadata["sha256"] == hashlib.sha256(Body).hexdigest()
+        self.objects[(Bucket, Key)] = Body
+
+    def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+        return {"Body": FakeReadable(self.objects[(Bucket, Key)])}
+
+    def delete_object(self, *, Bucket: str, Key: str) -> None:
+        self.objects.pop((Bucket, Key), None)
+
+
+class FakeReadable:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+    def read(self) -> bytes:
+        return self.data
+
+
+def test_s3_external_storage_round_trips_and_deletes_payload() -> None:
+    client = FakeS3Client()
+    storage = S3ExternalStorage(client, bucket="payloads", prefix="tenant-a/history")
+
+    reference = store_external_payload(storage, b'{"large":true}', codec="json")
+
+    assert reference.uri.startswith("s3://payloads/tenant-a/history/json/")
+    assert fetch_external_payload(storage, reference) == b'{"large":true}'
+    storage.delete(reference.uri)
+
+    assert client.objects == {}
+
+
+def test_s3_external_storage_rejects_foreign_bucket_or_prefix() -> None:
+    storage = S3ExternalStorage(FakeS3Client(), bucket="payloads", prefix="tenant-a")
+
+    with pytest.raises(ValueError, match="bucket"):
+        storage.get("s3://other/tenant-a/json/aa/hash")
+
+    with pytest.raises(ValueError, match="prefix"):
+        storage.get("s3://payloads/tenant-b/json/aa/hash")
+
+
+class FakeGCSClient:
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], bytes] = {}
+
+    def bucket(self, name: str) -> "FakeGCSBucket":
+        return FakeGCSBucket(self.objects, name)
+
+
+class FakeGCSBucket:
+    def __init__(self, objects: dict[tuple[str, str], bytes], name: str) -> None:
+        self.objects = objects
+        self.name = name
+
+    def blob(self, key: str) -> "FakeGCSBlob":
+        return FakeGCSBlob(self.objects, self.name, key)
+
+
+class FakeGCSBlob:
+    def __init__(self, objects: dict[tuple[str, str], bytes], bucket: str, key: str) -> None:
+        self.objects = objects
+        self.bucket = bucket
+        self.key = key
+        self.metadata: dict[str, str] = {}
+
+    def upload_from_string(self, data: bytes, *, content_type: str) -> None:
+        assert content_type == "application/octet-stream"
+        self.objects[(self.bucket, self.key)] = data
+
+    def download_as_bytes(self) -> bytes:
+        return self.objects[(self.bucket, self.key)]
+
+    def delete(self) -> None:
+        self.objects.pop((self.bucket, self.key), None)
+
+
+def test_gcs_external_storage_round_trips_and_deletes_payload() -> None:
+    client = FakeGCSClient()
+    storage = GCSExternalStorage(client, bucket="payloads", prefix="tenant-a")
+
+    reference = store_external_payload(storage, b'{"cloud":"gcs"}', codec="json")
+
+    assert reference.uri.startswith("gs://payloads/tenant-a/json/")
+    assert fetch_external_payload(storage, reference) == b'{"cloud":"gcs"}'
+    storage.delete(reference.uri)
+
+    assert client.objects == {}
+
+
+class FakeAzureContainerClient:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    def upload_blob(
+        self,
+        *,
+        name: str,
+        data: bytes,
+        overwrite: bool,
+        metadata: dict[str, str],
+    ) -> None:
+        assert overwrite is True
+        assert metadata["sha256"] == hashlib.sha256(data).hexdigest()
+        self.objects[name] = data
+
+    def download_blob(self, name: str) -> "FakeAzureDownloader":
+        return FakeAzureDownloader(self.objects[name])
+
+    def delete_blob(self, name: str) -> None:
+        self.objects.pop(name, None)
+
+
+class FakeAzureDownloader:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+    def readall(self) -> bytes:
+        return self.data
+
+
+def test_azure_external_storage_round_trips_and_deletes_payload() -> None:
+    client = FakeAzureContainerClient()
+    storage = AzureBlobExternalStorage(client, container="payloads", prefix="tenant-a")
+
+    reference = store_external_payload(storage, b'{"cloud":"azure"}', codec="json")
+
+    assert reference.uri.startswith("azure-blob://payloads/tenant-a/json/")
+    assert fetch_external_payload(storage, reference) == b'{"cloud":"azure"}'
+    storage.delete(reference.uri)
+
+    assert client.objects == {}
+
+
+def test_object_storage_rejects_unsafe_prefix() -> None:
+    with pytest.raises(ValueError, match="unsafe"):
+        S3ExternalStorage(FakeS3Client(), bucket="payloads", prefix="../tenant-a")
