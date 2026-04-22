@@ -46,6 +46,13 @@ from .errors import (
     WorkflowPayloadDecodeError,
     WorkflowTerminated,
 )
+from .external_storage import (
+    EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
+    ExternalPayloadIntegrityError,
+    ExternalPayloadReference,
+    ExternalStorageDriver,
+    LocalFilesystemExternalStorage,
+)
 from .interceptors import (
     ActivityHandler,
     ActivityInterceptorContext,
@@ -66,6 +73,7 @@ from .retry_policy import RetryPolicy, TransportRetryPolicy
 from .serializer import (
     PayloadSizeWarningConfig,
     PayloadSizeWarningContext,
+    external_storage_envelope,
     to_avro_payload_value,
     to_avro_payload_values,
 )
@@ -123,8 +131,13 @@ __all__ = [
     "testing",
     "workflow",
     "DurableWorkflowError",
+    "EXTERNAL_PAYLOAD_REFERENCE_SCHEMA",
+    "ExternalPayloadIntegrityError",
+    "ExternalPayloadReference",
+    "ExternalStorageDriver",
     "InvalidArgument",
     "InMemoryMetrics",
+    "LocalFilesystemExternalStorage",
     "MetricsRecorder",
     "NamespaceNotFound",
     "NoopMetrics",
@@ -145,6 +158,7 @@ __all__ = [
     "WorkflowFailed",
     "WorkflowNotFound",
     "WorkflowTerminated",
+    "external_storage_envelope",
     "to_avro_payload_value",
     "to_avro_payload_values",
     "replay",

@@ -24,6 +24,7 @@ pip install 'durable-workflow[prometheus]'
 - **[Retry policy](reference/retry_policy.md)** — HTTP transport retry configuration for the client. Durable activity and child workflow retry policies are workflow primitives, not transport settings.
 - **[Metrics](reference/metrics.md)** — pluggable recorders, including a Prometheus adapter.
 - **[Serializer](reference/serializer.md)** — payload encoding and decoding helpers.
+- **[External storage](reference/external_storage.md)** — reference envelopes and driver contracts for large-payload offload.
 - **[Sync helpers](reference/sync.md)** — blocking wrappers around the async client for scripts and tests.
 
 ## Versioning

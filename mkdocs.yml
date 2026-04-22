@@ -70,6 +70,7 @@ nav:
       - Errors: reference/errors.md
       - Retry policy: reference/retry_policy.md
       - Serializer: reference/serializer.md
+      - External storage: reference/external_storage.md
       - Metrics: reference/metrics.md
       - Sync helpers: reference/sync.md
       - Testing: reference/testing.md

@@ -29,6 +29,12 @@ from typing import Any, TypeGuard, cast
 from uuid import UUID
 
 from . import _avro
+from .external_storage import (
+    ExternalPayloadReference,
+    ExternalStorageDriver,
+    fetch_external_payload,
+    store_external_payload,
+)
 
 JSON_CODEC = "json"
 AVRO_CODEC = "avro"
@@ -269,6 +275,42 @@ def envelope(
     }
 
 
+def external_storage_envelope(
+    value: Any,
+    *,
+    external_storage: ExternalStorageDriver,
+    threshold_bytes: int,
+    codec: str = AVRO_CODEC,
+    size_warning: PayloadSizeWarningConfig | None = DEFAULT_PAYLOAD_SIZE_WARNING,
+    warning_context: PayloadSizeWarningContext | Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Wrap a value in a normal envelope or an external-payload reference.
+
+    Payloads whose encoded UTF-8 size is greater than *threshold_bytes* are
+    stored through *external_storage* and represented as ``{codec,
+    external_storage}`` so workflow history carries a stable reference instead
+    of the large payload bytes.
+    """
+    if threshold_bytes < 1:
+        raise ValueError("external storage threshold must be at least 1 byte")
+
+    blob = encode(
+        value,
+        codec=codec,
+        size_warning=size_warning,
+        warning_context=warning_context,
+    )
+    data = blob.encode("utf-8")
+    if len(data) <= threshold_bytes:
+        return {"codec": codec, "blob": blob}
+
+    reference = store_external_payload(external_storage, data, codec=codec)
+    return {
+        "codec": codec,
+        "external_storage": reference.to_dict(),
+    }
+
+
 def envelope_many(
     values: Sequence[Any],
     codec: str = AVRO_CODEC,
@@ -376,20 +418,48 @@ def _is_context_sequence(
     )
 
 
-def decode_envelope(value: Any, codec: str | None = None) -> Any:
+def decode_envelope(
+    value: Any,
+    codec: str | None = None,
+    *,
+    external_storage: ExternalStorageDriver | None = None,
+) -> Any:
     """Decode a value that may be a ``{codec, blob}`` envelope or a raw blob.
 
     When *value* is an envelope, its inner ``codec`` takes precedence over
     the *codec* argument.  When *value* is a raw blob, *codec* selects the
-    decoder (defaulting to JSON).
+    decoder (defaulting to JSON).  External payload references require an
+    *external_storage* driver and verify size/hash before decode.
     """
     if isinstance(value, dict) and "codec" in value and "blob" in value:
         return decode(value["blob"], codec=value["codec"])
+    if isinstance(value, dict) and "external_storage" in value:
+        if external_storage is None:
+            raise ValueError("external payload reference requires an external storage driver")
+        reference = ExternalPayloadReference.from_dict(value["external_storage"])
+        envelope_codec = value.get("codec")
+        if envelope_codec is not None and envelope_codec != reference.codec:
+            raise ValueError("external payload reference codec does not match envelope codec")
+        blob = fetch_external_payload(external_storage, reference).decode("utf-8")
+        return decode(blob, codec=reference.codec)
     return decode(value, codec=codec)
 
 
-def decode_envelopes(values: Sequence[Any], codec: str | None = None) -> list[Any]:
+def decode_envelopes(
+    values: Sequence[Any],
+    codec: str | None = None,
+    *,
+    external_storage: ExternalStorageDriver | None = None,
+) -> list[Any]:
     """Decode several raw blobs or ``{codec, blob}`` envelopes in order."""
+    if external_storage is not None or any(
+        isinstance(value, dict) and "external_storage" in value for value in values
+    ):
+        return [
+            decode_envelope(value, codec=codec, external_storage=external_storage)
+            for value in values
+        ]
+
     jobs: list[tuple[str | None, str | None]] = []
     passthroughs: dict[int, Any] = {}
     for index, value in enumerate(values):
