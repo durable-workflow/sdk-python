@@ -187,6 +187,50 @@ class TestWorkerRegistration:
         assert call_kwargs["max_concurrent_workflow_tasks"] == 3
         assert call_kwargs["max_concurrent_activity_tasks"] == 7
 
+    @pytest.mark.asyncio
+    async def test_register_forwards_build_id_when_configured(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            worker_id="w-build",
+            build_id="release-2026.04.22-a1",
+        )
+        assert worker.build_id == "release-2026.04.22-a1"
+
+        await worker._register()
+
+        call_kwargs = mock_client.register_worker.call_args.kwargs
+        assert call_kwargs["build_id"] == "release-2026.04.22-a1"
+
+    @pytest.mark.asyncio
+    async def test_register_omits_build_id_when_not_configured(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            worker_id="w-no-build",
+        )
+        assert worker.build_id is None
+
+        await worker._register()
+
+        call_kwargs = mock_client.register_worker.call_args.kwargs
+        assert call_kwargs["build_id"] is None
+
+    def test_constructor_rejects_empty_build_id(self, mock_client: AsyncMock) -> None:
+        with pytest.raises(ValueError, match="build_id"):
+            Worker(mock_client, task_queue="q1", build_id="")
+
+        with pytest.raises(ValueError, match="build_id"):
+            Worker(mock_client, task_queue="q1", build_id="   ")
+
     def test_constructor_rejects_non_positive_concurrency_limits(
         self, mock_client: AsyncMock
     ) -> None:

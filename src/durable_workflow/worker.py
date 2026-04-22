@@ -242,6 +242,7 @@ class Worker:
         workflows: Iterable[type] = (),
         activities: Iterable[Callable[..., Any]] = (),
         worker_id: str | None = None,
+        build_id: str | None = None,
         poll_timeout: float = 35.0,
         max_concurrent_workflow_tasks: int = 10,
         max_concurrent_activity_tasks: int = 10,
@@ -258,6 +259,12 @@ class Worker:
         }
         self.activities = {_activity_name(a): a for a in activities}
         self.worker_id = worker_id or f"py-worker-{uuid.uuid4().hex[:8]}"
+        if build_id is not None:
+            if not isinstance(build_id, str) or build_id.strip() == "":
+                raise ValueError("build_id must be a non-empty string when provided")
+            self.build_id: str | None = build_id
+        else:
+            self.build_id = None
         _guard_worker_workflow_fingerprints(self.worker_id, self.workflow_definition_fingerprints)
         if max_concurrent_workflow_tasks < 1:
             raise ValueError("max_concurrent_workflow_tasks must be at least 1")
@@ -346,6 +353,7 @@ class Worker:
             supported_activity_types=list(self.activities),
             max_concurrent_workflow_tasks=self.max_concurrent_workflow_tasks,
             max_concurrent_activity_tasks=self.max_concurrent_activity_tasks,
+            build_id=self.build_id,
         )
         log.info("worker %s registered on %s", self.worker_id, self.task_queue)
 
