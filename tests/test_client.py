@@ -366,6 +366,37 @@ class TestQueryWorkflow:
             assert result == {"result": "active"}
 
     @pytest.mark.asyncio
+    async def test_query_request_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-query-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        expected = sdk["expected_body"]
+        envelope_contract = sdk["payload_envelope"]
+
+        resp = _mock_response(200, {"result": {"status": "processing", "line_items": 3, "currency": "USD"}})
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.query_workflow(**sdk["args"])
+
+        assert result["result"]["status"] == "processing"
+
+        call_args = mock.call_args
+        assert call_args.args[0] == fixture["request"]["method"]
+        assert call_args.args[1] == f"/api{fixture['request']['path']}"
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+
+        for field, value in expected.items():
+            assert body[field] == value
+
+        envelope = body[envelope_contract["field"]]
+        assert envelope["codec"] == envelope_contract["codec"]
+        assert serializer.decode(envelope["blob"], codec=envelope["codec"]) == envelope_contract["decoded"]
+
+        semantic = fixture["semantic_body"]
+        assert sdk["args"]["workflow_id"] == semantic["workflow_id"]
+        assert sdk["args"]["query_name"] == semantic["query_name"]
+
+    @pytest.mark.asyncio
     async def test_query_not_found(self, client: Client) -> None:
         resp = _mock_response(404, {"reason": "query_not_found", "message": "query [status] not declared"})
         with (
