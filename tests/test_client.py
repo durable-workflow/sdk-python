@@ -690,6 +690,38 @@ class TestUpdateWorkflow:
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["request_id"] == "req-123"
 
+    @pytest.mark.asyncio
+    async def test_update_request_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-update-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        expected = sdk["expected_body"]
+        envelope_contract = sdk["payload_envelope"]
+
+        resp = _mock_response(200, {"outcome": "update_completed", "result": {"quota": 50}})
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.update_workflow(**sdk["args"])
+
+        assert result["outcome"] == "update_completed"
+
+        call_args = mock.call_args
+        assert call_args.args[0] == fixture["request"]["method"]
+        assert call_args.args[1] == f"/api{fixture['request']['path']}"
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+
+        for field, value in expected.items():
+            assert body[field] == value
+
+        envelope = body[envelope_contract["field"]]
+        assert envelope["codec"] == envelope_contract["codec"]
+        assert serializer.decode(envelope["blob"], codec=envelope["codec"]) == envelope_contract["decoded"]
+
+        semantic = fixture["semantic_body"]
+        assert sdk["args"]["workflow_id"] == semantic["workflow_id"]
+        assert sdk["args"]["update_name"] == semantic["update_name"]
+        assert sdk["args"]["wait_for"] == semantic["wait_for"]
+
 
 class TestGetResult:
     @pytest.mark.asyncio

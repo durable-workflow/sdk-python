@@ -1,0 +1,63 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow.update",
+  "request": {
+    "method": "POST",
+    "path": "/workflows/wf-polyglot-231/update/quota.adjust"
+  },
+  "semantic_body": {
+    "workflow_id": "wf-polyglot-231",
+    "update_name": "quota.adjust",
+    "wait_for": "completed",
+    "input": [
+      {
+        "quota": 50,
+        "reason": "gold-tier"
+      }
+    ]
+  },
+  "cli": {
+    "argv": {
+      "workflow-id": "wf-polyglot-231",
+      "update-name": "quota.adjust",
+      "--wait": "completed",
+      "--input": "[{\"quota\":50,\"reason\":\"gold-tier\"}]"
+    },
+    "expected_body": {
+      "wait_for": "completed",
+      "input": [
+        {
+          "quota": 50,
+          "reason": "gold-tier"
+        }
+      ]
+    }
+  },
+  "sdk_python": {
+    "args": {
+      "workflow_id": "wf-polyglot-231",
+      "update_name": "quota.adjust",
+      "args": [
+        {
+          "quota": 50,
+          "reason": "gold-tier"
+        }
+      ],
+      "wait_for": "completed"
+    },
+    "expected_body": {
+      "wait_for": "completed"
+    },
+    "payload_envelope": {
+      "field": "input",
+      "codec": "avro",
+      "decoded": [
+        {
+          "quota": 50,
+          "reason": "gold-tier"
+        }
+      ]
+    }
+  }
+}
