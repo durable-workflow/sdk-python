@@ -900,6 +900,75 @@ class TestListWorkflows:
         assert result.next_page_token == fixture["semantic_body"]["next_page_token"]
 
 
+class TestNamespaces:
+    @pytest.mark.asyncio
+    async def test_list_namespaces_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "namespace-list-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.list_namespaces(**fixture["sdk_python"]["args"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert [namespace.name for namespace in result.namespaces] == fixture["semantic_body"]["namespace_names"]
+
+        retention_days = {namespace.name: namespace.retention_days for namespace in result.namespaces}
+        assert retention_days == fixture["semantic_body"]["retention_days"]
+
+    @pytest.mark.asyncio
+    async def test_describe_namespace_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "namespace-describe-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.describe_namespace(**fixture["sdk_python"]["args"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert result.name == fixture["semantic_body"]["name"]
+        assert result.description == fixture["semantic_body"]["description"]
+        assert result.retention_days == fixture["semantic_body"]["retention_days"]
+        assert result.status == fixture["semantic_body"]["status"]
+
+    @pytest.mark.asyncio
+    async def test_create_namespace_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "namespace-create-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.create_namespace(**fixture["sdk_python"]["args"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+        assert result.name == fixture["semantic_body"]["name"]
+        assert result.retention_days == fixture["semantic_body"]["retention_days"]
+
+    @pytest.mark.asyncio
+    async def test_update_namespace_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "namespace-update-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.update_namespace(**fixture["sdk_python"]["args"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+        assert result.description == fixture["semantic_body"]["description"]
+        assert result.retention_days == fixture["semantic_body"]["retention_days"]
+
+    @pytest.mark.asyncio
+    async def test_namespace_name_is_url_encoded(self, client: Client) -> None:
+        resp = _mock_response(200, {"name": "billing reports"})
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.describe_namespace("billing reports")
+
+        assert mock.call_args.args[:2] == ("GET", "/api/namespaces/billing%20reports")
+
+
 class TestTaskQueues:
     @pytest.mark.asyncio
     async def test_list_task_queues_matches_polyglot_fixture(self, client: Client) -> None:

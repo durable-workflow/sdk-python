@@ -1,0 +1,47 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "operation": "namespace.list",
+  "request": {
+    "method": "GET",
+    "path": "/namespaces"
+  },
+  "cli": {
+    "argv": {
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "args": {}
+  },
+  "response_body": {
+    "namespaces": [
+      {
+        "name": "default",
+        "description": "Default namespace",
+        "retention_days": 30,
+        "status": "active",
+        "created_at": "2026-04-01T00:00:00Z",
+        "updated_at": "2026-04-15T12:00:00Z"
+      },
+      {
+        "name": "billing",
+        "description": "Billing workflows",
+        "retention_days": 90,
+        "status": "active",
+        "created_at": "2026-04-02T00:00:00Z",
+        "updated_at": "2026-04-16T12:00:00Z"
+      }
+    ]
+  },
+  "semantic_body": {
+    "namespace_names": ["default", "billing"],
+    "retention_days": {
+      "default": 30,
+      "billing": 90
+    },
+    "statuses": {
+      "default": "active",
+      "billing": "active"
+    }
+  }
+}

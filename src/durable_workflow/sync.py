@@ -7,6 +7,8 @@ from typing import Any
 
 from .client import Client as AsyncClient
 from .client import (
+    NamespaceDescription,
+    NamespaceList,
     ScheduleAction,
     ScheduleBackfillResult,
     ScheduleDescription,
@@ -279,6 +281,46 @@ class Client:
 
     def describe_task_queue(self, name: str) -> TaskQueueDescription:
         result: TaskQueueDescription = _run(self._async.describe_task_queue(name))
+        return result
+
+    def list_namespaces(self) -> NamespaceList:
+        result: NamespaceList = _run(self._async.list_namespaces())
+        return result
+
+    def describe_namespace(self, name: str) -> NamespaceDescription:
+        result: NamespaceDescription = _run(self._async.describe_namespace(name))
+        return result
+
+    def create_namespace(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+        retention_days: int = 30,
+    ) -> NamespaceDescription:
+        result: NamespaceDescription = _run(
+            self._async.create_namespace(
+                name,
+                description=description,
+                retention_days=retention_days,
+            )
+        )
+        return result
+
+    def update_namespace(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+        retention_days: int | None = None,
+    ) -> NamespaceDescription:
+        result: NamespaceDescription = _run(
+            self._async.update_namespace(
+                name,
+                description=description,
+                retention_days=retention_days,
+            )
+        )
         return result
 
     def get_history(self, workflow_id: str, run_id: str) -> Any:

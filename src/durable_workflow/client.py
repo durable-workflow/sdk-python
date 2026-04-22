@@ -70,7 +70,7 @@ def _route_for_metrics(path: str) -> str:
             parts[3] = "{run_id}"
     elif parts[0] == "schedules" and len(parts) >= 2:
         parts[1] = "{schedule_id}"
-    elif parts[0] == "search-attributes" and len(parts) >= 2:
+    elif parts[0] in {"namespaces", "search-attributes"} and len(parts) >= 2:
         parts[1] = "{name}"
     elif parts[0] == "workers" and len(parts) >= 2:
         parts[1] = "{worker_id}"
@@ -107,6 +107,36 @@ class WorkflowList:
 
     executions: list[WorkflowExecution]
     next_page_token: str | None = None
+
+
+@dataclass
+class NamespaceDescription:
+    """Server configuration for one workflow namespace."""
+
+    name: str
+    description: str | None = None
+    retention_days: int | None = None
+    status: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NamespaceDescription:
+        return cls(
+            name=str(data.get("name", "")),
+            description=data.get("description"),
+            retention_days=data.get("retention_days"),
+            status=data.get("status"),
+            created_at=data.get("created_at"),
+            updated_at=data.get("updated_at"),
+        )
+
+
+@dataclass
+class NamespaceList:
+    """Namespaces visible to the current control-plane identity."""
+
+    namespaces: list[NamespaceDescription]
 
 
 @dataclass
@@ -1039,6 +1069,93 @@ class Client:
                 {"reason": "invalid_health_response", "message": f"expected JSON object, got {type(result).__name__}"},
             )
         return result
+
+    # ── Namespaces ────────────────────────────────────────────────────
+    async def list_namespaces(self) -> NamespaceList:
+        """List namespaces visible to the current control-plane identity."""
+        data = await self._request("GET", "/namespaces")
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_namespace_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        items = data.get("namespaces", [])
+        return NamespaceList(
+            namespaces=[
+                NamespaceDescription.from_dict(item)
+                for item in items
+                if isinstance(item, dict)
+            ],
+        )
+
+    async def describe_namespace(self, name: str) -> NamespaceDescription:
+        """Return configuration and status for one namespace."""
+        data = await self._request("GET", f"/namespaces/{quote(name, safe='')}", context=name)
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_namespace_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return NamespaceDescription.from_dict(data)
+
+    async def create_namespace(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+        retention_days: int = 30,
+    ) -> NamespaceDescription:
+        """Create a workflow namespace and return the server representation."""
+        data = await self._request(
+            "POST",
+            "/namespaces",
+            json={
+                "name": name,
+                "description": description,
+                "retention_days": retention_days,
+            },
+            context=name,
+        )
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_namespace_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return NamespaceDescription.from_dict(data)
+
+    async def update_namespace(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+        retention_days: int | None = None,
+    ) -> NamespaceDescription:
+        """Update namespace metadata. Only provided fields are sent."""
+        body: dict[str, Any] = {}
+        if description is not None:
+            body["description"] = description
+        if retention_days is not None:
+            body["retention_days"] = retention_days
+
+        data = await self._request("PUT", f"/namespaces/{quote(name, safe='')}", json=body, context=name)
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_namespace_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return NamespaceDescription.from_dict(data)
 
     # ── Task queues ────────────────────────────────────────────────────
     async def list_task_queues(self) -> TaskQueueList:

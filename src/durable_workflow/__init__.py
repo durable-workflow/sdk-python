@@ -19,6 +19,8 @@ from .auth_composition import (
 from .client import (
     BridgeAdapterOutcome,
     Client,
+    NamespaceDescription,
+    NamespaceList,
     ScheduleAction,
     ScheduleBackfillResult,
     ScheduleDescription,
@@ -147,6 +149,8 @@ __all__ = [
     "ChildWorkflowFailed",
     "Client",
     "ContinueAsNew",
+    "NamespaceDescription",
+    "NamespaceList",
     "AUTH_COMPOSITION_CONTRACT_SCHEMA",
     "AUTH_COMPOSITION_CONTRACT_VERSION",
     "AUTH_COMPOSITION_REQUIRED_EFFECTIVE_CONFIG_FIELDS",
