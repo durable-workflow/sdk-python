@@ -1,0 +1,74 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "namespace.set_storage_driver",
+  "request": {
+    "method": "PUT",
+    "path": "/namespaces/billing/external-storage",
+    "body": {
+      "driver": "s3",
+      "enabled": true,
+      "threshold_bytes": 2097152,
+      "config": {
+        "bucket": "dw-payloads",
+        "prefix": "billing/",
+        "region": "us-east-1",
+        "endpoint": "https://s3.us-east-1.amazonaws.com",
+        "auth_profile": "billing-prod"
+      }
+    }
+  },
+  "cli": {
+    "argv": {
+      "name": "billing",
+      "driver": "s3",
+      "--threshold-bytes": "2097152",
+      "--bucket": "dw-payloads",
+      "--prefix": "billing/",
+      "--region": "us-east-1",
+      "--endpoint": "https://s3.us-east-1.amazonaws.com",
+      "--auth-profile": "billing-prod",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "set_namespace_external_storage",
+    "args": {
+      "namespace": "billing",
+      "driver": "s3",
+      "enabled": true,
+      "threshold_bytes": 2097152,
+      "config": {
+        "bucket": "dw-payloads",
+        "prefix": "billing/",
+        "region": "us-east-1",
+        "endpoint": "https://s3.us-east-1.amazonaws.com",
+        "auth_profile": "billing-prod"
+      }
+    }
+  },
+  "response_body": {
+    "name": "billing",
+    "external_payload_storage": {
+      "driver": "s3",
+      "enabled": true,
+      "threshold_bytes": 2097152,
+      "config": {
+        "bucket": "dw-payloads",
+        "prefix": "billing/",
+        "region": "us-east-1",
+        "endpoint": "https://s3.us-east-1.amazonaws.com",
+        "auth_profile": "billing-prod"
+      }
+    },
+    "updated_at": "2026-04-22T15:25:00Z"
+  },
+  "semantic_body": {
+    "namespace": "billing",
+    "driver": "s3",
+    "enabled": true,
+    "threshold_bytes": 2097152,
+    "bucket": "dw-payloads",
+    "prefix": "billing/"
+  }
+}

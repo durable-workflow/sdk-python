@@ -37,6 +37,7 @@ from .errors import (
     WorkflowTerminated,
     _raise_for_status,
 )
+from .external_storage import ExternalPayloadStoragePolicy
 from .metrics import CLIENT_REQUEST_DURATION_SECONDS, CLIENT_REQUESTS, NOOP_METRICS, MetricsRecorder
 from .retry_policy import TransportRetryPolicy
 
@@ -119,9 +120,14 @@ class NamespaceDescription:
     status: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    external_payload_storage: ExternalPayloadStoragePolicy | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> NamespaceDescription:
+        external_payload_storage = None
+        if isinstance(data.get("external_payload_storage"), dict):
+            external_payload_storage = ExternalPayloadStoragePolicy.from_dict(data)
+
         return cls(
             name=str(data.get("name", "")),
             description=data.get("description"),
@@ -129,6 +135,7 @@ class NamespaceDescription:
             status=data.get("status"),
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
+            external_payload_storage=external_payload_storage,
         )
 
 
@@ -137,6 +144,51 @@ class NamespaceList:
     """Namespaces visible to the current control-plane identity."""
 
     namespaces: list[NamespaceDescription]
+
+
+@dataclass
+class StoragePayloadTestResult:
+    """Result for one payload size exercised by the server storage probe."""
+
+    status: str
+    bytes: int | None = None
+    sha256: str | None = None
+    reference_uri: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> StoragePayloadTestResult:
+        return cls(
+            status=str(data.get("status", "")),
+            bytes=data.get("bytes"),
+            sha256=data.get("sha256"),
+            reference_uri=data.get("reference_uri"),
+        )
+
+
+@dataclass
+class StorageTestResult:
+    """Server response for an external payload storage probe."""
+
+    status: str
+    namespace: str | None = None
+    driver: str | None = None
+    small_payload: StoragePayloadTestResult | None = None
+    large_payload: StoragePayloadTestResult | None = None
+    raw: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> StorageTestResult:
+        small = data.get("small_payload")
+        large = data.get("large_payload")
+
+        return cls(
+            status=str(data.get("status", "")),
+            namespace=data.get("namespace"),
+            driver=data.get("driver"),
+            small_payload=StoragePayloadTestResult.from_dict(small) if isinstance(small, dict) else None,
+            large_payload=StoragePayloadTestResult.from_dict(large) if isinstance(large, dict) else None,
+            raw=data,
+        )
 
 
 @dataclass
@@ -1156,6 +1208,68 @@ class Client:
                 },
             )
         return NamespaceDescription.from_dict(data)
+
+    async def set_namespace_external_storage(
+        self,
+        namespace: str,
+        *,
+        driver: str,
+        enabled: bool = True,
+        threshold_bytes: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> NamespaceDescription:
+        """Configure external payload storage for a namespace."""
+        body: dict[str, Any] = {
+            "driver": driver,
+            "enabled": enabled,
+        }
+        if threshold_bytes is not None:
+            body["threshold_bytes"] = threshold_bytes
+        if config is not None:
+            body["config"] = config
+
+        data = await self._request(
+            "PUT",
+            f"/namespaces/{quote(namespace, safe='')}/external-storage",
+            json=body,
+            context=namespace,
+        )
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_namespace_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return NamespaceDescription.from_dict(data)
+
+    async def test_external_storage(
+        self,
+        *,
+        driver: str | None = None,
+        small_payload_bytes: int | None = None,
+        large_payload_bytes: int | None = None,
+    ) -> StorageTestResult:
+        """Ask the server to verify its configured external payload storage."""
+        body: dict[str, Any] = {}
+        if small_payload_bytes is not None:
+            body["small_payload_bytes"] = small_payload_bytes
+        if large_payload_bytes is not None:
+            body["large_payload_bytes"] = large_payload_bytes
+        if driver is not None:
+            body["driver"] = driver
+
+        data = await self._request("POST", "/storage/test", json=body, context=driver or "storage")
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_storage_test_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return StorageTestResult.from_dict(data)
 
     # ── Task queues ────────────────────────────────────────────────────
     async def list_task_queues(self) -> TaskQueueList:

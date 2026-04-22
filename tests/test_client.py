@@ -912,6 +912,25 @@ class TestNamespaces:
         assert result.retention_days == fixture["semantic_body"]["retention_days"]
 
     @pytest.mark.asyncio
+    async def test_set_namespace_external_storage_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "namespace-set-storage-driver-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.set_namespace_external_storage(**fixture["sdk_python"]["args"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+        assert result.name == fixture["semantic_body"]["namespace"]
+        assert result.external_payload_storage is not None
+        assert result.external_payload_storage.driver == fixture["semantic_body"]["driver"]
+        assert result.external_payload_storage.enabled is fixture["semantic_body"]["enabled"]
+        assert result.external_payload_storage.threshold_bytes == fixture["semantic_body"]["threshold_bytes"]
+        assert result.external_payload_storage.config["bucket"] == fixture["semantic_body"]["bucket"]
+        assert result.external_payload_storage.prefix == fixture["semantic_body"]["prefix"]
+
+    @pytest.mark.asyncio
     async def test_namespace_name_is_url_encoded(self, client: Client) -> None:
         resp = _mock_response(200, {"name": "billing reports"})
 
@@ -919,6 +938,28 @@ class TestNamespaces:
             await client.describe_namespace("billing reports")
 
         assert mock.call_args.args[:2] == ("GET", "/api/namespaces/billing%20reports")
+
+
+class TestStorage:
+    @pytest.mark.asyncio
+    async def test_external_storage_probe_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "storage-test-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.test_external_storage(**fixture["sdk_python"]["args"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+        assert result.status == fixture["semantic_body"]["status"]
+        assert result.namespace == fixture["semantic_body"]["namespace"]
+        assert result.driver == fixture["semantic_body"]["driver"]
+        assert result.small_payload is not None
+        assert result.small_payload.bytes == fixture["semantic_body"]["small_payload_bytes"]
+        assert result.large_payload is not None
+        assert result.large_payload.bytes == fixture["semantic_body"]["large_payload_bytes"]
+        assert result.large_payload.reference_uri == fixture["semantic_body"]["large_payload_reference_uri"]
 
 
 class TestTaskQueues:

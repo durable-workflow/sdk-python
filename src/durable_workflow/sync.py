@@ -16,6 +16,7 @@ from .client import (
     ScheduleList,
     ScheduleSpec,
     ScheduleTriggerResult,
+    StorageTestResult,
     TaskQueueDescription,
     TaskQueueList,
     WorkflowCommandResult,
@@ -319,6 +320,42 @@ class Client:
                 name,
                 description=description,
                 retention_days=retention_days,
+            )
+        )
+        return result
+
+    def set_namespace_external_storage(
+        self,
+        namespace: str,
+        *,
+        driver: str,
+        enabled: bool = True,
+        threshold_bytes: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> NamespaceDescription:
+        result: NamespaceDescription = _run(
+            self._async.set_namespace_external_storage(
+                namespace,
+                driver=driver,
+                enabled=enabled,
+                threshold_bytes=threshold_bytes,
+                config=config,
+            )
+        )
+        return result
+
+    def test_external_storage(
+        self,
+        *,
+        driver: str | None = None,
+        small_payload_bytes: int | None = None,
+        large_payload_bytes: int | None = None,
+    ) -> StorageTestResult:
+        result: StorageTestResult = _run(
+            self._async.test_external_storage(
+                driver=driver,
+                small_payload_bytes=small_payload_bytes,
+                large_payload_bytes=large_payload_bytes,
             )
         )
         return result

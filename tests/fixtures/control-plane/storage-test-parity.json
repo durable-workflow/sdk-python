@@ -1,0 +1,54 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "storage.test",
+  "request": {
+    "method": "POST",
+    "path": "/storage/test",
+    "body": {
+      "small_payload_bytes": 128,
+      "large_payload_bytes": 3145728,
+      "driver": "s3"
+    }
+  },
+  "cli": {
+    "argv": {
+      "--driver": "s3",
+      "--small-bytes": "128",
+      "--large-bytes": "3145728",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "test_external_storage",
+    "args": {
+      "driver": "s3",
+      "small_payload_bytes": 128,
+      "large_payload_bytes": 3145728
+    }
+  },
+  "response_body": {
+    "status": "passed",
+    "namespace": "billing",
+    "driver": "s3",
+    "small_payload": {
+      "status": "passed",
+      "bytes": 128,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "large_payload": {
+      "status": "passed",
+      "bytes": 3145728,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "reference_uri": "s3://dw-payloads/billing/storage-test-large"
+    }
+  },
+  "semantic_body": {
+    "status": "passed",
+    "namespace": "billing",
+    "driver": "s3",
+    "small_payload_bytes": 128,
+    "large_payload_bytes": 3145728,
+    "large_payload_reference_uri": "s3://dw-payloads/billing/storage-test-large"
+  }
+}
