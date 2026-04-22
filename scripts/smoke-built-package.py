@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Smoke test the built wheel as an installed distribution.
+"""Smoke test built distributions as installed packages.
 
 The README quickstart is the first path many users copy. In-tree tests can
-accidentally import from ``src/``; this script installs the built wheel into a
-temporary virtualenv, runs from outside the checkout, and verifies the README
+accidentally import from ``src/``; this script installs each built artifact into
+a temporary virtualenv, runs from outside the checkout, and verifies the README
 workflow snippet against that installed package.
 """
 
@@ -24,30 +24,18 @@ def find_wheel(dist: Path) -> Path:
     return wheels[0]
 
 
+def find_sdist(dist: Path) -> Path:
+    sdists = sorted(dist.glob("*.tar.gz"))
+    if len(sdists) != 1:
+        raise SystemExit(f"Expected exactly one source distribution in {dist}, found {len(sdists)}.")
+    return sdists[0]
+
+
 def run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, env=env, check=True)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--dist",
-        type=Path,
-        default=Path("dist"),
-        help="Directory containing the built wheel. Defaults to ./dist.",
-    )
-    parser.add_argument(
-        "--repo-root",
-        type=Path,
-        default=Path(__file__).resolve().parent.parent,
-        help="Repository root. Defaults to the parent of this script directory.",
-    )
-    args = parser.parse_args()
-
-    repo_root = args.repo_root.resolve()
-    readme = repo_root / "README.md"
-    wheel = find_wheel((repo_root / args.dist).resolve() if not args.dist.is_absolute() else args.dist.resolve())
-
+def smoke_distribution(artifact: Path, *, repo_root: Path, readme: Path) -> None:
     smoke_code = r'''
 import importlib
 import importlib.metadata
@@ -138,13 +126,13 @@ assert final.result == "hello, world"
 print(f"README quickstart smoke passed using {package_file}")
     '''
 
-    with tempfile.TemporaryDirectory(prefix="dw-sdk-wheel-smoke-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="dw-sdk-package-smoke-") as tmp:
         tmp_path = Path(tmp)
         venv = tmp_path / ".venv"
         run([sys.executable, "-m", "venv", str(venv)])
         python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         run([str(python), "-m", "pip", "install", "--upgrade", "pip"], cwd=tmp_path)
-        run([str(python), "-m", "pip", "install", str(wheel)], cwd=tmp_path)
+        run([str(python), "-m", "pip", "install", str(artifact)], cwd=tmp_path)
         env = {
             **os.environ,
             "DW_REPO_ROOT": str(repo_root),
@@ -152,6 +140,29 @@ print(f"README quickstart smoke passed using {package_file}")
             "PYTHONPATH": "",
         }
         run([str(python), "-c", smoke_code], cwd=tmp_path, env=env)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--dist",
+        type=Path,
+        default=Path("dist"),
+        help="Directory containing the built wheel and source distribution. Defaults to ./dist.",
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent,
+        help="Repository root. Defaults to the parent of this script directory.",
+    )
+    args = parser.parse_args()
+
+    repo_root = args.repo_root.resolve()
+    readme = repo_root / "README.md"
+    dist = (repo_root / args.dist).resolve() if not args.dist.is_absolute() else args.dist.resolve()
+    for artifact in (find_wheel(dist), find_sdist(dist)):
+        smoke_distribution(artifact, repo_root=repo_root, readme=readme)
 
     return 0
 
