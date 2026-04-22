@@ -1,0 +1,125 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "bridge.webhook",
+  "request": {
+    "method": "POST",
+    "path": "/bridge-adapters/webhook/stripe"
+  },
+  "semantic_body": {
+    "adapter": "stripe",
+    "action": "start_workflow",
+    "idempotency_key": "stripe-event-231",
+    "target": {
+      "workflow_type": "orders.fulfillment",
+      "task_queue": "external-workflows",
+      "business_key": "order-231",
+      "duplicate_policy": "use_existing"
+    },
+    "input": {
+      "order_id": "order-231",
+      "amount_cents": 1299
+    },
+    "correlation": {
+      "provider": "stripe",
+      "event_type": "checkout.session.completed"
+    },
+    "accepted": true,
+    "outcome": "accepted",
+    "workflow_id": "bridge-stripe-231",
+    "run_id": "run-bridge-231"
+  },
+  "response_body": {
+    "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+    "version": 1,
+    "adapter": "stripe",
+    "action": "start_workflow",
+    "accepted": true,
+    "outcome": "accepted",
+    "idempotency_key": "stripe-event-231",
+    "target": {
+      "workflow_type": "orders.fulfillment",
+      "task_queue": "external-workflows",
+      "business_key": "order-231",
+      "duplicate_policy": "use_existing"
+    },
+    "correlation": {
+      "provider": "stripe",
+      "event_type": "checkout.session.completed"
+    },
+    "workflow_id": "bridge-stripe-231",
+    "run_id": "run-bridge-231",
+    "workflow_type": "orders.fulfillment",
+    "control_plane_outcome": "started_new"
+  },
+  "cli": {
+    "argv": {
+      "adapter": "stripe",
+      "--action": "start_workflow",
+      "--idempotency-key": "stripe-event-231",
+      "--target": "{\"workflow_type\":\"orders.fulfillment\",\"task_queue\":\"external-workflows\",\"business_key\":\"order-231\",\"duplicate_policy\":\"use_existing\"}",
+      "--input": "{\"order_id\":\"order-231\",\"amount_cents\":1299}",
+      "--correlation": "{\"provider\":\"stripe\",\"event_type\":\"checkout.session.completed\"}"
+    },
+    "expected_body": {
+      "action": "start_workflow",
+      "idempotency_key": "stripe-event-231",
+      "target": {
+        "workflow_type": "orders.fulfillment",
+        "task_queue": "external-workflows",
+        "business_key": "order-231",
+        "duplicate_policy": "use_existing"
+      },
+      "input": {
+        "order_id": "order-231",
+        "amount_cents": 1299
+      },
+      "correlation": {
+        "provider": "stripe",
+        "event_type": "checkout.session.completed"
+      }
+    }
+  },
+  "sdk_python": {
+    "method": "send_webhook_bridge_event",
+    "args": {
+      "adapter": "stripe"
+    },
+    "kwargs": {
+      "action": "start_workflow",
+      "idempotency_key": "stripe-event-231",
+      "target": {
+        "workflow_type": "orders.fulfillment",
+        "task_queue": "external-workflows",
+        "business_key": "order-231",
+        "duplicate_policy": "use_existing"
+      },
+      "input": {
+        "order_id": "order-231",
+        "amount_cents": 1299
+      },
+      "correlation": {
+        "provider": "stripe",
+        "event_type": "checkout.session.completed"
+      }
+    },
+    "expected_body": {
+      "action": "start_workflow",
+      "idempotency_key": "stripe-event-231",
+      "target": {
+        "workflow_type": "orders.fulfillment",
+        "task_queue": "external-workflows",
+        "business_key": "order-231",
+        "duplicate_policy": "use_existing"
+      },
+      "input": {
+        "order_id": "order-231",
+        "amount_cents": 1299
+      },
+      "correlation": {
+        "provider": "stripe",
+        "event_type": "checkout.session.completed"
+      }
+    }
+  }
+}

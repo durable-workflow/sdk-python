@@ -529,75 +529,27 @@ class TestSignalWorkflow:
 
 class TestWebhookBridgeAdapters:
     @pytest.mark.asyncio
-    async def test_start_workflow_bridge_event_returns_accepted_outcome(self, client: Client) -> None:
-        resp = _mock_response(202, {
-            "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
-            "version": 1,
-            "adapter": "stripe",
-            "action": "start_workflow",
-            "accepted": True,
-            "outcome": "accepted",
-            "idempotency_key": "stripe-event-1001",
-            "target": {
-                "workflow_id": "bridge-stripe-derived",
-                "workflow_type": "orders.fulfillment",
-                "task_queue": "external-workflows",
-                "business_key": "order-1001",
-            },
-            "correlation": {
-                "provider": "stripe",
-                "event_type": "checkout.session.completed",
-            },
-            "workflow_id": "bridge-stripe-derived",
-            "run_id": "run-bridge-1",
-            "workflow_type": "orders.fulfillment",
-            "control_plane_outcome": "started_new",
-        })
+    async def test_start_workflow_bridge_event_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "bridge-webhook-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(202, fixture["response_body"])
 
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
-            outcome = await client.send_webhook_bridge_event(
-                "stripe",
-                action="start_workflow",
-                idempotency_key="stripe-event-1001",
-                target={
-                    "workflow_type": "orders.fulfillment",
-                    "task_queue": "external-workflows",
-                    "business_key": "order-1001",
-                    "duplicate_policy": "use_existing",
-                },
-                input={"order_id": "order-1001"},
-                correlation={
-                    "provider": "stripe",
-                    "event_type": "checkout.session.completed",
-                },
-            )
+            outcome = await client.send_webhook_bridge_event(**sdk["args"], **sdk["kwargs"])
 
         assert outcome.accepted is True
         assert outcome.outcome == "accepted"
-        assert outcome.workflow_id == "bridge-stripe-derived"
+        assert outcome.workflow_id == fixture["semantic_body"]["workflow_id"]
         assert outcome.control_plane_outcome == "started_new"
         assert outcome.target is not None
-        assert outcome.target["business_key"] == "order-1001"
+        assert outcome.target["business_key"] == fixture["semantic_body"]["target"]["business_key"]
 
         call_args = mock.call_args
-        assert call_args.args[0] == "POST"
-        assert call_args.args[1] == "/api/bridge-adapters/webhook/stripe"
+        assert call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
         body = call_args.kwargs.get("json") or call_args[1].get("json")
-        assert body == {
-            "action": "start_workflow",
-            "idempotency_key": "stripe-event-1001",
-            "target": {
-                "workflow_type": "orders.fulfillment",
-                "task_queue": "external-workflows",
-                "business_key": "order-1001",
-                "duplicate_policy": "use_existing",
-            },
-            "input": {"order_id": "order-1001"},
-            "correlation": {
-                "provider": "stripe",
-                "event_type": "checkout.session.completed",
-            },
-        }
+        assert body == sdk["expected_body"]
 
     @pytest.mark.asyncio
     async def test_signal_bridge_event_returns_rejected_outcome_for_422(self, client: Client) -> None:
