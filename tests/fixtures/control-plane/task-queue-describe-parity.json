@@ -1,0 +1,138 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "task_queue.describe",
+  "request": {
+    "method": "GET",
+    "path": "/task-queues/orders-critical"
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "task_queue": "orders-critical",
+    "workflow_admission_status": "throttled",
+    "activity_admission_status": "accepting",
+    "query_admission_status": "full",
+    "active_pollers": 2,
+    "current_lease_ids": [
+      "task-polyglot-231-001"
+    ]
+  },
+  "response_body": {
+    "name": "orders-critical",
+    "namespace": "orders-prod",
+    "stats": {
+      "approximate_backlog_count": 17,
+      "approximate_backlog_age": "45s",
+      "workflow_tasks": {
+        "ready_count": 9,
+        "leased_count": 3,
+        "expired_lease_count": 1
+      },
+      "activity_tasks": {
+        "ready_count": 5,
+        "leased_count": 1,
+        "expired_lease_count": 0
+      },
+      "pollers": {
+        "active_count": 2,
+        "stale_count": 1
+      }
+    },
+    "admission": {
+      "workflow_tasks": {
+        "status": "throttled",
+        "server_active_lease_count": 10,
+        "server_max_active_leases_per_queue": 10,
+        "server_remaining_active_lease_capacity": 0,
+        "server_namespace_active_lease_count": 26,
+        "server_max_active_leases_per_namespace": 30,
+        "server_remaining_namespace_active_lease_capacity": 4,
+        "server_dispatch_count_this_minute": 48,
+        "server_max_dispatches_per_minute": 60,
+        "server_remaining_dispatch_capacity": 12,
+        "server_namespace_dispatch_count_this_minute": 220,
+        "server_max_dispatches_per_minute_per_namespace": 300,
+        "server_remaining_namespace_dispatch_capacity": 80,
+        "server_dispatch_budget_group": "orders-ai",
+        "server_budget_group_dispatch_count_this_minute": 58,
+        "server_max_dispatches_per_minute_per_budget_group": 60,
+        "server_remaining_budget_group_dispatch_capacity": 2,
+        "server_budget_source": "server.admission.workflow_tasks.max_dispatches_per_minute_per_budget_group"
+      },
+      "activity_tasks": {
+        "status": "accepting",
+        "server_active_lease_count": 5,
+        "server_max_active_leases_per_queue": 10,
+        "server_remaining_active_lease_capacity": 5,
+        "server_namespace_active_lease_count": 18,
+        "server_max_active_leases_per_namespace": 48,
+        "server_remaining_namespace_active_lease_capacity": 30,
+        "server_dispatch_count_this_minute": 30,
+        "server_max_dispatches_per_minute": 120,
+        "server_remaining_dispatch_capacity": 90,
+        "server_namespace_dispatch_count_this_minute": 160,
+        "server_max_dispatches_per_minute_per_namespace": 400,
+        "server_remaining_namespace_dispatch_capacity": 240,
+        "server_budget_source": "worker_registration.max_concurrent_activity_tasks"
+      },
+      "query_tasks": {
+        "status": "full",
+        "approximate_pending_count": 4,
+        "max_pending_per_queue": 4,
+        "remaining_pending_capacity": 0,
+        "lock_required": true,
+        "lock_supported": true,
+        "budget_source": "server.query_tasks.max_pending_per_queue"
+      }
+    },
+    "current_leases": [
+      {
+        "task_id": "task-polyglot-231-001",
+        "task_type": "workflow",
+        "workflow_id": "wf-polyglot-231",
+        "lease_owner": "python-worker-1",
+        "lease_expires_at": "2026-04-22T07:05:00Z",
+        "is_expired": false,
+        "workflow_task_attempt": 2
+      }
+    ],
+    "pollers": [
+      {
+        "worker_id": "python-worker-1",
+        "runtime": "python",
+        "build_id": "build-2026-04-22",
+        "last_heartbeat_at": "2026-04-22T07:00:00Z",
+        "status": "active",
+        "is_stale": false
+      },
+      {
+        "worker_id": "php-worker-1",
+        "runtime": "php",
+        "build_id": "build-2026-04-22",
+        "last_heartbeat_at": "2026-04-22T06:59:30Z",
+        "status": "active",
+        "is_stale": false
+      },
+      {
+        "worker_id": "python-worker-old",
+        "runtime": "python",
+        "build_id": "build-2026-04-21",
+        "last_heartbeat_at": "2026-04-22T06:40:00Z",
+        "status": "stale",
+        "is_stale": true
+      }
+    ]
+  },
+  "cli": {
+    "argv": {
+      "task-queue": "orders-critical",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "describe_task_queue",
+    "args": {
+      "name": "orders-critical"
+    }
+  }
+}

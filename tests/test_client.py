@@ -894,6 +894,57 @@ class TestListWorkflows:
 
 class TestTaskQueues:
     @pytest.mark.asyncio
+    async def test_list_task_queues_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "task-queue-list-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.list_task_queues(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+
+        semantic = fixture["semantic_body"]
+        assert result.namespace == semantic["namespace"]
+        assert [queue.name for queue in result.task_queues] == semantic["task_queue_names"]
+
+        statuses = {
+            queue.name: queue.admission.workflow_tasks.status
+            for queue in result.task_queues
+            if queue.admission is not None and queue.admission.workflow_tasks is not None
+        }
+        assert statuses == semantic["workflow_admission_statuses"]
+
+    @pytest.mark.asyncio
+    async def test_describe_task_queue_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "task-queue-describe-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.describe_task_queue(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+
+        semantic = fixture["semantic_body"]
+        assert result.namespace == semantic["namespace"]
+        assert result.name == semantic["task_queue"]
+        assert result.stats is not None
+        assert result.stats["pollers"]["active_count"] == semantic["active_pollers"]
+        assert result.admission is not None
+        assert result.admission.workflow_tasks is not None
+        assert result.admission.activity_tasks is not None
+        assert result.admission.query_tasks is not None
+        assert result.admission.workflow_tasks.status == semantic["workflow_admission_status"]
+        assert result.admission.activity_tasks.status == semantic["activity_admission_status"]
+        assert result.admission.query_tasks.status == semantic["query_admission_status"]
+        assert [lease["task_id"] for lease in result.current_leases or []] == semantic["current_lease_ids"]
+
+    @pytest.mark.asyncio
     async def test_list_task_queues_parses_admission(self, client: Client) -> None:
         resp = _mock_response(200, {
             "namespace": "ns1",

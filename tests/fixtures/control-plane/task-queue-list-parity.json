@@ -1,0 +1,114 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "task_queue.list",
+  "request": {
+    "method": "GET",
+    "path": "/task-queues"
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "task_queue_names": [
+      "orders-critical",
+      "orders-standard"
+    ],
+    "workflow_admission_statuses": {
+      "orders-critical": "throttled",
+      "orders-standard": "accepting"
+    }
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "task_queues": [
+      {
+        "name": "orders-critical",
+        "namespace": "orders-prod",
+        "stats": {
+          "approximate_backlog_count": 17,
+          "workflow_tasks": {
+            "ready_count": 9,
+            "leased_count": 3
+          },
+          "activity_tasks": {
+            "ready_count": 5,
+            "leased_count": 1
+          },
+          "pollers": {
+            "active_count": 2,
+            "stale_count": 1
+          }
+        },
+        "admission": {
+          "workflow_tasks": {
+            "status": "throttled",
+            "server_remaining_active_lease_capacity": 0,
+            "server_remaining_namespace_active_lease_capacity": 4,
+            "server_remaining_dispatch_capacity": 12,
+            "server_remaining_namespace_dispatch_capacity": 80,
+            "server_dispatch_budget_group": "orders-ai",
+            "server_remaining_budget_group_dispatch_capacity": 2
+          },
+          "activity_tasks": {
+            "status": "accepting",
+            "server_remaining_active_lease_capacity": 5,
+            "server_remaining_namespace_active_lease_capacity": 30,
+            "server_remaining_dispatch_capacity": 90,
+            "server_remaining_namespace_dispatch_capacity": 240
+          },
+          "query_tasks": {
+            "status": "accepting",
+            "remaining_pending_capacity": 8
+          }
+        }
+      },
+      {
+        "name": "orders-standard",
+        "namespace": "orders-prod",
+        "stats": {
+          "approximate_backlog_count": 3,
+          "workflow_tasks": {
+            "ready_count": 1,
+            "leased_count": 1
+          },
+          "activity_tasks": {
+            "ready_count": 1,
+            "leased_count": 0
+          },
+          "pollers": {
+            "active_count": 4,
+            "stale_count": 0
+          }
+        },
+        "admission": {
+          "workflow_tasks": {
+            "status": "accepting",
+            "server_remaining_active_lease_capacity": 7,
+            "server_remaining_namespace_active_lease_capacity": 22,
+            "server_remaining_dispatch_capacity": 140,
+            "server_remaining_namespace_dispatch_capacity": 320
+          },
+          "activity_tasks": {
+            "status": "accepting",
+            "server_remaining_active_lease_capacity": 11,
+            "server_remaining_namespace_active_lease_capacity": 35,
+            "server_remaining_dispatch_capacity": 180,
+            "server_remaining_namespace_dispatch_capacity": 410
+          },
+          "query_tasks": {
+            "status": "accepting",
+            "remaining_pending_capacity": 12
+          }
+        }
+      }
+    ]
+  },
+  "cli": {
+    "argv": {
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "list_task_queues",
+    "args": {}
+  }
+}
