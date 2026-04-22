@@ -19,6 +19,8 @@ pip install -e '.[dev]'
 ## Quickstart
 
 ```python
+import asyncio
+
 from durable_workflow import Client, Worker, workflow, activity
 
 @activity.defn(name="greet")
@@ -48,6 +50,9 @@ async def main():
     await worker.run_until(workflow_id="greet-1", timeout=30.0)
     result = await client.get_result(handle)
     print(result)  # "hello, world"
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
 For a fuller deployable example, see
