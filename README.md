@@ -215,15 +215,24 @@ payload storage.
 Retention cleanup should delete by typed reference rather than by raw URI:
 `delete_external_payload(storage, reference, cache=cache)` calls the configured
 driver and evicts any verified replay-cache entry for the same reference.
+When the server or Cloud API returns an external payload storage policy, use
+`ExternalPayloadStoragePolicy.from_dict(...)` plus
+`external_storage_driver_from_policy(...)` to turn that control-plane payload
+into the matching SDK driver while keeping provider clients application-owned.
 
 ```python
-from durable_workflow import S3ExternalStorage, serializer
+from durable_workflow import (
+    ExternalPayloadStoragePolicy,
+    external_storage_driver_from_policy,
+    serializer,
+)
 
-storage = S3ExternalStorage(s3_client, bucket="workflow-payloads", prefix="prod")
+policy = ExternalPayloadStoragePolicy.from_dict(namespace_response)
+storage = external_storage_driver_from_policy(policy, s3_client=s3_client)
 payload = serializer.external_storage_envelope(
     {"large": "value"},
     external_storage=storage,
-    threshold_bytes=2 * 1024 * 1024,
+    threshold_bytes=policy.threshold_bytes or 2 * 1024 * 1024,
 )
 ```
 

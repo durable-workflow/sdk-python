@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 from collections import OrderedDict
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -28,6 +29,47 @@ class ExternalStorageDriver(Protocol):
 
     def delete(self, uri: str) -> None:
         """Delete previously persisted payload bytes when retention removes a run."""
+
+
+@dataclass(frozen=True)
+class ExternalPayloadStoragePolicy:
+    """Normalized external payload storage policy from server or Cloud APIs."""
+
+    enabled: bool
+    driver: str | None = None
+    threshold_bytes: int | None = None
+    config: Mapping[str, Any] = field(default_factory=dict)
+    reference: str | None = None
+    prefix: str = ""
+    mode: str | None = None
+    status: str | None = None
+    integrity_required: bool = True
+
+    @classmethod
+    def from_dict(cls, data: object) -> ExternalPayloadStoragePolicy:
+        """Parse a server namespace or Cloud organization storage policy."""
+        policy = _extract_policy(data)
+        driver = _optional_string(policy.get("driver"), "external payload storage driver")
+        enabled = bool(policy.get("enabled", driver is not None))
+        threshold_bytes = _optional_positive_int(policy.get("threshold_bytes"), "threshold_bytes")
+        config = _optional_mapping(policy.get("config"), "config")
+        prefix = _optional_string(policy.get("prefix"), "prefix") or _optional_string(
+            config.get("prefix"),
+            "config.prefix",
+        )
+        integrity_required = bool(policy.get("integrity_required", True))
+
+        return cls(
+            enabled=enabled,
+            driver=driver,
+            threshold_bytes=threshold_bytes,
+            config=config,
+            reference=_optional_string(policy.get("reference"), "reference"),
+            prefix=prefix or "",
+            mode=_optional_string(policy.get("mode"), "mode"),
+            status=_optional_string(policy.get("status"), "status"),
+            integrity_required=integrity_required,
+        )
 
 
 @dataclass(frozen=True)
@@ -321,6 +363,70 @@ class AzureBlobExternalStorage:
         self.container_client.delete_blob(key)
 
 
+def external_storage_driver_from_policy(
+    policy: ExternalPayloadStoragePolicy | Mapping[str, Any],
+    *,
+    s3_client: Any | None = None,
+    gcs_client: Any | None = None,
+    azure_container_client: Any | None = None,
+    local_root: str | Path | None = None,
+) -> ExternalStorageDriver:
+    """Build an SDK storage driver from a server or Cloud policy payload.
+
+    Provider SDK clients remain application-owned. Pass the already-configured
+    S3/GCS/Azure client that matches the policy returned by the control plane.
+    """
+    normalized = (
+        policy
+        if isinstance(policy, ExternalPayloadStoragePolicy)
+        else ExternalPayloadStoragePolicy.from_dict(policy)
+    )
+    if not normalized.enabled:
+        raise ValueError("external payload storage policy is disabled")
+    if normalized.driver is None:
+        raise ValueError("external payload storage policy driver is required")
+
+    driver = normalized.driver.lower()
+    if driver == "local":
+        root = local_root or _policy_string(normalized, "uri") or normalized.reference
+        if root is None:
+            raise ValueError("local external payload storage policy requires config.uri or local_root")
+        return LocalFilesystemExternalStorage(_local_path(root))
+
+    if driver == "s3":
+        if s3_client is None:
+            raise ValueError("s3 external payload storage policy requires s3_client")
+        bucket = _policy_string(normalized, "bucket") or _s3_bucket_from_reference(normalized.reference)
+        if bucket is None:
+            raise ValueError("s3 external payload storage policy requires config.bucket or an S3 bucket reference")
+        return S3ExternalStorage(s3_client, bucket=bucket, prefix=_policy_prefix(normalized))
+
+    if driver == "gcs":
+        if gcs_client is None:
+            raise ValueError("gcs external payload storage policy requires gcs_client")
+        bucket = _policy_string(normalized, "bucket") or _gcs_bucket_from_reference(normalized.reference)
+        if bucket is None:
+            raise ValueError("gcs external payload storage policy requires config.bucket or a GCS bucket reference")
+        return GCSExternalStorage(gcs_client, bucket=bucket, prefix=_policy_prefix(normalized))
+
+    if driver in {"azure", "azure-blob"}:
+        if azure_container_client is None:
+            raise ValueError("azure external payload storage policy requires azure_container_client")
+        container = (
+            _policy_string(normalized, "container")
+            or _policy_string(normalized, "bucket")
+            or _azure_container_from_reference(normalized.reference)
+        )
+        if container is None:
+            raise ValueError(
+                "azure external payload storage policy requires config.container, "
+                "config.bucket, or a container reference"
+            )
+        return AzureBlobExternalStorage(azure_container_client, container=container, prefix=_policy_prefix(normalized))
+
+    raise ValueError(f"unsupported external payload storage driver {normalized.driver!r}")
+
+
 def store_external_payload(
     driver: ExternalStorageDriver,
     data: bytes,
@@ -385,6 +491,96 @@ def _validate_sha256(sha256: str) -> None:
         int(sha256, 16)
     except ValueError as exc:
         raise ValueError("sha256 must be a hex digest") from exc
+
+
+def _extract_policy(data: object) -> Mapping[str, Any]:
+    if not isinstance(data, Mapping):
+        raise ValueError("external payload storage policy must be an object")
+    nested = data.get("external_payload_storage")
+    if nested is not None:
+        if not isinstance(nested, Mapping):
+            raise ValueError("external_payload_storage must be an object")
+        return nested
+    return data
+
+
+def _optional_mapping(data: object, field_name: str) -> Mapping[str, Any]:
+    if data is None:
+        return {}
+    if not isinstance(data, Mapping):
+        raise ValueError(f"external payload storage policy {field_name} must be an object")
+    return data
+
+
+def _optional_string(data: object, field_name: str) -> str | None:
+    if data is None:
+        return None
+    if not isinstance(data, str):
+        raise ValueError(f"external payload storage policy {field_name} must be a string")
+    return data
+
+
+def _optional_positive_int(data: object, field_name: str) -> int | None:
+    if data is None:
+        return None
+    if not isinstance(data, int) or data < 1:
+        raise ValueError(f"external payload storage policy {field_name} must be a positive integer")
+    return data
+
+
+def _policy_string(policy: ExternalPayloadStoragePolicy, key: str) -> str | None:
+    return _optional_string(policy.config.get(key), f"config.{key}")
+
+
+def _policy_prefix(policy: ExternalPayloadStoragePolicy) -> str:
+    return _policy_string(policy, "prefix") or policy.prefix
+
+
+def _local_path(root: str | Path) -> str | Path:
+    if isinstance(root, Path):
+        return root
+    parsed = urlparse(root)
+    if parsed.scheme == "file":
+        if parsed.netloc not in {"", "localhost"}:
+            raise ValueError("local external payload storage file URI must be local")
+        return unquote(parsed.path)
+    if parsed.scheme:
+        raise ValueError("local external payload storage policy must use a file:// URI or filesystem path")
+    return root
+
+
+def _s3_bucket_from_reference(reference: str | None) -> str | None:
+    if reference is None:
+        return None
+    if reference.startswith("arn:aws:s3:::"):
+        bucket = reference.removeprefix("arn:aws:s3:::").split("/", 1)[0]
+        return bucket or None
+    parsed = urlparse(reference)
+    if parsed.scheme == "s3" and parsed.netloc:
+        return parsed.netloc
+    return reference or None
+
+
+def _gcs_bucket_from_reference(reference: str | None) -> str | None:
+    if reference is None:
+        return None
+    marker = "/buckets/"
+    if marker in reference:
+        bucket = reference.rsplit(marker, 1)[1].split("/", 1)[0]
+        return bucket or None
+    parsed = urlparse(reference)
+    if parsed.scheme == "gs" and parsed.netloc:
+        return parsed.netloc
+    return reference or None
+
+
+def _azure_container_from_reference(reference: str | None) -> str | None:
+    if reference is None:
+        return None
+    parsed = urlparse(reference)
+    if parsed.scheme in {"azure", "azure-blob"} and parsed.netloc:
+        return parsed.netloc
+    return reference or None
 
 
 def _validate_rfc3339(value: str) -> None:

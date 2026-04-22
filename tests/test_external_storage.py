@@ -10,10 +10,12 @@ from durable_workflow.external_storage import (
     ExternalPayloadCache,
     ExternalPayloadIntegrityError,
     ExternalPayloadReference,
+    ExternalPayloadStoragePolicy,
     GCSExternalStorage,
     LocalFilesystemExternalStorage,
     S3ExternalStorage,
     delete_external_payload,
+    external_storage_driver_from_policy,
     fetch_external_payload,
     store_external_payload,
 )
@@ -419,3 +421,99 @@ def test_azure_external_storage_round_trips_and_deletes_payload() -> None:
 def test_object_storage_rejects_unsafe_prefix() -> None:
     with pytest.raises(ValueError, match="unsafe"):
         S3ExternalStorage(FakeS3Client(), bucket="payloads", prefix="../tenant-a")
+
+
+def test_external_storage_policy_builds_s3_driver_from_server_namespace_policy() -> None:
+    client = FakeS3Client()
+    policy = ExternalPayloadStoragePolicy.from_dict(
+        {
+            "external_payload_storage": {
+                "driver": "s3",
+                "enabled": True,
+                "threshold_bytes": 2_097_152,
+                "config": {
+                    "bucket": "dw-payloads",
+                    "prefix": "billing/",
+                },
+            }
+        }
+    )
+
+    storage = external_storage_driver_from_policy(policy, s3_client=client)
+    assert isinstance(storage, S3ExternalStorage)
+    assert policy.threshold_bytes == 2_097_152
+
+    reference = store_external_payload(storage, b'{"from":"server-policy"}', codec="json")
+
+    assert reference.uri.startswith("s3://dw-payloads/billing/json/")
+    assert fetch_external_payload(storage, reference) == b'{"from":"server-policy"}'
+
+
+def test_external_storage_policy_builds_gcs_driver_from_cloud_reference() -> None:
+    client = FakeGCSClient()
+    policy = ExternalPayloadStoragePolicy.from_dict(
+        {
+            "enabled": True,
+            "mode": "byob",
+            "driver": "gcs",
+            "reference": "projects/acme/buckets/workflow-payloads",
+            "prefix": "prod",
+            "threshold_bytes": 1_500_000,
+            "status": "pending_validation",
+        }
+    )
+
+    storage = external_storage_driver_from_policy(policy, gcs_client=client)
+
+    reference = store_external_payload(storage, b'{"from":"cloud-policy"}', codec="json")
+
+    assert reference.uri.startswith("gs://workflow-payloads/prod/json/")
+    assert fetch_external_payload(storage, reference) == b'{"from":"cloud-policy"}'
+
+
+def test_external_storage_policy_builds_local_driver_from_file_uri(tmp_path: Path) -> None:
+    root = tmp_path / "payloads"
+    storage = external_storage_driver_from_policy(
+        {
+            "driver": "local",
+            "enabled": True,
+            "config": {"uri": root.as_uri()},
+        }
+    )
+
+    reference = store_external_payload(storage, b"local-policy", codec="json")
+
+    assert fetch_external_payload(storage, reference) == b"local-policy"
+
+
+def test_external_storage_policy_builds_azure_driver_from_container_config() -> None:
+    client = FakeAzureContainerClient()
+    storage = external_storage_driver_from_policy(
+        {
+            "driver": "azure",
+            "enabled": True,
+            "config": {"container": "payloads", "prefix": "tenant-a"},
+        },
+        azure_container_client=client,
+    )
+
+    reference = store_external_payload(storage, b'{"from":"azure-policy"}', codec="json")
+
+    assert reference.uri.startswith("azure-blob://payloads/tenant-a/json/")
+    assert fetch_external_payload(storage, reference) == b'{"from":"azure-policy"}'
+
+
+def test_external_storage_policy_rejects_disabled_or_missing_provider_client() -> None:
+    with pytest.raises(ValueError, match="disabled"):
+        external_storage_driver_from_policy({"driver": "s3", "enabled": False, "config": {"bucket": "payloads"}})
+
+    with pytest.raises(ValueError, match="s3_client"):
+        external_storage_driver_from_policy({"driver": "s3", "enabled": True, "config": {"bucket": "payloads"}})
+
+
+def test_external_storage_policy_validates_threshold_and_config_shape() -> None:
+    with pytest.raises(ValueError, match="threshold_bytes"):
+        ExternalPayloadStoragePolicy.from_dict({"driver": "local", "threshold_bytes": 0})
+
+    with pytest.raises(ValueError, match="config"):
+        ExternalPayloadStoragePolicy.from_dict({"driver": "local", "config": "file:///tmp/payloads"})
