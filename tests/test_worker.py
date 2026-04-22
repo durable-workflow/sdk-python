@@ -8,6 +8,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from durable_workflow import activity, serializer, workflow
+from durable_workflow.auth_composition import (
+    AUTH_COMPOSITION_CONTRACT_SCHEMA,
+    AUTH_COMPOSITION_CONTRACT_VERSION,
+)
 from durable_workflow.client import (
     CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA,
     CONTROL_PLANE_REQUEST_CONTRACT_VERSION,
@@ -102,6 +106,32 @@ def mock_client() -> AsyncMock:
 def compatible_cluster_info(**overrides: object) -> dict[str, object]:
     info: dict[str, object] = {
         "version": "not-authoritative",
+        "auth_composition_contract": {
+            "schema": AUTH_COMPOSITION_CONTRACT_SCHEMA,
+            "version": AUTH_COMPOSITION_CONTRACT_VERSION,
+            "precedence": {
+                "connection_values": ["flag", "environment", "selected_profile", "default"],
+                "profile_selection": ["flag_env", "DW_ENV", "current_profile", "default_profile"],
+            },
+            "canonical_environment": {
+                "server_url": "DURABLE_WORKFLOW_SERVER_URL",
+                "namespace": "DURABLE_WORKFLOW_NAMESPACE",
+                "auth_token": "DURABLE_WORKFLOW_AUTH_TOKEN",
+                "tls_verify": "DURABLE_WORKFLOW_TLS_VERIFY",
+                "profile": "DW_ENV",
+            },
+            "auth_material": {
+                "token": {"status": "supported", "effective_config_value": "redacted"},
+                "mtls": {"status": "reserved"},
+                "signed_headers": {"status": "reserved"},
+            },
+            "effective_config": {
+                "required_fields": ["server_url", "namespace", "profile", "auth", "tls", "identity"],
+            },
+            "redaction": {
+                "never_echo": ["bearer_tokens", "private_keys", "raw_authorization_headers"],
+            },
+        },
         "control_plane": {
             "version": CONTROL_PLANE_VERSION,
             "request_contract": {
@@ -264,6 +294,26 @@ class TestWorkerRegistration:
         )
         worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
         with pytest.raises(RuntimeError, match="unsupported worker_protocol.version"):
+            await worker._register()
+        mock_client.register_worker.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_register_rejects_missing_auth_composition_contract(self, mock_client: AsyncMock) -> None:
+        mock_client.get_cluster_info = AsyncMock(return_value=compatible_cluster_info(auth_composition_contract=None))
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        with pytest.raises(RuntimeError, match="missing auth_composition_contract"):
+            await worker._register()
+        mock_client.register_worker.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_register_rejects_unsupported_auth_composition_contract(self, mock_client: AsyncMock) -> None:
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(
+                auth_composition_contract={"schema": AUTH_COMPOSITION_CONTRACT_SCHEMA, "version": 2}
+            )
+        )
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        with pytest.raises(RuntimeError, match="unsupported auth_composition_contract"):
             await worker._register()
         mock_client.register_worker.assert_not_called()
 

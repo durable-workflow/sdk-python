@@ -394,6 +394,7 @@ manifests from `GET /api/cluster/info`:
 
 - `control_plane.version: "2"`
 - `control_plane.request_contract.schema: durable-workflow.v2.control-plane-request.contract` version `1`
+- `auth_composition_contract.schema: durable-workflow.v2.auth-composition.contract` version `1`
 - `worker_protocol.version: "1.0"`
 - `worker_protocol.external_task_input_contract.schema: durable-workflow.v2.external-task-input.contract` version `1`
 - `worker_protocol.external_task_result_contract.schema: durable-workflow.v2.external-task-result.contract` version `1`
@@ -401,6 +402,10 @@ manifests from `GET /api/cluster/info`:
 The top-level server `version` is build identity only. The worker checks these
 protocol manifests at startup and fails closed when compatibility is missing,
 unknown, or undiscoverable.
+
+Carriers and support tooling can validate `auth_composition_contract` with
+`parse_auth_composition_contract()` before resolving connection, namespace,
+token, TLS, profile, and redacted effective-configuration diagnostics.
 
 External task carriers can validate fixture artifacts from
 `worker_protocol.external_task_input_contract.fixtures` with

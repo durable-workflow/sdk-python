@@ -29,6 +29,12 @@ from typing import Any
 
 from . import serializer
 from .activity import ActivityContext, ActivityInfo, _set_context
+from .auth_composition import (
+    AUTH_COMPOSITION_CONTRACT_SCHEMA,
+    AUTH_COMPOSITION_CONTRACT_VERSION,
+    AuthCompositionContractError,
+    parse_auth_composition_contract,
+)
 from .client import (
     CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA,
     CONTROL_PLANE_REQUEST_CONTRACT_VERSION,
@@ -195,6 +201,18 @@ def _validate_server_compatibility(info: dict[str, Any]) -> None:
             "Server compatibility error: unsupported worker_protocol.version "
             f"{worker_protocol_version!r}; sdk-python 0.2.x requires {PROTOCOL_VERSION!r}."
         )
+
+    auth_composition = info.get("auth_composition_contract")
+    if not isinstance(auth_composition, dict):
+        raise RuntimeError(
+            "Server compatibility error: missing auth_composition_contract; "
+            f"expected {AUTH_COMPOSITION_CONTRACT_SCHEMA} v{AUTH_COMPOSITION_CONTRACT_VERSION}."
+        )
+
+    try:
+        parse_auth_composition_contract(auth_composition)
+    except AuthCompositionContractError as exc:
+        raise RuntimeError(f"Server compatibility error: unsupported auth_composition_contract: {exc}") from exc
 
 
 def _server_supports_query_tasks(info: dict[str, Any]) -> bool:

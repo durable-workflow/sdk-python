@@ -8,6 +8,14 @@ except PackageNotFoundError:  # source checkout without installed metadata
 
 from . import activity, sync, testing, workflow
 from .activity import ActivityContext, ActivityInfo
+from .auth_composition import (
+    AUTH_COMPOSITION_CONTRACT_SCHEMA,
+    AUTH_COMPOSITION_CONTRACT_VERSION,
+    AUTH_COMPOSITION_REQUIRED_EFFECTIVE_CONFIG_FIELDS,
+    AuthCompositionContract,
+    AuthCompositionContractError,
+    parse_auth_composition_contract,
+)
 from .client import (
     Client,
     ScheduleAction,
@@ -125,6 +133,11 @@ __all__ = [
     "ChildWorkflowFailed",
     "Client",
     "ContinueAsNew",
+    "AUTH_COMPOSITION_CONTRACT_SCHEMA",
+    "AUTH_COMPOSITION_CONTRACT_VERSION",
+    "AUTH_COMPOSITION_REQUIRED_EFFECTIVE_CONFIG_FIELDS",
+    "AuthCompositionContract",
+    "AuthCompositionContractError",
     "NonRetryableError",
     "ReplayOutcome",
     "Replayer",
@@ -152,6 +165,7 @@ __all__ = [
     "WorkflowList",
     "WorkflowPayloadDecodeError",
     "activity",
+    "parse_auth_composition_contract",
     "sync",
     "testing",
     "workflow",
