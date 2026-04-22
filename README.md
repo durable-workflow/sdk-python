@@ -519,3 +519,7 @@ The API reference is published to [python.durable-workflow.com](https://python.d
 ## License
 
 MIT
+
+## Public Boundary Checks
+
+This is a public repository. Do not add private tracker names, workspace-only absolute paths, or internal automation metadata to files or new commit metadata. Run `scripts/check-public-boundary.sh` before publishing changes; CI runs the same scan on pushes and pull requests.
