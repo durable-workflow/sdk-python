@@ -98,6 +98,7 @@ from .interceptors import (
     WorkflowTaskHandler,
     WorkflowTaskInterceptorContext,
 )
+from .invocable import InvocableActivityHandler, handle_invocable_activity
 from .metrics import (
     InMemoryMetrics,
     MetricsRecorder,
@@ -192,6 +193,7 @@ __all__ = [
     "parse_external_task_result_artifact",
     "InvalidArgument",
     "InMemoryMetrics",
+    "InvocableActivityHandler",
     "LocalFilesystemExternalStorage",
     "MetricsRecorder",
     "NamespaceNotFound",
@@ -223,6 +225,7 @@ __all__ = [
     "parse_external_task_input",
     "parse_external_task_input_artifact",
     "parse_external_task_result",
+    "handle_invocable_activity",
     "to_avro_payload_value",
     "to_avro_payload_values",
     "replay",

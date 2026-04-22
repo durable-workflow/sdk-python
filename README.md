@@ -420,6 +420,18 @@ decisions for success, retryability, malformed output, cancellation, deadline
 exceeded, handler crash, decode failure, and unsupported payload
 codec/reference states without treating stderr as a machine signal.
 
+Invocable activity carriers can use `InvocableActivityHandler` as a reference
+adapter for HTTP or serverless runtimes. It accepts the same external-task input
+envelope, invokes a registered activity handler, and returns the same
+external-task result envelope while rejecting workflow-task inputs:
+
+```python
+from durable_workflow import InvocableActivityHandler
+
+adapter = InvocableActivityHandler({"billing.charge-card": charge_card})
+result_envelope = await adapter.handle(request_json)
+```
+
 Bridge adapters can hand bounded webhook ingress into the server through
 `Client.send_webhook_bridge_event()`. The method returns the server's typed
 bridge outcome for accepted, duplicate, and rejected events, including
