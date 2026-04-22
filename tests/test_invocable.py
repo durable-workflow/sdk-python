@@ -1,5 +1,8 @@
+import asyncio
 import copy
 import json
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +20,21 @@ def load_fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / name).read_text())
 
 
-def activity_input(*args: Any) -> dict[str, Any]:
+def _iso(timestamp: datetime) -> str:
+    return timestamp.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _refresh_bounds(envelope: dict[str, Any], *, expires_in: timedelta = timedelta(minutes=5)) -> dict[str, Any]:
+    expires_at = _iso(datetime.now(timezone.utc) + expires_in)
+    envelope["lease"]["expires_at"] = expires_at
+    for key in envelope["deadlines"]:
+        envelope["deadlines"][key] = expires_at
+    return envelope
+
+
+def activity_input(*args: Any, expires_in: timedelta = timedelta(minutes=5)) -> dict[str, Any]:
     envelope = copy.deepcopy(load_fixture("activity-task.v1.json"))
+    _refresh_bounds(envelope, expires_in=expires_in)
     envelope["payloads"]["arguments"] = serializer.envelope(list(args), codec=serializer.JSON_CODEC)
     return envelope
 
@@ -58,6 +74,68 @@ async def test_invocable_activity_handler_awaits_async_handlers() -> None:
     assert result.succeeded is True
     assert result.result is not None
     assert serializer.decode_envelope(result.result["payload"]) == {"amount": 42}
+
+
+async def test_invocable_activity_handler_fails_closed_for_expired_lease_without_invoking_handler() -> None:
+    invoked = False
+
+    def charge() -> dict[str, bool]:
+        nonlocal invoked
+        invoked = True
+        return {"approved": True}
+
+    envelope = activity_input()
+    envelope["lease"]["expires_at"] = _iso(datetime.now(timezone.utc) - timedelta(seconds=1))
+
+    output = await InvocableActivityHandler(
+        {"billing.charge-card": charge},
+        result_codec=serializer.JSON_CODEC,
+    ).handle(envelope)
+    result = parse_external_task_result(output)
+
+    assert invoked is False
+    assert result.failed is True
+    assert result.retryable is True
+    assert result.deadline_exceeded is True
+    assert result.failure is not None
+    assert result.failure.details == {
+        "deadline": "lease.expires_at",
+        "expires_at": envelope["lease"]["expires_at"],
+    }
+
+
+async def test_invocable_activity_handler_times_out_async_handler_before_success() -> None:
+    async def slow_charge() -> dict[str, bool]:
+        await asyncio.sleep(1)
+        return {"approved": True}
+
+    output = await InvocableActivityHandler(
+        {"billing.charge-card": slow_charge},
+        result_codec=serializer.JSON_CODEC,
+    ).handle(activity_input(expires_in=timedelta(milliseconds=100)))
+    result = parse_external_task_result(output)
+
+    assert result.failed is True
+    assert result.retryable is True
+    assert result.deadline_exceeded is True
+    assert result.result is None
+
+
+async def test_invocable_activity_handler_rejects_sync_success_after_deadline_overrun() -> None:
+    def slow_charge() -> dict[str, bool]:
+        time.sleep(0.05)
+        return {"approved": True}
+
+    output = await InvocableActivityHandler(
+        {"billing.charge-card": slow_charge},
+        result_codec=serializer.JSON_CODEC,
+    ).handle(activity_input(expires_in=timedelta(milliseconds=10)))
+    result = parse_external_task_result(output)
+
+    assert result.failed is True
+    assert result.retryable is True
+    assert result.deadline_exceeded is True
+    assert result.result is None
 
 
 async def test_invocable_activity_handler_fails_closed_for_unknown_handler() -> None:

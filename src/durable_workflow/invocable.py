@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 import traceback
 from collections.abc import Awaitable, Callable, Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 from . import serializer
@@ -56,6 +58,10 @@ class InvocableActivityHandler:
                 retryable=False,
             )
 
+        deadline_failure = self._expired_deadline_failure(task_input, started)
+        if deadline_failure is not None:
+            return deadline_failure
+
         handler_name = task_input.task.handler
         handler = self.handlers.get(handler_name or "")
         if handler is None:
@@ -71,9 +77,10 @@ class InvocableActivityHandler:
 
         try:
             args = self._decode_arguments(task_input)
+            timeout_seconds = self._remaining_timeout_seconds(task_input)
             result = handler(*args)
-            if asyncio.iscoroutine(result):
-                result = await result
+            if inspect.isawaitable(result):
+                result = await asyncio.wait_for(result, timeout=timeout_seconds)
         except ActivityCancelled:
             return self._failure(
                 task_input,
@@ -132,6 +139,10 @@ class InvocableActivityHandler:
                 retryable=True,
             )
 
+        deadline_failure = self._expired_deadline_failure(task_input, started, completed=True)
+        if deadline_failure is not None:
+            return deadline_failure
+
         return self._success(task_input, started, result)
 
     def _decode_arguments(self, task_input: ExternalTaskInput) -> list[Any]:
@@ -159,6 +170,70 @@ class InvocableActivityHandler:
             if isinstance(codec, str):
                 return codec
         return serializer.JSON_CODEC
+
+    def _expired_deadline_failure(
+        self,
+        task_input: ExternalTaskInput,
+        started: float,
+        *,
+        completed: bool = False,
+    ) -> dict[str, Any] | None:
+        now = datetime.now(timezone.utc)
+        for name, expires_at in self._deadline_candidates(task_input).items():
+            try:
+                expires_at_utc = self._parse_deadline(expires_at)
+            except ValueError as exc:
+                return self._failure(
+                    task_input,
+                    started,
+                    kind="decode_failure",
+                    classification="decode_failure",
+                    message=f"Carrier could not parse activity deadline {name}: {exc}",
+                    failure_type=type(exc).__name__,
+                    stack_trace=traceback.format_exc(),
+                    retryable=False,
+                    details={"deadline": name, "expires_at": expires_at},
+                )
+            if expires_at_utc <= now:
+                suffix = "completed after" if completed else "received after"
+                return self._failure(
+                    task_input,
+                    started,
+                    kind="timeout",
+                    classification="deadline_exceeded",
+                    message=f"Invocable activity task {suffix} {name}.",
+                    failure_type="ExternalTaskDeadlineExceeded",
+                    timeout_type="deadline_exceeded",
+                    retryable=True,
+                    details={"deadline": name, "expires_at": expires_at},
+                )
+        return None
+
+    def _remaining_timeout_seconds(self, task_input: ExternalTaskInput) -> float | None:
+        now = datetime.now(timezone.utc)
+        remaining = [
+            max(0.0, (self._parse_deadline(expires_at) - now).total_seconds())
+            for expires_at in self._deadline_candidates(task_input).values()
+        ]
+        if not remaining:
+            return None
+        return min(remaining)
+
+    @staticmethod
+    def _deadline_candidates(task_input: ExternalTaskInput) -> dict[str, str]:
+        candidates = {"lease.expires_at": task_input.lease.expires_at}
+        for key, value in (task_input.deadlines or {}).items():
+            if isinstance(value, str):
+                candidates[f"deadlines.{key}"] = value
+        return candidates
+
+    @staticmethod
+    def _parse_deadline(value: str) -> datetime:
+        normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
 
     def _success(self, task_input: ExternalTaskInput, started: float, result: Any) -> dict[str, Any]:
         return {
