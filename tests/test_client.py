@@ -1015,6 +1015,103 @@ class TestTaskQueues:
         assert [lease["task_id"] for lease in result.current_leases or []] == semantic["current_lease_ids"]
 
     @pytest.mark.asyncio
+    async def test_list_task_queue_build_ids_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = (
+            Path(__file__).parent
+            / "fixtures"
+            / "control-plane"
+            / "task-queue-build-ids-parity.json"
+        )
+        fixture = json.loads(fixture_path.read_text())
+        assert fixture["operation"] == "task_queue.build_ids"
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.list_task_queue_build_ids(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+
+        semantic = fixture["semantic_body"]
+        assert result.namespace == semantic["namespace"]
+        assert result.task_queue == semantic["task_queue"]
+        assert result.stale_after_seconds == fixture["response_body"]["stale_after_seconds"]
+        assert [cohort.build_id for cohort in result.build_ids] == semantic["build_ids"]
+
+        rollout_statuses = {
+            (cohort.build_id if cohort.build_id is not None else "unversioned"): cohort.rollout_status
+            for cohort in result.build_ids
+        }
+        assert rollout_statuses == semantic["rollout_statuses"]
+
+    @pytest.mark.asyncio
+    async def test_list_task_queue_build_ids_surfaces_cohort_worker_counts(
+        self, client: Client
+    ) -> None:
+        resp = _mock_response(
+            200,
+            {
+                "namespace": "default",
+                "task_queue": "orders",
+                "stale_after_seconds": 90,
+                "build_ids": [
+                    {
+                        "build_id": "build-alpha",
+                        "rollout_status": "active_with_draining",
+                        "active_worker_count": 2,
+                        "draining_worker_count": 1,
+                        "stale_worker_count": 0,
+                        "total_worker_count": 3,
+                        "runtimes": ["worker-runtime"],
+                        "sdk_versions": ["polyglot-sdk/2.0.0"],
+                        "last_heartbeat_at": "2026-04-22T09:30:00Z",
+                        "first_seen_at": "2026-04-22T08:00:00Z",
+                    },
+                    {
+                        "build_id": None,
+                        "rollout_status": "stale_only",
+                        "active_worker_count": 0,
+                        "draining_worker_count": 0,
+                        "stale_worker_count": 1,
+                        "total_worker_count": 1,
+                        "runtimes": [],
+                        "sdk_versions": [],
+                        "last_heartbeat_at": None,
+                        "first_seen_at": None,
+                    },
+                ],
+            },
+        )
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.list_task_queue_build_ids("orders")
+
+        assert mock.call_args.args[0] == "GET"
+        assert mock.call_args.args[1] == "/api/task-queues/orders/build-ids"
+        assert result.task_queue == "orders"
+        assert result.stale_after_seconds == 90
+        assert len(result.build_ids) == 2
+
+        alpha, unversioned = result.build_ids
+        assert alpha.build_id == "build-alpha"
+        assert alpha.rollout_status == "active_with_draining"
+        assert alpha.active_worker_count == 2
+        assert alpha.draining_worker_count == 1
+        assert alpha.total_worker_count == 3
+        assert alpha.runtimes == ["worker-runtime"]
+        assert alpha.sdk_versions == ["polyglot-sdk/2.0.0"]
+        assert unversioned.build_id is None
+        assert unversioned.rollout_status == "stale_only"
+        assert unversioned.stale_worker_count == 1
+        assert unversioned.last_heartbeat_at is None
+        assert unversioned.first_seen_at is None
+
+    @pytest.mark.asyncio
     async def test_list_task_queues_parses_admission(self, client: Client) -> None:
         resp = _mock_response(200, {
             "namespace": "ns1",

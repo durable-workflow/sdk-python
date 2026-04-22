@@ -161,6 +161,43 @@ class TestSyncClientList:
             assert result.admission.activity_tasks.status == "no_slots"
             assert mock.call_args.args[:2] == ("GET", "/api/task-queues/orders%2Fhigh%20priority")
 
+    def test_list_task_queue_build_ids(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            200,
+            {
+                "namespace": "default",
+                "task_queue": "orders",
+                "stale_after_seconds": 60,
+                "build_ids": [
+                    {
+                        "build_id": "build-alpha",
+                        "rollout_status": "active",
+                        "active_worker_count": 2,
+                        "draining_worker_count": 0,
+                        "stale_worker_count": 0,
+                        "total_worker_count": 2,
+                        "runtimes": ["worker-runtime"],
+                        "sdk_versions": ["polyglot-sdk/2.0.0"],
+                        "last_heartbeat_at": "2026-04-22T09:30:00Z",
+                        "first_seen_at": "2026-04-22T08:00:00Z",
+                    }
+                ],
+            },
+        )
+        with patch.object(
+            client._async._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = client.list_task_queue_build_ids("orders")
+            assert result.task_queue == "orders"
+            assert result.stale_after_seconds == 60
+            assert len(result.build_ids) == 1
+            cohort = result.build_ids[0]
+            assert cohort.build_id == "build-alpha"
+            assert cohort.rollout_status == "active"
+            assert cohort.total_worker_count == 2
+            assert mock.call_args.args[:2] == ("GET", "/api/task-queues/orders/build-ids")
+
 
 class TestSyncClientRunVisibility:
     def test_list_workflow_runs(self) -> None:

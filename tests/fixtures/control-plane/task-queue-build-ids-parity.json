@@ -1,0 +1,90 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "task_queue.build_ids",
+  "request": {
+    "method": "GET",
+    "path": "/task-queues/orders-critical/build-ids"
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "task_queue": "orders-critical",
+    "build_ids": [
+      "build-2026.04.22-a1",
+      "build-2026.04.21-z9",
+      null
+    ],
+    "rollout_statuses": {
+      "build-2026.04.22-a1": "active",
+      "build-2026.04.21-z9": "draining",
+      "unversioned": "stale_only"
+    }
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "task_queue": "orders-critical",
+    "stale_after_seconds": 60,
+    "build_ids": [
+      {
+        "build_id": "build-2026.04.22-a1",
+        "rollout_status": "active",
+        "active_worker_count": 2,
+        "draining_worker_count": 0,
+        "stale_worker_count": 0,
+        "total_worker_count": 2,
+        "runtimes": [
+          "worker-runtime"
+        ],
+        "sdk_versions": [
+          "polyglot-sdk/2.0.0"
+        ],
+        "last_heartbeat_at": "2026-04-22T09:30:00Z",
+        "first_seen_at": "2026-04-22T08:00:00Z"
+      },
+      {
+        "build_id": "build-2026.04.21-z9",
+        "rollout_status": "draining",
+        "active_worker_count": 0,
+        "draining_worker_count": 1,
+        "stale_worker_count": 0,
+        "total_worker_count": 1,
+        "runtimes": [
+          "worker-runtime"
+        ],
+        "sdk_versions": [
+          "polyglot-sdk/1.9.8"
+        ],
+        "last_heartbeat_at": "2026-04-22T09:29:00Z",
+        "first_seen_at": "2026-04-21T10:00:00Z"
+      },
+      {
+        "build_id": null,
+        "rollout_status": "stale_only",
+        "active_worker_count": 0,
+        "draining_worker_count": 0,
+        "stale_worker_count": 1,
+        "total_worker_count": 1,
+        "runtimes": [
+          "worker-runtime"
+        ],
+        "sdk_versions": [
+          "polyglot-sdk/1.0.0"
+        ],
+        "last_heartbeat_at": "2026-04-20T12:00:00Z",
+        "first_seen_at": "2026-04-20T11:00:00Z"
+      }
+    ]
+  },
+  "cli": {
+    "argv": {
+      "task-queue": "orders-critical",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "list_task_queue_build_ids",
+    "args": {
+      "task_queue": "orders-critical"
+    }
+  }
+}

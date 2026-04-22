@@ -468,6 +468,73 @@ class TaskQueueList:
 
 
 @dataclass
+class TaskQueueBuildIdCohort:
+    """Per-build-id rollout state for one task queue.
+
+    ``build_id`` is ``None`` for the cohort of workers that registered
+    without a build identifier (the legacy unversioned default).
+    """
+
+    build_id: str | None
+    rollout_status: str
+    active_worker_count: int
+    draining_worker_count: int
+    stale_worker_count: int
+    total_worker_count: int
+    runtimes: list[str]
+    sdk_versions: list[str]
+    last_heartbeat_at: str | None = None
+    first_seen_at: str | None = None
+    raw: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TaskQueueBuildIdCohort:
+        runtimes = data.get("runtimes")
+        sdk_versions = data.get("sdk_versions")
+        return cls(
+            build_id=data.get("build_id"),
+            rollout_status=str(data.get("rollout_status") or ""),
+            active_worker_count=int(data.get("active_worker_count") or 0),
+            draining_worker_count=int(data.get("draining_worker_count") or 0),
+            stale_worker_count=int(data.get("stale_worker_count") or 0),
+            total_worker_count=int(data.get("total_worker_count") or 0),
+            runtimes=[r for r in runtimes if isinstance(r, str)] if isinstance(runtimes, list) else [],
+            sdk_versions=[v for v in sdk_versions if isinstance(v, str)] if isinstance(sdk_versions, list) else [],
+            last_heartbeat_at=data.get("last_heartbeat_at"),
+            first_seen_at=data.get("first_seen_at"),
+            raw=data,
+        )
+
+
+@dataclass
+class TaskQueueBuildIdRollout:
+    """Build-id rollout snapshot returned by the server for one task queue."""
+
+    namespace: str | None
+    task_queue: str
+    stale_after_seconds: int | None
+    build_ids: list[TaskQueueBuildIdCohort]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TaskQueueBuildIdRollout:
+        items = data.get("build_ids")
+        return cls(
+            namespace=data.get("namespace"),
+            task_queue=str(data.get("task_queue") or ""),
+            stale_after_seconds=(
+                int(data["stale_after_seconds"])
+                if isinstance(data.get("stale_after_seconds"), int)
+                else None
+            ),
+            build_ids=[
+                TaskQueueBuildIdCohort.from_dict(item)
+                for item in (items if isinstance(items, list) else [])
+                if isinstance(item, dict)
+            ],
+        )
+
+
+@dataclass
 class WorkerDescription:
     """Current server view of one registered worker."""
 
@@ -1302,6 +1369,28 @@ class Client:
                 },
             )
         return TaskQueueDescription.from_dict(data)
+
+    async def list_task_queue_build_ids(self, task_queue: str) -> TaskQueueBuildIdRollout:
+        """Return the build-id rollout snapshot for ``task_queue``.
+
+        Use this before draining or removing an older build to confirm which
+        build cohorts can still claim work on the queue. Unversioned workers
+        are grouped under a cohort whose ``build_id`` is ``None``.
+        """
+        data = await self._request(
+            "GET",
+            f"/task-queues/{quote(task_queue, safe='')}/build-ids",
+            context=task_queue,
+        )
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_task_queue_build_ids_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return TaskQueueBuildIdRollout.from_dict(data)
 
     # ── Search attributes ─────────────────────────────────────────────
     async def list_search_attributes(self) -> SearchAttributeList:

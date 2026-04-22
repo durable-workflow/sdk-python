@@ -17,6 +17,7 @@ from .client import (
     ScheduleSpec,
     ScheduleTriggerResult,
     StorageTestResult,
+    TaskQueueBuildIdRollout,
     TaskQueueDescription,
     TaskQueueList,
     WorkflowCommandResult,
@@ -282,6 +283,12 @@ class Client:
 
     def describe_task_queue(self, name: str) -> TaskQueueDescription:
         result: TaskQueueDescription = _run(self._async.describe_task_queue(name))
+        return result
+
+    def list_task_queue_build_ids(self, task_queue: str) -> TaskQueueBuildIdRollout:
+        result: TaskQueueBuildIdRollout = _run(
+            self._async.list_task_queue_build_ids(task_queue)
+        )
         return result
 
     def list_namespaces(self) -> NamespaceList:
