@@ -1,0 +1,32 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow.repair",
+  "request": {
+    "method": "POST",
+    "path": "/workflows/wf-polyglot-231/repair"
+  },
+  "semantic_body": {
+    "workflow_id": "wf-polyglot-231"
+  },
+  "response_body": {
+    "workflow_id": "wf-polyglot-231",
+    "outcome": "repair_requested",
+    "command_status": "accepted",
+    "command_id": "cmd-polyglot-repair-231"
+  },
+  "cli": {
+    "argv": {
+      "workflow-id": "wf-polyglot-231",
+      "--json": true
+    },
+    "expected_body": {}
+  },
+  "sdk_python": {
+    "method": "repair_workflow",
+    "args": {
+      "workflow_id": "wf-polyglot-231"
+    },
+    "expected_body": {}
+  }
+}

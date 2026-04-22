@@ -177,6 +177,27 @@ class WorkflowRun:
 
 
 @dataclass
+class WorkflowCommandResult:
+    """Machine-readable outcome returned by workflow control commands."""
+
+    workflow_id: str
+    outcome: str
+    command_status: str | None = None
+    command_id: str | None = None
+    raw: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], *, workflow_id: str | None = None) -> WorkflowCommandResult:
+        return cls(
+            workflow_id=data.get("workflow_id", workflow_id or ""),
+            outcome=data.get("outcome", ""),
+            command_status=data.get("command_status"),
+            command_id=data.get("command_id"),
+            raw=data,
+        )
+
+
+@dataclass
 class WorkflowRunList:
     """All known durable runs for one workflow execution, oldest first."""
 
@@ -1212,6 +1233,19 @@ class Client:
         if reason is not None:
             body["reason"] = reason
         await self._request("POST", f"/workflows/{workflow_id}/terminate", json=body, context=workflow_id)
+
+    async def repair_workflow(self, workflow_id: str) -> WorkflowCommandResult:
+        """Ask the server to repair a stalled workflow, returning the command outcome."""
+        data = await self._request("POST", f"/workflows/{workflow_id}/repair", json={}, context=workflow_id)
+        return WorkflowCommandResult.from_dict(data, workflow_id=workflow_id)
+
+    async def archive_workflow(self, workflow_id: str, *, reason: str | None = None) -> WorkflowCommandResult:
+        """Move a terminal workflow into the archive tier, returning the command outcome."""
+        body: dict[str, Any] = {}
+        if reason is not None:
+            body["reason"] = reason
+        data = await self._request("POST", f"/workflows/{workflow_id}/archive", json=body, context=workflow_id)
+        return WorkflowCommandResult.from_dict(data, workflow_id=workflow_id)
 
     async def update_workflow(
         self,

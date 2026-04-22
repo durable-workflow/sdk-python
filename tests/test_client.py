@@ -642,6 +642,52 @@ class TestTerminateWorkflow:
         assert sdk["args"]["workflow_id"] == fixture["semantic_body"]["workflow_id"]
 
 
+class TestWorkflowMaintenanceCommands:
+    @pytest.mark.asyncio
+    async def test_repair_request_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-repair-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.repair_workflow(**sdk["args"])
+
+        call_args = mock.call_args
+        assert call_args.args[0] == fixture["request"]["method"]
+        assert call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert (call_args.kwargs.get("json") or call_args[1].get("json")) == sdk["expected_body"]
+
+        assert result.workflow_id == fixture["semantic_body"]["workflow_id"]
+        assert result.outcome == fixture["response_body"]["outcome"]
+        assert result.command_status == fixture["response_body"]["command_status"]
+        assert result.command_id == fixture["response_body"]["command_id"]
+
+    @pytest.mark.asyncio
+    async def test_archive_request_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-archive-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.archive_workflow(**sdk["args"])
+
+        call_args = mock.call_args
+        assert call_args.args[0] == fixture["request"]["method"]
+        assert call_args.args[1] == f"/api{fixture['request']['path']}"
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+
+        assert body == sdk["expected_body"]
+        assert body["reason"] == fixture["semantic_body"]["reason"]
+        assert result.workflow_id == fixture["semantic_body"]["workflow_id"]
+        assert result.outcome == fixture["response_body"]["outcome"]
+        assert result.command_status == fixture["response_body"]["command_status"]
+        assert result.command_id == fixture["response_body"]["command_id"]
+
+
 class TestQueryWorkflow:
     @pytest.mark.asyncio
     async def test_query(self, client: Client) -> None:
