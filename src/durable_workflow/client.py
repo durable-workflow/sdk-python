@@ -2043,7 +2043,8 @@ class Client:
         self,
         *,
         task_id: str,
-        page_token: str,
+        next_history_page_token: str | None = None,
+        page_token: str | None = None,
         lease_owner: str,
         workflow_task_attempt: int,
     ) -> Any:
@@ -2052,8 +2053,15 @@ class Client:
         Worker-plane endpoint. The first page of history is delivered inline
         with the workflow task; this endpoint fetches subsequent pages.
         """
+        if next_history_page_token is None:
+            next_history_page_token = page_token
+        elif page_token is not None and page_token != next_history_page_token:
+            raise ValueError("page_token must match next_history_page_token when both are provided")
+        if next_history_page_token is None:
+            raise ValueError("next_history_page_token is required")
+
         body: dict[str, Any] = {
-            "page_token": page_token,
+            "next_history_page_token": next_history_page_token,
             "lease_owner": lease_owner,
             "workflow_task_attempt": workflow_task_attempt,
         }

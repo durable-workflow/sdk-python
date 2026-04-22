@@ -393,7 +393,7 @@ class Worker:
             try:
                 page_data = await self.client.workflow_task_history(
                     task_id=task_id,
-                    page_token=next_page_token,
+                    next_history_page_token=next_page_token,
                     lease_owner=self.worker_id,
                     workflow_task_attempt=attempt,
                 )

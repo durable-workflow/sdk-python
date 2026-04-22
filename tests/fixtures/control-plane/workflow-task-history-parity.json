@@ -6,7 +6,7 @@
     "method": "POST",
     "path": "/worker/workflow-tasks/workflow-task-231/history",
     "body": {
-      "page_token": "history-page-2",
+      "next_history_page_token": "history-page-2",
       "lease_owner": "polyglot-worker-231",
       "workflow_task_attempt": 2
     }
@@ -15,7 +15,7 @@
     "task_id": "workflow-task-231",
     "lease_owner": "polyglot-worker-231",
     "workflow_task_attempt": 2,
-    "page_token": "history-page-2",
+    "next_history_page_token": "history-page-2",
     "last_sequence": 4,
     "next_page_token": "history-page-3"
   },
@@ -52,7 +52,7 @@
     "method": "workflow_task_history",
     "kwargs": {
       "task_id": "workflow-task-231",
-      "page_token": "history-page-2",
+      "next_history_page_token": "history-page-2",
       "lease_owner": "polyglot-worker-231",
       "workflow_task_attempt": 2
     }
