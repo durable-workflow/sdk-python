@@ -220,6 +220,61 @@ class TestOneActivity:
         assert server_cmd["schedule_to_close_timeout"] == 300
         assert server_cmd["heartbeat_timeout"] == 15
 
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("start_to_close_timeout", 0, "start_to_close_timeout must be >= 1 second"),
+            ("schedule_to_start_timeout", 0, "schedule_to_start_timeout must be >= 1 second"),
+            ("schedule_to_close_timeout", 0, "schedule_to_close_timeout must be >= 1 second"),
+            ("heartbeat_timeout", 0, "heartbeat_timeout must be >= 1 second"),
+        ],
+    )
+    def test_schedule_activity_rejects_non_positive_timeout_budgets(
+        self,
+        field: str,
+        value: int,
+        message: str,
+    ) -> None:
+        cmd = ScheduleActivity(
+            activity_type="charge-card",
+            arguments=[],
+            **{field: value},
+        )
+
+        with pytest.raises(ValueError, match=message):
+            cmd.to_server_command("default-queue")
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            (
+                {"start_to_close_timeout": 10, "heartbeat_timeout": 11},
+                "heartbeat_timeout must be <= start_to_close_timeout",
+            ),
+            (
+                {"start_to_close_timeout": 301, "schedule_to_close_timeout": 300},
+                "start_to_close_timeout must be <= schedule_to_close_timeout",
+            ),
+            (
+                {"schedule_to_start_timeout": 301, "schedule_to_close_timeout": 300},
+                "schedule_to_start_timeout must be <= schedule_to_close_timeout",
+            ),
+        ],
+    )
+    def test_schedule_activity_rejects_incoherent_timeout_envelopes(
+        self,
+        kwargs: dict[str, int],
+        message: str,
+    ) -> None:
+        cmd = ScheduleActivity(
+            activity_type="charge-card",
+            arguments=[],
+            **kwargs,
+        )
+
+        with pytest.raises(ValueError, match=message):
+            cmd.to_server_command("default-queue")
+
 
 class TestTwoActivities:
     def test_first_schedules(self) -> None:
@@ -727,6 +782,39 @@ class TestChildWorkflow:
         }
         assert sc["execution_timeout_seconds"] == 600
         assert sc["run_timeout_seconds"] == 120
+
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("execution_timeout_seconds", 0, "execution_timeout_seconds must be >= 1 second"),
+            ("run_timeout_seconds", 0, "run_timeout_seconds must be >= 1 second"),
+        ],
+    )
+    def test_server_command_rejects_non_positive_child_timeout_budgets(
+        self,
+        field: str,
+        value: int,
+        message: str,
+    ) -> None:
+        cmd = StartChildWorkflow(
+            workflow_type="sub",
+            arguments=[],
+            **{field: value},
+        )
+
+        with pytest.raises(ValueError, match=message):
+            cmd.to_server_command("default-q")
+
+    def test_server_command_rejects_child_run_timeout_larger_than_execution_timeout(self) -> None:
+        cmd = StartChildWorkflow(
+            workflow_type="sub",
+            arguments=[],
+            execution_timeout_seconds=120,
+            run_timeout_seconds=121,
+        )
+
+        with pytest.raises(ValueError, match="run_timeout_seconds must be <= execution_timeout_seconds"):
+            cmd.to_server_command("default-q")
 
     def test_server_command_defaults(self) -> None:
         cmd = StartChildWorkflow(workflow_type="sub", arguments=[])

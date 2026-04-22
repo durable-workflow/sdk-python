@@ -267,6 +267,13 @@ class ChildWorkflowRetryPolicy(ActivityRetryPolicy):
 ChildWorkflowRetryPolicyInput = ChildWorkflowRetryPolicy | ActivityRetryPolicy | Mapping[str, Any]
 
 
+def _validate_positive_timeout(name: str, value: int | None) -> None:
+    if value is None:
+        return
+    if value < 1:
+        raise ValueError(f"{name} must be >= 1 second")
+
+
 @dataclass
 class ScheduleActivity:
     """Command requesting an activity task.
@@ -296,6 +303,8 @@ class ScheduleActivity:
         size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
         warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
+        self._validate_timeouts()
+
         command: dict[str, Any] = {
             "type": "schedule_activity",
             "activity_type": self.activity_type,
@@ -327,6 +336,38 @@ class ScheduleActivity:
         if self.heartbeat_timeout is not None:
             command["heartbeat_timeout"] = self.heartbeat_timeout
         return command
+
+    def _validate_timeouts(self) -> None:
+        timeouts = {
+            "start_to_close_timeout": self.start_to_close_timeout,
+            "schedule_to_start_timeout": self.schedule_to_start_timeout,
+            "schedule_to_close_timeout": self.schedule_to_close_timeout,
+            "heartbeat_timeout": self.heartbeat_timeout,
+        }
+        for name, value in timeouts.items():
+            _validate_positive_timeout(name, value)
+
+        if (
+            self.heartbeat_timeout is not None
+            and self.start_to_close_timeout is not None
+            and self.heartbeat_timeout > self.start_to_close_timeout
+        ):
+            raise ValueError("heartbeat_timeout must be <= start_to_close_timeout")
+
+        if self.schedule_to_close_timeout is None:
+            return
+
+        if (
+            self.start_to_close_timeout is not None
+            and self.start_to_close_timeout > self.schedule_to_close_timeout
+        ):
+            raise ValueError("start_to_close_timeout must be <= schedule_to_close_timeout")
+
+        if (
+            self.schedule_to_start_timeout is not None
+            and self.schedule_to_start_timeout > self.schedule_to_close_timeout
+        ):
+            raise ValueError("schedule_to_start_timeout must be <= schedule_to_close_timeout")
 
 
 @dataclass
@@ -555,6 +596,8 @@ class StartChildWorkflow:
         size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
         warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
+        self._validate_timeouts()
+
         cmd: dict[str, Any] = {
             "type": "start_child_workflow",
             "workflow_type": self.workflow_type,
@@ -586,6 +629,17 @@ class StartChildWorkflow:
         if self.run_timeout_seconds is not None:
             cmd["run_timeout_seconds"] = self.run_timeout_seconds
         return cmd
+
+    def _validate_timeouts(self) -> None:
+        _validate_positive_timeout("execution_timeout_seconds", self.execution_timeout_seconds)
+        _validate_positive_timeout("run_timeout_seconds", self.run_timeout_seconds)
+
+        if (
+            self.execution_timeout_seconds is not None
+            and self.run_timeout_seconds is not None
+            and self.run_timeout_seconds > self.execution_timeout_seconds
+        ):
+            raise ValueError("run_timeout_seconds must be <= execution_timeout_seconds")
 
 
 @dataclass
