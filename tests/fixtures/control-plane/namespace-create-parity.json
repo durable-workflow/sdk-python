@@ -1,5 +1,6 @@
 {
   "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
   "operation": "namespace.create",
   "request": {
     "method": "POST",
