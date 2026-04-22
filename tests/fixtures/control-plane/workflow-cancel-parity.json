@@ -1,0 +1,31 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow.cancel",
+  "request": {
+    "method": "POST",
+    "path": "/workflows/wf-polyglot-231/cancel"
+  },
+  "semantic_body": {
+    "workflow_id": "wf-polyglot-231",
+    "reason": "customer requested refund"
+  },
+  "cli": {
+    "argv": {
+      "workflow-id": "wf-polyglot-231",
+      "--reason": "customer requested refund"
+    },
+    "expected_body": {
+      "reason": "customer requested refund"
+    }
+  },
+  "sdk_python": {
+    "args": {
+      "workflow_id": "wf-polyglot-231",
+      "reason": "customer requested refund"
+    },
+    "expected_body": {
+      "reason": "customer requested refund"
+    }
+  }
+}

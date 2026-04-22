@@ -346,6 +346,25 @@ class TestCancelWorkflow:
             body = call_args.kwargs.get("json") or call_args[1].get("json")
             assert body["reason"] == "test"
 
+    @pytest.mark.asyncio
+    async def test_cancel_request_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-cancel-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, {"ok": True})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.cancel_workflow(**sdk["args"])
+
+        call_args = mock.call_args
+        assert call_args.args[0] == fixture["request"]["method"]
+        assert call_args.args[1] == f"/api{fixture['request']['path']}"
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+
+        assert body == sdk["expected_body"]
+        assert body["reason"] == fixture["semantic_body"]["reason"]
+        assert sdk["args"]["workflow_id"] == fixture["semantic_body"]["workflow_id"]
+
 
 class TestTerminateWorkflow:
     @pytest.mark.asyncio
