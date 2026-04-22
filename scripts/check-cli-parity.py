@@ -93,7 +93,7 @@ def main() -> int:
         print(f"--- {name} ---", file=sys.stderr)
         print(diff, file=sys.stderr)
     print(
-        "Reconcile the fixtures so both repos agree. See zorporation/durable-workflow#563.",
+        "Reconcile the fixtures so the CLI and Python SDK agree on shared control-plane contracts.",
         file=sys.stderr,
     )
     return 1
