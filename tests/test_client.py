@@ -345,6 +345,62 @@ class TestGetHistory:
         assert history == fixture["response_body"]
 
 
+class TestWorkflowRunVisibility:
+    @pytest.mark.asyncio
+    async def test_list_runs_request_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-list-runs-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.list_workflow_runs(**sdk["args"])
+
+        call_args = mock.call_args
+        assert call_args.args[0] == fixture["request"]["method"]
+        assert call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert call_args.kwargs.get("json") is None
+
+        semantic = fixture["semantic_body"]
+        assert sdk["args"]["workflow_id"] == semantic["workflow_id"]
+        assert result.workflow_id == semantic["workflow_id"]
+        assert result.run_count == semantic["run_count"]
+        assert [run.run_id for run in result.runs] == semantic["run_ids"]
+        assert result.runs[0].workflow_type == fixture["response_body"]["runs"][0]["workflow_type"]
+        assert result.runs[1].is_current_run is True
+
+    @pytest.mark.asyncio
+    async def test_describe_run_request_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-show-run-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            run = await client.describe_workflow_run(**sdk["args"])
+
+        call_args = mock.call_args
+        assert call_args.args[0] == fixture["request"]["method"]
+        assert call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert call_args.kwargs.get("json") is None
+
+        semantic = fixture["semantic_body"]
+        response = fixture["response_body"]
+        assert sdk["args"]["workflow_id"] == semantic["workflow_id"]
+        assert sdk["args"]["run_id"] == semantic["run_id"]
+        assert run.workflow_id == semantic["workflow_id"]
+        assert run.run_id == semantic["run_id"]
+        assert run.workflow_type == response["workflow_type"]
+        assert run.status == response["status"]
+        assert run.status_bucket == response["status_bucket"]
+        assert run.business_key == response["business_key"]
+        assert run.memo == response["memo"]
+        assert run.search_attributes == response["search_attributes"]
+        assert run.actions == response["actions"]
+
+
 class TestSignalWorkflow:
     @pytest.mark.asyncio
     async def test_signal(self, client: Client) -> None:

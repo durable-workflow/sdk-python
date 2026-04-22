@@ -1,0 +1,73 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow.show_run",
+  "request": {
+    "method": "GET",
+    "path": "/workflows/wf-polyglot-231/runs/run-polyglot-231-002"
+  },
+  "semantic_body": {
+    "workflow_id": "wf-polyglot-231",
+    "run_id": "run-polyglot-231-002"
+  },
+  "response_body": {
+    "workflow_id": "wf-polyglot-231",
+    "run_id": "run-polyglot-231-002",
+    "workflow_type": "orders.process",
+    "namespace": "orders-prod",
+    "business_key": "order-42",
+    "status": "running",
+    "status_bucket": "active",
+    "run_number": 2,
+    "run_count": 2,
+    "is_current_run": true,
+    "task_queue": "orders",
+    "compatibility": "build-2026-04-22",
+    "payload_codec": "avro",
+    "execution_timeout_seconds": 86400,
+    "run_timeout_seconds": 3600,
+    "execution_deadline_at": "2026-04-23T05:00:00Z",
+    "run_deadline_at": "2026-04-22T06:05:00Z",
+    "started_at": "2026-04-22T05:05:00Z",
+    "closed_at": null,
+    "last_progress_at": "2026-04-22T05:06:00Z",
+    "closed_reason": null,
+    "wait_kind": "timer",
+    "wait_reason": "shipment deadline",
+    "input": [
+      {
+        "order_id": 42,
+        "priority": "gold"
+      }
+    ],
+    "memo": {
+      "source": "polyglot-fixture"
+    },
+    "search_attributes": {
+      "CustomerId": "cust-42",
+      "Tier": "gold"
+    },
+    "actions": {
+      "can_query": true,
+      "can_signal": true,
+      "can_cancel": true,
+      "can_terminate": true,
+      "can_repair": false,
+      "can_archive": false
+    }
+  },
+  "cli": {
+    "argv": {
+      "workflow-id": "wf-polyglot-231",
+      "run-id": "run-polyglot-231-002",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "describe_workflow_run",
+    "args": {
+      "workflow_id": "wf-polyglot-231",
+      "run_id": "run-polyglot-231-002"
+    }
+  }
+}

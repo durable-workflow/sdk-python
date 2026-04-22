@@ -34,6 +34,8 @@ from .client import (
     WorkflowExecution,
     WorkflowHandle,
     WorkflowList,
+    WorkflowRun,
+    WorkflowRunList,
 )
 from .errors import (
     ActivityCancelled,
@@ -171,6 +173,8 @@ __all__ = [
     "WorkflowHandle",
     "WorkflowList",
     "WorkflowPayloadDecodeError",
+    "WorkflowRun",
+    "WorkflowRunList",
     "activity",
     "parse_auth_composition_contract",
     "sync",

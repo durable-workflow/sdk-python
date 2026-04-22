@@ -1,0 +1,59 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow.list_runs",
+  "request": {
+    "method": "GET",
+    "path": "/workflows/wf-polyglot-231/runs"
+  },
+  "semantic_body": {
+    "workflow_id": "wf-polyglot-231",
+    "run_count": 2,
+    "run_ids": [
+      "run-polyglot-231-001",
+      "run-polyglot-231-002"
+    ]
+  },
+  "response_body": {
+    "workflow_id": "wf-polyglot-231",
+    "run_count": 2,
+    "runs": [
+      {
+        "workflow_id": "wf-polyglot-231",
+        "run_id": "run-polyglot-231-001",
+        "run_number": 1,
+        "workflow_type": "orders.process",
+        "status": "completed",
+        "status_bucket": "completed",
+        "task_queue": "orders",
+        "started_at": "2026-04-22T05:00:00Z",
+        "closed_at": "2026-04-22T05:04:00Z",
+        "is_current_run": false
+      },
+      {
+        "workflow_id": "wf-polyglot-231",
+        "run_id": "run-polyglot-231-002",
+        "run_number": 2,
+        "workflow_type": "orders.process",
+        "status": "running",
+        "status_bucket": "active",
+        "task_queue": "orders",
+        "started_at": "2026-04-22T05:05:00Z",
+        "closed_at": null,
+        "is_current_run": true
+      }
+    ]
+  },
+  "cli": {
+    "argv": {
+      "workflow-id": "wf-polyglot-231",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "list_workflow_runs",
+    "args": {
+      "workflow_id": "wf-polyglot-231"
+    }
+  }
+}

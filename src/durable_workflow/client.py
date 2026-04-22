@@ -106,6 +106,86 @@ class WorkflowList:
 
 
 @dataclass
+class WorkflowRun:
+    """Current server view of one durable run in a workflow execution chain."""
+
+    workflow_id: str
+    run_id: str
+    workflow_type: str
+    status: str | None = None
+    namespace: str | None = None
+    task_queue: str | None = None
+    run_number: int | None = None
+    run_count: int | None = None
+    is_current_run: bool | None = None
+    status_bucket: str | None = None
+    business_key: str | None = None
+    compatibility: str | None = None
+    payload_codec: str | None = None
+    input: Any = None
+    output: Any = None
+    memo: dict[str, Any] | None = None
+    search_attributes: dict[str, Any] | None = None
+    actions: dict[str, Any] | None = None
+    started_at: str | None = None
+    closed_at: str | None = None
+    last_progress_at: str | None = None
+    closed_reason: str | None = None
+    wait_kind: str | None = None
+    wait_reason: str | None = None
+    execution_timeout_seconds: int | None = None
+    run_timeout_seconds: int | None = None
+    execution_deadline_at: str | None = None
+    run_deadline_at: str | None = None
+
+    @classmethod
+    def from_dict(
+        cls, data: dict[str, Any], *, workflow_id: str | None = None, run_id: str | None = None
+    ) -> WorkflowRun:
+        return cls(
+            workflow_id=data.get("workflow_id", workflow_id or ""),
+            run_id=data.get("run_id", run_id or ""),
+            workflow_type=data.get("workflow_type", ""),
+            status=data.get("status"),
+            namespace=data.get("namespace"),
+            task_queue=data.get("task_queue"),
+            run_number=data.get("run_number"),
+            run_count=data.get("run_count"),
+            is_current_run=data.get("is_current_run"),
+            status_bucket=data.get("status_bucket"),
+            business_key=data.get("business_key"),
+            compatibility=data.get("compatibility"),
+            payload_codec=data.get("payload_codec"),
+            input=data.get("input"),
+            output=data.get("output"),
+            memo=data.get("memo") if isinstance(data.get("memo"), dict) else None,
+            search_attributes=(
+                data.get("search_attributes") if isinstance(data.get("search_attributes"), dict) else None
+            ),
+            actions=data.get("actions") if isinstance(data.get("actions"), dict) else None,
+            started_at=data.get("started_at"),
+            closed_at=data.get("closed_at"),
+            last_progress_at=data.get("last_progress_at"),
+            closed_reason=data.get("closed_reason"),
+            wait_kind=data.get("wait_kind"),
+            wait_reason=data.get("wait_reason"),
+            execution_timeout_seconds=data.get("execution_timeout_seconds"),
+            run_timeout_seconds=data.get("run_timeout_seconds"),
+            execution_deadline_at=data.get("execution_deadline_at"),
+            run_deadline_at=data.get("run_deadline_at"),
+        )
+
+
+@dataclass
+class WorkflowRunList:
+    """All known durable runs for one workflow execution, oldest first."""
+
+    workflow_id: str
+    run_count: int
+    runs: list[WorkflowRun]
+
+
+@dataclass
 class TaskQueueTaskAdmission:
     """Workflow/activity admission state for one task queue."""
 
@@ -1015,6 +1095,24 @@ class Client:
         return await self._request(
             "GET", f"/workflows/{workflow_id}/runs/{run_id}/history", context=workflow_id
         )
+
+    async def list_workflow_runs(self, workflow_id: str) -> WorkflowRunList:
+        """List all durable runs in one workflow execution chain, oldest first."""
+        data = await self._request("GET", f"/workflows/{workflow_id}/runs", context=workflow_id)
+        runs = [
+            WorkflowRun.from_dict(item, workflow_id=data.get("workflow_id", workflow_id))
+            for item in data.get("runs", [])
+        ]
+        return WorkflowRunList(
+            workflow_id=data.get("workflow_id", workflow_id),
+            run_count=data.get("run_count", len(runs)),
+            runs=runs,
+        )
+
+    async def describe_workflow_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
+        """Return detailed status, payload, and actionability for one specific workflow run."""
+        data = await self._request("GET", f"/workflows/{workflow_id}/runs/{run_id}", context=workflow_id)
+        return WorkflowRun.from_dict(data, workflow_id=workflow_id, run_id=run_id)
 
     async def send_webhook_bridge_event(
         self,
