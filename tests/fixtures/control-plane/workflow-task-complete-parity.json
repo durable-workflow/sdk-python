@@ -1,0 +1,66 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow-task.complete",
+  "request": {
+    "method": "POST",
+    "path": "/worker/workflow-tasks/workflow-task-231/complete",
+    "body": {
+      "lease_owner": "polyglot-worker-231",
+      "workflow_task_attempt": 2,
+      "commands": [
+        {
+          "type": "schedule_activity",
+          "activity_type": "inventory.sync-page",
+          "task_queue": "external-activities",
+          "input": {
+            "order_id": "order-231",
+            "page": 7
+          }
+        }
+      ]
+    }
+  },
+  "semantic_body": {
+    "task_id": "workflow-task-231",
+    "lease_owner": "polyglot-worker-231",
+    "workflow_task_attempt": 2,
+    "outcome": "completed"
+  },
+  "response_body": {
+    "task_id": "workflow-task-231",
+    "workflow_task_attempt": 2,
+    "outcome": "completed",
+    "run_status": "running"
+  },
+  "cli": {
+    "argv": {
+      "task-id": "workflow-task-231",
+      "attempt": "2",
+      "--lease-owner": "polyglot-worker-231",
+      "--command": [
+        "{\"type\":\"schedule_activity\",\"activity_type\":\"inventory.sync-page\",\"task_queue\":\"external-activities\",\"input\":{\"order_id\":\"order-231\",\"page\":7}}"
+      ],
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "complete_workflow_task",
+    "kwargs": {
+      "task_id": "workflow-task-231",
+      "lease_owner": "polyglot-worker-231",
+      "workflow_task_attempt": 2,
+      "commands": [
+        {
+          "type": "schedule_activity",
+          "activity_type": "inventory.sync-page",
+          "task_queue": "external-activities",
+          "input": {
+            "order_id": "order-231",
+            "page": 7
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow-task.poll",
+  "request": {
+    "method": "POST",
+    "path": "/worker/workflow-tasks/poll",
+    "body": {
+      "worker_id": "polyglot-worker-231",
+      "task_queue": "external-workflows"
+    }
+  },
+  "semantic_body": {
+    "worker_id": "polyglot-worker-231",
+    "task_queue": "external-workflows",
+    "task_id": "workflow-task-231",
+    "workflow_id": "order-231",
+    "run_id": "run-231",
+    "workflow_task_attempt": 2
+  },
+  "response_body": {
+    "task": {
+      "task_id": "workflow-task-231",
+      "workflow_id": "order-231",
+      "run_id": "run-231",
+      "workflow_task_attempt": 2,
+      "lease_owner": "polyglot-worker-231",
+      "history_events": [
+        {
+          "event_id": 1,
+          "event_type": "WorkflowStarted",
+          "payload": {
+            "workflow_type": "orders.fulfillment"
+          }
+        }
+      ]
+    }
+  },
+  "cli": {
+    "argv": {
+      "worker-id": "polyglot-worker-231",
+      "--task-queue": "external-workflows",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "poll_workflow_task",
+    "kwargs": {
+      "worker_id": "polyglot-worker-231",
+      "task_queue": "external-workflows"
+    }
+  }
+}

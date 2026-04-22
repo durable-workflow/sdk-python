@@ -1434,6 +1434,34 @@ class TestErrorMapping:
 
 class TestFailWorkflowTask:
     @pytest.mark.asyncio
+    async def test_poll_workflow_task_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-task-poll-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            task = await client.poll_workflow_task(**fixture["sdk_python"]["kwargs"])
+
+        assert task == fixture["response_body"]["task"]
+        assert task["task_id"] == fixture["semantic_body"]["task_id"]
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+
+    @pytest.mark.asyncio
+    async def test_complete_workflow_task_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-task-complete-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.complete_workflow_task(**fixture["sdk_python"]["kwargs"])
+
+        assert result == fixture["response_body"]
+        assert result["outcome"] == fixture["semantic_body"]["outcome"]
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+
+    @pytest.mark.asyncio
     async def test_body_shape(self, client: Client) -> None:
         resp = _mock_response(200, {"task_id": "t1", "outcome": "failed"})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
