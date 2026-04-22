@@ -237,6 +237,34 @@ class TestDescribeWorkflow:
             assert desc.status == "running"
 
     @pytest.mark.asyncio
+    async def test_describe_request_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-describe-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            desc = await client.describe_workflow(**sdk["args"])
+
+        call_args = mock.call_args
+        assert call_args.args[0] == fixture["request"]["method"]
+        assert call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert call_args.kwargs.get("json") is None
+
+        semantic = fixture["semantic_body"]
+        response = fixture["response_body"]
+        assert sdk["args"]["workflow_id"] == semantic["workflow_id"]
+        assert desc.workflow_id == semantic["workflow_id"]
+        assert desc.run_id == response["run_id"]
+        assert desc.workflow_type == response["workflow_type"]
+        assert desc.namespace == response["namespace"]
+        assert desc.task_queue == response["task_queue"]
+        assert desc.status == response["status"]
+        assert desc.payload_codec == response["payload_codec"]
+        assert desc.input == response["input"]
+
+    @pytest.mark.asyncio
     async def test_envelope_fields(self, client: Client) -> None:
         resp = _mock_response(200, {
             "workflow_id": "wf-1",
