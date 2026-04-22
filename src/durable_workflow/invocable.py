@@ -103,7 +103,7 @@ class InvocableActivityHandler:
                 stack_trace=traceback.format_exc(),
                 retryable=False,
             )
-        except TimeoutError as exc:
+        except (asyncio.TimeoutError, TimeoutError) as exc:
             return self._failure(
                 task_input,
                 started,

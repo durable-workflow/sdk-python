@@ -17,7 +17,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "external-task-input"
 
 
 def load_fixture(name: str) -> dict[str, Any]:
-    return json.loads((FIXTURES / name).read_text())
+    loaded: dict[str, Any] = json.loads((FIXTURES / name).read_text())
+    return loaded
 
 
 def _iso(timestamp: datetime) -> str:
@@ -118,6 +119,8 @@ async def test_invocable_activity_handler_times_out_async_handler_before_success
     assert result.failed is True
     assert result.retryable is True
     assert result.deadline_exceeded is True
+    assert result.failure is not None
+    assert result.failure.timeout_type == "deadline_exceeded"
     assert result.result is None
 
 
