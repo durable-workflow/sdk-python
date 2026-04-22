@@ -1,0 +1,67 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "activity.complete",
+  "request": {
+    "method": "POST",
+    "path": "/worker/activity-tasks/activity-task-231/complete"
+  },
+  "semantic_body": {
+    "task_id": "activity-task-231",
+    "activity_attempt_id": "activity-attempt-231",
+    "lease_owner": "polyglot-worker-231",
+    "result": {
+      "items_processed": 3,
+      "checkpoint": "inventory-page-7"
+    },
+    "outcome": "completed"
+  },
+  "response_body": {
+    "task_id": "activity-task-231",
+    "activity_attempt_id": "activity-attempt-231",
+    "outcome": "completed"
+  },
+  "cli": {
+    "argv": {
+      "task-id": "activity-task-231",
+      "attempt-id": "activity-attempt-231",
+      "--lease-owner": "polyglot-worker-231",
+      "--input": "{\"items_processed\":3,\"checkpoint\":\"inventory-page-7\"}",
+      "--json": true
+    },
+    "expected_body": {
+      "activity_attempt_id": "activity-attempt-231",
+      "lease_owner": "polyglot-worker-231",
+      "result": {
+        "items_processed": 3,
+        "checkpoint": "inventory-page-7"
+      }
+    }
+  },
+  "sdk_python": {
+    "method": "complete_activity_task",
+    "kwargs": {
+      "task_id": "activity-task-231",
+      "activity_attempt_id": "activity-attempt-231",
+      "lease_owner": "polyglot-worker-231",
+      "result": {
+        "items_processed": 3,
+        "checkpoint": "inventory-page-7"
+      },
+      "codec": "json",
+      "activity_name": "inventory.sync-page"
+    },
+    "expected_body": {
+      "activity_attempt_id": "activity-attempt-231",
+      "lease_owner": "polyglot-worker-231"
+    },
+    "payload_envelope": {
+      "field": "result",
+      "codec": "json",
+      "decoded": {
+        "items_processed": 3,
+        "checkpoint": "inventory-page-7"
+      }
+    }
+  }
+}

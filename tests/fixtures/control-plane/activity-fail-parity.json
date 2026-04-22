@@ -1,0 +1,54 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "activity.fail",
+  "request": {
+    "method": "POST",
+    "path": "/worker/activity-tasks/activity-task-231/fail",
+    "body": {
+      "activity_attempt_id": "activity-attempt-231",
+      "lease_owner": "polyglot-worker-231",
+      "failure": {
+        "message": "Inventory service rejected the batch.",
+        "type": "UpstreamRejected",
+        "non_retryable": true
+      }
+    }
+  },
+  "semantic_body": {
+    "task_id": "activity-task-231",
+    "activity_attempt_id": "activity-attempt-231",
+    "lease_owner": "polyglot-worker-231",
+    "message": "Inventory service rejected the batch.",
+    "type": "UpstreamRejected",
+    "non_retryable": true,
+    "outcome": "failed"
+  },
+  "response_body": {
+    "task_id": "activity-task-231",
+    "activity_attempt_id": "activity-attempt-231",
+    "outcome": "failed"
+  },
+  "cli": {
+    "argv": {
+      "task-id": "activity-task-231",
+      "attempt-id": "activity-attempt-231",
+      "--lease-owner": "polyglot-worker-231",
+      "--message": "Inventory service rejected the batch.",
+      "--type": "UpstreamRejected",
+      "--non-retryable": true,
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "fail_activity_task",
+    "kwargs": {
+      "task_id": "activity-task-231",
+      "activity_attempt_id": "activity-attempt-231",
+      "lease_owner": "polyglot-worker-231",
+      "message": "Inventory service rejected the batch.",
+      "failure_type": "UpstreamRejected",
+      "non_retryable": true
+    }
+  }
+}

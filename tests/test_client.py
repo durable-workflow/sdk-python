@@ -1337,6 +1337,41 @@ class TestFailWorkflowTask:
 
 class TestFailActivityTask:
     @pytest.mark.asyncio
+    async def test_complete_activity_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "activity-complete-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        expected = sdk["expected_body"]
+
+        resp = _mock_response(200, fixture["response_body"])
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.complete_activity_task(**sdk["kwargs"])
+
+        assert result == fixture["response_body"]
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+
+        body = mock.call_args.kwargs["json"]
+        assert body["activity_attempt_id"] == expected["activity_attempt_id"]
+        assert body["lease_owner"] == expected["lease_owner"]
+
+        envelope = body[sdk["payload_envelope"]["field"]]
+        assert envelope["codec"] == sdk["payload_envelope"]["codec"]
+        assert serializer.decode_envelope(envelope) == sdk["payload_envelope"]["decoded"]
+
+    @pytest.mark.asyncio
+    async def test_fail_activity_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "activity-fail-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+
+        resp = _mock_response(200, fixture["response_body"])
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.fail_activity_task(**fixture["sdk_python"]["kwargs"])
+
+        assert result == fixture["response_body"]
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+
+    @pytest.mark.asyncio
     async def test_body_shape(self, client: Client) -> None:
         resp = _mock_response(200, {"task_id": "t1", "outcome": "failed"})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
