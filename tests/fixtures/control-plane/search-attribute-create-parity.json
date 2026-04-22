@@ -1,0 +1,36 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "search_attribute.create",
+  "request": {
+    "method": "POST",
+    "path": "/search-attributes",
+    "body": {
+      "name": "OrderStatus",
+      "type": "keyword"
+    }
+  },
+  "semantic_body": {
+    "name": "OrderStatus",
+    "type": "keyword"
+  },
+  "response_body": {
+    "name": "OrderStatus",
+    "type": "keyword",
+    "outcome": "created"
+  },
+  "cli": {
+    "argv": {
+      "name": "OrderStatus",
+      "type": "keyword",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "create_search_attribute",
+    "args": {
+      "name": "OrderStatus",
+      "attribute_type": "keyword"
+    }
+  }
+}

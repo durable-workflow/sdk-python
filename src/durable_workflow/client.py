@@ -70,6 +70,8 @@ def _route_for_metrics(path: str) -> str:
             parts[3] = "{run_id}"
     elif parts[0] == "schedules" and len(parts) >= 2:
         parts[1] = "{schedule_id}"
+    elif parts[0] == "search-attributes" and len(parts) >= 2:
+        parts[1] = "{name}"
     elif parts[:2] == ["bridge-adapters", "webhook"] and len(parts) >= 3:
         parts[2] = "{adapter}"
     elif (
@@ -204,6 +206,24 @@ class WorkflowRunList:
     workflow_id: str
     run_count: int
     runs: list[WorkflowRun]
+
+
+@dataclass
+class SearchAttributeList:
+    """Search attribute definitions available in the current namespace."""
+
+    system_attributes: dict[str, str]
+    custom_attributes: dict[str, str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SearchAttributeList:
+        system = data.get("system_attributes")
+        custom = data.get("custom_attributes")
+
+        return cls(
+            system_attributes=dict(system) if isinstance(system, dict) else {},
+            custom_attributes=dict(custom) if isinstance(custom, dict) else {},
+        )
 
 
 @dataclass
@@ -997,6 +1017,51 @@ class Client:
                 },
             )
         return TaskQueueDescription.from_dict(data)
+
+    # ── Search attributes ─────────────────────────────────────────────
+    async def list_search_attributes(self) -> SearchAttributeList:
+        """List system and custom search attribute definitions for this namespace."""
+        data = await self._request("GET", "/search-attributes")
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_search_attribute_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return SearchAttributeList.from_dict(data)
+
+    async def create_search_attribute(self, name: str, attribute_type: str) -> dict[str, Any]:
+        """Register a custom search attribute and return the server response."""
+        data = await self._request(
+            "POST",
+            "/search-attributes",
+            json={"name": name, "type": attribute_type},
+            context=name,
+        )
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_search_attribute_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return data
+
+    async def delete_search_attribute(self, name: str) -> dict[str, Any]:
+        """Remove a custom search attribute and return the server response."""
+        data = await self._request("DELETE", f"/search-attributes/{quote(name, safe='')}", context=name)
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_search_attribute_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return data
 
     # ── Workflows ──────────────────────────────────────────────────────
     async def start_workflow(

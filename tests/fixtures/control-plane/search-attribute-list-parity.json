@@ -1,0 +1,38 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "search_attribute.list",
+  "request": {
+    "method": "GET",
+    "path": "/search-attributes"
+  },
+  "semantic_body": {
+    "system_attributes": {
+      "WorkflowType": "keyword",
+      "StartTime": "datetime"
+    },
+    "custom_attributes": {
+      "OrderStatus": "keyword",
+      "Priority": "int"
+    }
+  },
+  "response_body": {
+    "system_attributes": {
+      "WorkflowType": "keyword",
+      "StartTime": "datetime"
+    },
+    "custom_attributes": {
+      "OrderStatus": "keyword",
+      "Priority": "int"
+    }
+  },
+  "cli": {
+    "argv": {
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "list_search_attributes",
+    "args": {}
+  }
+}

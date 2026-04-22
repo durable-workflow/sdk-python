@@ -1,0 +1,29 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "search_attribute.delete",
+  "request": {
+    "method": "DELETE",
+    "path": "/search-attributes/OrderStatus"
+  },
+  "semantic_body": {
+    "name": "OrderStatus",
+    "outcome": "deleted"
+  },
+  "response_body": {
+    "name": "OrderStatus",
+    "outcome": "deleted"
+  },
+  "cli": {
+    "argv": {
+      "name": "OrderStatus",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "delete_search_attribute",
+    "args": {
+      "name": "OrderStatus"
+    }
+  }
+}

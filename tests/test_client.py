@@ -1074,6 +1074,55 @@ class TestTaskQueues:
             await client.describe_task_queue("orders")
 
 
+class TestSearchAttributes:
+    @pytest.mark.asyncio
+    async def test_list_search_attributes_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "search-attribute-list-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.list_search_attributes(**fixture["sdk_python"]["args"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert result.system_attributes == fixture["semantic_body"]["system_attributes"]
+        assert result.custom_attributes == fixture["semantic_body"]["custom_attributes"]
+
+    @pytest.mark.asyncio
+    async def test_create_search_attribute_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "search-attribute-create-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.create_search_attribute(**fixture["sdk_python"]["args"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+        assert result == fixture["response_body"]
+
+    @pytest.mark.asyncio
+    async def test_delete_search_attribute_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "search-attribute-delete-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.delete_search_attribute(**fixture["sdk_python"]["args"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert result == fixture["response_body"]
+
+    @pytest.mark.asyncio
+    async def test_search_attribute_name_is_url_encoded(self, client: Client) -> None:
+        resp = _mock_response(200, {"name": "Customer Status", "outcome": "deleted"})
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.delete_search_attribute("Customer Status")
+
+        assert mock.call_args.args[:2] == ("DELETE", "/api/search-attributes/Customer%20Status")
+
+
 class TestSchedules:
     @pytest.mark.asyncio
     async def test_create_schedule_matches_polyglot_fixture(self, client: Client) -> None:
