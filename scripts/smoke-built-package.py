@@ -49,6 +49,8 @@ def main() -> int:
     wheel = find_wheel((repo_root / args.dist).resolve() if not args.dist.is_absolute() else args.dist.resolve())
 
     smoke_code = r'''
+import importlib
+import importlib.metadata
 import os
 import re
 from pathlib import Path
@@ -74,6 +76,44 @@ package_file = Path(durable_workflow.__file__).resolve()
 if package_file.is_relative_to(repo_root):
     raise AssertionError(f"durable_workflow imported from source checkout: {package_file}")
 
+metadata_version = importlib.metadata.version("durable-workflow")
+if durable_workflow.__version__ != metadata_version:
+    raise AssertionError(
+        f"durable_workflow.__version__={durable_workflow.__version__!r} "
+        f"does not match installed metadata {metadata_version!r}"
+    )
+
+typed_marker = package_file.parent / "py.typed"
+if not typed_marker.is_file():
+    raise AssertionError(f"installed package is missing PEP 561 marker: {typed_marker}")
+
+missing_exports = [name for name in durable_workflow.__all__ if not hasattr(durable_workflow, name)]
+if missing_exports:
+    raise AssertionError(f"durable_workflow.__all__ names missing exports: {missing_exports}")
+
+reference_modules = [
+    "durable_workflow.activity",
+    "durable_workflow.auth_composition",
+    "durable_workflow.client",
+    "durable_workflow.errors",
+    "durable_workflow.external_storage",
+    "durable_workflow.external_task_input",
+    "durable_workflow.external_task_result",
+    "durable_workflow.invocable",
+    "durable_workflow.metrics",
+    "durable_workflow.retry_policy",
+    "durable_workflow.serializer",
+    "durable_workflow.sync",
+    "durable_workflow.testing",
+    "durable_workflow.worker",
+    "durable_workflow.workflow",
+]
+for module_name in reference_modules:
+    module = importlib.import_module(module_name)
+    module_file = Path(module.__file__).resolve()
+    if module_file.is_relative_to(repo_root):
+        raise AssertionError(f"{module_name} imported from source checkout: {module_file}")
+
 readme = Path(os.environ["DW_README"])
 text = readme.read_text(encoding="utf-8")
 match = re.search(r"## Quickstart\s+```python\n(?P<code>.*?)\n```", text, flags=re.DOTALL)
@@ -96,7 +136,7 @@ final = replay(workflow_class, [completed(greet("world"))], ["world"]).commands[
 assert isinstance(final, CompleteWorkflow)
 assert final.result == "hello, world"
 print(f"README quickstart smoke passed using {package_file}")
-'''
+    '''
 
     with tempfile.TemporaryDirectory(prefix="dw-sdk-wheel-smoke-") as tmp:
         tmp_path = Path(tmp)
