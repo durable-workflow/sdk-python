@@ -4,6 +4,7 @@ import json
 import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -685,6 +686,32 @@ class TestListWorkflows:
             assert len(result.executions) == 2
             assert result.next_page_token == "abc"
             assert result.executions[0].workflow_id == "wf-1"
+
+    @pytest.mark.asyncio
+    async def test_list_request_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-list-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk_args = fixture["sdk_python"]["args"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.list_workflows(**sdk_args)
+
+        call_args = mock.call_args
+        assert call_args.args[0] == fixture["request"]["method"]
+
+        url = urlsplit(call_args.args[1])
+        assert url.path == f"/api{fixture['request']['path']}"
+        assert parse_qs(url.query) == {
+            "workflow_type": [fixture["semantic_body"]["workflow_type"]],
+            "status": [fixture["semantic_body"]["status"]],
+            "query": [fixture["semantic_body"]["query"]],
+            "page_size": [str(fixture["semantic_body"]["page_size"])],
+        }
+
+        assert [execution.workflow_id for execution in result.executions] == fixture["semantic_body"]["workflow_ids"]
+        assert result.next_page_token == fixture["semantic_body"]["next_page_token"]
 
 
 class TestTaskQueues:

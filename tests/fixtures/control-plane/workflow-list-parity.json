@@ -1,0 +1,69 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow.list",
+  "request": {
+    "method": "GET",
+    "path": "/workflows"
+  },
+  "semantic_body": {
+    "workflow_type": "orders.process",
+    "status": "running",
+    "query": "CustomerId=\"42\"",
+    "page_size": 25,
+    "workflow_ids": [
+      "wf-polyglot-list-1",
+      "wf-polyglot-list-2"
+    ],
+    "next_page_token": "next-polyglot-page"
+  },
+  "response_body": {
+    "workflows": [
+      {
+        "workflow_id": "wf-polyglot-list-1",
+        "run_id": "run-polyglot-list-1",
+        "workflow_type": "orders.process",
+        "business_key": "order-42",
+        "status": "running",
+        "task_queue": "orders",
+        "started_at": "2026-04-22T05:00:00Z",
+        "closed_at": null
+      },
+      {
+        "workflow_id": "wf-polyglot-list-2",
+        "run_id": "run-polyglot-list-2",
+        "workflow_type": "orders.process",
+        "business_key": "order-43",
+        "status": "running",
+        "task_queue": "orders",
+        "started_at": "2026-04-22T05:01:00Z",
+        "closed_at": null
+      }
+    ],
+    "next_page_token": "next-polyglot-page"
+  },
+  "cli": {
+    "argv": {
+      "--type": "orders.process",
+      "--status": "running",
+      "--query": "CustomerId=\"42\"",
+      "--limit": "25",
+      "--json": true
+    },
+    "expected_query": {
+      "workflow_type": "orders.process",
+      "status": "running",
+      "query": "CustomerId=\"42\"",
+      "page_size": 25
+    }
+  },
+  "sdk_python": {
+    "method": "list_workflows",
+    "args": {
+      "workflow_type": "orders.process",
+      "status": "running",
+      "query": "CustomerId=\"42\"",
+      "page_size": 25
+    }
+  }
+}

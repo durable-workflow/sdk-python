@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -992,7 +992,7 @@ class Client:
         if next_page_token is not None:
             params["next_page_token"] = next_page_token
 
-        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        qs = urlencode(params)
         path = f"/workflows?{qs}" if qs else "/workflows"
         data = await self._request("GET", path)
         items = data.get("workflows", [])
