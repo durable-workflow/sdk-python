@@ -25,6 +25,7 @@ pip install 'durable-workflow[prometheus]'
 - **[Metrics](reference/metrics.md)** — pluggable recorders, including a Prometheus adapter.
 - **[Serializer](reference/serializer.md)** — payload encoding and decoding helpers.
 - **[External storage](reference/external_storage.md)** — reference envelopes and driver contracts for large-payload offload.
+- **[Invocable carriers](reference/invocable.md)** — activity-grade external-task adapter for HTTP and serverless handlers.
 - **[Sync helpers](reference/sync.md)** — blocking wrappers around the async client for scripts and tests.
 
 ## Versioning
