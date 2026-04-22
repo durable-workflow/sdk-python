@@ -6,17 +6,17 @@ tests/fixtures/control-plane/. Each copy projects the language-specific call
 (the `cli` and `sdk_python` sections) alongside the shared wire contract
 (`schema`, `version`, `operation`, `request`, `semantic_body`, `response_body`).
 
-This script enforces that whenever a fixture file exists in both repos, every
-byte of that file matches. Byte-level parity catches both shared-contract
-drift (a request body that differs between CLI and SDK tests) and
-language-projection drift (a CLI argv spelling in the SDK copy that no longer
-matches the CLI copy's argv spelling).
+This script enforces that both repos carry the same fixture filenames and that
+every fixture is byte-identical. Byte-level parity catches both
+shared-contract drift (a request body that differs between CLI and SDK tests)
+and language-projection drift (a CLI argv spelling in the SDK copy that no
+longer matches the CLI copy's argv spelling).
 
 Usage:
     python scripts/check-cli-parity.py --cli path/to/cli-checkout
 
-Exits 0 if every common fixture is byte-identical. Exits 1 with a unified diff
-for each divergent fixture otherwise.
+Exits 0 if both repos carry the same byte-identical fixtures. Exits 1 with a
+missing-file report or unified diff for each divergent fixture otherwise.
 """
 
 from __future__ import annotations
@@ -55,7 +55,9 @@ def main() -> int:
     sdk_fixtures = list_fixtures(args.self)
     cli_fixtures = list_fixtures(args.cli)
 
-    common = sorted(set(sdk_fixtures) & set(cli_fixtures))
+    sdk_names = set(sdk_fixtures)
+    cli_names = set(cli_fixtures)
+    common = sorted(sdk_names & cli_names)
     if not common:
         print(
             "No shared parity fixtures found. Check that the CLI checkout path is correct.",
@@ -63,6 +65,8 @@ def main() -> int:
         )
         return 1
 
+    cli_only = sorted(cli_names - sdk_names)
+    sdk_only = sorted(sdk_names - cli_names)
     divergent: list[tuple[str, str]] = []
     for name in common:
         sdk_bytes = sdk_fixtures[name].read_bytes()
@@ -84,9 +88,29 @@ def main() -> int:
     print(
         f"Compared {len(common)} shared parity fixture(s) between CLI and SDK-Python."
     )
-    if not divergent:
+    if not cli_only and not sdk_only and not divergent:
         print("All shared fixtures are byte-identical.")
         return 0
+
+    if cli_only or sdk_only:
+        print("\nParity fixture filename drift detected:\n", file=sys.stderr)
+        if cli_only:
+            print("Present in CLI only:", file=sys.stderr)
+            for name in cli_only:
+                print(f"  - {FIXTURES_SUBPATH / name}", file=sys.stderr)
+            print(file=sys.stderr)
+        if sdk_only:
+            print("Present in SDK-Python only:", file=sys.stderr)
+            for name in sdk_only:
+                print(f"  - {FIXTURES_SUBPATH / name}", file=sys.stderr)
+            print(file=sys.stderr)
+
+    if not divergent:
+        print(
+            "Reconcile the fixture set so both repos advertise the same shared control-plane operations.",
+            file=sys.stderr,
+        )
+        return 1
 
     print(f"\n{len(divergent)} fixture(s) drifted:\n", file=sys.stderr)
     for name, diff in divergent:
