@@ -72,6 +72,8 @@ def _route_for_metrics(path: str) -> str:
         parts[1] = "{schedule_id}"
     elif parts[0] == "search-attributes" and len(parts) >= 2:
         parts[1] = "{name}"
+    elif parts[0] == "workers" and len(parts) >= 2:
+        parts[1] = "{worker_id}"
     elif parts[:2] == ["bridge-adapters", "webhook"] and len(parts) >= 3:
         parts[2] = "{adapter}"
     elif (
@@ -381,6 +383,58 @@ class TaskQueueList:
 
     namespace: str | None
     task_queues: list[TaskQueueDescription]
+
+
+@dataclass
+class WorkerDescription:
+    """Current server view of one registered worker."""
+
+    worker_id: str
+    task_queue: str | None = None
+    runtime: str | None = None
+    namespace: str | None = None
+    sdk_version: str | None = None
+    build_id: str | None = None
+    status: str | None = None
+    max_concurrent_workflow_tasks: int | None = None
+    max_concurrent_activity_tasks: int | None = None
+    supported_workflow_types: list[str] | None = None
+    supported_activity_types: list[str] | None = None
+    last_heartbeat_at: str | None = None
+    registered_at: str | None = None
+    updated_at: str | None = None
+    raw: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], *, worker_id: str | None = None) -> WorkerDescription:
+        workflow_types = data.get("supported_workflow_types")
+        activity_types = data.get("supported_activity_types")
+
+        return cls(
+            worker_id=data.get("worker_id", worker_id or ""),
+            task_queue=data.get("task_queue"),
+            runtime=data.get("runtime"),
+            namespace=data.get("namespace"),
+            sdk_version=data.get("sdk_version"),
+            build_id=data.get("build_id"),
+            status=data.get("status"),
+            max_concurrent_workflow_tasks=data.get("max_concurrent_workflow_tasks"),
+            max_concurrent_activity_tasks=data.get("max_concurrent_activity_tasks"),
+            supported_workflow_types=workflow_types if isinstance(workflow_types, list) else None,
+            supported_activity_types=activity_types if isinstance(activity_types, list) else None,
+            last_heartbeat_at=data.get("last_heartbeat_at"),
+            registered_at=data.get("registered_at"),
+            updated_at=data.get("updated_at"),
+            raw=data,
+        )
+
+
+@dataclass
+class WorkerList:
+    """Registered worker roster for one namespace."""
+
+    namespace: str | None
+    workers: list[WorkerDescription]
 
 
 @dataclass
@@ -1063,6 +1117,70 @@ class Client:
             )
         return data
 
+    # ── Workers ───────────────────────────────────────────────────────
+    async def list_workers(
+        self,
+        *,
+        task_queue: str | None = None,
+        status: str | None = None,
+    ) -> WorkerList:
+        """List registered workers in the current namespace."""
+        params: dict[str, str] = {}
+        if task_queue is not None:
+            params["task_queue"] = task_queue
+        if status is not None:
+            params["status"] = status
+
+        path = "/workers"
+        if params:
+            path = f"{path}?{urlencode(params)}"
+
+        data = await self._request("GET", path)
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_worker_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        items = data.get("workers", [])
+
+        return WorkerList(
+            namespace=data.get("namespace"),
+            workers=[
+                WorkerDescription.from_dict(item)
+                for item in items
+                if isinstance(item, dict)
+            ],
+        )
+
+    async def describe_worker(self, worker_id: str) -> WorkerDescription:
+        """Return runtime, capacity, heartbeat, and type support for one worker."""
+        data = await self._request("GET", f"/workers/{quote(worker_id, safe='')}", context=worker_id)
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_worker_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return WorkerDescription.from_dict(data, worker_id=worker_id)
+
+    async def deregister_worker(self, worker_id: str) -> dict[str, Any]:
+        """Remove a stale or retired worker from the server roster."""
+        data = await self._request("DELETE", f"/workers/{quote(worker_id, safe='')}", context=worker_id)
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_worker_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return data
+
     # ── Workflows ──────────────────────────────────────────────────────
     async def start_workflow(
         self,
@@ -1701,6 +1819,7 @@ class Client:
         max_concurrent_activity_tasks: int | None = None,
         runtime: str = "python",
         sdk_version: str | None = None,
+        build_id: str | None = None,
     ) -> Any:
         """Register this process with the server as a worker for ``task_queue``.
 
@@ -1725,6 +1844,8 @@ class Client:
         }
         if workflow_definition_fingerprints is not None:
             body["workflow_definition_fingerprints"] = workflow_definition_fingerprints
+        if build_id is not None:
+            body["build_id"] = build_id
         if max_concurrent_workflow_tasks is not None:
             body["max_concurrent_workflow_tasks"] = max_concurrent_workflow_tasks
         if max_concurrent_activity_tasks is not None:

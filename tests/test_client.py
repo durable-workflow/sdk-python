@@ -1692,6 +1692,20 @@ class TestGetResult:
 
 class TestRegisterWorker:
     @pytest.mark.asyncio
+    async def test_register_worker_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "worker-register-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(201, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.register_worker(**fixture["sdk_python"]["kwargs"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+        assert result == fixture["response_body"]
+        assert result["worker_id"] == fixture["semantic_body"]["worker_id"]
+
+    @pytest.mark.asyncio
     async def test_register(self, client: Client) -> None:
         resp = _mock_response(201, {"worker_id": "w1", "registered": True})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
@@ -1761,6 +1775,74 @@ class TestRegisterWorker:
             )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["sdk_version"] == "custom-runtime/9.9.9"
+
+
+class TestWorkers:
+    @pytest.mark.asyncio
+    async def test_list_workers_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "worker-list-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.list_workers(**fixture["sdk_python"]["kwargs"])
+
+        method, path = mock.call_args.args[:2]
+        split = urlsplit(path)
+        assert method == fixture["request"]["method"]
+        assert split.path == f"/api{fixture['request']['path']}"
+        assert {key: values[0] for key, values in parse_qs(split.query).items()} == fixture["request"]["query"]
+        assert result.namespace == fixture["semantic_body"]["namespace"]
+        assert [worker.worker_id for worker in result.workers] == fixture["semantic_body"]["worker_ids"]
+        assert result.workers[0].task_queue == fixture["semantic_body"]["task_queue"]
+
+    @pytest.mark.asyncio
+    async def test_describe_worker_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "worker-describe-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.describe_worker(**fixture["sdk_python"]["args"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert result.worker_id == fixture["semantic_body"]["worker_id"]
+        assert result.namespace == fixture["semantic_body"]["namespace"]
+        assert result.runtime == fixture["semantic_body"]["runtime"]
+        assert result.status == fixture["semantic_body"]["status"]
+        assert result.supported_activity_types == fixture["response_body"]["supported_activity_types"]
+
+    @pytest.mark.asyncio
+    async def test_deregister_worker_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "worker-deregister-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.deregister_worker(**fixture["sdk_python"]["args"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert result == fixture["response_body"]
+        assert result["outcome"] == fixture["semantic_body"]["outcome"]
+
+    @pytest.mark.asyncio
+    async def test_worker_id_is_url_encoded(self, client: Client) -> None:
+        resp = _mock_response(200, {"worker_id": "worker with spaces", "status": "active"})
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.describe_worker("worker with spaces")
+
+        assert mock.call_args.args[:2] == ("GET", "/api/workers/worker%20with%20spaces")
+
+    @pytest.mark.asyncio
+    async def test_list_workers_rejects_non_object_response(self, client: Client) -> None:
+        resp = _mock_response(200, ["not", "an", "object"])  # type: ignore[arg-type]
+
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(ServerError, match="invalid_worker_response"),
+        ):
+            await client.list_workers()
 
 
 class TestQueryTasks:

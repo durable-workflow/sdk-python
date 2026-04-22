@@ -1,0 +1,29 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "worker.deregister",
+  "request": {
+    "method": "DELETE",
+    "path": "/workers/polyglot-worker-231"
+  },
+  "semantic_body": {
+    "worker_id": "polyglot-worker-231",
+    "outcome": "deregistered"
+  },
+  "response_body": {
+    "worker_id": "polyglot-worker-231",
+    "outcome": "deregistered"
+  },
+  "cli": {
+    "argv": {
+      "worker-id": "polyglot-worker-231",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "deregister_worker",
+    "args": {
+      "worker_id": "polyglot-worker-231"
+    }
+  }
+}

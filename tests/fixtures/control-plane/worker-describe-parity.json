@@ -1,0 +1,48 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "worker.describe",
+  "request": {
+    "method": "GET",
+    "path": "/workers/polyglot-worker-231"
+  },
+  "semantic_body": {
+    "worker_id": "polyglot-worker-231",
+    "namespace": "orders-prod",
+    "task_queue": "external-workflows",
+    "runtime": "external",
+    "status": "active"
+  },
+  "response_body": {
+    "worker_id": "polyglot-worker-231",
+    "namespace": "orders-prod",
+    "task_queue": "external-workflows",
+    "runtime": "external",
+    "sdk_version": "durable-worker/1.2.3",
+    "build_id": "build-231",
+    "status": "active",
+    "max_concurrent_workflow_tasks": 4,
+    "max_concurrent_activity_tasks": 8,
+    "supported_workflow_types": [
+      "orders.fulfillment"
+    ],
+    "supported_activity_types": [
+      "inventory.sync"
+    ],
+    "last_heartbeat_at": "2026-04-22T09:30:00Z",
+    "registered_at": "2026-04-22T09:00:00Z",
+    "updated_at": "2026-04-22T09:30:00Z"
+  },
+  "cli": {
+    "argv": {
+      "worker-id": "polyglot-worker-231",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "describe_worker",
+    "args": {
+      "worker_id": "polyglot-worker-231"
+    }
+  }
+}

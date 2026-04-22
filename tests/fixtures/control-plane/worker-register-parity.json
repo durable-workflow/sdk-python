@@ -1,0 +1,73 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "worker.register",
+  "request": {
+    "method": "POST",
+    "path": "/worker/register",
+    "body": {
+      "worker_id": "polyglot-worker-231",
+      "task_queue": "external-workflows",
+      "runtime": "external",
+      "sdk_version": "durable-worker/1.2.3",
+      "build_id": "build-231",
+      "supported_workflow_types": [
+        "orders.fulfillment"
+      ],
+      "supported_activity_types": [
+        "inventory.sync"
+      ],
+      "max_concurrent_workflow_tasks": 4,
+      "max_concurrent_activity_tasks": 8
+    }
+  },
+  "semantic_body": {
+    "worker_id": "polyglot-worker-231",
+    "task_queue": "external-workflows",
+    "runtime": "external",
+    "status": "active"
+  },
+  "response_body": {
+    "worker_id": "polyglot-worker-231",
+    "task_queue": "external-workflows",
+    "runtime": "external",
+    "status": "active",
+    "registered": true
+  },
+  "cli": {
+    "argv": {
+      "worker-id": "polyglot-worker-231",
+      "--task-queue": "external-workflows",
+      "--runtime": "external",
+      "--sdk-version": "durable-worker/1.2.3",
+      "--build-id": "build-231",
+      "--workflow-type": [
+        "orders.fulfillment"
+      ],
+      "--activity-type": [
+        "inventory.sync"
+      ],
+      "--max-workflow-tasks": "4",
+      "--max-activity-tasks": "8",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "register_worker",
+    "kwargs": {
+      "worker_id": "polyglot-worker-231",
+      "task_queue": "external-workflows",
+      "runtime": "external",
+      "sdk_version": "durable-worker/1.2.3",
+      "build_id": "build-231",
+      "supported_workflow_types": [
+        "orders.fulfillment"
+      ],
+      "supported_activity_types": [
+        "inventory.sync"
+      ],
+      "max_concurrent_workflow_tasks": 4,
+      "max_concurrent_activity_tasks": 8
+    }
+  }
+}
