@@ -1,0 +1,55 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "query-task.fail",
+  "request": {
+    "method": "POST",
+    "path": "/worker/query-tasks/query-task-231/fail",
+    "body": {
+      "lease_owner": "polyglot-worker-231",
+      "query_task_attempt": 1,
+      "failure": {
+        "message": "unknown query current_status_v3",
+        "reason": "rejected_unknown_query",
+        "type": "QueryFailed",
+        "stack_trace": "query handler not registered"
+      }
+    }
+  },
+  "semantic_body": {
+    "query_task_id": "query-task-231",
+    "lease_owner": "polyglot-worker-231",
+    "query_task_attempt": 1,
+    "reason": "rejected_unknown_query",
+    "outcome": "failed"
+  },
+  "response_body": {
+    "query_task_id": "query-task-231",
+    "query_task_attempt": 1,
+    "outcome": "failed"
+  },
+  "cli": {
+    "argv": {
+      "query-task-id": "query-task-231",
+      "attempt": "1",
+      "--lease-owner": "polyglot-worker-231",
+      "--message": "unknown query current_status_v3",
+      "--reason": "rejected_unknown_query",
+      "--type": "QueryFailed",
+      "--stack-trace": "query handler not registered",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "fail_query_task",
+    "kwargs": {
+      "query_task_id": "query-task-231",
+      "lease_owner": "polyglot-worker-231",
+      "query_task_attempt": 1,
+      "message": "unknown query current_status_v3",
+      "reason": "rejected_unknown_query",
+      "failure_type": "QueryFailed",
+      "stack_trace": "query handler not registered"
+    }
+  }
+}

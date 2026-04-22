@@ -1,0 +1,57 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "query-task.complete",
+  "request": {
+    "method": "POST",
+    "path": "/worker/query-tasks/query-task-231/complete",
+    "body": {
+      "lease_owner": "polyglot-worker-231",
+      "query_task_attempt": 1,
+      "result": {
+        "status": "ready",
+        "open_items": 3
+      },
+      "result_envelope": {
+        "codec": "json",
+        "blob": "{\"status\":\"ready\",\"open_items\":3}"
+      }
+    }
+  },
+  "semantic_body": {
+    "query_task_id": "query-task-231",
+    "lease_owner": "polyglot-worker-231",
+    "query_task_attempt": 1,
+    "outcome": "completed"
+  },
+  "response_body": {
+    "query_task_id": "query-task-231",
+    "query_task_attempt": 1,
+    "outcome": "completed"
+  },
+  "cli": {
+    "argv": {
+      "query-task-id": "query-task-231",
+      "attempt": "1",
+      "--lease-owner": "polyglot-worker-231",
+      "--result": "{\"status\":\"ready\",\"open_items\":3}",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "complete_query_task",
+    "kwargs": {
+      "query_task_id": "query-task-231",
+      "lease_owner": "polyglot-worker-231",
+      "query_task_attempt": 1,
+      "result": {
+        "status": "ready",
+        "open_items": 3
+      },
+      "codec": "json",
+      "workflow_id": "order-231",
+      "run_id": "run-231",
+      "query_name": "current_status"
+    }
+  }
+}

@@ -1972,6 +1972,48 @@ class TestWorkers:
 
 class TestQueryTasks:
     @pytest.mark.asyncio
+    async def test_poll_query_task_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "query-task-poll-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            task = await client.poll_query_task(**fixture["sdk_python"]["kwargs"])
+
+        assert task == fixture["response_body"]["task"]
+        assert task["query_task_id"] == fixture["semantic_body"]["query_task_id"]
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+
+    @pytest.mark.asyncio
+    async def test_complete_query_task_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "query-task-complete-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.complete_query_task(**fixture["sdk_python"]["kwargs"])
+
+        assert result == fixture["response_body"]
+        assert result["outcome"] == fixture["semantic_body"]["outcome"]
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+
+    @pytest.mark.asyncio
+    async def test_fail_query_task_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "query-task-fail-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.fail_query_task(**fixture["sdk_python"]["kwargs"])
+
+        assert result == fixture["response_body"]
+        assert result["outcome"] == fixture["semantic_body"]["outcome"]
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+
+    @pytest.mark.asyncio
     async def test_poll_query_task_returns_task_payload(self, client: Client) -> None:
         resp = _mock_response(200, {"task": {"query_task_id": "qt1"}})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
