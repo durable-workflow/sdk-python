@@ -17,7 +17,7 @@
     "workflow_task_attempt": 2,
     "next_history_page_token": "history-page-2",
     "total_history_events": 4,
-    "next_history_page_token_response": "history-page-3"
+    "response_next_history_page_token": "history-page-3"
   },
   "response_body": {
     "history_events": [
