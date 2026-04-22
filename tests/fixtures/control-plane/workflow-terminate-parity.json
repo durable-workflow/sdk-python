@@ -1,0 +1,31 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "workflow.terminate",
+  "request": {
+    "method": "POST",
+    "path": "/workflows/wf-polyglot-231/terminate"
+  },
+  "semantic_body": {
+    "workflow_id": "wf-polyglot-231",
+    "reason": "operator forced failover"
+  },
+  "cli": {
+    "argv": {
+      "workflow-id": "wf-polyglot-231",
+      "--reason": "operator forced failover"
+    },
+    "expected_body": {
+      "reason": "operator forced failover"
+    }
+  },
+  "sdk_python": {
+    "args": {
+      "workflow_id": "wf-polyglot-231",
+      "reason": "operator forced failover"
+    },
+    "expected_body": {
+      "reason": "operator forced failover"
+    }
+  }
+}
