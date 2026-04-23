@@ -927,6 +927,7 @@ class TestNamespaces:
         assert result.external_payload_storage.driver == fixture["semantic_body"]["driver"]
         assert result.external_payload_storage.enabled is fixture["semantic_body"]["enabled"]
         assert result.external_payload_storage.threshold_bytes == fixture["semantic_body"]["threshold_bytes"]
+        assert result.external_payload_storage.config["disk"] == fixture["semantic_body"]["disk"]
         assert result.external_payload_storage.config["bucket"] == fixture["semantic_body"]["bucket"]
         assert result.external_payload_storage.prefix == fixture["semantic_body"]["prefix"]
 

@@ -10,6 +10,7 @@
       "enabled": true,
       "threshold_bytes": 2097152,
       "config": {
+        "disk": "external-payload-objects",
         "bucket": "dw-payloads",
         "prefix": "billing/",
         "region": "us-east-1",
@@ -23,6 +24,7 @@
       "name": "billing",
       "driver": "s3",
       "--threshold-bytes": "2097152",
+      "--disk": "external-payload-objects",
       "--bucket": "dw-payloads",
       "--prefix": "billing/",
       "--region": "us-east-1",
@@ -39,6 +41,7 @@
       "enabled": true,
       "threshold_bytes": 2097152,
       "config": {
+        "disk": "external-payload-objects",
         "bucket": "dw-payloads",
         "prefix": "billing/",
         "region": "us-east-1",
@@ -54,6 +57,7 @@
       "enabled": true,
       "threshold_bytes": 2097152,
       "config": {
+        "disk": "external-payload-objects",
         "bucket": "dw-payloads",
         "prefix": "billing/",
         "region": "us-east-1",
@@ -68,6 +72,7 @@
     "driver": "s3",
     "enabled": true,
     "threshold_bytes": 2097152,
+    "disk": "external-payload-objects",
     "bucket": "dw-payloads",
     "prefix": "billing/"
   }
