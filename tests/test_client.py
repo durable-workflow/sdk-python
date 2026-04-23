@@ -932,6 +932,34 @@ class TestNamespaces:
         assert result.external_payload_storage.prefix == fixture["semantic_body"]["prefix"]
 
     @pytest.mark.asyncio
+    async def test_set_namespace_external_storage_accepts_deprecated_namespace_alias(
+        self, client: Client
+    ) -> None:
+        resp = _mock_response(200, {"name": "billing"})
+
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock,
+            pytest.warns(DeprecationWarning, match="namespace.*deprecated"),
+        ):
+            await client.set_namespace_external_storage(namespace="billing", driver="local")
+
+        assert mock.call_args.args[:2] == ("PUT", "/api/namespaces/billing/external-storage")
+
+    @pytest.mark.asyncio
+    async def test_set_namespace_external_storage_rejects_both_name_and_alias(
+        self, client: Client
+    ) -> None:
+        with pytest.raises(TypeError, match="both 'name' and the deprecated alias"):
+            await client.set_namespace_external_storage(
+                "billing", namespace="other", driver="local"
+            )
+
+    @pytest.mark.asyncio
+    async def test_set_namespace_external_storage_requires_name(self, client: Client) -> None:
+        with pytest.raises(TypeError, match="missing required argument: 'name'"):
+            await client.set_namespace_external_storage(driver="local")
+
+    @pytest.mark.asyncio
     async def test_namespace_name_is_url_encoded(self, client: Client) -> None:
         resp = _mock_response(200, {"name": "billing reports"})
 

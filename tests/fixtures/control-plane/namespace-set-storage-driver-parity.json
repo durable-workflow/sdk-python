@@ -36,7 +36,7 @@
   "sdk_python": {
     "method": "set_namespace_external_storage",
     "args": {
-      "namespace": "billing",
+      "name": "billing",
       "driver": "s3",
       "enabled": true,
       "threshold_bytes": 2097152,

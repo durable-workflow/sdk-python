@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
@@ -85,6 +86,32 @@ def _route_for_metrics(path: str) -> str:
         parts[2] = "{task_id}"
 
     return "/" + "/".join(parts)
+
+
+def _resolve_namespace_name(
+    name: str | None,
+    namespace_alias: str | None,
+    *,
+    method: str,
+) -> str:
+    """Resolve the namespace name accepted via ``name=`` or the deprecated ``namespace=`` alias."""
+    if namespace_alias is not None:
+        if name is not None:
+            raise TypeError(
+                f"{method}() received both 'name' and the deprecated alias "
+                "'namespace'; pass only 'name'."
+            )
+        warnings.warn(
+            f"{method}() argument 'namespace' is deprecated since 0.4.1; "
+            "use 'name' to match describe_namespace, create_namespace, and "
+            "update_namespace.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        name = namespace_alias
+    if name is None:
+        raise TypeError(f"{method}() missing required argument: 'name'")
+    return name
 
 
 @dataclass
@@ -1308,14 +1335,25 @@ class Client:
 
     async def set_namespace_external_storage(
         self,
-        namespace: str,
+        name: str | None = None,
         *,
         driver: str,
         enabled: bool = True,
         threshold_bytes: int | None = None,
         config: dict[str, Any] | None = None,
+        namespace: str | None = None,
     ) -> NamespaceDescription:
-        """Configure external payload storage for a namespace."""
+        """Configure external payload storage for a namespace.
+
+        The first positional argument is the namespace ``name``, matching
+        :meth:`describe_namespace`, :meth:`create_namespace`, and
+        :meth:`update_namespace`. The ``namespace=`` keyword is accepted as a
+        deprecated alias from the 0.4.0 release and emits a
+        :class:`DeprecationWarning`; it will be removed in a future release.
+        """
+        name = _resolve_namespace_name(
+            name, namespace, method="set_namespace_external_storage"
+        )
         body: dict[str, Any] = {
             "driver": driver,
             "enabled": enabled,
@@ -1327,9 +1365,9 @@ class Client:
 
         data = await self._request(
             "PUT",
-            f"/namespaces/{quote(namespace, safe='')}/external-storage",
+            f"/namespaces/{quote(name, safe='')}/external-storage",
             json=body,
-            context=namespace,
+            context=name,
         )
         if not isinstance(data, dict):
             raise ServerError(

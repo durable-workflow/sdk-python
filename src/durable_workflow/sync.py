@@ -354,20 +354,22 @@ class Client:
 
     def set_namespace_external_storage(
         self,
-        namespace: str,
+        name: str | None = None,
         *,
         driver: str,
         enabled: bool = True,
         threshold_bytes: int | None = None,
         config: dict[str, Any] | None = None,
+        namespace: str | None = None,
     ) -> NamespaceDescription:
         result: NamespaceDescription = _run(
             self._async.set_namespace_external_storage(
-                namespace,
+                name,
                 driver=driver,
                 enabled=enabled,
                 threshold_bytes=threshold_bytes,
                 config=config,
+                namespace=namespace,
             )
         )
         return result
