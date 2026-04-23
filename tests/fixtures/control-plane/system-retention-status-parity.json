@@ -1,0 +1,42 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "system.retention.status",
+  "request": {
+    "method": "GET",
+    "path": "/system/retention"
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "retention_days": 30,
+    "cutoff": "2026-03-24T05:00:00+00:00",
+    "expired_run_count": 2,
+    "expired_run_ids": [
+      "wf-run-1",
+      "wf-run-2"
+    ],
+    "scan_limit": 100,
+    "scan_pressure": false
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "retention_days": 30,
+    "cutoff": "2026-03-24T05:00:00+00:00",
+    "expired_run_count": 2,
+    "expired_run_ids": [
+      "wf-run-1",
+      "wf-run-2"
+    ],
+    "scan_limit": 100,
+    "scan_pressure": false
+  },
+  "cli": {
+    "argv": {
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "retention_status",
+    "args": {}
+  }
+}

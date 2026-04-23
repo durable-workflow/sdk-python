@@ -1415,6 +1415,113 @@ class Client:
             )
         return data
 
+    async def retention_status(self) -> dict[str, Any]:
+        """Return history-retention diagnostics for the current namespace.
+
+        Mirrors ``dw system:retention-status``. The response reports the
+        namespace retention window, the cutoff, and the run IDs currently
+        eligible for pruning up to the server's scan limit. Operator
+        surface; requires admin scope.
+        """
+        data = await self._request("GET", "/system/retention", context="retention_status")
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_retention_status_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return data
+
+    async def retention_pass(
+        self,
+        *,
+        run_ids: list[str] | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Run one history-retention enforcement sweep on the server.
+
+        Mirrors ``dw system:retention-pass``. Without filters the server
+        prunes expired terminal runs from the namespace up to its scan
+        limit; pass ``run_ids`` to narrow the sweep or ``limit`` to bound
+        how many runs a single pass processes. Operator surface; requires
+        admin scope.
+        """
+        body: dict[str, Any] = {}
+        if run_ids:
+            body["run_ids"] = list(run_ids)
+        if limit is not None:
+            body["limit"] = limit
+
+        data = await self._request("POST", "/system/retention/pass", json=body, context="retention_pass")
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_retention_pass_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return data
+
+    async def activity_timeout_status(self) -> dict[str, Any]:
+        """Return activity-timeout diagnostics for the current namespace.
+
+        Mirrors ``dw system:activity-timeout-status``. The response lists
+        activity execution IDs that have passed their start-to-close or
+        schedule-to-close deadline and are eligible for forced timeout.
+        Operator surface; requires admin scope.
+        """
+        data = await self._request(
+            "GET", "/system/activity-timeouts", context="activity_timeout_status"
+        )
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_activity_timeout_status_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return data
+
+    async def activity_timeout_pass(
+        self,
+        *,
+        execution_ids: list[str] | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Run one activity-timeout enforcement sweep on the server.
+
+        Mirrors ``dw system:activity-timeout-pass``. Without filters the
+        server enforces timeouts for any expired activity executions up
+        to its scan limit; pass ``execution_ids`` to narrow the sweep or
+        ``limit`` to bound how many executions a single pass processes.
+        Operator surface; requires admin scope.
+        """
+        body: dict[str, Any] = {}
+        if execution_ids:
+            body["execution_ids"] = list(execution_ids)
+        if limit is not None:
+            body["limit"] = limit
+
+        data = await self._request(
+            "POST",
+            "/system/activity-timeouts/pass",
+            json=body,
+            context="activity_timeout_pass",
+        )
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_activity_timeout_pass_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return data
+
     # ── Task queues ────────────────────────────────────────────────────
     async def list_task_queues(self) -> TaskQueueList:
         """List task queues with server-side admission status.

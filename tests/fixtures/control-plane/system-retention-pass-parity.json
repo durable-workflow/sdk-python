@@ -1,0 +1,70 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "system.retention.pass",
+  "request": {
+    "method": "POST",
+    "path": "/system/retention/pass",
+    "body": {
+      "run_ids": [
+        "wf-run-1",
+        "wf-run-2"
+      ],
+      "limit": 50
+    }
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "processed": 2,
+    "pruned": 1,
+    "skipped": 1,
+    "failed": 0,
+    "pruned_run_ids": [
+      "wf-run-1"
+    ],
+    "skipped_run_ids": [
+      "wf-run-2"
+    ]
+  },
+  "response_body": {
+    "processed": 2,
+    "pruned": 1,
+    "skipped": 1,
+    "failed": 0,
+    "results": [
+      {
+        "run_id": "wf-run-1",
+        "outcome": "pruned",
+        "history_events_deleted": 12,
+        "tasks_deleted": 4,
+        "external_payloads_deleted": 0,
+        "deleted": true
+      },
+      {
+        "run_id": "wf-run-2",
+        "outcome": "skipped",
+        "reason": "run_not_terminal"
+      }
+    ]
+  },
+  "cli": {
+    "argv": {
+      "--run-id": [
+        "wf-run-1",
+        "wf-run-2"
+      ],
+      "--limit": "50",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "retention_pass",
+    "args": {
+      "run_ids": [
+        "wf-run-1",
+        "wf-run-2"
+      ],
+      "limit": 50
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "system.activity_timeout.status",
+  "request": {
+    "method": "GET",
+    "path": "/system/activity-timeouts"
+  },
+  "semantic_body": {
+    "expired_count": 2,
+    "expired_execution_ids": [
+      "act-exec-1",
+      "act-exec-2"
+    ],
+    "scan_limit": 100,
+    "scan_pressure": false
+  },
+  "response_body": {
+    "expired_count": 2,
+    "expired_execution_ids": [
+      "act-exec-1",
+      "act-exec-2"
+    ],
+    "scan_limit": 100,
+    "scan_pressure": false
+  },
+  "cli": {
+    "argv": {
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "activity_timeout_status",
+    "args": {}
+  }
+}

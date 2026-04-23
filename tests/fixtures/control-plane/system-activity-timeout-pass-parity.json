@@ -1,0 +1,66 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "system.activity_timeout.pass",
+  "request": {
+    "method": "POST",
+    "path": "/system/activity-timeouts/pass",
+    "body": {
+      "execution_ids": [
+        "act-exec-1",
+        "act-exec-2"
+      ],
+      "limit": 50
+    }
+  },
+  "semantic_body": {
+    "processed": 2,
+    "enforced": 1,
+    "skipped": 1,
+    "failed": 0,
+    "enforced_execution_ids": [
+      "act-exec-1"
+    ],
+    "skipped_execution_ids": [
+      "act-exec-2"
+    ]
+  },
+  "response_body": {
+    "processed": 2,
+    "enforced": 1,
+    "skipped": 1,
+    "failed": 0,
+    "results": [
+      {
+        "execution_id": "act-exec-1",
+        "outcome": "enforced",
+        "has_retry": true
+      },
+      {
+        "execution_id": "act-exec-2",
+        "outcome": "skipped",
+        "reason": "not_expired"
+      }
+    ]
+  },
+  "cli": {
+    "argv": {
+      "--execution-id": [
+        "act-exec-1",
+        "act-exec-2"
+      ],
+      "--limit": "50",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "activity_timeout_pass",
+    "args": {
+      "execution_ids": [
+        "act-exec-1",
+        "act-exec-2"
+      ],
+      "limit": 50
+    }
+  }
+}

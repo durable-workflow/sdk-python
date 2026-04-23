@@ -1051,6 +1051,169 @@ class TestSystemMaintenance:
         assert mock.call_args.args[1] == "/api/system/repair/pass"
         assert mock.call_args.kwargs.get("json") == {}
 
+    @pytest.mark.asyncio
+    async def test_retention_status_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = (
+            Path(__file__).parent / "fixtures" / "control-plane" / "system-retention-status-parity.json"
+        )
+        fixture = json.loads(fixture_path.read_text())
+        assert fixture["operation"] == "system.retention.status"
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.retention_status(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert mock.call_args.kwargs.get("json") is None
+
+        assert result == fixture["response_body"]
+
+        semantic = fixture["semantic_body"]
+        assert result["namespace"] == semantic["namespace"]
+        assert result["retention_days"] == semantic["retention_days"]
+        assert result["cutoff"] == semantic["cutoff"]
+        assert result["expired_run_count"] == semantic["expired_run_count"]
+        assert result["expired_run_ids"] == semantic["expired_run_ids"]
+        assert result["scan_limit"] == semantic["scan_limit"]
+        assert result["scan_pressure"] is semantic["scan_pressure"]
+
+    @pytest.mark.asyncio
+    async def test_retention_pass_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = (
+            Path(__file__).parent / "fixtures" / "control-plane" / "system-retention-pass-parity.json"
+        )
+        fixture = json.loads(fixture_path.read_text())
+        assert fixture["operation"] == "system.retention.pass"
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.retention_pass(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert mock.call_args.kwargs.get("json") == fixture["request"]["body"]
+
+        assert result == fixture["response_body"]
+
+        semantic = fixture["semantic_body"]
+        assert result["processed"] == semantic["processed"]
+        assert result["pruned"] == semantic["pruned"]
+        assert result["skipped"] == semantic["skipped"]
+        assert result["failed"] == semantic["failed"]
+
+        pruned_ids = [r["run_id"] for r in result["results"] if r["outcome"] == "pruned"]
+        skipped_ids = [r["run_id"] for r in result["results"] if r["outcome"] == "skipped"]
+        assert pruned_ids == semantic["pruned_run_ids"]
+        assert skipped_ids == semantic["skipped_run_ids"]
+
+    @pytest.mark.asyncio
+    async def test_retention_pass_sends_empty_body_without_filters(self, client: Client) -> None:
+        resp = _mock_response(200, {
+            "processed": 0,
+            "pruned": 0,
+            "skipped": 0,
+            "failed": 0,
+            "results": [],
+        })
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            await client.retention_pass()
+
+        assert mock.call_args.args[0] == "POST"
+        assert mock.call_args.args[1] == "/api/system/retention/pass"
+        assert mock.call_args.kwargs.get("json") == {}
+
+    @pytest.mark.asyncio
+    async def test_activity_timeout_status_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = (
+            Path(__file__).parent / "fixtures" / "control-plane" / "system-activity-timeout-status-parity.json"
+        )
+        fixture = json.loads(fixture_path.read_text())
+        assert fixture["operation"] == "system.activity_timeout.status"
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.activity_timeout_status(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert mock.call_args.kwargs.get("json") is None
+
+        assert result == fixture["response_body"]
+
+        semantic = fixture["semantic_body"]
+        assert result["expired_count"] == semantic["expired_count"]
+        assert result["expired_execution_ids"] == semantic["expired_execution_ids"]
+        assert result["scan_limit"] == semantic["scan_limit"]
+        assert result["scan_pressure"] is semantic["scan_pressure"]
+
+    @pytest.mark.asyncio
+    async def test_activity_timeout_pass_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = (
+            Path(__file__).parent / "fixtures" / "control-plane" / "system-activity-timeout-pass-parity.json"
+        )
+        fixture = json.loads(fixture_path.read_text())
+        assert fixture["operation"] == "system.activity_timeout.pass"
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.activity_timeout_pass(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert mock.call_args.kwargs.get("json") == fixture["request"]["body"]
+
+        assert result == fixture["response_body"]
+
+        semantic = fixture["semantic_body"]
+        assert result["processed"] == semantic["processed"]
+        assert result["enforced"] == semantic["enforced"]
+        assert result["skipped"] == semantic["skipped"]
+        assert result["failed"] == semantic["failed"]
+
+        enforced_ids = [r["execution_id"] for r in result["results"] if r["outcome"] == "enforced"]
+        skipped_ids = [r["execution_id"] for r in result["results"] if r["outcome"] == "skipped"]
+        assert enforced_ids == semantic["enforced_execution_ids"]
+        assert skipped_ids == semantic["skipped_execution_ids"]
+
+    @pytest.mark.asyncio
+    async def test_activity_timeout_pass_sends_empty_body_without_filters(self, client: Client) -> None:
+        resp = _mock_response(200, {
+            "processed": 0,
+            "enforced": 0,
+            "skipped": 0,
+            "failed": 0,
+            "results": [],
+        })
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            await client.activity_timeout_pass()
+
+        assert mock.call_args.args[0] == "POST"
+        assert mock.call_args.args[1] == "/api/system/activity-timeouts/pass"
+        assert mock.call_args.kwargs.get("json") == {}
+
 
 class TestTaskQueues:
     @pytest.mark.asyncio
