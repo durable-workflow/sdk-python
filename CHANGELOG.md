@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-04-23
+
+### Changed
+- `Client.set_namespace_external_storage` (and its sync facade) now takes the
+  namespace as `name`, matching `describe_namespace`, `create_namespace`, and
+  `update_namespace`. The 0.4.0 spelling `namespace=` is still accepted as a
+  deprecated keyword alias that emits a `DeprecationWarning`; it will be
+  removed in a future release. Passing both `name` and `namespace` raises
+  `TypeError`.
+
 ## [0.4.0] — 2026-04-23
 
 ### Added
