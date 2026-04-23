@@ -6,10 +6,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-04-23
+
+### Added
+- Workflow control-plane parity across the async and sync clients for list,
+  describe, cancel, terminate, history, history export, and run visibility,
+  plus a public history replayer and released golden replay fixtures.
+- Task-queue, worker, and namespace control-plane coverage for build-id rollout
+  visibility, drain/resume mutation, worker build-id reporting, namespace
+  controls, activity-task operations, schedule visibility/mutation, and search
+  attribute management.
+- External payload storage support for reference envelopes, object-store
+  drivers, expiry metadata, retention/delete helpers, storage policy parity,
+  and verified-byte caching.
+- Bridge webhook client support, invocable activity carrier support, replay-safe
+  UUIDv7 and patch-marker helpers, worker interceptors, payload codec batching,
+  and explicit Avro payload adapters.
+
 ### Changed
 - PyPI/TestPyPI publish builds now run the installed-package smoke before
   uploading artifacts, so release candidates verify the wheel and source
   distribution import from site-packages and replay the README quickstart.
+- Polyglot parity coverage now spans CLI/Python shared control-plane fixtures,
+  including workflow maintenance, task queues, storage drivers, and system
+  maintenance endpoints, reducing drift between released SDK behavior and other
+  Durable Workflow surfaces.
 
 ## [0.3.1] — 2026-04-21
 
