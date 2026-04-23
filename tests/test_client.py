@@ -963,6 +963,95 @@ class TestStorage:
         assert result.large_payload.reference_uri == fixture["semantic_body"]["large_payload_reference_uri"]
 
 
+class TestSystemMaintenance:
+    @pytest.mark.asyncio
+    async def test_repair_status_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = (
+            Path(__file__).parent / "fixtures" / "control-plane" / "system-repair-status-parity.json"
+        )
+        fixture = json.loads(fixture_path.read_text())
+        assert fixture["operation"] == "system.repair.status"
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.repair_status(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert mock.call_args.kwargs.get("json") is None
+
+        assert result == fixture["response_body"]
+
+        semantic = fixture["semantic_body"]
+        candidates = result["candidates"]
+        assert candidates["total_candidates"] == semantic["total_candidates"]
+        assert candidates["existing_task_candidates"] == semantic["existing_task_candidates"]
+        assert candidates["missing_task_candidates"] == semantic["missing_task_candidates"]
+        assert candidates["scan_pressure"] is semantic["scan_pressure"]
+        assert result["policy"]["scan_limit"] == semantic["scan_limit"]
+        assert result["policy"]["scan_strategy"] == semantic["scan_strategy"]
+        assert [scope["scope_key"] for scope in candidates["scopes"]] == semantic["scope_keys"]
+
+    @pytest.mark.asyncio
+    async def test_repair_pass_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = (
+            Path(__file__).parent / "fixtures" / "control-plane" / "system-repair-pass-parity.json"
+        )
+        fixture = json.loads(fixture_path.read_text())
+        assert fixture["operation"] == "system.repair.pass"
+        sdk = fixture["sdk_python"]
+
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.repair_pass(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        assert mock.call_args.kwargs.get("json") == fixture["request"]["body"]
+
+        assert result == fixture["response_body"]
+
+        semantic = fixture["semantic_body"]
+        assert result["repaired_existing_tasks"] == semantic["repaired_existing_tasks"]
+        assert result["repaired_missing_tasks"] == semantic["repaired_missing_tasks"]
+        assert result["dispatched_tasks"] == semantic["dispatched_tasks"]
+        assert result["existing_task_failures"] == semantic["existing_task_failures"]
+        assert result["missing_run_failures"] == semantic["missing_run_failures"]
+
+    @pytest.mark.asyncio
+    async def test_repair_pass_sends_empty_body_without_filters(self, client: Client) -> None:
+        resp = _mock_response(200, {
+            "throttled": False,
+            "selected_existing_task_candidates": 0,
+            "selected_missing_task_candidates": 0,
+            "repaired_existing_tasks": 0,
+            "repaired_missing_tasks": 0,
+            "dispatched_tasks": 0,
+            "selected_command_contract_candidates": 0,
+            "backfilled_command_contracts": 0,
+            "command_contract_backfill_unavailable": 0,
+            "command_contract_failures": [],
+            "existing_task_failures": [],
+            "missing_run_failures": [],
+        })
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            await client.repair_pass()
+
+        assert mock.call_args.args[0] == "POST"
+        assert mock.call_args.args[1] == "/api/system/repair/pass"
+        assert mock.call_args.kwargs.get("json") == {}
+
+
 class TestTaskQueues:
     @pytest.mark.asyncio
     async def test_list_task_queues_matches_polyglot_fixture(self, client: Client) -> None:

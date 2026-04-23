@@ -1,0 +1,61 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "system.repair.pass",
+  "request": {
+    "method": "POST",
+    "path": "/system/repair/pass",
+    "body": {
+      "run_ids": [
+        "wf-run-1",
+        "wf-run-2"
+      ],
+      "instance_id": "chk-42"
+    }
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "instance_id": "chk-42",
+    "repaired_existing_tasks": 1,
+    "repaired_missing_tasks": 0,
+    "dispatched_tasks": 1,
+    "selected_existing_task_candidates": 1,
+    "selected_missing_task_candidates": 0,
+    "existing_task_failures": [],
+    "missing_run_failures": []
+  },
+  "response_body": {
+    "throttled": false,
+    "selected_existing_task_candidates": 1,
+    "selected_missing_task_candidates": 0,
+    "repaired_existing_tasks": 1,
+    "repaired_missing_tasks": 0,
+    "dispatched_tasks": 1,
+    "selected_command_contract_candidates": 0,
+    "backfilled_command_contracts": 0,
+    "command_contract_backfill_unavailable": 0,
+    "command_contract_failures": [],
+    "existing_task_failures": [],
+    "missing_run_failures": []
+  },
+  "cli": {
+    "argv": {
+      "--run-id": [
+        "wf-run-1",
+        "wf-run-2"
+      ],
+      "--instance-id": "chk-42",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "repair_pass",
+    "args": {
+      "run_ids": [
+        "wf-run-1",
+        "wf-run-2"
+      ],
+      "instance_id": "chk-42"
+    }
+  }
+}

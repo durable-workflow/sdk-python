@@ -1,0 +1,66 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "system.repair.status",
+  "request": {
+    "method": "GET",
+    "path": "/system/repair"
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "total_candidates": 3,
+    "existing_task_candidates": 2,
+    "missing_task_candidates": 1,
+    "scan_pressure": false,
+    "scan_limit": 100,
+    "scan_strategy": "oldest_first",
+    "scope_keys": [
+      "wf-polyglot-231:wf-run-1",
+      "wf-polyglot-231:wf-run-2"
+    ]
+  },
+  "response_body": {
+    "policy": {
+      "redispatch_after_seconds": 120,
+      "loop_throttle_seconds": 15,
+      "scan_limit": 100,
+      "scan_strategy": "oldest_first",
+      "failure_backoff_max_seconds": 900
+    },
+    "candidates": {
+      "total_candidates": 3,
+      "existing_task_candidates": 2,
+      "missing_task_candidates": 1,
+      "scan_pressure": false,
+      "oldest_task_candidate_created_at": "2026-04-22T05:30:00Z",
+      "oldest_missing_run_started_at": "2026-04-22T05:25:00Z",
+      "scopes": [
+        {
+          "scope_key": "wf-polyglot-231:wf-run-1",
+          "existing_task_candidates": 2,
+          "missing_task_candidates": 0,
+          "total_candidates": 2,
+          "selected_total_candidates": 2,
+          "scan_limited_by_global_policy": false
+        },
+        {
+          "scope_key": "wf-polyglot-231:wf-run-2",
+          "existing_task_candidates": 0,
+          "missing_task_candidates": 1,
+          "total_candidates": 1,
+          "selected_total_candidates": 1,
+          "scan_limited_by_global_policy": false
+        }
+      ]
+    }
+  },
+  "cli": {
+    "argv": {
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "repair_status",
+    "args": {}
+  }
+}

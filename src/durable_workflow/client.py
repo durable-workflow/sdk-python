@@ -1368,6 +1368,53 @@ class Client:
             )
         return StorageTestResult.from_dict(data)
 
+    # ── System maintenance ────────────────────────────────────────────
+    async def repair_status(self) -> dict[str, Any]:
+        """Return the current task repair policy and candidate snapshot.
+
+        Mirrors ``dw system:repair-status``. Operator surface; the caller
+        must be authenticated with admin scope.
+        """
+        data = await self._request("GET", "/system/repair", context="repair_status")
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_repair_status_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return data
+
+    async def repair_pass(
+        self,
+        *,
+        run_ids: list[str] | None = None,
+        instance_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Run one task repair sweep on the server.
+
+        Mirrors ``dw system:repair-pass``. Without filters the server runs
+        a full-scope pass; pass ``run_ids`` or ``instance_id`` to narrow
+        the sweep. Operator surface; requires admin scope.
+        """
+        body: dict[str, Any] = {}
+        if run_ids:
+            body["run_ids"] = list(run_ids)
+        if instance_id is not None:
+            body["instance_id"] = instance_id
+
+        data = await self._request("POST", "/system/repair/pass", json=body, context="repair_pass")
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_repair_pass_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return data
+
     # ── Task queues ────────────────────────────────────────────────────
     async def list_task_queues(self) -> TaskQueueList:
         """List task queues with server-side admission status.
