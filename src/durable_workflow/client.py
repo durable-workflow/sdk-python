@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import time
 import warnings
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -746,6 +746,42 @@ class ScheduleBackfillResult:
 
 
 @dataclass
+class ScheduleHistoryEvent:
+    """One entry in a schedule's audit history stream.
+
+    Each event corresponds to a lifecycle transition recorded by the
+    server (ScheduleCreated, SchedulePaused, ScheduleResumed,
+    ScheduleUpdated, ScheduleTriggered, ScheduleTriggerSkipped, or
+    ScheduleDeleted). The ``payload`` mirrors what the workflow engine
+    recorded, including command-context attribution when the transition
+    came from a mutating API call.
+    """
+
+    sequence: int
+    event_type: str | None = None
+    recorded_at: str | None = None
+    workflow_instance_id: str | None = None
+    workflow_run_id: str | None = None
+    payload: dict[str, Any] | None = None
+    id: str | None = None
+
+
+@dataclass
+class ScheduleHistoryPage:
+    """One page of a schedule's audit history stream.
+
+    ``next_cursor`` is the ``after_sequence`` value to request the next
+    page when ``has_more`` is ``True``; it is ``None`` on the final page.
+    """
+
+    schedule_id: str
+    events: list[ScheduleHistoryEvent]
+    has_more: bool = False
+    next_cursor: int | None = None
+    namespace: str | None = None
+
+
+@dataclass
 class BridgeAdapterOutcome:
     """Machine-readable result returned by a bridge adapter event."""
 
@@ -932,6 +968,32 @@ class ScheduleHandle:
         """Fire this schedule for every moment in a past time range. See :meth:`Client.backfill_schedule`."""
         return await self._client.backfill_schedule(
             self.schedule_id, start_time=start_time, end_time=end_time, overlap_policy=overlap_policy,
+        )
+
+    async def history(
+        self,
+        *,
+        limit: int | None = None,
+        after_sequence: int | None = None,
+    ) -> ScheduleHistoryPage:
+        """Return one page of this schedule's audit history. See :meth:`Client.get_schedule_history`."""
+        return await self._client.get_schedule_history(
+            self.schedule_id,
+            limit=limit,
+            after_sequence=after_sequence,
+        )
+
+    def iter_history(
+        self,
+        *,
+        limit: int | None = None,
+        after_sequence: int | None = None,
+    ) -> AsyncIterator[ScheduleHistoryEvent]:
+        """Iterate every audit event for this schedule. See :meth:`Client.iter_schedule_history`."""
+        return self._client.iter_schedule_history(
+            self.schedule_id,
+            limit=limit,
+            after_sequence=after_sequence,
         )
 
 
@@ -2408,6 +2470,102 @@ class Client:
             fires_attempted=data.get("fires_attempted", 0),
             results=data.get("results"),
         )
+
+    async def get_schedule_history(
+        self,
+        schedule_id: str,
+        *,
+        limit: int | None = None,
+        after_sequence: int | None = None,
+    ) -> ScheduleHistoryPage:
+        """Return one page of the audit history stream for a schedule.
+
+        The page is ordered by ``sequence`` ascending. Use
+        ``after_sequence=page.next_cursor`` to request the next page while
+        ``page.has_more`` is ``True``, or call :meth:`iter_schedule_history`
+        to walk every remaining event with paging hidden.
+
+        History is available for deleted schedules: the audit stream
+        records ``ScheduleDeleted`` and survives the schedule's removal
+        exactly so operators can review what happened.
+
+        ``limit`` is clamped by the server between 1 and 500 (default
+        100). ``after_sequence`` must be a non-negative integer; invalid
+        values raise :class:`~durable_workflow.errors.InvalidArgument`
+        through the shared 4xx mapping.
+        """
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be >= 1")
+        if after_sequence is not None and after_sequence < 0:
+            raise ValueError("after_sequence must be >= 0")
+
+        params: dict[str, str] = {}
+        if limit is not None:
+            params["limit"] = str(limit)
+        if after_sequence is not None:
+            params["after_sequence"] = str(after_sequence)
+
+        path = f"/schedules/{schedule_id}/history"
+        if params:
+            path = f"{path}?{urlencode(params)}"
+
+        data = await self._request("GET", path, context=schedule_id)
+        raw_events = data.get("events") or []
+        events = [
+            ScheduleHistoryEvent(
+                sequence=int(item.get("sequence", 0)),
+                event_type=item.get("event_type"),
+                recorded_at=item.get("recorded_at"),
+                workflow_instance_id=item.get("workflow_instance_id"),
+                workflow_run_id=item.get("workflow_run_id"),
+                payload=item.get("payload") if isinstance(item.get("payload"), dict) else None,
+                id=item.get("id"),
+            )
+            for item in raw_events
+        ]
+
+        raw_cursor = data.get("next_cursor")
+        next_cursor: int | None
+        if raw_cursor is None:
+            next_cursor = None
+        else:
+            try:
+                next_cursor = int(raw_cursor)
+            except (TypeError, ValueError):
+                next_cursor = None
+
+        return ScheduleHistoryPage(
+            schedule_id=data.get("schedule_id", schedule_id),
+            events=events,
+            has_more=bool(data.get("has_more", False)),
+            next_cursor=next_cursor,
+            namespace=data.get("namespace"),
+        )
+
+    async def iter_schedule_history(
+        self,
+        schedule_id: str,
+        *,
+        limit: int | None = None,
+        after_sequence: int | None = None,
+    ) -> AsyncIterator[ScheduleHistoryEvent]:
+        """Yield every audit event for a schedule, paging under the hood.
+
+        Each element is a :class:`ScheduleHistoryEvent`. Paging stops once
+        the server reports ``has_more=False``.
+        """
+        cursor = after_sequence
+        while True:
+            page = await self.get_schedule_history(
+                schedule_id,
+                limit=limit,
+                after_sequence=cursor,
+            )
+            for event in page.events:
+                yield event
+            if not page.has_more or page.next_cursor is None:
+                return
+            cursor = page.next_cursor
 
     # ── Worker protocol ────────────────────────────────────────────────
     async def register_worker(

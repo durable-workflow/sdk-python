@@ -14,6 +14,8 @@ from durable_workflow.client import (
     ScheduleBackfillResult,
     ScheduleDescription,
     ScheduleHandle,
+    ScheduleHistoryEvent,
+    ScheduleHistoryPage,
     ScheduleList,
     ScheduleSpec,
     ScheduleTriggerResult,
@@ -538,3 +540,187 @@ class TestScheduleHandle:
                 end_time="2026-04-14T01:00:00Z",
             )
             assert result.fires_attempted == 1
+
+
+class TestScheduleHistory:
+    @pytest.mark.asyncio
+    async def test_parses_events_and_pagination_cursor(self, client: Client) -> None:
+        resp = _mock_response(200, {
+            "schedule_id": "sched-1",
+            "namespace": "ns1",
+            "events": [
+                {
+                    "id": "evt-1",
+                    "sequence": 1,
+                    "event_type": "ScheduleCreated",
+                    "recorded_at": "2026-04-01T00:00:00+00:00",
+                    "workflow_instance_id": None,
+                    "workflow_run_id": None,
+                    "payload": {},
+                },
+                {
+                    "id": "evt-2",
+                    "sequence": 2,
+                    "event_type": "ScheduleTriggered",
+                    "recorded_at": "2026-04-02T00:00:00+00:00",
+                    "workflow_instance_id": "wf-abc",
+                    "workflow_run_id": "run-abc",
+                    "payload": {"outcome": "triggered", "trigger_number": 1},
+                },
+            ],
+            "has_more": True,
+            "next_cursor": 2,
+        })
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock_req:
+            page = await client.get_schedule_history("sched-1")
+
+        assert isinstance(page, ScheduleHistoryPage)
+        assert page.schedule_id == "sched-1"
+        assert page.namespace == "ns1"
+        assert page.has_more is True
+        assert page.next_cursor == 2
+        assert len(page.events) == 2
+        assert isinstance(page.events[0], ScheduleHistoryEvent)
+        assert page.events[0].sequence == 1
+        assert page.events[0].event_type == "ScheduleCreated"
+        assert page.events[1].workflow_instance_id == "wf-abc"
+        assert page.events[1].payload == {"outcome": "triggered", "trigger_number": 1}
+
+        call = mock_req.call_args
+        assert call.args[0] == "GET"
+        assert call.args[1] == "/api/schedules/sched-1/history"
+
+    @pytest.mark.asyncio
+    async def test_forwards_limit_and_after_sequence_in_query(self, client: Client) -> None:
+        resp = _mock_response(200, {
+            "schedule_id": "sched-1",
+            "namespace": "ns1",
+            "events": [],
+            "has_more": False,
+            "next_cursor": None,
+        })
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock_req:
+            await client.get_schedule_history("sched-1", limit=50, after_sequence=7)
+
+        call = mock_req.call_args
+        path = call.args[1]
+        assert path.startswith("/api/schedules/sched-1/history?")
+        assert "limit=50" in path
+        assert "after_sequence=7" in path
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_limit(self, client: Client) -> None:
+        with pytest.raises(ValueError):
+            await client.get_schedule_history("sched-1", limit=0)
+
+    @pytest.mark.asyncio
+    async def test_rejects_negative_after_sequence(self, client: Client) -> None:
+        with pytest.raises(ValueError):
+            await client.get_schedule_history("sched-1", after_sequence=-1)
+
+    @pytest.mark.asyncio
+    async def test_not_found_maps_to_schedule_not_found(self, client: Client) -> None:
+        resp = _mock_response(404, {"reason": "schedule_not_found", "message": "not found"})
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(ScheduleNotFound),
+        ):
+            await client.get_schedule_history("missing")
+
+    @pytest.mark.asyncio
+    async def test_iter_pages_across_multiple_server_responses(self, client: Client) -> None:
+        responses = [
+            _mock_response(200, {
+                "schedule_id": "sched-1",
+                "namespace": "ns1",
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ScheduleCreated",
+                        "recorded_at": "2026-04-01T00:00:00+00:00",
+                        "payload": {},
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "SchedulePaused",
+                        "recorded_at": "2026-04-02T00:00:00+00:00",
+                        "payload": {},
+                    },
+                ],
+                "has_more": True,
+                "next_cursor": 2,
+            }),
+            _mock_response(200, {
+                "schedule_id": "sched-1",
+                "namespace": "ns1",
+                "events": [
+                    {
+                        "sequence": 3,
+                        "event_type": "ScheduleResumed",
+                        "recorded_at": "2026-04-03T00:00:00+00:00",
+                        "payload": {},
+                    },
+                ],
+                "has_more": False,
+                "next_cursor": None,
+            }),
+        ]
+
+        mock = AsyncMock(side_effect=responses)
+        with patch.object(client._http, "request", new=mock):
+            sequences = [event.sequence async for event in client.iter_schedule_history("sched-1")]
+
+        assert sequences == [1, 2, 3]
+        assert mock.call_count == 2
+        second_call_path = mock.call_args_list[1].args[1]
+        assert "after_sequence=2" in second_call_path
+
+    @pytest.mark.asyncio
+    async def test_handle_history_delegates_to_client(self, client: Client) -> None:
+        resp = _mock_response(200, {
+            "schedule_id": "sched-1",
+            "namespace": "ns1",
+            "events": [
+                {
+                    "sequence": 1,
+                    "event_type": "ScheduleCreated",
+                    "recorded_at": "2026-04-01T00:00:00+00:00",
+                    "payload": {},
+                },
+            ],
+            "has_more": False,
+            "next_cursor": None,
+        })
+
+        handle = client.get_schedule_handle("sched-1")
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
+            page = await handle.history(limit=10)
+
+        assert isinstance(page, ScheduleHistoryPage)
+        assert page.events[0].event_type == "ScheduleCreated"
+
+    @pytest.mark.asyncio
+    async def test_handle_iter_history_delegates_to_client(self, client: Client) -> None:
+        resp = _mock_response(200, {
+            "schedule_id": "sched-1",
+            "namespace": "ns1",
+            "events": [
+                {
+                    "sequence": 1,
+                    "event_type": "ScheduleCreated",
+                    "recorded_at": "2026-04-01T00:00:00+00:00",
+                    "payload": {},
+                },
+            ],
+            "has_more": False,
+            "next_cursor": None,
+        })
+
+        handle = client.get_schedule_handle("sched-1")
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
+            events = [event async for event in handle.iter_history()]
+
+        assert len(events) == 1
+        assert events[0].event_type == "ScheduleCreated"

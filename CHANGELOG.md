@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `Client.get_schedule_history(schedule_id, *, limit=None, after_sequence=None)`
+  returns one `ScheduleHistoryPage` of the schedule's audit stream, and
+  `Client.iter_schedule_history(...)` is an async iterator that walks every
+  remaining `ScheduleHistoryEvent` with paging hidden. `ScheduleHandle`
+  exposes the same surface as `handle.history(...)` and
+  `handle.iter_history(...)`. History remains available for deleted
+  schedules so post-mortem review still works after a schedule is
+  removed.
+
 ## [0.4.2] — 2026-04-24
 
 ### Added
