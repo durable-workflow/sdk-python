@@ -16,6 +16,14 @@ Typical use::
         result = env.execute_workflow(OrderWorkflow, "order-1", {"amount": 42})
         assert result == {"status": "complete", "charge_id": "ch_1"}
 
+When a workflow yields :class:`~durable_workflow.workflow.ContinueAsNew`,
+the harness records a ``WorkflowContinuedAsNew`` event on the completing
+run, resets history, and starts a new run with the command's arguments.
+:attr:`WorkflowEnvironment.runs` exposes the per-run record (input,
+workflow type, history events, and terminal command) so tests can assert
+on the whole chain. The chain length is bounded by
+``continue_as_new_limit``; exceeding it raises :exc:`RuntimeError`.
+
 For regression-testing workflow code against production histories, use
 :func:`replay_history` — it hands the real durable history straight to
 the worker's replayer and surfaces any non-determinism as a raised
@@ -26,6 +34,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -42,19 +51,57 @@ from .workflow import (
     StartChildWorkflow,
     StartTimer,
     UpsertSearchAttributes,
+    registry,
     replay,
 )
 
 
-class WorkflowEnvironment:
-    """Drives a workflow to completion against user-registered activity mocks."""
+@dataclass
+class WorkflowRunRecord:
+    """One run within an ``execute_workflow`` chain.
 
-    def __init__(self, *, iteration_limit: int = 1000) -> None:
+    A single-run workflow produces one record with :attr:`terminal` of
+    type :class:`~durable_workflow.workflow.CompleteWorkflow` or
+    :class:`~durable_workflow.workflow.FailWorkflow`. A workflow that
+    yields :class:`~durable_workflow.workflow.ContinueAsNew` produces
+    one record per link; the terminal of each non-final link is the
+    ``ContinueAsNew`` command itself and the final link terminates as
+    usual.
+    """
+
+    workflow_type: str
+    input: list[Any]
+    history: list[dict[str, Any]] = field(default_factory=list)
+    terminal: Any = None
+
+
+class WorkflowEnvironment:
+    """Drives a workflow to completion against user-registered activity mocks.
+
+    :param iteration_limit: upper bound on per-run replay iterations
+        (guard against workflows that never yield a terminal command).
+    :param continue_as_new_limit: upper bound on the number of
+        continue-as-new links in one ``execute_workflow`` chain. The
+        first run counts as link 1; a workflow that continues five
+        times runs six links. Exceeding the limit raises
+        :exc:`RuntimeError`.
+    """
+
+    def __init__(
+        self,
+        *,
+        iteration_limit: int = 1000,
+        continue_as_new_limit: int = 50,
+    ) -> None:
         self._activity_results: dict[str, Any] = {}
         self._activity_fns: dict[str, Callable[..., Any]] = {}
         self._child_workflow_results: dict[str, Any] = {}
         self._pending_signals: list[tuple[str, list[Any]]] = []
+        self._queued_signals_by_run: dict[int, list[tuple[str, list[Any]]]] = {}
         self._iteration_limit = iteration_limit
+        self._continue_as_new_limit = continue_as_new_limit
+        self._registered_workflows: dict[str, type] = {}
+        self._runs: list[WorkflowRunRecord] = []
 
     def register_activity_result(self, name: str, result: Any) -> None:
         """Canned response: every call to ``name`` returns ``result``."""
@@ -72,14 +119,65 @@ class WorkflowEnvironment:
         """Canned response for child workflow completions."""
         self._child_workflow_results[workflow_type] = result
 
-    def signal(self, name: str, args: list[Any] | None = None) -> None:
+    def register_workflow(self, workflow_cls: type) -> None:
+        """Make ``workflow_cls`` resolvable by name for continue-as-new.
+
+        ``continue_as_new(workflow_type="other-name")`` looks up the
+        next workflow class by its ``@workflow.defn`` name. The class
+        passed to :meth:`execute_workflow` is registered automatically;
+        call this method for additional workflow classes the chain may
+        continue into.
+        """
+        name = getattr(workflow_cls, "__workflow_name__", None)
+        if not isinstance(name, str) or not name:
+            raise TypeError(
+                f"{workflow_cls!r} is not a workflow class; "
+                "decorate it with @workflow.defn(name=...) first."
+            )
+        self._registered_workflows[name] = workflow_cls
+
+    def signal(
+        self,
+        name: str,
+        args: list[Any] | None = None,
+        *,
+        run: int | None = None,
+    ) -> None:
         """Queue a signal to be delivered before the next iteration.
 
-        Signals are drained in the order they were queued and injected into
-        the workflow history as ``SignalReceived`` events; the replayer then
-        dispatches each to its registered ``@workflow.signal`` handler.
+        Signals are drained in the order they were queued and injected
+        into the workflow history as ``SignalReceived`` events; the
+        replayer dispatches each to its registered ``@workflow.signal``
+        handler.
+
+        Pass ``run`` to target a specific link in a continue-as-new
+        chain (``run=1`` is the first run, ``run=2`` the run that
+        starts after the first ``ContinueAsNew``, and so on). Without
+        ``run`` the signal is consumed at the current front of the
+        chain — on the first run before the first iteration, and on
+        later iterations in whatever link happens to be running.
         """
-        self._pending_signals.append((name, list(args) if args is not None else []))
+        normalized = (name, list(args) if args is not None else [])
+        if run is None:
+            self._pending_signals.append(normalized)
+            return
+        if run < 1:
+            raise ValueError("run number must be 1 or greater")
+        self._queued_signals_by_run.setdefault(run, []).append(normalized)
+
+    @property
+    def runs(self) -> list[WorkflowRunRecord]:
+        """Per-run records produced by the most recent ``execute_workflow`` call.
+
+        Empty before the first ``execute_workflow`` call. Reset at the
+        start of each call.
+        """
+        return list(self._runs)
+
+    @property
+    def run_count(self) -> int:
+        """Number of runs in the most recent ``execute_workflow`` chain."""
+        return len(self._runs)
 
     def execute_workflow(
         self,
@@ -89,52 +187,112 @@ class WorkflowEnvironment:
     ) -> Any:
         """Drive ``workflow_cls`` to a terminal state and return its result.
 
-        Raises :class:`~durable_workflow.errors.WorkflowFailed` if the workflow
-        ended in the ``failed`` state. Activities that do not have a
-        registered mock raise :class:`KeyError` so tests fail loudly on
-        missing fixtures.
-        """
-        history: list[dict[str, Any]] = []
+        Raises :class:`~durable_workflow.errors.WorkflowFailed` if the
+        workflow ended in the ``failed`` state. Activities that do not
+        have a registered mock raise :class:`KeyError` so tests fail
+        loudly on missing fixtures.
 
-        for _ in range(self._iteration_limit):
-            self._drain_pending_signals_into(history)
-            outcome = replay(workflow_cls, history, list(args), run_id=run_id)
-            terminal = self._apply_commands(outcome, history)
-            if terminal is not _SENTINEL:
-                return terminal
+        If the workflow yields
+        :class:`~durable_workflow.workflow.ContinueAsNew`, the harness
+        starts a new run with the new input and, if the command named a
+        ``workflow_type``, the matching registered workflow class. The
+        chain is bounded by ``continue_as_new_limit`` and returns the
+        terminal result of the final run.
+        """
+        self._runs = []
+        self.register_workflow(workflow_cls)
+        current_cls = workflow_cls
+        current_args: list[Any] = list(args)
+        current_run_id = run_id
+
+        for link_index in range(self._continue_as_new_limit):
+            history: list[dict[str, Any]] = []
+            link_number = link_index + 1
+            record = WorkflowRunRecord(
+                workflow_type=_workflow_name(current_cls),
+                input=list(current_args),
+                history=history,
+            )
+            self._runs.append(record)
+
+            if link_index == 0:
+                self._drain_pending_signals_into(history)
+            for queued in self._queued_signals_by_run.pop(link_number, []):
+                history.append(_signal_event(*queued))
+
+            continuation: ContinueAsNew | None = None
+            terminal_outcome: Any = _SENTINEL
+            for _ in range(self._iteration_limit):
+                self._drain_pending_signals_into(history)
+                outcome = replay(
+                    current_cls, history, list(current_args), run_id=current_run_id
+                )
+                terminal_outcome, continuation = self._apply_commands(outcome, history)
+                if continuation is not None or terminal_outcome is not _SENTINEL:
+                    break
+            else:
+                raise RuntimeError(
+                    f"workflow {record.workflow_type!r} did not terminate within "
+                    f"{self._iteration_limit} iterations; check for missing "
+                    "activity mocks or signals that never satisfy a wait."
+                )
+
+            if continuation is not None:
+                record.terminal = continuation
+                history.append(_continued_as_new_event(continuation))
+                current_cls = self._resolve_next_workflow(continuation, current_cls)
+                current_args = list(continuation.arguments)
+                current_run_id = f"{current_run_id}-continued"
+                continue
+
+            record.terminal = terminal_outcome
+            if isinstance(terminal_outcome, WorkflowFailed):
+                raise terminal_outcome
+            if isinstance(terminal_outcome, CompleteWorkflow):
+                return terminal_outcome.result
+            return terminal_outcome
 
         raise RuntimeError(
-            f"workflow did not terminate within {self._iteration_limit} iterations; "
-            "check for missing activity mocks or signals that never satisfy a wait."
+            f"workflow chained continue-as-new past the {self._continue_as_new_limit}"
+            " link limit; raise continue_as_new_limit or tighten the workflow's "
+            "termination condition."
+        )
+
+    def _resolve_next_workflow(
+        self, continuation: ContinueAsNew, current_cls: type
+    ) -> type:
+        target_name = continuation.workflow_type
+        if not target_name:
+            return current_cls
+        current_name = getattr(current_cls, "__workflow_name__", None)
+        if target_name == current_name:
+            return current_cls
+        if target_name in self._registered_workflows:
+            return self._registered_workflows[target_name]
+        global_registry = registry()
+        if target_name in global_registry:
+            return global_registry[target_name]
+        raise KeyError(
+            f"continue_as_new targeted workflow type {target_name!r} "
+            "but no matching class is registered; call "
+            "env.register_workflow(YourWorkflow) before execute_workflow()."
         )
 
     def _drain_pending_signals_into(self, history: list[dict[str, Any]]) -> None:
         while self._pending_signals:
             name, sig_args = self._pending_signals.pop(0)
-            history.append(
-                {
-                    "event_type": "SignalReceived",
-                    "payload": {
-                        "signal_name": name,
-                        "value": serializer.envelope(sig_args),
-                        "payload_codec": serializer.AVRO_CODEC,
-                    },
-                }
-            )
+            history.append(_signal_event(name, sig_args))
 
     def _apply_commands(
         self, outcome: ReplayOutcome, history: list[dict[str, Any]]
-    ) -> Any:
+    ) -> tuple[Any, ContinueAsNew | None]:
         for cmd in outcome.commands:
             if isinstance(cmd, CompleteWorkflow):
-                return cmd.result
+                return cmd, None
             if isinstance(cmd, FailWorkflow):
-                raise WorkflowFailed(cmd.message, cmd.exception_type)
+                return WorkflowFailed(cmd.message, cmd.exception_type), None
             if isinstance(cmd, ContinueAsNew):
-                raise NotImplementedError(
-                    "continue_as_new is not yet supported by the test harness; "
-                    "drive each run explicitly with a separate execute_workflow call."
-                )
+                return _SENTINEL, cmd
             if isinstance(cmd, ScheduleActivity):
                 history.append(self._resolve_activity(cmd))
             elif isinstance(cmd, StartTimer):
@@ -164,7 +322,7 @@ class WorkflowEnvironment:
                 )
             else:
                 raise TypeError(f"unsupported command in test harness: {cmd!r}")
-        return _SENTINEL
+        return _SENTINEL, None
 
     def _resolve_activity(self, cmd: ScheduleActivity) -> dict[str, Any]:
         if cmd.activity_type in self._activity_fns:
@@ -197,6 +355,34 @@ class WorkflowEnvironment:
                 "payload_codec": serializer.AVRO_CODEC,
             },
         }
+
+
+def _workflow_name(cls: type) -> str:
+    name = getattr(cls, "__workflow_name__", None)
+    return name if isinstance(name, str) and name else cls.__name__
+
+
+def _signal_event(name: str, sig_args: list[Any]) -> dict[str, Any]:
+    return {
+        "event_type": "SignalReceived",
+        "payload": {
+            "signal_name": name,
+            "value": serializer.envelope(sig_args),
+            "payload_codec": serializer.AVRO_CODEC,
+        },
+    }
+
+
+def _continued_as_new_event(cmd: ContinueAsNew) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "arguments": serializer.envelope(cmd.arguments),
+        "payload_codec": serializer.AVRO_CODEC,
+    }
+    if cmd.workflow_type is not None:
+        payload["workflow_type"] = cmd.workflow_type
+    if cmd.task_queue is not None:
+        payload["queue"] = cmd.task_queue
+    return {"event_type": "WorkflowContinuedAsNew", "payload": payload}
 
 
 # Sentinel marking "no terminal command seen this iteration".
@@ -257,6 +443,7 @@ def replay_history_file(
 
 __all__ = [
     "WorkflowEnvironment",
+    "WorkflowRunRecord",
     "replay_history",
     "replay_history_file",
 ]

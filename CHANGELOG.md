@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `WorkflowEnvironment` now drives `continue_as_new` chains end-to-end.
+  Each link's input, workflow type, history, and terminal command are
+  exposed through the `runs` / `run_count` properties, signals can be
+  queued for a specific link via `env.signal(..., run=N)`, and chains
+  that switch workflow types use the new `env.register_workflow(cls)`
+  registration. Chain length is bounded by `continue_as_new_limit`
+  (default `50`); exceeding the limit raises `RuntimeError` so tests
+  catch runaway continuations.
+
 ## [0.4.1] — 2026-04-23
 
 ### Changed

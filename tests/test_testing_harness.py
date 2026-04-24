@@ -10,10 +10,15 @@ from durable_workflow import workflow
 from durable_workflow.errors import WorkflowFailed
 from durable_workflow.testing import (
     WorkflowEnvironment,
+    WorkflowRunRecord,
     replay_history,
     replay_history_file,
 )
-from durable_workflow.workflow import CompleteWorkflow, WorkflowContext
+from durable_workflow.workflow import (
+    CompleteWorkflow,
+    ContinueAsNew,
+    WorkflowContext,
+)
 
 
 @workflow.defn(name="simple-greeter")
@@ -152,6 +157,194 @@ class TestSignalInjection:
         result = env.execute_workflow(SignalApprovalHarness)
 
         assert result == {"approved_by": None}
+
+
+@workflow.defn(name="countdown")
+class CountdownContinueAsNewWorkflow:
+    def run(self, ctx: WorkflowContext, counter: int):  # type: ignore[no-untyped-def]
+        yield ctx.schedule_activity("emit", [counter])
+        if counter > 0:
+            return ctx.continue_as_new(counter - 1)
+        return {"final_counter": counter}
+
+
+@workflow.defn(name="continue-signal-aware")
+class ContinueSignalAwareWorkflow:
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    @workflow.signal("note")
+    def on_note(self, message: str) -> None:
+        self.seen.append(message)
+
+    def run(self, ctx: WorkflowContext, counter: int):  # type: ignore[no-untyped-def]
+        yield ctx.schedule_activity("wait", [counter])
+        if counter > 0:
+            return ctx.continue_as_new(counter - 1)
+        return {"counter": counter, "seen": list(self.seen)}
+
+
+@workflow.defn(name="continue-after-timer")
+class ContinueAfterTimerWorkflow:
+    def run(self, ctx: WorkflowContext, counter: int):  # type: ignore[no-untyped-def]
+        yield ctx.sleep(60)
+        if counter > 0:
+            return ctx.continue_as_new(counter - 1)
+        return "done"
+
+
+@workflow.defn(name="continue-with-side-effect-and-search")
+class ContinueWithSideEffectsWorkflow:
+    def run(self, ctx: WorkflowContext, counter: int):  # type: ignore[no-untyped-def]
+        val = yield ctx.side_effect(lambda: f"side-{counter}")
+        yield ctx.upsert_search_attributes({"counter": counter})
+        if counter > 0:
+            return ctx.continue_as_new(counter - 1)
+        return val
+
+
+@workflow.defn(name="continue-first-stage")
+class ContinueFirstStageWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.schedule_activity("stage_one", [])
+        return ctx.continue_as_new(workflow_type="continue-second-stage")
+
+
+@workflow.defn(name="continue-second-stage")
+class ContinueSecondStageWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        result = yield ctx.schedule_activity("stage_two", [])
+        return {"stage": "two", "activity": result}
+
+
+class TestContinueAsNew:
+    def test_chain_returns_final_run_result(self) -> None:
+        env = WorkflowEnvironment()
+        env.register_activity_result("emit", None)
+
+        result = env.execute_workflow(CountdownContinueAsNewWorkflow, 3)
+
+        assert result == {"final_counter": 0}
+        assert env.run_count == 4
+
+    def test_run_records_capture_input_and_terminal_per_link(self) -> None:
+        env = WorkflowEnvironment()
+        env.register_activity_result("emit", None)
+
+        env.execute_workflow(CountdownContinueAsNewWorkflow, 2)
+
+        runs = env.runs
+        assert [r.input for r in runs] == [[2], [1], [0]]
+        assert all(isinstance(r, WorkflowRunRecord) for r in runs)
+        assert all(r.workflow_type == "countdown" for r in runs)
+        assert isinstance(runs[0].terminal, ContinueAsNew)
+        assert runs[0].terminal.arguments == [1]
+        assert isinstance(runs[1].terminal, ContinueAsNew)
+        assert isinstance(runs[2].terminal, CompleteWorkflow)
+        assert runs[2].terminal.result == {"final_counter": 0}
+
+    def test_non_final_run_history_records_continue_as_new_event(self) -> None:
+        env = WorkflowEnvironment()
+        env.register_activity_result("emit", None)
+
+        env.execute_workflow(CountdownContinueAsNewWorkflow, 1)
+
+        first_run_events = env.runs[0].history
+        event_types = [e["event_type"] for e in first_run_events]
+        assert event_types[-1] == "WorkflowContinuedAsNew"
+        payload = first_run_events[-1]["payload"]
+        assert payload["payload_codec"] == "avro"
+        assert "arguments" in payload
+        # Non-final run captures the activity event that ran before continue.
+        assert "ActivityCompleted" in event_types
+
+    def test_continue_as_new_limit_raises(self) -> None:
+        env = WorkflowEnvironment(continue_as_new_limit=3)
+        env.register_activity_result("emit", None)
+
+        with pytest.raises(RuntimeError, match="continue-as-new past the 3"):
+            env.execute_workflow(CountdownContinueAsNewWorkflow, 100)
+
+    def test_signal_queued_for_specific_run_targets_that_link(self) -> None:
+        env = WorkflowEnvironment()
+        env.register_activity_result("wait", None)
+        env.signal("note", ["hello-first"], run=1)
+        env.signal("note", ["hello-last"], run=3)
+
+        result = env.execute_workflow(ContinueSignalAwareWorkflow, 2)
+
+        assert result == {"counter": 0, "seen": ["hello-last"]}
+        first_events = env.runs[0].history
+        assert any(
+            e["event_type"] == "SignalReceived"
+            and e["payload"]["signal_name"] == "note"
+            for e in first_events
+        )
+        middle_events = env.runs[1].history
+        assert not any(
+            e["event_type"] == "SignalReceived" for e in middle_events
+        )
+
+    def test_timer_auto_fires_across_continuations(self) -> None:
+        env = WorkflowEnvironment()
+
+        result = env.execute_workflow(ContinueAfterTimerWorkflow, 2)
+
+        assert result == "done"
+        assert env.run_count == 3
+        for record in env.runs[:-1]:
+            assert any(
+                e["event_type"] == "TimerFired" for e in record.history
+            )
+
+    def test_side_effects_and_search_attributes_work_across_continuations(
+        self,
+    ) -> None:
+        env = WorkflowEnvironment()
+
+        result = env.execute_workflow(ContinueWithSideEffectsWorkflow, 2)
+
+        # Final link gets its own side-effect value.
+        assert result == "side-0"
+        for record in env.runs:
+            event_types = [e["event_type"] for e in record.history]
+            assert "SideEffectRecorded" in event_types
+            assert "SearchAttributesUpserted" in event_types
+
+    def test_continue_can_switch_workflow_type(self) -> None:
+        env = WorkflowEnvironment()
+        env.register_workflow(ContinueSecondStageWorkflow)
+        env.register_activity_result("stage_one", None)
+        env.register_activity_result("stage_two", "stage-two-result")
+
+        result = env.execute_workflow(ContinueFirstStageWorkflow)
+
+        assert result == {"stage": "two", "activity": "stage-two-result"}
+        assert [r.workflow_type for r in env.runs] == [
+            "continue-first-stage",
+            "continue-second-stage",
+        ]
+
+    def test_continue_to_unregistered_workflow_raises(self) -> None:
+        @workflow.defn(name="continue-to-unknown")
+        class ContinueToUnknownWorkflow:
+            def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+                return ctx.continue_as_new(workflow_type="never-registered-xyz")
+
+        env = WorkflowEnvironment()
+
+        with pytest.raises(KeyError, match="never-registered-xyz"):
+            env.execute_workflow(ContinueToUnknownWorkflow)
+
+    def test_re_running_execute_workflow_resets_runs(self) -> None:
+        env = WorkflowEnvironment()
+        env.register_activity_result("emit", None)
+
+        env.execute_workflow(CountdownContinueAsNewWorkflow, 2)
+        assert env.run_count == 3
+
+        env.execute_workflow(CountdownContinueAsNewWorkflow, 0)
+        assert env.run_count == 1
 
 
 class TestReplayHistory:
