@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-04-24
+
 ### Added
 - `WorkflowEnvironment` now drives `continue_as_new` chains end-to-end.
   Each link's input, workflow type, history, and terminal command are
