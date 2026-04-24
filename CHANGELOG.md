@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-04-24
+
 ### Added
 - `Client.get_schedule_history(schedule_id, *, limit=None, after_sequence=None)`
   returns one `ScheduleHistoryPage` of the schedule's audit stream, and
