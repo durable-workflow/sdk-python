@@ -135,6 +135,12 @@ from .serializer import (
     to_avro_payload_values,
 )
 from .worker import Worker
+from .replay_verify import (
+    CaseReport as ReplayCaseReport,
+    GoldenHistoryReport,
+    verify_golden_history,
+    verify_replay,
+)
 from .workflow import (
     ActivityRetryPolicy,
     ChildWorkflowRetryPolicy,
@@ -271,4 +277,8 @@ __all__ = [
     "to_avro_payload_value",
     "to_avro_payload_values",
     "replay",
+    "GoldenHistoryReport",
+    "ReplayCaseReport",
+    "verify_golden_history",
+    "verify_replay",
 ]
