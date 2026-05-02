@@ -141,6 +141,14 @@ from .replay_verify import (
     verify_golden_history,
     verify_replay,
 )
+from .history_bundle_verify import (
+    BUNDLE_SCHEMA as HISTORY_BUNDLE_SCHEMA,
+    BUNDLE_SCHEMA_VERSION as HISTORY_BUNDLE_SCHEMA_VERSION,
+    REPORT_SCHEMA as HISTORY_BUNDLE_VERIFICATION_REPORT_SCHEMA,
+    REPORT_SCHEMA_VERSION as HISTORY_BUNDLE_VERIFICATION_REPORT_SCHEMA_VERSION,
+    verify_bundle as verify_history_bundle,
+    verify_bundle_json as verify_history_bundle_json,
+)
 from .workflow import (
     ActivityRetryPolicy,
     ChildWorkflowRetryPolicy,
@@ -281,4 +289,10 @@ __all__ = [
     "ReplayCaseReport",
     "verify_golden_history",
     "verify_replay",
+    "HISTORY_BUNDLE_SCHEMA",
+    "HISTORY_BUNDLE_SCHEMA_VERSION",
+    "HISTORY_BUNDLE_VERIFICATION_REPORT_SCHEMA",
+    "HISTORY_BUNDLE_VERIFICATION_REPORT_SCHEMA_VERSION",
+    "verify_history_bundle",
+    "verify_history_bundle_json",
 ]
