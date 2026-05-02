@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Notes
+- Current release line is 0.4.x (Alpha). The package covers workflow and
+  activity authoring, schedules, signals, timers, child workflows,
+  continue-as-new, side effects, version markers, worker-applied accepted
+  updates, the in-process `WorkflowEnvironment` test harness, control-plane
+  parity for workflow / task-queue / worker / namespace / schedule
+  operations (including the per-schedule audit history stream), external
+  payload storage with policy and retention helpers, and golden replay
+  fixtures.
+- Targeting continued alignment with the Durable Workflow v2 protocol
+  surface advertised by `/api/cluster/info`
+  (`control_plane.version: "2"`, request-contract version `1`,
+  `worker_protocol.version: "1.0"`). Remaining v2 follow-ups tracked for
+  this line: server-routed Python query execution and pre-accept update
+  validator routing.
+
 ## [0.4.3] — 2026-04-24
 
 ### Added
