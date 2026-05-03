@@ -48,6 +48,11 @@ REPORT_SCHEMA = "durable-workflow.v2.replay-diff"
 
 REPORT_SCHEMA_VERSION = 1
 
+SIMULATION_REPORT_SCHEMA = "durable-workflow.v2.replay-simulation.report"
+"""Schema name for the batch-simulation report shape (matches workflow-php)."""
+
+SIMULATION_REPORT_SCHEMA_VERSION = 1
+
 FIXTURE_SCHEMA = "durable-workflow.golden-history.v1"
 
 REQUIRED_FAMILIES = frozenset(
@@ -64,11 +69,76 @@ STATUS_REPLAYED = "replayed"
 STATUS_DRIFTED = "drifted"
 STATUS_FAILED = "failed"
 
+VERDICT_OK = "ok"
+VERDICT_WARNING = "warning"
+VERDICT_DRIFTED = "drifted"
+VERDICT_FAILED = "failed"
+
+PROMOTION_SAFE_TO_PROMOTE = "safe_to_promote"
+PROMOTION_REVIEW_BEFORE_PROMOTE = "review_before_promote"
+PROMOTION_BLOCK_UNTIL_COMPATIBLE = "block_until_compatible"
+PROMOTION_BLOCK_AND_INVESTIGATE = "block_and_investigate"
+
 REASON_NONE = "none"
 REASON_SHAPE_MISMATCH = "shape_mismatch"
 REASON_REPLAY_ERROR = "replay_error"
 REASON_BUNDLE_INVALID = "bundle_invalid"
 REASON_EXPECTATION_MISMATCH = "expectation_mismatch"
+
+
+def promotion_decision_for(verdict: str) -> str:
+    """Map a replay verdict to a canonical promotion-gate decision.
+
+    The mapping is the one published by the control plane's
+    ``replay_verification_contract``. Unknown verdicts collapse to
+    ``block_and_investigate`` so a future or mistyped verdict cannot
+    accidentally let a bad build promote.
+    """
+
+    return {
+        VERDICT_OK: PROMOTION_SAFE_TO_PROMOTE,
+        VERDICT_WARNING: PROMOTION_REVIEW_BEFORE_PROMOTE,
+        VERDICT_DRIFTED: PROMOTION_BLOCK_UNTIL_COMPATIBLE,
+        VERDICT_FAILED: PROMOTION_BLOCK_AND_INVESTIGATE,
+    }.get(verdict, PROMOTION_BLOCK_AND_INVESTIGATE)
+
+
+def aggregate_verdicts(verdicts: Sequence[str]) -> str:
+    """Reduce a list of verdicts to the strictest one.
+
+    Empty input collapses to ``failed`` because a gate with no evidence
+    is never safe to promote — the same rule the workflow-php
+    ``ReplaySimulation`` aggregator uses.
+    """
+
+    if not verdicts:
+        return VERDICT_FAILED
+
+    rank = {VERDICT_OK: 0, VERDICT_WARNING: 1, VERDICT_DRIFTED: 2, VERDICT_FAILED: 3}
+    worst = VERDICT_OK
+
+    for verdict in verdicts:
+        current_rank = rank.get(verdict, rank[VERDICT_FAILED])
+        if current_rank > rank[worst]:
+            worst = verdict if verdict in rank else VERDICT_FAILED
+
+    return worst
+
+
+def _replay_status_to_verdict(status: str) -> str:
+    """Translate a CaseReport.status into a verify-report verdict."""
+
+    return {
+        STATUS_REPLAYED: VERDICT_OK,
+        STATUS_DRIFTED: VERDICT_DRIFTED,
+        STATUS_FAILED: VERDICT_FAILED,
+    }.get(status, VERDICT_FAILED)
+
+
+def _golden_status_to_verdict(status: str) -> str:
+    """Translate a GoldenHistoryReport.status into a verify verdict."""
+
+    return _replay_status_to_verdict(status)
 
 
 @dataclass(frozen=True)
@@ -85,10 +155,22 @@ class CaseReport:
     observed: Mapping[str, Any] | None = None
     error: Mapping[str, Any] | None = None
 
+    @property
+    def verdict(self) -> str:
+        """Promotion-facing verdict for this case."""
+
+        return _replay_status_to_verdict(self.status)
+
+    @property
+    def promotion_decision(self) -> str:
+        return promotion_decision_for(self.verdict)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "status": self.status,
+            "verdict": self.verdict,
+            "promotion_decision": self.promotion_decision,
             "reason": self.reason,
             "workflow_type": self.workflow_type,
             "family": self.family,
@@ -111,16 +193,89 @@ class GoldenHistoryReport:
     missing_families: list[str] = field(default_factory=list)
     summary: dict[str, int] = field(default_factory=dict)
 
+    @property
+    def verdict(self) -> str:
+        """Promotion-facing verdict (`ok` / `warning` / `drifted` / `failed`).
+
+        ``status`` reports the replay outcome (``replayed`` / ``drifted`` /
+        ``failed``); the verdict is the one a CI gate or rollout
+        controller should consume because it shares its vocabulary with
+        the workflow-php verify-report and the control-plane promotion
+        gate.
+        """
+
+        if self.missing_families:
+            return VERDICT_FAILED
+        return _golden_status_to_verdict(self.status)
+
+    @property
+    def promotion_decision(self) -> str:
+        return promotion_decision_for(self.verdict)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
             "schema_version": self.schema_version,
             "status": self.status,
+            "verdict": self.verdict,
+            "promotion_decision": self.promotion_decision,
             "fixture_schema": self.fixture_schema,
             "summary": dict(self.summary),
             "missing_families": list(self.missing_families),
             "cases": [case.to_dict() for case in self.cases],
         }
+
+
+@dataclass
+class BundleEntry:
+    """One history-export bundle inside a simulation batch."""
+
+    path: str
+    verdict: str
+    promotion_decision: str
+    integrity: Mapping[str, Any] | None = None
+    reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "bundle_path": self.path,
+            "verdict": self.verdict,
+            "promotion_decision": self.promotion_decision,
+            "reason": self.reason,
+            "integrity": dict(self.integrity) if self.integrity is not None else None,
+        }
+
+
+@dataclass
+class SimulationReport:
+    """Batch report for a directory of ``durable-workflow.v2.history-export`` bundles.
+
+    Mirrors the workflow-php ``ReplaySimulation`` JSON shape so a CI
+    pipeline can swap runtimes without re-implementing the parser.
+    """
+
+    schema: str = SIMULATION_REPORT_SCHEMA
+    schema_version: int = SIMULATION_REPORT_SCHEMA_VERSION
+    verdict: str = VERDICT_OK
+    promotion_decision: str = PROMOTION_SAFE_TO_PROMOTE
+    summary: dict[str, int] = field(default_factory=dict)
+    bundles: list[BundleEntry] = field(default_factory=list)
+    missing_bundles: list[str] = field(default_factory=list)
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "schema": self.schema,
+            "schema_version": self.schema_version,
+            "verdict": self.verdict,
+            "promotion_decision": self.promotion_decision,
+            "summary": dict(self.summary),
+            "bundles": [entry.to_dict() for entry in self.bundles],
+            "missing_bundles": list(self.missing_bundles),
+        }
+        if self.error is not None:
+            payload["error"] = self.error
+        return payload
 
 
 def verify_replay(
@@ -471,6 +626,112 @@ def _summarize(cases: Sequence[CaseReport]) -> dict[str, int]:
     return summary
 
 
+def simulate_bundles(
+    bundle_dir: str | Path,
+    *,
+    signing_key: str | None = None,
+    strict_warnings: bool = False,
+) -> SimulationReport:
+    """Verify integrity of every history-export bundle in a directory.
+
+    Emits a ``durable-workflow.v2.replay-simulation.report`` whose shape
+    matches the workflow-php ``ReplaySimulation`` output, so a single
+    promotion gate can consume reports from any official runtime.
+
+    The simulation does not replay against Python workflow code — it
+    runs the integrity verifier from
+    :mod:`durable_workflow.history_bundle_verify`, which is the
+    cross-runtime check (structure / payload envelope / command-event
+    consistency / evidence completeness). For per-runtime replay drift,
+    use :func:`verify_golden_history`.
+    """
+
+    from . import history_bundle_verify  # local import to avoid a cycle
+
+    directory = Path(bundle_dir)
+
+    if not directory.is_dir():
+        return SimulationReport(
+            verdict=VERDICT_FAILED,
+            promotion_decision=PROMOTION_BLOCK_AND_INVESTIGATE,
+            summary={
+                "total": 0,
+                VERDICT_OK: 0,
+                VERDICT_WARNING: 0,
+                VERDICT_DRIFTED: 0,
+                VERDICT_FAILED: 0,
+            },
+            error=f"Bundle directory [{directory}] does not exist.",
+        )
+
+    paths = sorted(directory.glob("*.json"))
+
+    summary = {
+        "total": 0,
+        VERDICT_OK: 0,
+        VERDICT_WARNING: 0,
+        VERDICT_DRIFTED: 0,
+        VERDICT_FAILED: 0,
+    }
+
+    bundles: list[BundleEntry] = []
+    verdicts: list[str] = []
+
+    for path in paths:
+        try:
+            payload = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            entry = BundleEntry(
+                path=str(path),
+                verdict=VERDICT_FAILED,
+                promotion_decision=PROMOTION_BLOCK_AND_INVESTIGATE,
+                reason=f"bundle_unreadable: {exc}",
+            )
+            bundles.append(entry)
+            verdicts.append(VERDICT_FAILED)
+            summary["total"] += 1
+            summary[VERDICT_FAILED] += 1
+            continue
+
+        integrity = history_bundle_verify.verify_bundle_json(payload, signing_key)
+        verdict = _integrity_status_to_verdict(integrity, strict_warnings)
+        decision = promotion_decision_for(verdict)
+
+        bundles.append(
+            BundleEntry(
+                path=str(path),
+                verdict=verdict,
+                promotion_decision=decision,
+                integrity=integrity,
+            )
+        )
+        verdicts.append(verdict)
+        summary["total"] += 1
+        summary[verdict] += 1
+
+    overall = aggregate_verdicts(verdicts) if verdicts else VERDICT_FAILED
+
+    return SimulationReport(
+        verdict=overall,
+        promotion_decision=promotion_decision_for(overall),
+        summary=summary,
+        bundles=bundles,
+    )
+
+
+def _integrity_status_to_verdict(
+    integrity: Mapping[str, Any], strict_warnings: bool
+) -> str:
+    status = integrity.get("status")
+    if status == "failed":
+        return VERDICT_FAILED
+    if status == "warning":
+        return VERDICT_FAILED if strict_warnings else VERDICT_WARNING
+    if status == "ok":
+        return VERDICT_OK
+    return VERDICT_FAILED
+
+
 def _resolve_workflow_loader(spec: str) -> Sequence[type]:
     """Resolve ``module:callable`` to a list of workflow classes.
 
@@ -493,20 +754,26 @@ def _cli(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m durable_workflow.replay_verify",
         description=(
-            "Replay golden-history fixtures against a registry of workflow "
-            "classes and emit a JSON verdict consumable by promotion gates."
+            "Replay golden-history fixtures or batch-verify exported history "
+            "bundles, and emit a JSON verdict + promotion_decision consumable "
+            "by CI gates."
         ),
     )
     parser.add_argument(
         "fixture_dir",
-        help="Directory of durable-workflow.golden-history.v1 JSON fixtures.",
+        help=(
+            "Directory of durable-workflow.golden-history.v1 fixtures (default), "
+            "or — with --simulate-bundles — a directory of "
+            "durable-workflow.v2.history-export bundles to integrity-verify in batch."
+        ),
     )
     parser.add_argument(
         "--workflows",
-        required=True,
+        required=False,
         help=(
             "Workflow loader of the form 'module:callable'. The callable "
-            "must return an iterable of workflow classes."
+            "must return an iterable of workflow classes. Required when "
+            "verifying golden histories; ignored with --simulate-bundles."
         ),
     )
     parser.add_argument(
@@ -518,7 +785,37 @@ def _cli(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Treat missing required families as a failure exit.",
     )
+    parser.add_argument(
+        "--simulate-bundles",
+        action="store_true",
+        help=(
+            "Switch the positional directory from golden-history fixtures to "
+            "exported history bundles. Runs the integrity verifier across "
+            "every *.json bundle and emits a replay-simulation report."
+        ),
+    )
+    parser.add_argument(
+        "--signing-key",
+        help=(
+            "HMAC signing key for bundle signature verification (only used "
+            "with --simulate-bundles)."
+        ),
+    )
+    parser.add_argument(
+        "--strict-warnings",
+        action="store_true",
+        help=(
+            "Treat structural integrity warnings as per-bundle failures "
+            "(only used with --simulate-bundles)."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.simulate_bundles:
+        return _run_simulation(args)
+
+    if not args.workflows:
+        parser.error("--workflows is required unless --simulate-bundles is set")
 
     workflows = _resolve_workflow_loader(args.workflows)
     report = verify_golden_history(args.fixture_dir, workflows)
@@ -541,6 +838,26 @@ def _cli(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def _run_simulation(args: argparse.Namespace) -> int:
+    report = simulate_bundles(
+        args.fixture_dir,
+        signing_key=args.signing_key,
+        strict_warnings=args.strict_warnings,
+    )
+    payload = report.to_dict()
+    text = json.dumps(payload, indent=2, sort_keys=True)
+
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(text + "\n", encoding="utf-8")
+    else:
+        print(text)
+
+    if report.verdict in (VERDICT_DRIFTED, VERDICT_FAILED):
+        return 1
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Command-line entry point used by ``python -m durable_workflow.replay_verify``."""
 
@@ -554,11 +871,21 @@ if __name__ == "__main__":  # pragma: no cover - module entry point
 __all__ = [
     "REPORT_SCHEMA",
     "REPORT_SCHEMA_VERSION",
+    "SIMULATION_REPORT_SCHEMA",
+    "SIMULATION_REPORT_SCHEMA_VERSION",
     "FIXTURE_SCHEMA",
     "REQUIRED_FAMILIES",
     "STATUS_REPLAYED",
     "STATUS_DRIFTED",
     "STATUS_FAILED",
+    "VERDICT_OK",
+    "VERDICT_WARNING",
+    "VERDICT_DRIFTED",
+    "VERDICT_FAILED",
+    "PROMOTION_SAFE_TO_PROMOTE",
+    "PROMOTION_REVIEW_BEFORE_PROMOTE",
+    "PROMOTION_BLOCK_UNTIL_COMPATIBLE",
+    "PROMOTION_BLOCK_AND_INVESTIGATE",
     "REASON_NONE",
     "REASON_SHAPE_MISMATCH",
     "REASON_REPLAY_ERROR",
@@ -566,7 +893,12 @@ __all__ = [
     "REASON_EXPECTATION_MISMATCH",
     "CaseReport",
     "GoldenHistoryReport",
+    "BundleEntry",
+    "SimulationReport",
+    "promotion_decision_for",
+    "aggregate_verdicts",
     "verify_replay",
     "verify_golden_history",
+    "simulate_bundles",
     "main",
 ]
