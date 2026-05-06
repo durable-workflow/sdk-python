@@ -56,6 +56,10 @@ Documentation = "https://durable-workflow.github.io/docs/2.0/polyglot/python"
 Repository = "https://github.com/durable-workflow/sdk-python"
 Issues = "https://github.com/durable-workflow/sdk-python/issues"
 
+[project.scripts]
+durable-workflow-replay-verify = "durable_workflow.replay_verify:main"
+durable-workflow-history-bundle-verify = "durable_workflow.history_bundle_verify:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

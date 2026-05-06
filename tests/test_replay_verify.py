@@ -428,6 +428,17 @@ def test_simulate_bundles_returns_failed_for_missing_directory(tmp_path: Path) -
 
     assert report.verdict == VERDICT_FAILED
     assert report.promotion_decision == PROMOTION_BLOCK_AND_INVESTIGATE
+    assert report.missing_bundles == [str(tmp_path / "no-such-dir")]
+    assert report.error is not None
+
+
+def test_simulate_bundles_returns_failed_when_directory_has_no_bundles(tmp_path: Path) -> None:
+    report = simulate_bundles(tmp_path)
+
+    assert report.verdict == VERDICT_FAILED
+    assert report.promotion_decision == PROMOTION_BLOCK_AND_INVESTIGATE
+    assert report.summary["total"] == 0
+    assert report.missing_bundles == [str(tmp_path / "*.json")]
     assert report.error is not None
 
 

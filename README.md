@@ -203,6 +203,28 @@ infers the workflow type and input from that event; otherwise pass
 contains the commands the workflow would emit next, including determinism
 failures surfaced as workflow failure commands.
 
+For CI and operator replay gates, the package also installs offline
+verification commands:
+
+```bash
+durable-workflow-replay-verify tests/fixtures/golden_history \
+  --workflows my_app.workflows:all_workflows \
+  --output replay-report.json
+
+durable-workflow-replay-verify exported-history-bundles \
+  --simulate-bundles \
+  --output replay-simulation.json
+
+durable-workflow-history-bundle-verify exported-history-bundles/run-001.json \
+  --output integrity-report.json
+```
+
+`durable-workflow-replay-verify` emits the same verdict and
+`promotion_decision` vocabulary as the platform replay contract. Golden-history
+mode replays cross-runtime fixtures against registered workflow classes;
+`--simulate-bundles` integrity-checks every exported history bundle in a
+directory and reports missing bundle evidence as a blocking result.
+
 ## External payload storage
 
 Large payload offload is opt-in. `serializer.external_storage_envelope(...)`

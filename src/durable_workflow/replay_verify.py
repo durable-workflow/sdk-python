@@ -661,6 +661,7 @@ def simulate_bundles(
                 VERDICT_DRIFTED: 0,
                 VERDICT_FAILED: 0,
             },
+            missing_bundles=[str(directory)],
             error=f"Bundle directory [{directory}] does not exist.",
         )
 
@@ -673,6 +674,15 @@ def simulate_bundles(
         VERDICT_DRIFTED: 0,
         VERDICT_FAILED: 0,
     }
+
+    if not paths:
+        return SimulationReport(
+            verdict=VERDICT_FAILED,
+            promotion_decision=PROMOTION_BLOCK_AND_INVESTIGATE,
+            summary=summary,
+            missing_bundles=[str(directory / "*.json")],
+            error=f"No history-export bundle JSON files were found in [{directory}].",
+        )
 
     bundles: list[BundleEntry] = []
     verdicts: list[str] = []
@@ -709,7 +719,7 @@ def simulate_bundles(
         summary["total"] += 1
         summary[verdict] += 1
 
-    overall = aggregate_verdicts(verdicts) if verdicts else VERDICT_FAILED
+    overall = aggregate_verdicts(verdicts)
 
     return SimulationReport(
         verdict=overall,

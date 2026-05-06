@@ -138,6 +138,10 @@ from .worker import Worker
 from .replay_verify import (
     CaseReport as ReplayCaseReport,
     GoldenHistoryReport,
+    SimulationReport,
+    aggregate_verdicts,
+    promotion_decision_for,
+    simulate_bundles,
     verify_golden_history,
     verify_replay,
 )
@@ -287,6 +291,10 @@ __all__ = [
     "replay",
     "GoldenHistoryReport",
     "ReplayCaseReport",
+    "SimulationReport",
+    "aggregate_verdicts",
+    "promotion_decision_for",
+    "simulate_bundles",
     "verify_golden_history",
     "verify_replay",
     "HISTORY_BUNDLE_SCHEMA",
