@@ -55,6 +55,13 @@ def _base_bundle() -> dict[str, Any]:
             }
         ],
         "commands": [],
+        "signals": [],
+        "updates": [],
+        "tasks": [],
+        "activities": [],
+        "timers": [],
+        "failures": [],
+        "links": {"projection_source": "rebuilt", "parents": [], "children": []},
         "codec_schemas": {},
         "payload_manifest": {"version": 1, "entries": []},
         "redaction": {"applied": False, "policy": None, "paths": []},
@@ -99,9 +106,16 @@ def test_signed_bundle_reports_ok() -> None:
     assert report["schema_version"] == REPORT_SCHEMA_VERSION
     assert report["status"] == STATUS_OK
     assert report["findings"] == []
+    assert report["integrity"]["present"] is True
+    assert report["integrity"]["checksum_matches"] is True
+    assert report["integrity"]["signature_verified"] is True
+    assert report["integrity"]["expected_checksum"] == report["integrity"]["checksum"]
+    assert report["integrity"]["recomputed_checksum"] == report["integrity"]["checksum"]
     assert report["integrity"]["checksum_ok"] is True
     assert report["integrity"]["signature_ok"] is True
     assert report["integrity"]["key_id"] == "key-1"
+    assert report["bundle"]["workflow_run_id"] == "run-1"
+    assert report["bundle"]["workflow_instance_id"] == "instance-1"
 
 
 def test_tampered_bundle_reports_checksum_mismatch() -> None:
@@ -248,6 +262,39 @@ def test_writer_schema_fingerprint_mismatch_in_payload_manifest() -> None:
 
     report = verify_bundle(bundle, signing_key=signing_key)
     assert "payload_manifest.writer_schema_fingerprint_mismatch" in _rule_names(report)
+    assert report["status"] == STATUS_FAILED
+
+
+def test_required_evidence_sections_are_enforced() -> None:
+    signing_key = "secret"
+    bundle = _base_bundle()
+    del bundle["signals"]
+    bundle = _sign(bundle, signing_key, "key-1")
+
+    report = verify_bundle(bundle, signing_key=signing_key)
+
+    assert "bundle.section_missing" in _rule_names(report)
+    assert report["status"] == STATUS_FAILED
+
+
+def test_payload_marked_available_but_missing_is_failed() -> None:
+    signing_key = "secret"
+    bundle = _base_bundle()
+    bundle["payload_manifest"]["entries"].append(
+        {
+            "path": "payloads.arguments.data",
+            "codec": "json",
+            "available": True,
+            "redacted": False,
+            "encoding": "opaque-string",
+            "diagnostic": "payload_missing",
+        }
+    )
+    bundle = _sign(bundle, signing_key, "key-1")
+
+    report = verify_bundle(bundle, signing_key=signing_key)
+
+    assert "payload_manifest.payload_missing" in _rule_names(report)
     assert report["status"] == STATUS_FAILED
 
 

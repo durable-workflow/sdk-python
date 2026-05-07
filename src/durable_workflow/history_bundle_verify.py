@@ -100,11 +100,15 @@ def verify_bundle(bundle: Any, signing_key: str | None = None) -> dict[str, Any]
 
     workflow = bundle.get("workflow") if isinstance(bundle.get("workflow"), Mapping) else {}
     history_events = bundle.get("history_events")
+    instance_id = _string_or_none(workflow.get("instance_id")) if isinstance(workflow, Mapping) else None
+    run_id = _string_or_none(workflow.get("run_id")) if isinstance(workflow, Mapping) else None
     bundle_summary = {
         "schema": _string_or_none(bundle.get("schema")),
         "schema_version": _int_or_none(bundle.get("schema_version")),
-        "instance_id": _string_or_none(workflow.get("instance_id")) if isinstance(workflow, Mapping) else None,
-        "run_id": _string_or_none(workflow.get("run_id")) if isinstance(workflow, Mapping) else None,
+        "instance_id": instance_id,
+        "run_id": run_id,
+        "workflow_instance_id": instance_id,
+        "workflow_run_id": run_id,
         "history_event_count": len(history_events) if isinstance(history_events, list) else 0,
     }
 
@@ -151,7 +155,24 @@ def _check_envelope(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -
             )
         )
 
-    for section in ("workflow", "history_events", "commands", "payloads"):
+    required_sections = {
+        "workflow": dict,
+        "payloads": dict,
+        "history_events": list,
+        "commands": list,
+        "signals": list,
+        "updates": list,
+        "tasks": list,
+        "activities": list,
+        "timers": list,
+        "failures": list,
+        "links": dict,
+        "redaction": dict,
+        "codec_schemas": dict,
+        "payload_manifest": dict,
+    }
+
+    for section, expected_type in required_sections.items():
         if section not in bundle:
             findings.append(
                 _finding(
@@ -163,7 +184,6 @@ def _check_envelope(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -
             )
             continue
         value = bundle[section]
-        expected_type = list if section in ("history_events", "commands") else dict
         if not isinstance(value, expected_type):
             findings.append(
                 _finding(
@@ -363,7 +383,7 @@ def _check_payload_manifest(bundle: Mapping[str, Any], findings: list[dict[str, 
             findings.append(
                 _finding(
                     "payload_manifest.codec_missing",
-                    SEVERITY_WARNING,
+                    SEVERITY_ERROR,
                     f"payload_manifest entry [{path}] does not declare a codec.",
                     {"path": path},
                 )
@@ -373,13 +393,13 @@ def _check_payload_manifest(bundle: Mapping[str, Any], findings: list[dict[str, 
         redacted = bool(entry.get("redacted"))
         diagnostic = _string_or_none(entry.get("diagnostic"))
 
-        if not available and not redacted and diagnostic == "payload_missing":
+        if available and not redacted and diagnostic == "payload_missing":
             findings.append(
                 _finding(
                     "payload_manifest.payload_missing",
-                    SEVERITY_WARNING,
+                    SEVERITY_ERROR,
                     (
-                        f"payload_manifest entry [{path}] is marked unavailable but flagged "
+                        f"payload_manifest entry [{path}] is marked available but flagged "
                         "as payload_missing — bundle decode will be lossy."
                     ),
                     {"path": path},
@@ -424,7 +444,7 @@ def _check_redaction(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) 
         findings.append(
             _finding(
                 "redaction.empty_paths",
-                SEVERITY_WARNING,
+                SEVERITY_INFO,
                 "redaction.applied=true but redaction.paths is empty — operators cannot tell what was redacted.",
             )
         )
@@ -449,7 +469,7 @@ def _check_integrity(
     signature = _string_or_none(integrity.get("signature"))
     key_id = _string_or_none(integrity.get("key_id"))
 
-    if canonicalization is not None and canonicalization not in SUPPORTED_CANONICALIZATIONS:
+    if canonicalization not in SUPPORTED_CANONICALIZATIONS:
         findings.append(
             _finding(
                 "integrity.canonicalization_unsupported",
@@ -461,9 +481,18 @@ def _check_integrity(
                 {"canonicalization": canonicalization},
             )
         )
-        return _integrity_report_for(canonicalization, checksum_algorithm, checksum, signature_algorithm, key_id)
+        return _integrity_report_for(
+            canonicalization,
+            checksum_algorithm,
+            checksum,
+            signature_algorithm,
+            key_id,
+            present=True,
+            signature_present=signature is not None,
+            signing_key_provided=bool(signing_key),
+        )
 
-    if checksum_algorithm is not None and checksum_algorithm not in SUPPORTED_CHECKSUM_ALGORITHMS:
+    if checksum_algorithm not in SUPPORTED_CHECKSUM_ALGORITHMS:
         findings.append(
             _finding(
                 "integrity.checksum_algorithm_unsupported",
@@ -474,6 +503,16 @@ def _check_integrity(
                 ),
                 {"checksum_algorithm": checksum_algorithm},
             )
+        )
+        return _integrity_report_for(
+            canonicalization,
+            checksum_algorithm,
+            checksum,
+            signature_algorithm,
+            key_id,
+            present=True,
+            signature_present=signature is not None,
+            signing_key_provided=bool(signing_key),
         )
 
     if checksum is None:
@@ -491,81 +530,113 @@ def _check_integrity(
                 f"Bundle could not be canonicalized: {exc}",
             )
         )
-        return _integrity_report_for(canonicalization, checksum_algorithm, checksum, signature_algorithm, key_id)
+        return _integrity_report_for(
+            canonicalization,
+            checksum_algorithm,
+            checksum,
+            signature_algorithm,
+            key_id,
+            present=True,
+            signature_present=signature is not None,
+            signing_key_provided=bool(signing_key),
+        )
 
     checksum_ok: bool | None = None
+    recomputed_checksum: str | None = None
     if checksum_algorithm == "sha256" and checksum is not None:
-        expected = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
-        checksum_ok = hmac.compare_digest(expected, checksum)
+        recomputed_checksum = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+        checksum_ok = hmac.compare_digest(recomputed_checksum, checksum)
         if not checksum_ok:
             findings.append(
                 _finding(
                     "integrity.checksum_mismatch",
                     SEVERITY_ERROR,
                     (
-                        f"integrity.checksum=[{checksum}] does not match recomputed sha256=[{expected}]. "
+                        f"integrity.checksum=[{checksum}] does not match recomputed sha256=[{recomputed_checksum}]. "
                         "Bundle has been tampered with or canonicalization disagrees."
                     ),
-                    {"expected": expected, "observed": checksum},
+                    {"expected": recomputed_checksum, "observed": checksum},
                 )
             )
 
     signature_ok: bool | None = None
-    if signature_algorithm is not None:
-        if signature_algorithm not in SUPPORTED_SIGNATURE_ALGORITHMS:
+    if signature_algorithm is None and signature is None:
+        return _integrity_report_for(
+            canonicalization,
+            checksum_algorithm,
+            checksum,
+            signature_algorithm,
+            key_id,
+            present=True,
+            recomputed_checksum=recomputed_checksum,
+            checksum_matches=checksum_ok,
+            signature_present=False,
+            signature_verified=None,
+            signing_key_provided=bool(signing_key),
+        )
+
+    if signature_algorithm not in SUPPORTED_SIGNATURE_ALGORITHMS:
+        findings.append(
+            _finding(
+                "integrity.signature_algorithm_unsupported",
+                SEVERITY_ERROR,
+                (
+                    f"integrity.signature_algorithm=[{signature_algorithm}] is not supported "
+                    f"(supported: {sorted(SUPPORTED_SIGNATURE_ALGORITHMS)})."
+                ),
+                {"signature_algorithm": signature_algorithm},
+            )
+        )
+    elif signature is None:
+        findings.append(
+            _finding(
+                "integrity.signature_missing",
+                SEVERITY_ERROR,
+                "Bundle declares a signature_algorithm but does not include a signature.",
+            )
+        )
+    elif not signing_key:
+        findings.append(
+            _finding(
+                "integrity.signature_key_unavailable",
+                SEVERITY_WARNING,
+                "Bundle is signed but the verifier was not given a signing key — signature was not validated.",
+                {"key_id": key_id},
+            )
+        )
+    else:
+        expected = hmac.new(
+            signing_key.encode("utf-8"),
+            canonical_json.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        signature_ok = hmac.compare_digest(expected, signature)
+        if not signature_ok:
             findings.append(
                 _finding(
-                    "integrity.signature_algorithm_unsupported",
+                    "integrity.signature_mismatch",
                     SEVERITY_ERROR,
                     (
-                        f"integrity.signature_algorithm=[{signature_algorithm}] is not supported "
-                        f"(supported: {sorted(SUPPORTED_SIGNATURE_ALGORITHMS)})."
+                        "integrity.signature does not match HMAC-SHA256 of the canonical bundle "
+                        f"under the provided key (key_id={key_id or 'unknown'})."
                     ),
-                    {"signature_algorithm": signature_algorithm},
-                )
-            )
-        elif signature is None:
-            findings.append(
-                _finding(
-                    "integrity.signature_missing",
-                    SEVERITY_ERROR,
-                    "Bundle declares a signature_algorithm but does not include a signature.",
-                )
-            )
-        elif not signing_key:
-            findings.append(
-                _finding(
-                    "integrity.signature_key_unavailable",
-                    SEVERITY_WARNING,
-                    "Bundle is signed but the verifier was not given a signing key — signature was not validated.",
                     {"key_id": key_id},
                 )
             )
-        else:
-            expected = hmac.new(
-                signing_key.encode("utf-8"),
-                canonical_json.encode("utf-8"),
-                hashlib.sha256,
-            ).hexdigest()
-            signature_ok = hmac.compare_digest(expected, signature)
-            if not signature_ok:
-                findings.append(
-                    _finding(
-                        "integrity.signature_mismatch",
-                        SEVERITY_ERROR,
-                        (
-                            "integrity.signature does not match HMAC-SHA256 of the canonical bundle "
-                            f"under the provided key (key_id={key_id or 'unknown'})."
-                        ),
-                        {"key_id": key_id},
-                    )
-                )
 
-    report = _integrity_report_for(canonicalization, checksum_algorithm, checksum, signature_algorithm, key_id)
-    report["checksum_ok"] = checksum_ok
-    report["signature_ok"] = signature_ok
-    report["signing_key_provided"] = bool(signing_key)
-    return report
+    return _integrity_report_for(
+        canonicalization,
+        checksum_algorithm,
+        checksum,
+        signature_algorithm,
+        key_id,
+        present=True,
+        recomputed_checksum=recomputed_checksum,
+        checksum_matches=checksum_ok,
+        signature_present=signature is not None,
+        signature_verified=signature_ok,
+        signing_key_provided=bool(signing_key),
+    )
 
 
 def _canonicalize(bundle: Mapping[str, Any]) -> str:
@@ -587,8 +658,17 @@ def _finalize(
     bundle_summary: Mapping[str, Any],
     integrity_report: Mapping[str, Any],
 ) -> dict[str, Any]:
-    summary = {"findings": len(findings), "errors": 0, "warnings": 0, "info": 0}
+    summary: dict[str, Any] = {
+        "findings": len(findings),
+        "errors": 0,
+        "warnings": 0,
+        "info": 0,
+        "findings_by_rule": {},
+    }
     for finding in findings:
+        rule = str(finding.get("rule", "unknown"))
+        summary["findings_by_rule"][rule] = summary["findings_by_rule"].get(rule, 0) + 1
+
         severity = finding.get("severity", SEVERITY_INFO)
         if severity == SEVERITY_ERROR:
             summary["errors"] += 1
@@ -633,17 +713,29 @@ def _integrity_report_for(
     checksum: str | None,
     signature_algorithm: str | None,
     key_id: str | None,
+    *,
+    present: bool = False,
+    recomputed_checksum: str | None = None,
+    checksum_matches: bool | None = None,
+    signature_present: bool = False,
+    signature_verified: bool | None = None,
+    signing_key_provided: bool = False,
 ) -> dict[str, Any]:
     return {
+        "present": present,
         "canonicalization": canonicalization,
         "checksum_algorithm": checksum_algorithm,
-        "checksum": checksum,
+        "expected_checksum": checksum,
+        "recomputed_checksum": recomputed_checksum,
+        "checksum_matches": checksum_matches,
         "signature_algorithm": signature_algorithm,
-        "signature_present": signature_algorithm is not None,
+        "signature_present": signature_present,
+        "signature_verified": signature_verified,
         "key_id": key_id,
-        "checksum_ok": None,
-        "signature_ok": None,
-        "signing_key_provided": False,
+        "checksum": checksum,
+        "checksum_ok": checksum_matches,
+        "signature_ok": signature_verified,
+        "signing_key_provided": signing_key_provided,
     }
 
 
@@ -653,6 +745,8 @@ def _empty_bundle_summary() -> dict[str, Any]:
         "schema_version": None,
         "instance_id": None,
         "run_id": None,
+        "workflow_instance_id": None,
+        "workflow_run_id": None,
         "history_event_count": 0,
     }
 
