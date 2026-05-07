@@ -191,6 +191,8 @@ class GoldenHistoryReport:
     fixture_schema: str = FIXTURE_SCHEMA
     cases: list[CaseReport] = field(default_factory=list)
     missing_families: list[str] = field(default_factory=list)
+    required_families: list[str] = field(default_factory=list)
+    covered_families: list[str] = field(default_factory=list)
     summary: dict[str, int] = field(default_factory=dict)
 
     @property
@@ -212,6 +214,17 @@ class GoldenHistoryReport:
     def promotion_decision(self) -> str:
         return promotion_decision_for(self.verdict)
 
+    @property
+    def evidence(self) -> dict[str, Any]:
+        return {
+            "fixture_count": int(self.summary.get("fixtures", 0)),
+            "case_count": int(self.summary.get("cases", 0)),
+            "required_families": list(self.required_families),
+            "covered_families": list(self.covered_families),
+            "missing_family_count": len(self.missing_families),
+            "missing_families": list(self.missing_families),
+        }
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
@@ -219,6 +232,7 @@ class GoldenHistoryReport:
             "status": self.status,
             "verdict": self.verdict,
             "promotion_decision": self.promotion_decision,
+            "evidence": self.evidence,
             "fixture_schema": self.fixture_schema,
             "summary": dict(self.summary),
             "missing_families": list(self.missing_families),
@@ -234,6 +248,7 @@ class BundleEntry:
     verdict: str
     promotion_decision: str
     integrity: Mapping[str, Any] | None = None
+    evidence: Mapping[str, Any] | None = None
     reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -242,6 +257,7 @@ class BundleEntry:
             "verdict": self.verdict,
             "promotion_decision": self.promotion_decision,
             "reason": self.reason,
+            "evidence": dict(self.evidence) if self.evidence is not None else None,
             "integrity": dict(self.integrity) if self.integrity is not None else None,
         }
 
@@ -263,12 +279,34 @@ class SimulationReport:
     missing_bundles: list[str] = field(default_factory=list)
     error: str | None = None
 
+    @property
+    def evidence(self) -> dict[str, Any]:
+        bundle_count = int(self.summary.get("total", len(self.bundles)))
+        integrity_checked = 0
+        for entry in self.bundles:
+            evidence = entry.evidence or {}
+            if evidence.get("integrity_checked") is True:
+                integrity_checked += 1
+
+        return {
+            "bundle_count": bundle_count,
+            "missing_bundle_count": len(self.missing_bundles),
+            "integrity_checked_count": integrity_checked,
+            "replay_checked_count": 0,
+            "replay_skipped": True,
+            "strict_warnings": any(
+                (entry.evidence or {}).get("strict_warnings") is True
+                for entry in self.bundles
+            ),
+        }
+
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "schema": self.schema,
             "schema_version": self.schema_version,
             "verdict": self.verdict,
             "promotion_decision": self.promotion_decision,
+            "evidence": self.evidence,
             "summary": dict(self.summary),
             "bundles": [entry.to_dict() for entry in self.bundles],
             "missing_bundles": list(self.missing_bundles),
@@ -325,10 +363,16 @@ def verify_golden_history(
     caller decides whether to gate promotion on them.
     """
 
+    required = sorted(set(required_families))
     fixtures = sorted(Path(fixture_dir).glob("*.json"))
 
     if not fixtures:
-        report = GoldenHistoryReport(status=STATUS_FAILED)
+        report = GoldenHistoryReport(
+            status=STATUS_FAILED,
+            missing_families=list(required),
+            required_families=list(required),
+            covered_families=[],
+        )
         report.summary = {
             "fixtures": 0,
             "cases": 0,
@@ -386,7 +430,7 @@ def verify_golden_history(
                 )
             )
 
-    missing = sorted(set(required_families) - covered_families)
+    missing = sorted(set(required) - covered_families)
     summary = _summarize(cases)
     summary["fixtures"] = len(fixtures)
 
@@ -401,6 +445,8 @@ def verify_golden_history(
         status=overall,
         cases=cases,
         missing_families=missing,
+        required_families=list(required),
+        covered_families=sorted(covered_families),
         summary=summary,
     )
 
@@ -695,6 +741,15 @@ def simulate_bundles(
                 path=str(path),
                 verdict=VERDICT_FAILED,
                 promotion_decision=PROMOTION_BLOCK_AND_INVESTIGATE,
+                evidence={
+                    "integrity_checked": False,
+                    "integrity_status": None,
+                    "integrity_finding_count": 0,
+                    "replay_checked": False,
+                    "replay_status": None,
+                    "replay_skipped": True,
+                    "strict_warnings": strict_warnings,
+                },
                 reason=f"bundle_unreadable: {exc}",
             )
             bundles.append(entry)
@@ -713,6 +768,19 @@ def simulate_bundles(
                 verdict=verdict,
                 promotion_decision=decision,
                 integrity=integrity,
+                evidence={
+                    "integrity_checked": True,
+                    "integrity_status": integrity.get("status"),
+                    "integrity_finding_count": int(
+                        (integrity.get("summary") or {}).get(
+                            "findings", len(integrity.get("findings") or [])
+                        )
+                    ),
+                    "replay_checked": False,
+                    "replay_status": None,
+                    "replay_skipped": True,
+                    "strict_warnings": strict_warnings,
+                },
             )
         )
         verdicts.append(verdict)

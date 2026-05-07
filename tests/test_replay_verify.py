@@ -136,6 +136,9 @@ def test_verify_golden_history_replays_clean_fixture(tmp_path: Path) -> None:
         "failed": 0,
     }
     assert report.missing_families == []
+    assert report.evidence["required_families"] == ["activity"]
+    assert report.evidence["covered_families"] == ["activity"]
+    assert report.evidence["missing_family_count"] == 0
     assert report.cases[0].status == STATUS_REPLAYED
     assert report.cases[0].family == "activity"
 
@@ -237,6 +240,8 @@ def test_report_to_dict_uses_published_schema(tmp_path: Path) -> None:
     payload = report.to_dict()
     assert payload["schema"] == REPORT_SCHEMA
     assert payload["schema_version"] == REPORT_SCHEMA_VERSION
+    assert payload["evidence"]["fixture_count"] == 1
+    assert payload["evidence"]["case_count"] == 0
 
 
 def _greet_workflows() -> list[type]:
@@ -386,6 +391,7 @@ def test_golden_history_report_to_dict_includes_promotion_decision(tmp_path: Pat
     payload = report.to_dict()
     assert payload["verdict"] == VERDICT_OK
     assert payload["promotion_decision"] == PROMOTION_SAFE_TO_PROMOTE
+    assert payload["evidence"]["missing_family_count"] == 0
     assert payload["cases"][0]["promotion_decision"] == PROMOTION_SAFE_TO_PROMOTE
 
 
@@ -461,9 +467,15 @@ def test_simulate_bundles_aggregates_per_bundle_verdicts(tmp_path: Path) -> None
     assert payload["promotion_decision"] == PROMOTION_BLOCK_AND_INVESTIGATE
     assert payload["summary"]["total"] == 2
     assert payload["summary"][VERDICT_FAILED] == 2
+    assert payload["evidence"]["bundle_count"] == 2
+    assert payload["evidence"]["missing_bundle_count"] == 0
+    assert payload["evidence"]["integrity_checked_count"] == 2
+    assert payload["evidence"]["replay_checked_count"] == 0
+    assert payload["evidence"]["replay_skipped"] is True
     for entry in payload["bundles"]:
         assert entry["verdict"] == VERDICT_FAILED
         assert entry["promotion_decision"] == PROMOTION_BLOCK_AND_INVESTIGATE
+        assert entry["evidence"]["integrity_checked"] is True
 
 
 def test_simulate_bundles_cli(tmp_path: Path) -> None:
@@ -486,6 +498,7 @@ def test_simulate_bundles_cli(tmp_path: Path) -> None:
     assert payload["schema"] == SIMULATION_REPORT_SCHEMA
     assert payload["verdict"] == VERDICT_FAILED
     assert payload["promotion_decision"] == PROMOTION_BLOCK_AND_INVESTIGATE
+    assert payload["evidence"]["bundle_count"] == 1
 
 
 def test_cli_requires_workflows_when_not_simulating(tmp_path: Path) -> None:

@@ -262,6 +262,12 @@ def test_writer_schema_fingerprint_mismatch_in_payload_manifest() -> None:
 
     report = verify_bundle(bundle, signing_key=signing_key)
     assert "payload_manifest.writer_schema_fingerprint_mismatch" in _rule_names(report)
+    finding = next(
+        finding
+        for finding in report["findings"]
+        if finding["rule"] == "payload_manifest.writer_schema_fingerprint_mismatch"
+    )
+    assert finding["path"] == "payloads.output.data"
     assert report["status"] == STATUS_FAILED
 
 
@@ -295,6 +301,12 @@ def test_payload_marked_available_but_missing_is_failed() -> None:
     report = verify_bundle(bundle, signing_key=signing_key)
 
     assert "payload_manifest.payload_missing" in _rule_names(report)
+    finding = next(
+        finding
+        for finding in report["findings"]
+        if finding["rule"] == "payload_manifest.payload_missing"
+    )
+    assert finding["path"] == "payloads.arguments.data"
     assert report["status"] == STATUS_FAILED
 
 

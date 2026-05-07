@@ -700,8 +700,19 @@ def _finding(
     severity: str,
     message: str,
     context: Mapping[str, Any] | None = None,
+    path: str | None = None,
 ) -> dict[str, Any]:
-    finding: dict[str, Any] = {"rule": rule, "severity": severity, "message": message}
+    if path is None and context is not None:
+        context_path = context.get("path")
+        if isinstance(context_path, str) and context_path:
+            path = context_path
+
+    finding: dict[str, Any] = {
+        "rule": rule,
+        "severity": severity,
+        "message": message,
+        "path": path,
+    }
     if context:
         finding["context"] = dict(context)
     return finding
