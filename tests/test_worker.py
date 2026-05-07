@@ -342,6 +342,45 @@ class TestWorkerRegistration:
         mock_client.register_worker.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_register_rejects_worker_protocol_below_payload_codec_floor(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(worker_protocol={"version": "1.0"})
+        )
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        with pytest.raises(RuntimeError, match="requires '1.1'"):
+            await worker._register()
+        mock_client.register_worker.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_register_accepts_protocol_1_1_when_newer_feature_floor_is_unavailable(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(
+                worker_protocol={
+                    "version": PROTOCOL_VERSION,
+                    "server_capabilities": {
+                        "query_tasks": True,
+                        "worker_session_verbs": [],
+                        "worker_sessions": {
+                            "feature": "worker_sessions",
+                            "supported": False,
+                            "minimum_protocol_version": "1.2",
+                            "unavailable_reason": "worker_protocol_version_below_worker_session_minimum",
+                        },
+                    },
+                }
+            )
+        )
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+
+        await worker._register()
+
+        mock_client.register_worker.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_register_rejects_missing_auth_composition_contract(self, mock_client: AsyncMock) -> None:
         mock_client.get_cluster_info = AsyncMock(return_value=compatible_cluster_info(auth_composition_contract=None))
         worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])

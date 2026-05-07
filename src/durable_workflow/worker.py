@@ -169,14 +169,14 @@ def _validate_server_compatibility(info: dict[str, Any]) -> None:
     if not isinstance(control_plane, dict):
         raise RuntimeError(
             "Server compatibility error: missing control_plane manifest; "
-            f"sdk-python 0.2.x requires control_plane.version {CONTROL_PLANE_VERSION}."
+            f"sdk-python requires control_plane.version {CONTROL_PLANE_VERSION}."
         )
 
     control_plane_version = _manifest_version(control_plane)
     if control_plane_version != CONTROL_PLANE_VERSION:
         raise RuntimeError(
             "Server compatibility error: unsupported control_plane.version "
-            f"{control_plane_version!r}; sdk-python 0.2.x requires {CONTROL_PLANE_VERSION!r}."
+            f"{control_plane_version!r}; sdk-python requires {CONTROL_PLANE_VERSION!r}."
         )
 
     request_contract = control_plane.get("request_contract")
@@ -202,14 +202,14 @@ def _validate_server_compatibility(info: dict[str, Any]) -> None:
     if not isinstance(worker_protocol, dict):
         raise RuntimeError(
             "Server compatibility error: missing worker_protocol manifest; "
-            f"sdk-python 0.2.x requires worker_protocol.version {PROTOCOL_VERSION}."
+            f"sdk-python requires worker_protocol.version {PROTOCOL_VERSION}."
         )
 
     worker_protocol_version = _manifest_version(worker_protocol)
     if worker_protocol_version != PROTOCOL_VERSION:
         raise RuntimeError(
             "Server compatibility error: unsupported worker_protocol.version "
-            f"{worker_protocol_version!r}; sdk-python 0.2.x requires {PROTOCOL_VERSION!r}."
+            f"{worker_protocol_version!r}; sdk-python requires {PROTOCOL_VERSION!r}."
         )
 
     auth_composition = info.get("auth_composition_contract")

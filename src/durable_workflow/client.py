@@ -42,7 +42,7 @@ from .external_storage import ExternalPayloadStoragePolicy
 from .metrics import CLIENT_REQUEST_DURATION_SECONDS, CLIENT_REQUESTS, NOOP_METRICS, MetricsRecorder
 from .retry_policy import TransportRetryPolicy
 
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "1.1"
 CONTROL_PLANE_VERSION = "2"
 CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA = "durable-workflow.v2.control-plane-request.contract"
 CONTROL_PLANE_REQUEST_CONTRACT_VERSION = 1

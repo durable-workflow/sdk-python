@@ -457,13 +457,13 @@ Full documentation is available at
 
 ## Compatibility
 
-SDK version 0.2.x is compatible with servers that advertise these protocol
+SDK version 0.4.x is compatible with servers that advertise these protocol
 manifests from `GET /api/cluster/info`:
 
 - `control_plane.version: "2"`
 - `control_plane.request_contract.schema: durable-workflow.v2.control-plane-request.contract` version `1`
 - `auth_composition_contract.schema: durable-workflow.v2.auth-composition.contract` version `1`
-- `worker_protocol.version: "1.0"`
+- `worker_protocol.version: "1.1"`
 - `worker_protocol.external_task_input_contract.schema: durable-workflow.v2.external-task-input.contract` version `1`
 - `worker_protocol.external_task_result_contract.schema: durable-workflow.v2.external-task-result.contract` version `1`
 

@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Targeting continued alignment with the Durable Workflow v2 protocol
   surface advertised by `/api/cluster/info`
   (`control_plane.version: "2"`, request-contract version `1`,
-  `worker_protocol.version: "1.0"`). Remaining v2 follow-ups tracked for
+  `worker_protocol.version: "1.1"`). Remaining v2 follow-ups tracked for
   this line: server-routed Python query execution and pre-accept update
   validator routing.
 
