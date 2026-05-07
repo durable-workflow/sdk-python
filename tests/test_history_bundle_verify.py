@@ -283,6 +283,27 @@ def test_required_evidence_sections_are_enforced() -> None:
     assert report["status"] == STATUS_FAILED
 
 
+def test_settled_command_without_history_event_warns_even_when_no_events_reference_commands() -> None:
+    signing_key = "secret"
+    bundle = _base_bundle()
+    bundle["commands"].append(
+        {
+            "id": "cmd-orphan",
+            "sequence": 2,
+            "type": "workflow.start",
+            "status": "applied",
+            "outcome": "applied",
+            "applied_at": "2026-04-09T12:00:01.000000Z",
+        }
+    )
+    bundle = _sign(bundle, signing_key, "key-1")
+
+    report = verify_bundle(bundle, signing_key=signing_key)
+
+    assert report["status"] == STATUS_WARNING
+    assert "commands.history_event_missing" in _rule_names(report)
+
+
 def test_payload_marked_available_but_missing_is_failed() -> None:
     signing_key = "secret"
     bundle = _base_bundle()

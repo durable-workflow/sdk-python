@@ -350,17 +350,31 @@ def _check_commands(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -
             continue
 
         applied = _string_or_none(command.get("applied_at"))
+        rejected = _string_or_none(command.get("rejected_at"))
         status = _string_or_none(command.get("status"))
-        if applied is not None and event_command_ids and command_id not in event_command_ids:
+        outcome = _string_or_none(command.get("outcome"))
+        settled = (
+            status in {"applied", "rejected"}
+            or outcome in {"applied", "rejected"}
+            or applied is not None
+            or rejected is not None
+        )
+
+        if settled and command_id not in event_command_ids:
             findings.append(
                 _finding(
                     "commands.history_event_missing",
                     SEVERITY_WARNING,
                     (
-                        f"commands[{index}] (id={command_id}, status={status or 'unknown'}) was applied "
+                        f"commands[{index}] (id={command_id}, status={status or 'unknown'}) was settled "
                         "but no history event references it."
                     ),
-                    {"index": index, "command_id": command_id, "command_status": status},
+                    {
+                        "index": index,
+                        "command_id": command_id,
+                        "command_status": status,
+                        "command_outcome": outcome,
+                    },
                 )
             )
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 from durable_workflow import workflow
 from durable_workflow.replay_verify import (
@@ -28,6 +30,7 @@ from durable_workflow.replay_verify import (
     aggregate_verdicts,
     main as replay_verify_main,
     promotion_decision_for,
+    promotion_decision_for_report,
     simulate_bundles,
     verify_golden_history,
     verify_replay,
@@ -350,6 +353,17 @@ def test_promotion_decision_for_unknown_verdict_blocks() -> None:
     assert promotion_decision_for("totally-bogus") == PROMOTION_BLOCK_AND_INVESTIGATE
 
 
+def test_promotion_decision_for_report_reviews_skipped_replay() -> None:
+    assert (
+        promotion_decision_for_report(VERDICT_OK, {"replay_skipped": True})
+        == PROMOTION_REVIEW_BEFORE_PROMOTE
+    )
+    assert (
+        promotion_decision_for_report(VERDICT_OK, {"replay_skipped": False})
+        == PROMOTION_SAFE_TO_PROMOTE
+    )
+
+
 def test_aggregate_verdicts_picks_strictest() -> None:
     assert aggregate_verdicts([VERDICT_OK, VERDICT_OK]) == VERDICT_OK
     assert aggregate_verdicts([VERDICT_OK, "warning"]) == "warning"
@@ -478,6 +492,24 @@ def test_simulate_bundles_aggregates_per_bundle_verdicts(tmp_path: Path) -> None
         assert entry["evidence"]["integrity_checked"] is True
 
 
+def test_simulate_bundles_clean_integrity_only_recommends_review(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundles"
+    bundle_dir.mkdir()
+    (bundle_dir / "clean.json").write_text(
+        json.dumps(_history_export_bundle()),
+        encoding="utf-8",
+    )
+
+    report = simulate_bundles(bundle_dir)
+    payload = report.to_dict()
+
+    assert report.verdict == VERDICT_OK
+    assert report.promotion_decision == PROMOTION_REVIEW_BEFORE_PROMOTE
+    assert payload["promotion_decision"] == PROMOTION_REVIEW_BEFORE_PROMOTE
+    assert payload["evidence"]["replay_skipped"] is True
+    assert payload["bundles"][0]["promotion_decision"] == PROMOTION_REVIEW_BEFORE_PROMOTE
+
+
 def test_simulate_bundles_cli(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundles"
     bundle_dir.mkdir()
@@ -511,3 +543,71 @@ def test_cli_requires_workflows_when_not_simulating(tmp_path: Path) -> None:
         replay_verify_main([str(fixture_dir)])
 
     assert excinfo.value.code == 2
+
+
+def _history_export_bundle() -> dict[str, Any]:
+    bundle: dict[str, Any] = {
+        "schema": "durable-workflow.v2.history-export",
+        "schema_version": 1,
+        "exported_at": "2026-04-09T12:00:00.000000Z",
+        "dedupe_key": "run-1:1:2026-04-09T12:00:00.000000Z",
+        "history_complete": True,
+        "workflow": {
+            "instance_id": "instance-1",
+            "run_id": "run-1",
+            "run_number": 1,
+            "workflow_type": "history.export",
+            "workflow_class": "tests.Replay",
+            "last_history_sequence": 1,
+        },
+        "payloads": {
+            "codec": "json",
+            "arguments": {"available": False, "data": None},
+            "output": {"available": False, "data": None},
+        },
+        "history_events": [
+            {
+                "id": "evt-1",
+                "sequence": 1,
+                "type": "WorkflowStarted",
+                "workflow_task_id": None,
+                "workflow_command_id": None,
+                "recorded_at": "2026-04-09T12:00:00.000000Z",
+                "payload": {},
+            }
+        ],
+        "commands": [],
+        "signals": [],
+        "updates": [],
+        "tasks": [],
+        "activities": [],
+        "timers": [],
+        "failures": [],
+        "links": {"projection_source": "rebuilt", "parents": [], "children": []},
+        "codec_schemas": {},
+        "payload_manifest": {"version": 1, "entries": []},
+        "redaction": {"applied": False, "policy": None, "paths": []},
+    }
+    cloned = {key: value for key, value in bundle.items() if key != "integrity"}
+    canonical = json.dumps(
+        _canonicalize(cloned),
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    bundle["integrity"] = {
+        "canonicalization": "json-recursive-ksort-v1",
+        "checksum_algorithm": "sha256",
+        "checksum": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "signature_algorithm": None,
+        "signature": None,
+        "key_id": None,
+    }
+    return bundle
+
+
+def _canonicalize(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _canonicalize(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        return [_canonicalize(item) for item in value]
+    return value

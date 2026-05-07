@@ -223,7 +223,10 @@ durable-workflow-history-bundle-verify exported-history-bundles/run-001.json \
 `promotion_decision` vocabulary as the platform replay contract. Golden-history
 mode replays cross-runtime fixtures against registered workflow classes;
 `--simulate-bundles` integrity-checks every exported history bundle in a
-directory and reports missing bundle evidence as a blocking result.
+directory and reports missing bundle evidence as a blocking result. Because
+bundle simulation does not execute workflow code in Python, a clean
+integrity-only simulation recommends `review_before_promote` rather than
+`safe_to_promote`.
 
 ## External payload storage
 

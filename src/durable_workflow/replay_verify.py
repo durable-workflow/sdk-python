@@ -103,6 +103,27 @@ def promotion_decision_for(verdict: str) -> str:
     }.get(verdict, PROMOTION_BLOCK_AND_INVESTIGATE)
 
 
+def promotion_decision_for_report(
+    verdict: str, evidence: Mapping[str, Any] | None = None
+) -> str:
+    """Map a report verdict and evidence block to a promotion decision.
+
+    A clean integrity-only report is useful, but it is not enough to
+    claim replay-safe promotion. Keep the verdict tied to the checks that
+    ran while reducing the recommendation to review when replay was
+    intentionally skipped.
+    """
+
+    decision = promotion_decision_for(verdict)
+    if (
+        decision == PROMOTION_SAFE_TO_PROMOTE
+        and evidence is not None
+        and evidence.get("replay_skipped") is True
+    ):
+        return PROMOTION_REVIEW_BEFORE_PROMOTE
+    return decision
+
+
 def aggregate_verdicts(verdicts: Sequence[str]) -> str:
     """Reduce a list of verdicts to the strictest one.
 
@@ -252,12 +273,16 @@ class BundleEntry:
     reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        evidence = dict(self.evidence) if self.evidence is not None else None
         return {
             "bundle_path": self.path,
             "verdict": self.verdict,
-            "promotion_decision": self.promotion_decision,
+            "promotion_decision": promotion_decision_for_report(
+                self.verdict,
+                evidence,
+            ),
             "reason": self.reason,
-            "evidence": dict(self.evidence) if self.evidence is not None else None,
+            "evidence": evidence,
             "integrity": dict(self.integrity) if self.integrity is not None else None,
         }
 
@@ -301,12 +326,16 @@ class SimulationReport:
         }
 
     def to_dict(self) -> dict[str, Any]:
+        evidence = self.evidence
         payload: dict[str, Any] = {
             "schema": self.schema,
             "schema_version": self.schema_version,
             "verdict": self.verdict,
-            "promotion_decision": self.promotion_decision,
-            "evidence": self.evidence,
+            "promotion_decision": promotion_decision_for_report(
+                self.verdict,
+                evidence,
+            ),
+            "evidence": evidence,
             "summary": dict(self.summary),
             "bundles": [entry.to_dict() for entry in self.bundles],
             "missing_bundles": list(self.missing_bundles),
@@ -760,27 +789,28 @@ def simulate_bundles(
 
         integrity = history_bundle_verify.verify_bundle_json(payload, signing_key)
         verdict = _integrity_status_to_verdict(integrity, strict_warnings)
-        decision = promotion_decision_for(verdict)
+
+        evidence = {
+            "integrity_checked": True,
+            "integrity_status": integrity.get("status"),
+            "integrity_finding_count": int(
+                (integrity.get("summary") or {}).get(
+                    "findings", len(integrity.get("findings") or [])
+                )
+            ),
+            "replay_checked": False,
+            "replay_status": None,
+            "replay_skipped": True,
+            "strict_warnings": strict_warnings,
+        }
 
         bundles.append(
             BundleEntry(
                 path=str(path),
                 verdict=verdict,
-                promotion_decision=decision,
+                promotion_decision=promotion_decision_for_report(verdict, evidence),
                 integrity=integrity,
-                evidence={
-                    "integrity_checked": True,
-                    "integrity_status": integrity.get("status"),
-                    "integrity_finding_count": int(
-                        (integrity.get("summary") or {}).get(
-                            "findings", len(integrity.get("findings") or [])
-                        )
-                    ),
-                    "replay_checked": False,
-                    "replay_status": None,
-                    "replay_skipped": True,
-                    "strict_warnings": strict_warnings,
-                },
+                evidence=evidence,
             )
         )
         verdicts.append(verdict)
@@ -789,12 +819,14 @@ def simulate_bundles(
 
     overall = aggregate_verdicts(verdicts)
 
-    return SimulationReport(
+    report = SimulationReport(
         verdict=overall,
         promotion_decision=promotion_decision_for(overall),
         summary=summary,
         bundles=bundles,
     )
+    report.promotion_decision = promotion_decision_for_report(overall, report.evidence)
+    return report
 
 
 def _integrity_status_to_verdict(
@@ -974,6 +1006,7 @@ __all__ = [
     "BundleEntry",
     "SimulationReport",
     "promotion_decision_for",
+    "promotion_decision_for_report",
     "aggregate_verdicts",
     "verify_replay",
     "verify_golden_history",
