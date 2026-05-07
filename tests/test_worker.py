@@ -878,9 +878,7 @@ class TestEnvelopeArguments:
 
 
 class TestCodecDecodeFailures:
-    """TD-P012 / #370 regression: codec decode failures at the task boundary
-    must turn into a deterministic fail_{workflow,activity}_task call so the
-    lease does not sit until timeout."""
+    """Codec decode failures at the task boundary must fail tasks deterministically."""
 
     @pytest.mark.asyncio
     async def test_activity_json_decode_failure_fails_task(self, mock_client: AsyncMock) -> None:
@@ -916,6 +914,29 @@ class TestCodecDecodeFailures:
         call_kwargs = mock_client.fail_activity_task.call_args.kwargs
         assert "decode" in call_kwargs["message"].lower()
         assert "avro" in call_kwargs["message"]
+        assert call_kwargs["non_retryable"] is True
+        mock_client.complete_activity_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_activity_unsupported_payload_codec_fails_before_handler(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[echo_activity])
+        task = {
+            "task_id": "at-unsupported-codec",
+            "activity_attempt_id": "aa-unsupported-codec",
+            "activity_type": "test-act",
+            "arguments": {"codec": "json", "blob": '["hello"]'},
+            "payload_codec": "zstd",
+        }
+
+        outcome = await worker._run_activity_task(task)
+
+        assert outcome == "decode_error"
+        mock_client.fail_activity_task.assert_called_once()
+        call_kwargs = mock_client.fail_activity_task.call_args.kwargs
+        assert "Unsupported payload codec 'zstd'" in call_kwargs["message"]
+        assert call_kwargs["failure_type"] == "ValueError"
         assert call_kwargs["non_retryable"] is True
         mock_client.complete_activity_task.assert_not_called()
 
@@ -967,6 +988,55 @@ class TestCodecDecodeFailures:
         assert "decode" in call_kwargs["message"].lower()
         assert "json" in call_kwargs["message"]
         mock_client.complete_workflow_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workflow_unsupported_payload_codec_fails_before_replay(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        task = {
+            "task_id": "t-unsupported-codec",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": {"codec": "json", "blob": '["hello"]'},
+            "payload_codec": "zstd",
+        }
+
+        commands = await worker._run_workflow_task(task)
+
+        assert commands is None
+        mock_client.fail_workflow_task.assert_called_once()
+        call_kwargs = mock_client.fail_workflow_task.call_args.kwargs
+        assert "Unsupported payload codec 'zstd'" in call_kwargs["message"]
+        assert call_kwargs["failure_type"] == "ValueError"
+        mock_client.complete_workflow_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_unsupported_payload_codec_fails_before_query_handler(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[QueryWorkflow], activities=[])
+        task = {
+            "query_task_id": "qt-unsupported-codec",
+            "query_task_attempt": 1,
+            "workflow_type": "query-wf",
+            "query_name": "status",
+            "history_events": [],
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "zstd",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "failed"
+        mock_client.fail_query_task.assert_called_once()
+        call_kwargs = mock_client.fail_query_task.call_args.kwargs
+        assert call_kwargs["reason"] == "query_payload_decode_failed"
+        assert "Unsupported payload codec 'zstd'" in call_kwargs["message"]
+        assert call_kwargs["failure_type"] == "ValueError"
+        mock_client.complete_query_task.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_workflow_avro_missing_dependency_fails_task(

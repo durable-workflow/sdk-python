@@ -70,6 +70,16 @@ def _command_payload_codec(codec: object) -> str:
     return codec if isinstance(codec, str) and codec in serializer.SUPPORTED_CODECS else serializer.AVRO_CODEC
 
 
+def _validate_payload_codec(codec: object) -> str | None:
+    if codec is None:
+        return None
+    if isinstance(codec, str) and codec in serializer.SUPPORTED_CODECS:
+        return codec
+    raise ValueError(
+        f"Unsupported payload codec {codec!r}; this SDK supports {serializer.SUPPORTED_CODECS!r}."
+    )
+
+
 def _activity_name(fn: Callable[..., Any]) -> str:
     return getattr(fn, "__activity_name__", fn.__name__)
 
@@ -414,9 +424,9 @@ class Worker:
 
         start_input: list[Any] = []
         codec = task.get("payload_codec")
-        command_codec = _command_payload_codec(codec)
         raw_args = task.get("arguments")
         try:
+            codec = _validate_payload_codec(codec)
             decoded = serializer.decode_envelope(raw_args, codec=codec)
             if decoded is not None:
                 start_input = decoded if isinstance(decoded, list) else [decoded]
@@ -456,6 +466,7 @@ class Worker:
             return None
 
         run_id: str = task.get("run_id", "")
+        command_codec = _command_payload_codec(codec)
 
         cls = self.workflows.get(wf_type)
         if cls is None:
@@ -583,9 +594,9 @@ class Worker:
         activity_type: str = task.get("activity_type", "")
         attempt_number: int = task.get("attempt_number", 1)
         raw_args = task.get("arguments")
-        inbound_codec = task.get("payload_codec") or serializer.JSON_CODEC
-        result_codec = inbound_codec if inbound_codec in serializer.SUPPORTED_CODECS else serializer.AVRO_CODEC
+        inbound_codec = task.get("payload_codec")
         try:
+            inbound_codec = _validate_payload_codec(inbound_codec) or serializer.JSON_CODEC
             args = serializer.decode_envelope(raw_args, codec=inbound_codec) or []
         except AvroNotInstalledError as e:
             log.exception("activity %s arguments Avro decode failed (avro dependency unavailable)", task_id)
@@ -625,6 +636,7 @@ class Worker:
             return "decode_error"
         if not isinstance(args, list):
             args = [args]
+        result_codec = inbound_codec
 
         fn = self.activities.get(activity_type)
         if fn is None:
@@ -783,6 +795,19 @@ class Worker:
         wf_type: str = task.get("workflow_type", "")
         query_name: str = task.get("query_name", "")
         codec = task.get("payload_codec")
+        try:
+            codec = _validate_payload_codec(codec)
+        except ValueError as e:
+            await self._fail_query_task(
+                query_task_id,
+                attempt,
+                f"cannot decode query payload with codec {codec!r}: {e}.",
+                reason="query_payload_decode_failed",
+                failure_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
+            )
+            return "failed"
+
         result_codec = _command_payload_codec(codec)
         history = task.get("history_events", [])
 
