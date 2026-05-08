@@ -7,20 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Notes
-- Current release line is 0.4.x (Alpha). The package covers workflow and
-  activity authoring, schedules, signals, timers, child workflows,
-  continue-as-new, side effects, version markers, worker-applied accepted
-  updates, the in-process `WorkflowEnvironment` test harness, control-plane
-  parity for workflow / task-queue / worker / namespace / schedule
-  operations (including the per-schedule audit history stream), external
-  payload storage with policy and retention helpers, and golden replay
-  fixtures.
-- Targeting continued alignment with the Durable Workflow v2 protocol
-  surface advertised by `/api/cluster/info`
-  (`control_plane.version: "2"`, request-contract version `1`,
-  `worker_protocol.version: "1.1"`). Remaining v2 follow-ups tracked for
-  this line: server-routed Python query execution and pre-accept update
-  validator routing.
+- Production-readiness validation is in progress for the first
+  `1.0.0` release candidate. The 0.4.x line is feature-complete for
+  the documented Durable Workflow v2 surface and is being exercised
+  end-to-end by external-user walkthroughs against the published
+  Python SDK guide and the `examples/order_processing` Docker Compose
+  sample.
+- Remaining v2 follow-ups tracked for this line: server-routed Python
+  query execution and pre-accept update validator routing. These are
+  server-side capabilities; the SDK already records the receiver
+  metadata required to participate when the server advertises support.
+
+## [0.4.18] — 2026-05-08
+
+### Added
+- `durable-workflow-replay-verify` and `durable-workflow-history-bundle-verify`
+  console scripts plus matching Python APIs (`verify_replay`,
+  `verify_golden_history`, `simulate_bundles`,
+  `verify_history_bundle`, `aggregate_verdicts`,
+  `promotion_decision_for*`). These produce verdicts and
+  `promotion_decision` values that match the platform replay
+  contract, replay cross-runtime golden histories against registered
+  workflow classes, and integrity-check exported history bundles for
+  promotion gates.
+- `InvocableActivityHandler`, `handle_invocable_http_request`,
+  `handle_invocable_lambda_event`, and
+  `lambda_invocable_activity_handler` for activity-grade external
+  execution from HTTP servers and serverless runtimes. The carrier
+  shares the external-task input/result envelope with first-party
+  workers and rejects workflow-task inputs.
+- `CONFORMANCE.md` — per-repo platform conformance claim listing the
+  fixtures this SDK serves, the targets it claims (`official_sdk`,
+  `worker_protocol_implementation`), and the release gate that blocks
+  PyPI publication when conformance regresses.
+- `docs/reference/invocable.md` covering the invocable adapter for
+  the generated API reference site.
+
+### Changed
+- Worker registration enforces the `worker_protocol.version: "1.1"`
+  feature floor advertised by `/api/cluster/info` and fails closed
+  with a clear error when the server's advertised feature set is
+  missing capabilities the SDK relies on.
+- Workers and the serializer reject unsupported payload codecs at
+  encode and decode time instead of silently passing the raw bytes
+  through; misconfigured deployments surface a typed error instead
+  of a downstream decode failure.
+- Built-package smoke (`scripts/smoke-built-package.py`) now verifies
+  installed wheel and source distribution metadata, the PEP 561
+  `py.typed` marker, every name in `__all__`, that reference modules
+  resolve from `site-packages` rather than the source checkout, and
+  that the README quickstart still replays. The PyPI/TestPyPI publish
+  workflow runs the smoke before uploading artifacts.
 
 ## [0.4.3] — 2026-04-24
 
