@@ -164,6 +164,38 @@ def _manifest_version(manifest: Any) -> str:
     return "missing"
 
 
+def _parse_protocol_version(value: str) -> tuple[int, int] | None:
+    """Parse "MAJOR.MINOR" into a tuple. Returns None for malformed inputs."""
+    if not isinstance(value, str):
+        return None
+    parts = value.split(".")
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+
+
+def _server_protocol_compatible(server_version: str, sdk_version: str) -> bool:
+    """A server's worker_protocol.version is compatible with this SDK when
+    they share a major and the server's minor is at least the SDK's minor.
+
+    Per workflow:v2's WorkerProtocolVersion contract, MINOR bumps are
+    additive (new optional fields, new non-terminal command types) and
+    therefore safe for older SDKs to talk to newer servers — they just
+    will not exercise the new optional shapes. MAJOR bumps are breaking
+    and must always be rejected.
+    """
+    server = _parse_protocol_version(server_version)
+    sdk = _parse_protocol_version(sdk_version)
+    if server is None or sdk is None:
+        return server_version == sdk_version
+    if server[0] != sdk[0]:
+        return False
+    return server[1] >= sdk[1]
+
+
 def _validate_server_compatibility(info: dict[str, Any]) -> None:
     control_plane = info.get("control_plane")
     if not isinstance(control_plane, dict):
@@ -206,10 +238,11 @@ def _validate_server_compatibility(info: dict[str, Any]) -> None:
         )
 
     worker_protocol_version = _manifest_version(worker_protocol)
-    if worker_protocol_version != PROTOCOL_VERSION:
+    if not _server_protocol_compatible(worker_protocol_version, PROTOCOL_VERSION):
         raise RuntimeError(
-            "Server compatibility error: unsupported worker_protocol.version "
-            f"{worker_protocol_version!r}; sdk-python requires {PROTOCOL_VERSION!r}."
+            "Server compatibility error: incompatible worker_protocol.version "
+            f"{worker_protocol_version!r}; sdk-python requires major-equal and "
+            f"minor>={PROTOCOL_VERSION!r}."
         )
 
     auth_composition = info.get("auth_composition_contract")

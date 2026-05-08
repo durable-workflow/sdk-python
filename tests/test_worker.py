@@ -332,14 +332,29 @@ class TestWorkerRegistration:
         mock_client.register_worker.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_register_rejects_unsupported_worker_protocol_version(self, mock_client: AsyncMock) -> None:
+    async def test_register_rejects_worker_protocol_major_mismatch(self, mock_client: AsyncMock) -> None:
         mock_client.get_cluster_info = AsyncMock(
             return_value=compatible_cluster_info(worker_protocol={"version": "2.0"})
         )
         worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
-        with pytest.raises(RuntimeError, match="unsupported worker_protocol.version"):
+        with pytest.raises(RuntimeError, match="incompatible worker_protocol.version"):
             await worker._register()
         mock_client.register_worker.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_register_accepts_higher_compatible_minor_protocol(self, mock_client: AsyncMock) -> None:
+        # Server is one minor ahead of the SDK. MINOR bumps in workflow:v2's
+        # WorkerProtocolVersion are documented as additive (new optional
+        # fields, new non-terminal command types) so the SDK must talk to a
+        # newer server happily — the test pins that contract.
+        major, minor = (int(p) for p in PROTOCOL_VERSION.split("."))
+        future_version = f"{major}.{minor + 1}"
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(worker_protocol={"version": future_version})
+        )
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        await worker._register()
+        mock_client.register_worker.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_register_rejects_worker_protocol_below_payload_codec_floor(
@@ -349,7 +364,7 @@ class TestWorkerRegistration:
             return_value=compatible_cluster_info(worker_protocol={"version": "1.0"})
         )
         worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
-        with pytest.raises(RuntimeError, match="requires '1.1'"):
+        with pytest.raises(RuntimeError, match=r"minor>='1\.1'"):
             await worker._register()
         mock_client.register_worker.assert_not_called()
 
