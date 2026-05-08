@@ -55,12 +55,38 @@ result document before tag, with the conformance level at `full` or
 A `nonconforming` result blocks the release. A failure in a provisional
 category emits a warning and does not block.
 
+## SDK neutrality posture
+
+Python is the highest-value non-PHP first-party SDK and is treated as a
+`priority` posture under the platform-wide SDK neutrality contract
+(schema `durable-workflow.v2.sdk-neutrality.contract`, mirrored at
+[`/sdk-neutrality-contract.json`](https://durable-workflow.github.io/sdk-neutrality-contract.json)
+on the docs site). The contract's purpose is to keep public Durable
+contracts implementable in any language without protocol redesign;
+this SDK exists in part to validate that the worker protocol, control
+plane, and replay fixtures behave the same way outside PHP.
+
+Concretely, that means this SDK never persists Python-only state
+across a public boundary: no `pickle`, no Python-only exception class
+matching, no `__qualname__` leaking into the wire format. Failure
+shapes use stable string codes; workflow, activity, child-workflow,
+and exception types are identified by registered string names; replay
+fixtures under `tests/fixtures/golden_history/` are JSON conforming to
+the published `history_event_payloads` and `replay_bundle` JSON
+Schemas. Any new test fixture or public helper added to this SDK that
+would only round-trip through Python is a contract violation, even if
+no test in this repo notices.
+
 ## Cross-references
 
 - Authority spec: `workflow/docs/architecture/platform-conformance-suite.md`
 - Authority manifest class: `Workflow\V2\Support\PlatformConformanceSuite`
   (PHP, mirrored in `static/platform-conformance-contract.json` on the
   docs site for language-neutral access)
+- SDK neutrality authority:
+  `workflow/docs/architecture/sdk-neutrality.md`, manifest class
+  `Workflow\V2\Support\SdkNeutralityContract`, public docs page at
+  <https://durable-workflow.github.io/docs/2.0/sdk-neutrality>
 - Public docs page: <https://durable-workflow.github.io/docs/2.0/compatibility>
 - Polyglot parity doc:
   <https://durable-workflow.github.io/docs/polyglot/cli-python-parity>
