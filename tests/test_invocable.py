@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from durable_workflow import serializer
-from durable_workflow.errors import NonRetryableError
+from durable_workflow.errors import ActivityCancelled, NonRetryableError
 from durable_workflow.external_task_result import parse_external_task_result
 from durable_workflow.invocable import (
     InvocableActivityHandler,
@@ -260,3 +260,130 @@ def test_lambda_invocable_activity_handler_rejects_missing_body() -> None:
 
     assert response["statusCode"] == 400
     assert json.loads(response["body"])["error"] == "invalid_invocable_request"
+
+
+# HTTP carrier contract: activity-level failures must return HTTP 200 with a
+# valid external-task result envelope, not HTTP 400. HTTP 400 is reserved for
+# requests that cannot be parsed into a task envelope at all.
+
+
+async def test_invocable_http_request_propagates_non_retryable_error_as_200() -> None:
+    def handler() -> None:
+        raise NonRetryableError("card rejected")
+
+    response = await handle_invocable_http_request(
+        json.dumps(activity_input()),
+        {"billing.charge-card": handler},
+        result_codec=serializer.JSON_CODEC,
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Content-Type"] == "application/vnd.durable-workflow.external-task-result+json"
+    result = parse_external_task_result(response.json())
+    assert result.failed is True
+    assert result.retryable is False
+    assert result.failure_kind == "application"
+    assert result.failure is not None
+    assert result.failure.message == "card rejected"
+
+
+async def test_invocable_http_request_propagates_generic_exception_as_200() -> None:
+    def handler() -> None:
+        raise RuntimeError("unexpected crash")
+
+    response = await handle_invocable_http_request(
+        json.dumps(activity_input()),
+        {"billing.charge-card": handler},
+        result_codec=serializer.JSON_CODEC,
+    )
+
+    assert response.status_code == 200
+    result = parse_external_task_result(response.json())
+    assert result.failed is True
+    assert result.retryable is True
+    assert result.failure_kind == "application"
+    assert result.failure is not None
+    assert "unexpected crash" in result.failure.message
+
+
+async def test_invocable_http_request_propagates_cancellation_as_200() -> None:
+    def handler() -> None:
+        raise ActivityCancelled("cancelled by workflow")
+
+    response = await handle_invocable_http_request(
+        json.dumps(activity_input()),
+        {"billing.charge-card": handler},
+        result_codec=serializer.JSON_CODEC,
+    )
+
+    assert response.status_code == 200
+    result = parse_external_task_result(response.json())
+    assert result.failed is True
+    assert result.retryable is False
+    assert result.cancelled is True
+    assert result.failure_classification == "cancelled"
+
+
+async def test_invocable_http_request_propagates_expired_deadline_as_200() -> None:
+    envelope = activity_input()
+    envelope["lease"]["expires_at"] = _iso(datetime.now(timezone.utc) - timedelta(seconds=1))
+
+    response = await handle_invocable_http_request(
+        json.dumps(envelope),
+        {"billing.charge-card": lambda: {"approved": True}},
+        result_codec=serializer.JSON_CODEC,
+    )
+
+    assert response.status_code == 200
+    result = parse_external_task_result(response.json())
+    assert result.failed is True
+    assert result.retryable is True
+    assert result.deadline_exceeded is True
+
+
+async def test_invocable_http_request_propagates_handler_timeout_as_200() -> None:
+    async def slow_handler() -> None:
+        await asyncio.sleep(1)
+
+    response = await handle_invocable_http_request(
+        json.dumps(activity_input(expires_in=timedelta(milliseconds=100))),
+        {"billing.charge-card": slow_handler},
+        result_codec=serializer.JSON_CODEC,
+    )
+
+    assert response.status_code == 200
+    result = parse_external_task_result(response.json())
+    assert result.failed is True
+    assert result.retryable is True
+    assert result.deadline_exceeded is True
+
+
+async def test_invocable_http_request_propagates_unknown_handler_as_200() -> None:
+    response = await handle_invocable_http_request(
+        json.dumps(activity_input()),
+        {},
+        result_codec=serializer.JSON_CODEC,
+    )
+
+    assert response.status_code == 200
+    result = parse_external_task_result(response.json())
+    assert result.failed is True
+    assert result.retryable is False
+    assert result.failure_kind == "application"
+    assert result.failure is not None
+    assert "no invocable activity handler registered" in result.failure.message
+
+
+async def test_invocable_http_request_propagates_workflow_task_rejection_as_200() -> None:
+    response = await handle_invocable_http_request(
+        json.dumps(load_fixture("workflow-task.v1.json")),
+        {"billing.invoice.workflow": lambda: {"ignored": True}},
+        result_codec=serializer.JSON_CODEC,
+    )
+
+    assert response.status_code == 200
+    result = parse_external_task_result(response.json())
+    assert result.failed is True
+    assert result.retryable is False
+    assert result.failure is not None
+    assert "only accept activity_task" in result.failure.message
