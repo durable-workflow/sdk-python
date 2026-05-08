@@ -1885,6 +1885,45 @@ class TestSchedules:
             assert matching[0].workflow_instance_id == expected_refs["workflow_instance_id"]
             assert matching[0].workflow_run_id == expected_refs["workflow_run_id"]
 
+        wire_events = fixture["response_body"]["events"]
+        assert len(page.events) == len(wire_events)
+        for parsed, wire in zip(page.events, wire_events):
+            assert parsed.id == wire["id"]
+            assert parsed.sequence == wire["sequence"]
+            assert parsed.event_type == wire["event_type"]
+            assert parsed.recorded_at == wire["recorded_at"]
+            assert parsed.workflow_instance_id == wire["workflow_instance_id"]
+            assert parsed.workflow_run_id == wire["workflow_run_id"]
+            assert parsed.payload == wire["payload"]
+
+    @pytest.mark.asyncio
+    async def test_iter_schedule_history_walks_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-history-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        wire_events = fixture["response_body"]["events"]
+
+        first_page = dict(fixture["response_body"])
+        last_sequence = wire_events[-1]["sequence"]
+        terminal_page = {
+            "schedule_id": fixture["response_body"]["schedule_id"],
+            "namespace": fixture["response_body"].get("namespace"),
+            "events": [],
+            "has_more": False,
+            "next_cursor": None,
+        }
+        responses = [_mock_response(200, first_page), _mock_response(200, terminal_page)]
+
+        mock = AsyncMock(side_effect=responses)
+        with patch.object(client._http, "request", new=mock):
+            collected = [event async for event in client.iter_schedule_history(**sdk["args"])]
+
+        assert [event.sequence for event in collected] == [event["sequence"] for event in wire_events]
+        assert [event.event_type for event in collected] == [event["event_type"] for event in wire_events]
+        assert mock.call_count == 2
+        second_path = mock.call_args_list[1].args[1]
+        assert f"after_sequence={last_sequence}" in second_path
+
     @staticmethod
     def _schedule_spec(data: dict) -> ScheduleSpec:
         return ScheduleSpec(

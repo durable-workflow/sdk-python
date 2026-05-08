@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `tests/test_client.py` now closes the `schedule.history` polyglot
+  parity slice. `test_get_schedule_history_matches_polyglot_fixture`
+  asserts the full decoded payload envelope per event (`id`,
+  `recorded_at`, `payload`, plus the workflow attribution fields)
+  so the Python parity check covers the same wire content the CLI
+  parity check covers when it asserts the printed JSON envelope
+  matches the shared fixture's `response_body`. A companion
+  `test_iter_schedule_history_walks_polyglot_fixture` exercises
+  `Client.iter_schedule_history` against the shared fixture to lock
+  in the cursor-advance semantics across pages.
+
 ### Notes
 - Production-readiness validation is in progress for the first
   `1.0.0` release candidate. The 0.4.x line is feature-complete for
