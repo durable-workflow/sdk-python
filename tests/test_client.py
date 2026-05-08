@@ -1854,6 +1854,37 @@ class TestSchedules:
         assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
         assert mock.call_args.kwargs.get("json") is None
 
+    @pytest.mark.asyncio
+    async def test_get_schedule_history_matches_polyglot_fixture(self, client: Client) -> None:
+        from urllib.parse import urlencode
+
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "schedule-history-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            page = await client.get_schedule_history(**sdk["args"])
+
+        expected_query = urlencode(fixture["request"]["query"])
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}?{expected_query}"
+        assert mock.call_args.kwargs.get("json") is None
+
+        semantic = fixture["semantic_body"]
+        assert page.namespace == semantic["namespace"]
+        assert page.schedule_id == semantic["schedule_id"]
+        assert page.has_more == semantic["has_more"]
+        assert page.next_cursor == semantic["next_cursor"]
+        assert [event.event_type for event in page.events] == semantic["event_types"]
+        assert [event.sequence for event in page.events] == semantic["sequences"]
+        for sequence_str, expected_refs in semantic["workflow_refs"].items():
+            sequence = int(sequence_str)
+            matching = [event for event in page.events if event.sequence == sequence]
+            assert len(matching) == 1
+            assert matching[0].workflow_instance_id == expected_refs["workflow_instance_id"]
+            assert matching[0].workflow_run_id == expected_refs["workflow_run_id"]
+
     @staticmethod
     def _schedule_spec(data: dict) -> ScheduleSpec:
         return ScheduleSpec(

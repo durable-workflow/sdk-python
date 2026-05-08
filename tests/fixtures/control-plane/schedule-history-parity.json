@@ -1,0 +1,94 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "schedule.history",
+  "request": {
+    "method": "GET",
+    "path": "/schedules/daily-inventory-check/history",
+    "query": {
+      "limit": "100",
+      "after_sequence": "5"
+    }
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "schedule_id": "daily-inventory-check",
+    "event_types": [
+      "ScheduleTriggered",
+      "ScheduleTriggerSkipped",
+      "ScheduleUpdated"
+    ],
+    "sequences": [
+      6,
+      7,
+      8
+    ],
+    "workflow_refs": {
+      "6": {
+        "workflow_instance_id": "wf-inventory-check-20260422",
+        "workflow_run_id": "run-inventory-check-20260422"
+      }
+    },
+    "has_more": true,
+    "next_cursor": 8
+  },
+  "response_body": {
+    "schedule_id": "daily-inventory-check",
+    "namespace": "orders-prod",
+    "events": [
+      {
+        "id": "evt-6",
+        "sequence": 6,
+        "event_type": "ScheduleTriggered",
+        "recorded_at": "2026-04-22T06:00:00Z",
+        "workflow_instance_id": "wf-inventory-check-20260422",
+        "workflow_run_id": "run-inventory-check-20260422",
+        "payload": {
+          "overlap_policy": "skip"
+        }
+      },
+      {
+        "id": "evt-7",
+        "sequence": 7,
+        "event_type": "ScheduleTriggerSkipped",
+        "recorded_at": "2026-04-22T06:30:00Z",
+        "workflow_instance_id": null,
+        "workflow_run_id": null,
+        "payload": {
+          "reason": "previous_run_in_progress"
+        }
+      },
+      {
+        "id": "evt-8",
+        "sequence": 8,
+        "event_type": "ScheduleUpdated",
+        "recorded_at": "2026-04-22T12:00:00Z",
+        "workflow_instance_id": null,
+        "workflow_run_id": null,
+        "payload": {
+          "fields": [
+            "overlap_policy"
+          ]
+        }
+      }
+    ],
+    "has_more": true,
+    "next_cursor": 8
+  },
+  "cli": {
+    "argv": {
+      "schedule-id": "daily-inventory-check",
+      "--limit": "100",
+      "--after-sequence": "5",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "get_schedule_history",
+    "args": {
+      "schedule_id": "daily-inventory-check",
+      "limit": 100,
+      "after_sequence": 5
+    }
+  }
+}
