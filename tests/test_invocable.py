@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import copy
 import json
 import time
@@ -11,7 +12,12 @@ import pytest
 from durable_workflow import serializer
 from durable_workflow.errors import NonRetryableError
 from durable_workflow.external_task_result import parse_external_task_result
-from durable_workflow.invocable import InvocableActivityHandler, handle_invocable_activity
+from durable_workflow.invocable import (
+    InvocableActivityHandler,
+    handle_invocable_activity,
+    handle_invocable_http_request,
+    lambda_invocable_activity_handler,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "external-task-input"
 
@@ -187,3 +193,70 @@ async def test_invocable_activity_handler_rejects_workflow_task_inputs() -> None
 async def test_invocable_activity_handler_validates_result_codec() -> None:
     with pytest.raises(ValueError, match="unsupported invocable result codec"):
         InvocableActivityHandler({}, result_codec="protobuf")
+
+
+async def test_invocable_http_request_helper_returns_result_response() -> None:
+    response = await handle_invocable_http_request(
+        json.dumps(activity_input(42)),
+        {"billing.charge-card": lambda amount: {"amount": amount}},
+        result_codec=serializer.JSON_CODEC,
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Content-Type"] == "application/vnd.durable-workflow.external-task-result+json"
+
+    result = parse_external_task_result(response.json())
+    assert result.succeeded is True
+    assert result.result is not None
+    assert serializer.decode_envelope(result.result["payload"]) == {"amount": 42}
+
+
+async def test_invocable_http_request_helper_accepts_bytes_body() -> None:
+    response = await handle_invocable_http_request(
+        json.dumps(activity_input(7)).encode(),
+        {"billing.charge-card": lambda amount: {"amount": amount}},
+        result_codec=serializer.JSON_CODEC,
+    )
+
+    assert response.status_code == 200
+    result = parse_external_task_result(response.json())
+    assert result.succeeded is True
+
+
+async def test_invocable_http_request_helper_rejects_invalid_json_body() -> None:
+    response = await handle_invocable_http_request("{", {})
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_invocable_request"
+
+
+def test_lambda_invocable_activity_handler_accepts_base64_api_gateway_body() -> None:
+    handler = lambda_invocable_activity_handler(
+        {"billing.charge-card": lambda amount: {"amount": amount}},
+        result_codec=serializer.JSON_CODEC,
+    )
+    body = json.dumps(activity_input(99)).encode()
+
+    response = handler(
+        {
+            "body": base64.b64encode(body).decode(),
+            "isBase64Encoded": True,
+        },
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert response["headers"]["Content-Type"] == "application/vnd.durable-workflow.external-task-result+json"
+
+    result = parse_external_task_result(json.loads(response["body"]))
+    assert result.succeeded is True
+    assert result.result is not None
+    assert serializer.decode_envelope(result.result["payload"]) == {"amount": 99}
+
+
+def test_lambda_invocable_activity_handler_rejects_missing_body() -> None:
+    handler = lambda_invocable_activity_handler({})
+    response = handler({"body": None}, None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"])["error"] == "invalid_invocable_request"

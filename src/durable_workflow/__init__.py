@@ -119,7 +119,14 @@ from .interceptors import (
     WorkflowTaskHandler,
     WorkflowTaskInterceptorContext,
 )
-from .invocable import InvocableActivityHandler, handle_invocable_activity
+from .invocable import (
+    InvocableActivityHandler,
+    InvocableHttpResponse,
+    handle_invocable_activity,
+    handle_invocable_http_request,
+    handle_invocable_lambda_event,
+    lambda_invocable_activity_handler,
+)
 from .metrics import (
     InMemoryMetrics,
     MetricsRecorder,
@@ -249,6 +256,7 @@ __all__ = [
     "InvalidArgument",
     "InMemoryMetrics",
     "InvocableActivityHandler",
+    "InvocableHttpResponse",
     "GCSExternalStorage",
     "LocalFilesystemExternalStorage",
     "MetricsRecorder",
@@ -286,6 +294,9 @@ __all__ = [
     "parse_external_task_input_artifact",
     "parse_external_task_result",
     "handle_invocable_activity",
+    "handle_invocable_http_request",
+    "handle_invocable_lambda_event",
+    "lambda_invocable_activity_handler",
     "store_external_payload",
     "to_avro_payload_value",
     "to_avro_payload_values",

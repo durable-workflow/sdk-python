@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import inspect
+import json
 import time
 import traceback
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from . import serializer
 from .errors import ActivityCancelled, NonRetryableError
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .external_task_input import ExternalTaskInput, parse_external_task_input
-from .external_task_result import EXTERNAL_TASK_RESULT_SCHEMA, EXTERNAL_TASK_RESULT_VERSION
+from .external_task_result import (
+    EXTERNAL_TASK_RESULT_MEDIA_TYPE,
+    EXTERNAL_TASK_RESULT_SCHEMA,
+    EXTERNAL_TASK_RESULT_VERSION,
+)
 
 InvocableActivityCallable = Callable[..., Any | Awaitable[Any]]
 
@@ -315,3 +322,123 @@ async def handle_invocable_activity(
     """Handle one invocable activity task with a temporary adapter instance."""
 
     return await InvocableActivityHandler(handlers, **options).handle(envelope)
+
+
+@dataclass(frozen=True)
+class InvocableHttpResponse:
+    """Structured HTTP response from an invocable activity carrier endpoint."""
+
+    status_code: int
+    headers: Mapping[str, str]
+    body: str
+
+    def json(self) -> dict[str, Any]:
+        decoded = json.loads(self.body)
+        if not isinstance(decoded, dict):
+            raise ValueError("invocable HTTP response body is not a JSON object")
+        return cast(dict[str, Any], decoded)
+
+
+async def handle_invocable_http_request(
+    body: bytes | str | Mapping[str, Any],
+    handlers: Mapping[str, InvocableActivityCallable],
+    **options: Any,
+) -> InvocableHttpResponse:
+    """Handle one HTTP-addressed invocable activity request.
+
+    The server expects a structured external-task result envelope on HTTP 200.
+    Bad request bodies return HTTP 400 because no durable task identity can be
+    recovered for a valid failure envelope.
+    """
+
+    try:
+        envelope = _coerce_json_object(body)
+    except (TypeError, ValueError) as exc:
+        return InvocableHttpResponse(
+            status_code=400,
+            headers={"Content-Type": "application/json"},
+            body=_json_dump({"error": "invalid_invocable_request", "message": str(exc)}),
+        )
+
+    try:
+        result = await handle_invocable_activity(envelope, handlers, **options)
+    except Exception as exc:
+        return InvocableHttpResponse(
+            status_code=400,
+            headers={"Content-Type": "application/json"},
+            body=_json_dump({"error": "invalid_invocable_request", "message": str(exc)}),
+        )
+
+    return InvocableHttpResponse(
+        status_code=200,
+        headers={"Content-Type": EXTERNAL_TASK_RESULT_MEDIA_TYPE},
+        body=_json_dump(result),
+    )
+
+
+async def handle_invocable_lambda_event(
+    event: Mapping[str, Any],
+    handlers: Mapping[str, InvocableActivityCallable],
+    **options: Any,
+) -> dict[str, Any]:
+    """Handle an AWS Lambda / API Gateway style invocable activity event."""
+
+    try:
+        body = _lambda_event_body(event)
+    except (TypeError, ValueError) as exc:
+        response = InvocableHttpResponse(
+            status_code=400,
+            headers={"Content-Type": "application/json"},
+            body=_json_dump({"error": "invalid_invocable_request", "message": str(exc)}),
+        )
+    else:
+        response = await handle_invocable_http_request(body, handlers, **options)
+
+    return {
+        "statusCode": response.status_code,
+        "headers": dict(response.headers),
+        "body": response.body,
+        "isBase64Encoded": False,
+    }
+
+
+def lambda_invocable_activity_handler(
+    handlers: Mapping[str, InvocableActivityCallable],
+    **options: Any,
+) -> Callable[[Mapping[str, Any], Any], dict[str, Any]]:
+    """Build a synchronous AWS Lambda handler for invocable activities."""
+
+    def _handler(event: Mapping[str, Any], context: Any) -> dict[str, Any]:
+        return asyncio.run(handle_invocable_lambda_event(event, handlers, **options))
+
+    return _handler
+
+
+def _coerce_json_object(body: bytes | str | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(body, Mapping):
+        return dict(body)
+
+    if isinstance(body, bytes):
+        body = body.decode("utf-8")
+
+    if not isinstance(body, str):
+        raise TypeError("request body must be bytes, str, or a JSON object")
+
+    decoded = json.loads(body)
+    if not isinstance(decoded, dict):
+        raise ValueError("request body must decode to a JSON object")
+
+    return cast(dict[str, Any], decoded)
+
+
+def _lambda_event_body(event: Mapping[str, Any]) -> bytes | str | Mapping[str, Any]:
+    body = event.get("body")
+    if isinstance(body, str) and event.get("isBase64Encoded") is True:
+        return base64.b64decode(body)
+    if isinstance(body, (bytes, str, Mapping)):
+        return cast(bytes | str | Mapping[str, Any], body)
+    raise ValueError("Lambda event body must contain the invocable request JSON")
+
+
+def _json_dump(value: Mapping[str, Any]) -> str:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
