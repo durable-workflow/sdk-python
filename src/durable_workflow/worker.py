@@ -334,6 +334,13 @@ class Worker:
         self._activity_inflight = 0
         self._heartbeat_interval = float(heartbeat_interval)
         self._process_started_at = time.time()
+        # CPU sampling baseline. The heartbeat reports an *instantaneous*
+        # cpu_percent — CPU time burned in the interval since the previous
+        # heartbeat, divided by that interval — rather than the lifetime
+        # average. ``_last_cpu_sample_at`` is None until the first sample
+        # has been taken; subsequent samples diff against it.
+        self._last_cpu_sample_at: float | None = None
+        self._last_cpu_total_seconds: float = 0.0
         configured_metrics = metrics if metrics is not None else getattr(client, "metrics", NOOP_METRICS)
         self.metrics: MetricsRecorder = configured_metrics or NOOP_METRICS
         self.interceptors = tuple(interceptors)
@@ -1152,32 +1159,54 @@ class Worker:
         import os
         import socket
 
+        now = time.time()
         metrics: dict[str, Any] = {
-            "process_uptime_seconds": int(time.time() - self._process_started_at),
+            "process_uptime_seconds": int(now - self._process_started_at),
             "process_id": os.getpid(),
         }
 
+        # ``memory_bytes`` is the *current* resident set size, not the
+        # lifetime peak. ``resource.getrusage().ru_maxrss`` is the high-
+        # water mark since the process started, which masks freed memory
+        # and never decreases — wrong shape for a heartbeat metric meant
+        # to show what the worker is using right now. On Linux we read
+        # the second field of ``/proc/self/statm`` (resident pages) and
+        # multiply by the page size. Platforms without ``/proc`` get no
+        # ``memory_bytes`` field rather than a misleading lifetime peak.
+        if sys.platform.startswith("linux"):
+            try:
+                with open("/proc/self/statm") as statm:
+                    fields = statm.read().split()
+                if len(fields) >= 2:
+                    metrics["memory_bytes"] = int(fields[1]) * os.sysconf("SC_PAGE_SIZE")
+            except (OSError, ValueError):
+                pass
+
+        # ``cpu_percent`` is the share of wall time the process spent on
+        # CPU during the interval since the previous heartbeat — not the
+        # lifetime average, which converges to a fixed value and stops
+        # tracking live load. The first sample bootstraps from process
+        # start so the very first heartbeat still has a number.
         try:
             import resource
 
             usage = resource.getrusage(resource.RUSAGE_SELF)
-            # ru_maxrss is kilobytes on Linux and bytes on macOS — normalize
-            # to bytes. The server stores whatever is sent so the units stay
-            # consistent across SDKs.
-            if sys.platform == "darwin":
-                metrics["memory_bytes"] = int(usage.ru_maxrss)
-            else:
-                metrics["memory_bytes"] = int(usage.ru_maxrss) * 1024
-
             cpu_seconds = float(usage.ru_utime) + float(usage.ru_stime)
-            wall_seconds = max(0.001, time.time() - self._process_started_at)
+            if self._last_cpu_sample_at is None:
+                interval = max(0.001, now - self._process_started_at)
+                delta_cpu = max(0.0, cpu_seconds)
+            else:
+                interval = max(0.001, now - self._last_cpu_sample_at)
+                delta_cpu = max(0.0, cpu_seconds - self._last_cpu_total_seconds)
             metrics["cpu_percent"] = max(
-                0.0, min(100.0, round((cpu_seconds / wall_seconds) * 100.0, 2))
+                0.0, min(100.0, round((delta_cpu / interval) * 100.0, 2))
             )
+            self._last_cpu_sample_at = now
+            self._last_cpu_total_seconds = cpu_seconds
         except (ImportError, OSError):
-            # `resource` is POSIX-only — Windows skips getrusage but still
-            # reports pid + uptime + host so the operator surface remains
-            # populated.
+            # ``resource`` is POSIX-only — Windows skips the CPU sample
+            # but still reports pid + uptime + host so the operator
+            # surface stays populated.
             pass
 
         try:

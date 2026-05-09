@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 from unittest.mock import AsyncMock
 
 import pytest
@@ -1435,6 +1436,80 @@ class TestWorkerHeartbeats:
         with contextlib.suppress(asyncio.CancelledError):
             await run_task
         assert mock_client.heartbeat_worker.call_count >= 2
+
+    def test_process_metrics_cpu_percent_is_instantaneous_not_lifetime(
+        self, mock_client: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``cpu_percent`` reflects only the interval since the previous
+        heartbeat. A worker that was busy at startup and idle ever since
+        used to keep reporting the lifetime average forever, hiding the
+        fact that it is no longer doing CPU work."""
+
+        import resource
+
+        from durable_workflow import worker as worker_mod
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+        )
+        worker._process_started_at = 1000.0
+
+        class FakeUsage:
+            def __init__(self, utime: float, stime: float) -> None:
+                self.ru_utime = utime
+                self.ru_stime = stime
+                self.ru_maxrss = 0
+
+        fake_now = {"value": 1010.0}
+        fake_usage = {"value": FakeUsage(7.0, 1.0)}
+
+        monkeypatch.setattr(worker_mod.time, "time", lambda: fake_now["value"])
+        monkeypatch.setattr(resource, "getrusage", lambda _who: fake_usage["value"])
+
+        # First sample: 8s of CPU over 10s of wall time since process start = 80%.
+        first = worker._current_process_metrics()
+        assert first["cpu_percent"] == 80.0
+
+        # Ten more wall seconds with only 0.5s of additional CPU (the
+        # worker went idle). Lifetime average would still be 8.5/20 =
+        # 42.5%, but the instantaneous reading is 5%.
+        fake_now["value"] = 1020.0
+        fake_usage["value"] = FakeUsage(7.3, 1.2)
+        second = worker._current_process_metrics()
+        assert second["cpu_percent"] == 5.0
+
+        # Fully idle for ten more seconds. Used to be ~32% (lifetime
+        # average), should now be 0.
+        fake_now["value"] = 1030.0
+        third = worker._current_process_metrics()
+        assert third["cpu_percent"] == 0.0
+        assert third["process_uptime_seconds"] == 30
+
+    def test_process_metrics_memory_bytes_is_current_resident_set(
+        self, mock_client: AsyncMock
+    ) -> None:
+        """``memory_bytes`` is the current resident set size on Linux —
+        read from ``/proc/self/statm`` — not ``ru_maxrss``, which is the
+        process-lifetime high-water mark and never decreases after a
+        startup spike."""
+
+        if not sys.platform.startswith("linux"):
+            pytest.skip("memory_bytes is only sampled on Linux")
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+        )
+
+        metrics = worker._current_process_metrics()
+        assert "memory_bytes" in metrics
+        assert isinstance(metrics["memory_bytes"], int)
+        assert metrics["memory_bytes"] > 0
 
 
 class TestRunUntil:

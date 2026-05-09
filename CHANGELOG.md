@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Worker heartbeat `process_metrics` now report instantaneous values
+  instead of process-lifetime aggregates. `cpu_percent` is the share of
+  wall time the worker spent on CPU during the interval since the
+  previous heartbeat (previously the lifetime average, which converged
+  to a fixed value within minutes and stopped tracking live load), and
+  `memory_bytes` is the current resident set size sampled from
+  `/proc/self/statm` on Linux (previously `ru_maxrss`, which is the
+  process-lifetime high-water mark and never decreased after a startup
+  spike). Platforms without `/proc` no longer report `memory_bytes`
+  rather than reporting a misleading peak. The heartbeat protocol shape
+  is unchanged; the server records whatever the worker sends, so the
+  Worker Status surface starts showing accurate live numbers as soon as
+  workers upgrade.
+
 ### Changed
 - `tests/test_client.py` now closes the `schedule.history` polyglot
   parity slice. `test_get_schedule_history_matches_polyglot_fixture`
