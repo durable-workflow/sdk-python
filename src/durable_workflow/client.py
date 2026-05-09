@@ -1877,6 +1877,9 @@ class Client:
         duplicate_policy: str | None = None,
         memo: dict[str, Any] | None = None,
         search_attributes: dict[str, Any] | None = None,
+        priority: int | None = None,
+        fairness_key: str | None = None,
+        fairness_weight: int | None = None,
     ) -> WorkflowHandle:
         """Start a new workflow instance and return a handle bound to it.
 
@@ -1895,6 +1898,16 @@ class Client:
 
         ``memo`` and ``search_attributes`` attach operator-facing metadata to
         the instance; see the main docs site for the key/value rules.
+
+        ``priority`` is an integer in the range ``0..9`` (lower numbers run
+        first when workers on a shared task queue are saturated; default
+        ``5``). ``fairness_key`` tags the workload class — typically a
+        tenant id, team name, or workflow type — so dispatch on a shared
+        task queue can be rebalanced across declared classes under
+        contention; tasks without a key share one class. ``fairness_weight``
+        (``1..1000``, default ``1``) lets a class take a proportionally
+        larger share of dispatch slots versus other classes on the same
+        queue.
         """
         body: dict[str, Any] = {
             "workflow_id": workflow_id,
@@ -1921,6 +1934,12 @@ class Client:
                 task_queue=task_queue,
             )
             body["search_attributes"] = search_attributes
+        if priority is not None:
+            body["priority"] = priority
+        if fairness_key is not None:
+            body["fairness_key"] = fairness_key
+        if fairness_weight is not None:
+            body["fairness_weight"] = fairness_weight
         data = await self._request("POST", "/workflows", json=body, context=workflow_id)
         return WorkflowHandle(
             self,
