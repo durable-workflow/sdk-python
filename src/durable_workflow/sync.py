@@ -238,6 +238,9 @@ class Client:
         duplicate_policy: str | None = None,
         memo: dict[str, Any] | None = None,
         search_attributes: dict[str, Any] | None = None,
+        priority: int | None = None,
+        fairness_key: str | None = None,
+        fairness_weight: int | None = None,
     ) -> SyncWorkflowHandle:
         handle = _run(
             self._async.start_workflow(
@@ -250,6 +253,9 @@ class Client:
                 duplicate_policy=duplicate_policy,
                 memo=memo,
                 search_attributes=search_attributes,
+                priority=priority,
+                fairness_key=fairness_key,
+                fairness_weight=fairness_weight,
             )
         )
         return SyncWorkflowHandle(handle)

@@ -51,6 +51,57 @@ class TestSyncClientStartWorkflow:
             assert handle.workflow_id == "wf-1"
             assert handle.run_id == "run-1"
 
+    def test_priority_and_fairness_are_forwarded_on_start(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            201,
+            {
+                "workflow_id": "wf-prio",
+                "run_id": "run-prio",
+                "workflow_type": "greeter",
+            },
+        )
+        with patch.object(
+            client._async._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            client.start_workflow(
+                workflow_type="greeter",
+                task_queue="shared",
+                workflow_id="wf-prio",
+                priority=1,
+                fairness_key="tenant-a",
+                fairness_weight=3,
+            )
+
+        body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
+        assert body["priority"] == 1
+        assert body["fairness_key"] == "tenant-a"
+        assert body["fairness_weight"] == 3
+
+    def test_priority_and_fairness_are_omitted_when_unset(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            201,
+            {
+                "workflow_id": "wf-nopri",
+                "run_id": "run-nopri",
+                "workflow_type": "greeter",
+            },
+        )
+        with patch.object(
+            client._async._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            client.start_workflow(
+                workflow_type="greeter",
+                task_queue="shared",
+                workflow_id="wf-nopri",
+            )
+
+        body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
+        assert "priority" not in body
+        assert "fairness_key" not in body
+        assert "fairness_weight" not in body
+
 
 class TestSyncClientDescribe:
     def test_describe(self) -> None:
