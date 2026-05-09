@@ -609,12 +609,17 @@ class WorkerDescription:
     last_heartbeat_at: str | None = None
     registered_at: str | None = None
     updated_at: str | None = None
+    task_slots: dict[str, int | None] | None = None
+    process_metrics: dict[str, Any] | None = None
+    heartbeat_interval_seconds: int | None = None
     raw: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], *, worker_id: str | None = None) -> WorkerDescription:
         workflow_types = data.get("supported_workflow_types")
         activity_types = data.get("supported_activity_types")
+        task_slots = data.get("task_slots")
+        process_metrics = data.get("process_metrics")
 
         return cls(
             worker_id=data.get("worker_id", worker_id or ""),
@@ -631,6 +636,13 @@ class WorkerDescription:
             last_heartbeat_at=data.get("last_heartbeat_at"),
             registered_at=data.get("registered_at"),
             updated_at=data.get("updated_at"),
+            task_slots=task_slots if isinstance(task_slots, dict) else None,
+            process_metrics=process_metrics if isinstance(process_metrics, dict) else None,
+            heartbeat_interval_seconds=(
+                int(data["heartbeat_interval_seconds"])
+                if isinstance(data.get("heartbeat_interval_seconds"), int)
+                else None
+            ),
             raw=data,
         )
 
@@ -641,6 +653,7 @@ class WorkerList:
 
     namespace: str | None
     workers: list[WorkerDescription]
+    stale_after_seconds: int | None = None
 
 
 @dataclass
@@ -1818,6 +1831,11 @@ class Client:
                 for item in items
                 if isinstance(item, dict)
             ],
+            stale_after_seconds=(
+                int(data["stale_after_seconds"])
+                if isinstance(data.get("stale_after_seconds"), int)
+                else None
+            ),
         )
 
     async def describe_worker(self, worker_id: str) -> WorkerDescription:
@@ -2612,6 +2630,50 @@ class Client:
         if max_concurrent_activity_tasks is not None:
             body["max_concurrent_activity_tasks"] = max_concurrent_activity_tasks
         return await self._request("POST", "/worker/register", worker=True, json=body)
+
+    async def heartbeat_worker(
+        self,
+        *,
+        worker_id: str,
+        task_slots: dict[str, int] | None = None,
+        process_metrics: dict[str, Any] | None = None,
+        heartbeat_interval_seconds: int | None = None,
+    ) -> Any:
+        """Send a worker-fleet heartbeat to refresh liveness and report state.
+
+        Workers should call this on a steady cadence (default 60s, advertised
+        by the server in the register/heartbeat acknowledgement) so operators
+        can answer "what workers are polling task queue X right now, what's
+        their slot capacity, when did each last check in" via the worker
+        management API, the CLI worker listing, and the operator Worker
+        Status view.
+
+        ``task_slots`` is an optional dict with any subset of
+        ``workflow_available``, ``activity_available``, ``session_available``
+        — the count of currently free slots for each family. The server
+        clamps each value into ``[0, max_concurrent_*]``.
+
+        ``process_metrics`` is an optional dict with any subset of
+        ``cpu_percent``, ``memory_bytes``, ``process_uptime_seconds``,
+        ``process_id``, and ``host`` — the SDK reports only what it has
+        cheap access to, and the server records exactly what was reported.
+
+        Returns the server acknowledgement, which includes the advertised
+        ``heartbeat_interval_seconds`` and ``stale_after_seconds`` so the
+        worker can adapt its cadence on the fly.
+
+        Most applications create a :class:`~durable_workflow.Worker`, which
+        runs this on a background asyncio task — call this directly only when
+        driving the worker protocol by hand (smoke tests, custom runtimes).
+        """
+        body: dict[str, Any] = {"worker_id": worker_id}
+        if task_slots:
+            body["task_slots"] = task_slots
+        if process_metrics:
+            body["process_metrics"] = process_metrics
+        if heartbeat_interval_seconds is not None:
+            body["heartbeat_interval_seconds"] = heartbeat_interval_seconds
+        return await self._request("POST", "/worker/heartbeat", worker=True, json=body)
 
     async def poll_workflow_task(
         self, *, worker_id: str, task_queue: str, timeout: float = 35.0

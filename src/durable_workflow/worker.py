@@ -20,6 +20,7 @@ import contextlib
 import hashlib
 import inspect
 import logging
+import sys
 import time
 import traceback
 import uuid
@@ -290,6 +291,7 @@ class Worker:
         max_concurrent_workflow_tasks: int = 10,
         max_concurrent_activity_tasks: int = 10,
         shutdown_timeout: float = 30.0,
+        heartbeat_interval: float = 60.0,
         metrics: MetricsRecorder | None = None,
         interceptors: Iterable[WorkerInterceptor] = (),
     ) -> None:
@@ -313,6 +315,8 @@ class Worker:
             raise ValueError("max_concurrent_workflow_tasks must be at least 1")
         if max_concurrent_activity_tasks < 1:
             raise ValueError("max_concurrent_activity_tasks must be at least 1")
+        if heartbeat_interval <= 0:
+            raise ValueError("heartbeat_interval must be positive")
 
         self._poll_timeout = poll_timeout
         self.max_concurrent_workflow_tasks = max_concurrent_workflow_tasks
@@ -323,6 +327,13 @@ class Worker:
         self._shutdown_timeout = shutdown_timeout
         self._in_flight: set[asyncio.Task[Any]] = set()
         self._query_tasks_supported = False
+        # In-flight slot accounting feeds the periodic heartbeat so operators
+        # see free-slot counts without the worker having to re-derive them at
+        # shutdown. Counters are bumped/decremented around dispatch.
+        self._workflow_inflight = 0
+        self._activity_inflight = 0
+        self._heartbeat_interval = float(heartbeat_interval)
+        self._process_started_at = time.time()
         configured_metrics = metrics if metrics is not None else getattr(client, "metrics", NOOP_METRICS)
         self.metrics: MetricsRecorder = configured_metrics or NOOP_METRICS
         self.interceptors = tuple(interceptors)
@@ -388,7 +399,7 @@ class Worker:
             _manifest_version(info.get("worker_protocol")),
         )
 
-        await self.client.register_worker(
+        ack = await self.client.register_worker(
             worker_id=self.worker_id,
             task_queue=self.task_queue,
             supported_workflow_types=list(self.workflows),
@@ -398,6 +409,14 @@ class Worker:
             max_concurrent_activity_tasks=self.max_concurrent_activity_tasks,
             build_id=self.build_id,
         )
+        # Adapt to the server-advertised cadence when present so a cluster
+        # can pin the worker fleet's heartbeat beat without each worker
+        # passing the cadence explicitly. Falls back to the constructor
+        # value when the server has not advertised a cadence.
+        if isinstance(ack, dict):
+            advertised = ack.get("heartbeat_interval_seconds")
+            if isinstance(advertised, int) and advertised > 0:
+                self._heartbeat_interval = float(advertised)
         log.info("worker %s registered on %s", self.worker_id, self.task_queue)
 
     async def _run_workflow_task(self, task: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -993,12 +1012,14 @@ class Worker:
     async def _dispatch_workflow_task(self, task: dict[str, Any]) -> None:
         task_start = time.perf_counter()
         outcome = "error"
+        self._workflow_inflight += 1
         try:
             commands = await self._run_workflow_task(task)
             outcome = "completed" if commands is not None else "failed"
         except Exception:
             log.exception("unhandled error in workflow task execution")
         finally:
+            self._workflow_inflight = max(0, self._workflow_inflight - 1)
             self._record_task_metrics("workflow", outcome, time.perf_counter() - task_start)
             self._wf_semaphore.release()
 
@@ -1032,11 +1053,13 @@ class Worker:
     async def _dispatch_activity_task(self, task: dict[str, Any]) -> None:
         task_start = time.perf_counter()
         outcome = "error"
+        self._activity_inflight += 1
         try:
             outcome = await self._run_activity_task(task)
         except Exception:
             log.exception("unhandled error in activity task execution")
         finally:
+            self._activity_inflight = max(0, self._activity_inflight - 1)
             self._record_task_metrics("activity", outcome, time.perf_counter() - task_start)
             self._act_semaphore.release()
 
@@ -1076,11 +1099,95 @@ class Worker:
         await self._register()
         wf_loop = asyncio.create_task(self._poll_workflow_tasks())
         act_loop = asyncio.create_task(self._poll_activity_tasks())
-        loops = [wf_loop, act_loop]
+        hb_loop = asyncio.create_task(self._heartbeat_loop())
+        loops = [wf_loop, act_loop, hb_loop]
         if self._query_tasks_supported:
             loops.append(asyncio.create_task(self._poll_query_tasks()))
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*loops)
+
+    async def _heartbeat_loop(self) -> None:
+        """Periodically refresh the server-side worker registration.
+
+        Reports current task-slot availability and basic process-level
+        metrics so the worker management API, CLI worker listing, and
+        Waterline Worker Status view can show free-slot counts and
+        process health alongside ``last_heartbeat_at``. Cadence is the
+        server-advertised ``heartbeat_interval_seconds`` (default 60s,
+        bounded to [1s, 1h] cluster-wide) so workers stop being
+        considered for task dispatch when they miss enough heartbeats.
+        """
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self._heartbeat_interval)
+            except asyncio.TimeoutError:
+                pass
+            if self._stop.is_set():
+                return
+            try:
+                ack = await self.client.heartbeat_worker(
+                    worker_id=self.worker_id,
+                    task_slots=self._current_task_slots(),
+                    process_metrics=self._current_process_metrics(),
+                )
+            except Exception as e:
+                log.warning("worker heartbeat failed: %s", e)
+                continue
+            if isinstance(ack, dict):
+                advertised = ack.get("heartbeat_interval_seconds")
+                if isinstance(advertised, int) and advertised > 0:
+                    self._heartbeat_interval = float(advertised)
+
+    def _current_task_slots(self) -> dict[str, int]:
+        return {
+            "workflow_available": max(
+                0, self.max_concurrent_workflow_tasks - self._workflow_inflight
+            ),
+            "activity_available": max(
+                0, self.max_concurrent_activity_tasks - self._activity_inflight
+            ),
+        }
+
+    def _current_process_metrics(self) -> dict[str, Any]:
+        import os
+        import socket
+
+        metrics: dict[str, Any] = {
+            "process_uptime_seconds": int(time.time() - self._process_started_at),
+            "process_id": os.getpid(),
+        }
+
+        try:
+            import resource
+
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            # ru_maxrss is kilobytes on Linux and bytes on macOS — normalize
+            # to bytes. The server stores whatever is sent so the units stay
+            # consistent across SDKs.
+            if sys.platform == "darwin":
+                metrics["memory_bytes"] = int(usage.ru_maxrss)
+            else:
+                metrics["memory_bytes"] = int(usage.ru_maxrss) * 1024
+
+            cpu_seconds = float(usage.ru_utime) + float(usage.ru_stime)
+            wall_seconds = max(0.001, time.time() - self._process_started_at)
+            metrics["cpu_percent"] = max(
+                0.0, min(100.0, round((cpu_seconds / wall_seconds) * 100.0, 2))
+            )
+        except (ImportError, OSError):
+            # `resource` is POSIX-only — Windows skips getrusage but still
+            # reports pid + uptime + host so the operator surface remains
+            # populated.
+            pass
+
+        try:
+            host = socket.gethostname()
+        except Exception:
+            host = ""
+        if isinstance(host, str) and host != "":
+            metrics["host"] = host[:255]
+
+        return metrics
 
     async def run_until(
         self,

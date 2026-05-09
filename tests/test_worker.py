@@ -90,6 +90,9 @@ async def echo_async_activity(val: str) -> str:
 def mock_client() -> AsyncMock:
     client = AsyncMock(spec=Client)
     client.register_worker = AsyncMock(return_value={"worker_id": "w1", "registered": True})
+    client.heartbeat_worker = AsyncMock(
+        return_value={"worker_id": "w1", "acknowledged": True, "heartbeat_interval_seconds": 60}
+    )
     client.poll_workflow_task = AsyncMock(return_value=None)
     client.poll_activity_task = AsyncMock(return_value=None)
     client.poll_query_task = AsyncMock(return_value=None)
@@ -1355,6 +1358,83 @@ class TestPollLoops:
         assert mock_client.poll_workflow_task.call_count >= 1
         assert mock_client.poll_activity_task.call_count >= 1
         mock_client.poll_query_task.assert_not_called()
+
+
+class TestWorkerHeartbeats:
+    @pytest.mark.asyncio
+    async def test_run_drives_periodic_heartbeats_with_slot_state(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            max_concurrent_workflow_tasks=4,
+            max_concurrent_activity_tasks=2,
+            poll_timeout=0.01,
+            heartbeat_interval=0.05,
+        )
+        run_task = asyncio.create_task(worker.run())
+        await asyncio.sleep(0.2)
+        await worker.stop()
+        run_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run_task
+
+        assert mock_client.heartbeat_worker.call_count >= 1
+        kwargs = mock_client.heartbeat_worker.call_args.kwargs
+        assert kwargs["worker_id"] == worker.worker_id
+        assert kwargs["task_slots"]["workflow_available"] == 4
+        assert kwargs["task_slots"]["activity_available"] == 2
+        process_metrics = kwargs["process_metrics"]
+        assert "process_id" in process_metrics
+        assert process_metrics["process_id"] > 0
+        assert "process_uptime_seconds" in process_metrics
+
+    @pytest.mark.asyncio
+    async def test_register_adopts_server_advertised_heartbeat_cadence(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.register_worker = AsyncMock(
+            return_value={
+                "worker_id": "w1",
+                "registered": True,
+                "heartbeat_interval_seconds": 7,
+            }
+        )
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            heartbeat_interval=120.0,
+        )
+        await worker._register()
+        assert worker._heartbeat_interval == 7.0
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_loop_survives_transient_errors(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.heartbeat_worker = AsyncMock(
+            side_effect=[RuntimeError("temporary"), {"acknowledged": True}]
+        )
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            poll_timeout=0.01,
+            heartbeat_interval=0.02,
+        )
+        run_task = asyncio.create_task(worker.run())
+        await asyncio.sleep(0.15)
+        await worker.stop()
+        run_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run_task
+        assert mock_client.heartbeat_worker.call_count >= 2
 
 
 class TestRunUntil:
