@@ -320,6 +320,81 @@ class WorkflowRunList:
 
 
 @dataclass
+class StandaloneActivityExecution:
+    """Server view of one standalone activity execution.
+
+    Standalone activities run as top-level durable jobs anchored by a
+    server-managed host run; this dataclass collapses the host-run state
+    and the underlying activity execution state into one description so
+    callers do not need to navigate between two surfaces to inspect a
+    single job.
+    """
+
+    activity_id: str
+    workflow_run_id: str | None
+    activity_execution_id: str | None
+    workflow_type: str
+    activity_type: str | None
+    activity_class: str | None
+    task_queue: str | None
+    namespace: str | None
+    status: str | None
+    activity_status: str | None
+    closed_reason: str | None
+    business_key: str | None
+    payload_codec: str | None
+    started_at: str | None
+    closed_at: str | None
+    last_progress_at: str | None
+    last_heartbeat_at: str | None
+    schedule_to_start_deadline_at: str | None
+    schedule_to_close_deadline_at: str | None
+    attempt_count: int | None
+    result: Any = None
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        activity_id: str | None = None,
+        result: Any = None,
+    ) -> StandaloneActivityExecution:
+        return cls(
+            activity_id=data.get("activity_id", activity_id or ""),
+            workflow_run_id=data.get("workflow_run_id"),
+            activity_execution_id=data.get("activity_execution_id"),
+            workflow_type=data.get("workflow_type", ""),
+            activity_type=data.get("activity_type"),
+            activity_class=data.get("activity_class"),
+            task_queue=data.get("task_queue"),
+            namespace=data.get("namespace"),
+            status=data.get("status"),
+            activity_status=data.get("activity_status"),
+            closed_reason=data.get("closed_reason"),
+            business_key=data.get("business_key"),
+            payload_codec=data.get("payload_codec"),
+            started_at=data.get("started_at"),
+            closed_at=data.get("closed_at"),
+            last_progress_at=data.get("last_progress_at"),
+            last_heartbeat_at=data.get("last_heartbeat_at"),
+            schedule_to_start_deadline_at=data.get("schedule_to_start_deadline_at"),
+            schedule_to_close_deadline_at=data.get("schedule_to_close_deadline_at"),
+            attempt_count=data.get("attempt_count"),
+            result=result,
+        )
+
+
+@dataclass
+class StandaloneActivityList:
+    """One page of standalone activity executions returned by the server."""
+
+    activities: list[StandaloneActivityExecution]
+    activity_count: int
+    next_page_token: str | None = None
+
+
+@dataclass
 class SearchAttributeList:
     """Search attribute definitions available in the current namespace."""
 
@@ -917,6 +992,61 @@ class WorkflowHandle:
             wait_timeout_seconds=wait_timeout_seconds,
             request_id=request_id,
         )
+
+
+class StandaloneActivityHandle:
+    """Convenience wrapper for operating on one standalone activity job.
+
+    Returned by :meth:`Client.start_activity`. The underlying execution is
+    a top-level durable job — the server records the activity inside its
+    own host run so retries, deadlines, cancellation, and history surface
+    through the existing activity infrastructure. The handle exposes the
+    job-style operations (``describe``, ``result``, ``cancel``) without
+    having to know that there is a host workflow run behind the scenes.
+    """
+
+    def __init__(
+        self,
+        client: Client,
+        activity_id: str,
+        *,
+        workflow_run_id: str | None = None,
+        activity_execution_id: str | None = None,
+        workflow_type: str = "",
+        activity_type: str = "",
+    ) -> None:
+        self._client = client
+        self.activity_id = activity_id
+        self.workflow_run_id = workflow_run_id
+        self.activity_execution_id = activity_execution_id
+        self.workflow_type = workflow_type
+        self.activity_type = activity_type
+
+    async def describe(self) -> StandaloneActivityExecution:
+        """Fetch the server's current view of this standalone activity.
+
+        See :meth:`Client.describe_activity`.
+        """
+        return await self._client.describe_activity(self.activity_id)
+
+    async def result(
+        self, *, poll_interval: float = 0.5, timeout: float = 30.0
+    ) -> Any:
+        """Block until the activity reaches a terminal outcome and return its result.
+
+        See :meth:`Client.get_activity_result`.
+        """
+        return await self._client.get_activity_result(
+            self, poll_interval=poll_interval, timeout=timeout
+        )
+
+    async def cancel(self, *, reason: str | None = None) -> None:
+        """Request graceful cancellation of this standalone activity.
+
+        Cancellation flows through the host run's workflow cancellation
+        path; the next heartbeat or attempt boundary observes the request.
+        """
+        await self._client.cancel_workflow(self.activity_id, reason=reason)
 
 
 class ScheduleHandle:
@@ -2056,6 +2186,221 @@ class Client:
         """Return detailed status, payload, and actionability for one specific workflow run."""
         data = await self._request("GET", f"/workflows/{workflow_id}/runs/{run_id}", context=workflow_id)
         return WorkflowRun.from_dict(data, workflow_id=workflow_id, run_id=run_id)
+
+    # ── Standalone Activities ─────────────────────────────────────────
+    #
+    # Activities can run as top-level durable jobs without a wrapper
+    # workflow. The same activity definition registered via
+    # ``@activity.defn(name=...)`` is reusable inside a workflow's
+    # ``activity()`` invocation and as a standalone job — the server
+    # handles dispatch, retry, deadline, cancellation, and history
+    # projection through the existing activity infrastructure.
+
+    async def start_activity(
+        self,
+        *,
+        activity_type: str,
+        task_queue: str,
+        activity_id: str | None = None,
+        activity_class: str | None = None,
+        input: list[Any] | None = None,
+        business_key: str | None = None,
+        retry_policy: dict[str, Any] | None = None,
+        start_to_close_timeout_seconds: int | None = None,
+        schedule_to_start_timeout_seconds: int | None = None,
+        schedule_to_close_timeout_seconds: int | None = None,
+        heartbeat_timeout_seconds: int | None = None,
+    ) -> StandaloneActivityHandle:
+        """Start a standalone activity and return a handle bound to it.
+
+        ``activity_type`` is the language-neutral activity type key
+        registered via :func:`durable_workflow.activity.defn`. The same
+        activity definition can be invoked inside a workflow with the
+        worker's ``activity()`` call and also dispatched here as a
+        top-level durable job — there is no separate "job activity"
+        decorator. ``task_queue`` selects the worker pool that will run
+        the activity.
+
+        ``activity_id`` is an optional caller-supplied identifier (must be
+        URL-safe; same character rules as ``workflow_id``). When omitted,
+        the server generates one. ``activity_class`` is an optional
+        free-form label that surfaces on the listing/show endpoints — it
+        does not affect dispatch.
+
+        ``input`` is a list of positional arguments passed to the
+        activity, encoded with the default payload codec.
+        ``retry_policy`` follows the same shape used inside a workflow
+        (``max_attempts``, ``backoff_seconds``,
+        ``non_retryable_error_types``). The four timeout knobs map
+        one-to-one onto the same fields applied to activities scheduled
+        from inside a workflow.
+
+        Returns a :class:`StandaloneActivityHandle` so the caller can
+        inspect the activity, await its result, or cancel it without
+        having to know that the server records the work inside a host
+        workflow run.
+        """
+        body: dict[str, Any] = {
+            "activity_type": activity_type,
+            "task_queue": task_queue,
+        }
+        if activity_id is not None:
+            body["activity_id"] = activity_id
+        if activity_class is not None:
+            body["activity_class"] = activity_class
+        if business_key is not None:
+            body["business_key"] = business_key
+        if input is not None:
+            body["input"] = self._payload_envelope(
+                input,
+                kind="activity_input",
+                activity_name=activity_type,
+                task_queue=task_queue,
+            )
+        if retry_policy is not None:
+            body["retry_policy"] = retry_policy
+        if start_to_close_timeout_seconds is not None:
+            body["start_to_close_timeout_seconds"] = start_to_close_timeout_seconds
+        if schedule_to_start_timeout_seconds is not None:
+            body["schedule_to_start_timeout_seconds"] = schedule_to_start_timeout_seconds
+        if schedule_to_close_timeout_seconds is not None:
+            body["schedule_to_close_timeout_seconds"] = schedule_to_close_timeout_seconds
+        if heartbeat_timeout_seconds is not None:
+            body["heartbeat_timeout_seconds"] = heartbeat_timeout_seconds
+
+        data = await self._request(
+            "POST",
+            "/activities",
+            json=body,
+            context=activity_id or activity_type,
+        )
+
+        return StandaloneActivityHandle(
+            self,
+            activity_id=data.get("activity_id", activity_id or ""),
+            workflow_run_id=data.get("workflow_run_id"),
+            activity_execution_id=data.get("activity_execution_id"),
+            workflow_type=data.get("workflow_type", ""),
+            activity_type=data.get("activity_type", activity_type),
+        )
+
+    def get_activity_handle(
+        self,
+        activity_id: str,
+        *,
+        workflow_run_id: str | None = None,
+        activity_execution_id: str | None = None,
+        activity_type: str = "",
+    ) -> StandaloneActivityHandle:
+        """Return a :class:`StandaloneActivityHandle` bound to an existing
+        standalone activity. Does not round-trip to the server.
+        """
+        return StandaloneActivityHandle(
+            self,
+            activity_id=activity_id,
+            workflow_run_id=workflow_run_id,
+            activity_execution_id=activity_execution_id,
+            activity_type=activity_type,
+        )
+
+    async def describe_activity(self, activity_id: str) -> StandaloneActivityExecution:
+        """Return the server's current view of one standalone activity.
+
+        The returned ``result`` field is decoded from the server's payload
+        envelope when the activity has completed; for not-yet-terminal
+        activities it is ``None``.
+        """
+        data = await self._request(
+            "GET", f"/activities/{quote(activity_id, safe='._:-')}", context=activity_id
+        )
+        result_envelope = data.get("result")
+        result_value: Any = None
+        if isinstance(result_envelope, dict) and result_envelope.get("blob") is not None:
+            result_value = serializer.decode_envelope(
+                result_envelope,
+                codec=result_envelope.get("codec") or data.get("payload_codec"),
+            )
+        return StandaloneActivityExecution.from_dict(
+            data,
+            activity_id=activity_id,
+            result=result_value,
+        )
+
+    async def list_activities(
+        self,
+        *,
+        status: str | None = None,
+        page_size: int | None = None,
+        next_page_token: str | None = None,
+    ) -> StandaloneActivityList:
+        """Page through standalone activities visible to the calling namespace.
+
+        ``status`` filters on the host-run status bucket and accepts
+        ``running``, ``completed``, or ``failed``.
+        """
+        params: dict[str, str] = {}
+        if status is not None:
+            params["status"] = status
+        if page_size is not None:
+            params["page_size"] = str(page_size)
+        if next_page_token is not None:
+            params["next_page_token"] = next_page_token
+
+        qs = urlencode(params)
+        path = f"/activities?{qs}" if qs else "/activities"
+        data = await self._request("GET", path)
+        items = data.get("activities", [])
+        executions = [
+            StandaloneActivityExecution.from_dict(item)
+            for item in items
+        ]
+        return StandaloneActivityList(
+            activities=executions,
+            activity_count=data.get("activity_count", len(executions)),
+            next_page_token=data.get("next_page_token"),
+        )
+
+    async def get_activity_result(
+        self,
+        handle: StandaloneActivityHandle,
+        *,
+        poll_interval: float = 0.5,
+        timeout: float = 30.0,
+    ) -> Any:
+        """Poll a standalone activity until it reaches a terminal outcome.
+
+        Returns the decoded activity result on success, raises
+        :class:`~durable_workflow.errors.WorkflowFailed` on failure (the
+        host run carries the activity's failure as its terminal state),
+        :class:`~durable_workflow.errors.WorkflowCancelled` /
+        :class:`~durable_workflow.errors.WorkflowTerminated` for the
+        respective lifecycle outcomes, or :class:`TimeoutError` if the
+        activity is still running after ``timeout`` seconds.
+        """
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            desc = await self.describe_activity(handle.activity_id)
+            status = desc.status
+            if status in ("completed", "failed", "terminated", "canceled", "cancelled"):
+                if status == "completed":
+                    return desc.result
+                if status == "failed":
+                    raise WorkflowFailed(
+                        f"standalone activity {handle.activity_id} failed",
+                    )
+                if status == "terminated":
+                    raise WorkflowTerminated(
+                        desc.closed_reason or "standalone activity was terminated",
+                    )
+                raise WorkflowCancelled(
+                    desc.closed_reason or "standalone activity was cancelled",
+                )
+            if asyncio.get_running_loop().time() > deadline:
+                raise TimeoutError(
+                    f"standalone activity {handle.activity_id} not terminal after {timeout}s "
+                    f"(status={status})"
+                )
+            await asyncio.sleep(poll_interval)
 
     async def send_webhook_bridge_event(
         self,
