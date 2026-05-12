@@ -38,7 +38,7 @@ from .errors import (
     WorkflowTerminated,
     _raise_for_status,
 )
-from .external_storage import ExternalPayloadStoragePolicy
+from .external_storage import ExternalPayloadCache, ExternalPayloadStoragePolicy, ExternalStorageDriver
 from .metrics import CLIENT_REQUEST_DURATION_SECONDS, CLIENT_REQUESTS, NOOP_METRICS, MetricsRecorder
 from .retry_policy import TransportRetryPolicy
 
@@ -1161,6 +1161,9 @@ class Client:
         payload_size_limit_bytes: int = serializer.DEFAULT_PAYLOAD_SIZE_BYTES,
         payload_size_warning_threshold_percent: int = serializer.DEFAULT_WARNING_THRESHOLD_PERCENT,
         payload_size_warnings: bool = True,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
+        external_storage_cache: ExternalPayloadCache | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
@@ -1176,6 +1179,15 @@ class Client:
             )
             if payload_size_warnings
             else None
+        )
+        if external_storage_threshold_bytes is not None and external_storage_threshold_bytes < 1:
+            raise ValueError("external_storage_threshold_bytes must be at least 1 when provided")
+        self.external_storage = external_storage
+        self.external_storage_threshold_bytes = external_storage_threshold_bytes
+        self.external_storage_cache = (
+            external_storage_cache
+            if external_storage_cache is not None
+            else ExternalPayloadCache()
         )
         self._http = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
 
@@ -1253,23 +1265,43 @@ class Client:
         query_name: str | None = None,
         schedule_id: str | None = None,
         task_queue: str | None = None,
-    ) -> dict[str, str]:
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
+    ) -> dict[str, Any]:
+        warning_context = self._payload_context(
+            kind=kind,
+            workflow_id=workflow_id,
+            workflow_type=workflow_type,
+            run_id=run_id,
+            activity_name=activity_name,
+            signal_name=signal_name,
+            update_name=update_name,
+            query_name=query_name,
+            schedule_id=schedule_id,
+            task_queue=task_queue,
+        )
+        if external_storage_threshold_bytes is not None and external_storage_threshold_bytes < 1:
+            raise ValueError("external_storage_threshold_bytes must be at least 1 when provided")
+        payload_storage = external_storage if external_storage is not None else self.external_storage
+        payload_storage_threshold_bytes = (
+            external_storage_threshold_bytes
+            if external_storage_threshold_bytes is not None
+            else self.external_storage_threshold_bytes
+        )
+        if payload_storage is not None and payload_storage_threshold_bytes is not None:
+            return serializer.external_storage_envelope(
+                value,
+                external_storage=payload_storage,
+                threshold_bytes=payload_storage_threshold_bytes,
+                codec=codec,
+                size_warning=self.payload_size_warning_config,
+                warning_context=warning_context,
+            )
         return serializer.envelope(
             value,
             codec=codec,
             size_warning=self.payload_size_warning_config,
-            warning_context=self._payload_context(
-                kind=kind,
-                workflow_id=workflow_id,
-                workflow_type=workflow_type,
-                run_id=run_id,
-                activity_name=activity_name,
-                signal_name=signal_name,
-                update_name=update_name,
-                query_name=query_name,
-                schedule_id=schedule_id,
-                task_queue=task_queue,
-            ),
+            warning_context=warning_context,
         )
 
     def _warn_json_payload_size(
@@ -2094,7 +2126,11 @@ class Client:
         if data.get("output_envelope"):
             envelope_jobs.append(("output", data["output_envelope"]))
         if envelope_jobs:
-            decoded = serializer.decode_envelopes([envelope for _, envelope in envelope_jobs])
+            decoded = serializer.decode_envelopes(
+                [envelope for _, envelope in envelope_jobs],
+                external_storage=self.external_storage,
+                external_storage_cache=self.external_storage_cache,
+            )
             for (field, _), value in zip(envelope_jobs, decoded, strict=True):
                 if field == "input":
                     input_val = value
@@ -2315,10 +2351,15 @@ class Client:
         )
         result_envelope = data.get("result")
         result_value: Any = None
-        if isinstance(result_envelope, dict) and result_envelope.get("blob") is not None:
+        if (
+            isinstance(result_envelope, dict)
+            and (result_envelope.get("blob") is not None or result_envelope.get("external_storage") is not None)
+        ):
             result_value = serializer.decode_envelope(
                 result_envelope,
                 codec=result_envelope.get("codec") or data.get("payload_codec"),
+                external_storage=self.external_storage,
+                external_storage_cache=self.external_storage_cache,
             )
         return StandaloneActivityExecution.from_dict(
             data,
@@ -2586,6 +2627,8 @@ class Client:
                         return serializer.decode_envelope(
                             payload.get("output"),
                             codec=payload.get("payload_codec") or desc.payload_codec,
+                            external_storage=self.external_storage,
+                            external_storage_cache=self.external_storage_cache,
                         )
                     if etype == "WorkflowFailed":
                         raise WorkflowFailed(
@@ -3167,6 +3210,8 @@ class Client:
         workflow_id: str | None = None,
         run_id: str | None = None,
         query_name: str | None = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
     ) -> Any:
         """Submit the successful result for a worker-routed query task."""
         body: dict[str, Any] = {
@@ -3180,6 +3225,8 @@ class Client:
                 workflow_id=workflow_id,
                 run_id=run_id,
                 query_name=query_name,
+                external_storage=external_storage,
+                external_storage_threshold_bytes=external_storage_threshold_bytes,
             ),
         }
         return await self._request(
@@ -3238,6 +3285,8 @@ class Client:
         result: Any,
         codec: str = serializer.AVRO_CODEC,
         activity_name: str | None = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
     ) -> Any:
         """Report successful activity execution and submit the encoded result."""
         body: dict[str, Any] = {
@@ -3248,6 +3297,8 @@ class Client:
                 codec=codec,
                 kind="activity_result",
                 activity_name=activity_name,
+                external_storage=external_storage,
+                external_storage_threshold_bytes=external_storage_threshold_bytes,
             ),
         }
         return await self._request(

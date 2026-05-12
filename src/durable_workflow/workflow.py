@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import serializer
+from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .errors import ChildWorkflowFailed, QueryFailed, WorkflowPayloadDecodeError
 
 _REGISTRY: dict[str, type] = {}
@@ -254,6 +255,139 @@ def _payload_warning_context(
     return context
 
 
+def _should_use_external_storage(
+    external_storage: ExternalStorageDriver | None,
+    external_storage_threshold_bytes: int | None,
+) -> bool:
+    return external_storage is not None and external_storage_threshold_bytes is not None
+
+
+def _payload_envelope(
+    value: Any,
+    *,
+    payload_codec: str,
+    size_warning: serializer.PayloadSizeWarningConfig | None,
+    warning_context: PayloadWarningContext,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_threshold_bytes: int | None = None,
+) -> dict[str, Any]:
+    if _should_use_external_storage(external_storage, external_storage_threshold_bytes):
+        assert external_storage is not None
+        assert external_storage_threshold_bytes is not None
+        return serializer.external_storage_envelope(
+            value,
+            external_storage=external_storage,
+            threshold_bytes=external_storage_threshold_bytes,
+            codec=payload_codec,
+            size_warning=size_warning,
+            warning_context=warning_context,
+        )
+    return serializer.envelope(
+        value,
+        codec=payload_codec,
+        size_warning=size_warning,
+        warning_context=warning_context,
+    )
+
+
+def _payload_envelopes(
+    values: Sequence[Any],
+    *,
+    payload_codec: str,
+    size_warning: serializer.PayloadSizeWarningConfig | None,
+    warning_contexts: Sequence[PayloadWarningContext],
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_threshold_bytes: int | None = None,
+) -> list[dict[str, Any]]:
+    if _should_use_external_storage(external_storage, external_storage_threshold_bytes):
+        assert external_storage is not None
+        assert external_storage_threshold_bytes is not None
+        return serializer.external_storage_envelope_many(
+            values,
+            external_storage=external_storage,
+            threshold_bytes=external_storage_threshold_bytes,
+            codec=payload_codec,
+            size_warning=size_warning,
+            warning_context=warning_contexts,
+        )
+    return serializer.envelope_many(
+        values,
+        codec=payload_codec,
+        size_warning=size_warning,
+        warning_context=warning_contexts,
+    )
+
+
+def _payload_blob_or_external_envelope(
+    value: Any,
+    *,
+    payload_codec: str,
+    size_warning: serializer.PayloadSizeWarningConfig | None,
+    warning_context: PayloadWarningContext,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_threshold_bytes: int | None = None,
+) -> str | dict[str, Any]:
+    if _should_use_external_storage(external_storage, external_storage_threshold_bytes):
+        assert external_storage is not None
+        assert external_storage_threshold_bytes is not None
+        envelope = serializer.external_storage_envelope(
+            value,
+            external_storage=external_storage,
+            threshold_bytes=external_storage_threshold_bytes,
+            codec=payload_codec,
+            size_warning=size_warning,
+            warning_context=warning_context,
+        )
+        if "external_storage" in envelope:
+            return envelope
+        blob = envelope.get("blob")
+        return blob if isinstance(blob, str) else str(blob)
+
+    return serializer.encode(
+        value,
+        codec=payload_codec,
+        size_warning=size_warning,
+        warning_context=warning_context,
+    )
+
+
+def _payload_blobs_or_external_envelopes(
+    values: Sequence[Any],
+    *,
+    payload_codec: str,
+    size_warning: serializer.PayloadSizeWarningConfig | None,
+    warning_contexts: Sequence[PayloadWarningContext],
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_threshold_bytes: int | None = None,
+) -> list[str | dict[str, Any]]:
+    if _should_use_external_storage(external_storage, external_storage_threshold_bytes):
+        assert external_storage is not None
+        assert external_storage_threshold_bytes is not None
+        envelopes = serializer.external_storage_envelope_many(
+            values,
+            external_storage=external_storage,
+            threshold_bytes=external_storage_threshold_bytes,
+            codec=payload_codec,
+            size_warning=size_warning,
+            warning_context=warning_contexts,
+        )
+        payloads: list[str | dict[str, Any]] = []
+        for envelope in envelopes:
+            if "external_storage" in envelope:
+                payloads.append(envelope)
+                continue
+            blob = envelope.get("blob")
+            payloads.append(blob if isinstance(blob, str) else str(blob))
+        return payloads
+
+    return serializer.encode_many(
+        values,
+        codec=payload_codec,
+        size_warning=size_warning,
+        warning_context=warning_contexts,
+    )
+
+
 @dataclass
 class ChildWorkflowRetryPolicy(ActivityRetryPolicy):
     """Retry policy applied to one started child workflow call.
@@ -302,15 +436,17 @@ class ScheduleActivity:
         payload_codec: str = serializer.AVRO_CODEC,
         size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
         warning_context: PayloadWarningContext = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
     ) -> dict[str, Any]:
         self._validate_timeouts()
 
         command: dict[str, Any] = {
             "type": "schedule_activity",
             "activity_type": self.activity_type,
-            "arguments": serializer.envelope(
+            "arguments": _payload_envelope(
                 self.arguments,
-                codec=payload_codec,
+                payload_codec=payload_codec,
                 size_warning=size_warning,
                 warning_context=_payload_warning_context(
                     warning_context,
@@ -318,6 +454,8 @@ class ScheduleActivity:
                     task_queue=self.queue or task_queue,
                     activity_name=self.activity_type,
                 ),
+                external_storage=external_storage,
+                external_storage_threshold_bytes=external_storage_threshold_bytes,
             ),
             "queue": self.queue or task_queue,
         }
@@ -403,18 +541,22 @@ class CompleteWorkflow:
         payload_codec: str = serializer.AVRO_CODEC,
         size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
         warning_context: PayloadWarningContext = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
     ) -> dict[str, Any]:
         return {
             "type": "complete_workflow",
-            "result": serializer.envelope(
+            "result": _payload_envelope(
                 self.result,
-                codec=payload_codec,
+                payload_codec=payload_codec,
                 size_warning=size_warning,
                 warning_context=_payload_warning_context(
                     warning_context,
                     kind="workflow_result",
                     task_queue=task_queue,
                 ),
+                external_storage=external_storage,
+                external_storage_threshold_bytes=external_storage_threshold_bytes,
             ),
         }
 
@@ -460,19 +602,23 @@ class CompleteUpdate:
         payload_codec: str = serializer.AVRO_CODEC,
         size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
         warning_context: PayloadWarningContext = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
     ) -> dict[str, Any]:
         return {
             "type": "complete_update",
             "update_id": self.update_id,
-            "result": serializer.envelope(
+            "result": _payload_envelope(
                 self.result,
-                codec=payload_codec,
+                payload_codec=payload_codec,
                 size_warning=size_warning,
                 warning_context=_payload_warning_context(
                     warning_context,
                     kind="update_result",
                     task_queue=task_queue,
                 ),
+                external_storage=external_storage,
+                external_storage_threshold_bytes=external_storage_threshold_bytes,
             ),
         }
 
@@ -494,6 +640,8 @@ class FailUpdate:
         payload_codec: str = serializer.AVRO_CODEC,
         size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
         warning_context: PayloadWarningContext = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
     ) -> dict[str, Any]:
         cmd: dict[str, Any] = {
             "type": "fail_update",
@@ -524,19 +672,23 @@ class ContinueAsNew:
         payload_codec: str = serializer.AVRO_CODEC,
         size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
         warning_context: PayloadWarningContext = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
     ) -> dict[str, Any]:
         cmd: dict[str, Any] = {"type": "continue_as_new"}
         if self.workflow_type is not None:
             cmd["workflow_type"] = self.workflow_type
-        cmd["arguments"] = serializer.envelope(
+        cmd["arguments"] = _payload_envelope(
             self.arguments,
-            codec=payload_codec,
+            payload_codec=payload_codec,
             size_warning=size_warning,
             warning_context=_payload_warning_context(
                 warning_context,
                 kind="continue_as_new_input",
                 task_queue=self.task_queue or task_queue,
             ),
+            external_storage=external_storage,
+            external_storage_threshold_bytes=external_storage_threshold_bytes,
         )
         cmd["queue"] = self.task_queue or task_queue
         return cmd
@@ -555,18 +707,22 @@ class RecordSideEffect:
         payload_codec: str = serializer.AVRO_CODEC,
         size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
         warning_context: PayloadWarningContext = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
     ) -> dict[str, Any]:
         return {
             "type": "record_side_effect",
-            "result": serializer.encode(
+            "result": _payload_blob_or_external_envelope(
                 self.result,
-                codec=payload_codec,
+                payload_codec=payload_codec,
                 size_warning=size_warning,
                 warning_context=_payload_warning_context(
                     warning_context,
                     kind="side_effect_result",
                     task_queue=task_queue,
                 ),
+                external_storage=external_storage,
+                external_storage_threshold_bytes=external_storage_threshold_bytes,
             ),
         }
 
@@ -595,21 +751,25 @@ class StartChildWorkflow:
         payload_codec: str = serializer.AVRO_CODEC,
         size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
         warning_context: PayloadWarningContext = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
     ) -> dict[str, Any]:
         self._validate_timeouts()
 
         cmd: dict[str, Any] = {
             "type": "start_child_workflow",
             "workflow_type": self.workflow_type,
-            "arguments": serializer.envelope(
+            "arguments": _payload_envelope(
                 self.arguments,
-                codec=payload_codec,
+                payload_codec=payload_codec,
                 size_warning=size_warning,
                 warning_context=_payload_warning_context(
                     warning_context,
                     kind="child_workflow_input",
                     task_queue=self.task_queue or task_queue,
                 ),
+                external_storage=external_storage,
+                external_storage_threshold_bytes=external_storage_threshold_bytes,
             ),
         }
         if self.task_queue is not None:
@@ -770,6 +930,8 @@ def commands_to_server_commands(
     payload_codec: str = serializer.AVRO_CODEC,
     size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
     warning_context: PayloadWarningContext = None,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_threshold_bytes: int | None = None,
 ) -> list[dict[str, Any]]:
     """Convert workflow commands to the server wire shape with batched payload encoding."""
     server_commands: list[dict[str, Any]] = []
@@ -912,21 +1074,25 @@ def commands_to_server_commands(
         ))
 
     if envelope_jobs:
-        envelopes = serializer.envelope_many(
+        envelopes = _payload_envelopes(
             [value for _, _, value, _ in envelope_jobs],
-            codec=payload_codec,
+            payload_codec=payload_codec,
             size_warning=size_warning,
-            warning_context=[context for _, _, _, context in envelope_jobs],
+            warning_contexts=[context for _, _, _, context in envelope_jobs],
+            external_storage=external_storage,
+            external_storage_threshold_bytes=external_storage_threshold_bytes,
         )
         for (index, key, _, _), envelope_value in zip(envelope_jobs, envelopes, strict=True):
             server_commands[index][key] = envelope_value
 
     if encode_jobs:
-        blobs = serializer.encode_many(
+        blobs = _payload_blobs_or_external_envelopes(
             [value for _, _, value, _ in encode_jobs],
-            codec=payload_codec,
+            payload_codec=payload_codec,
             size_warning=size_warning,
-            warning_context=[context for _, _, _, context in encode_jobs],
+            warning_contexts=[context for _, _, _, context in encode_jobs],
+            external_storage=external_storage,
+            external_storage_threshold_bytes=external_storage_threshold_bytes,
         )
         for (index, key, _, _), blob in zip(encode_jobs, blobs, strict=True):
             server_commands[index][key] = blob
@@ -1176,6 +1342,8 @@ class Replayer:
         workflow_id: str | None = None,
         run_id: str = "",
         payload_codec: str | None = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_cache: ExternalPayloadCache | None = None,
     ) -> ReplayOutcome:
         events = _history_events_from_export(history)
         selected_workflow_type = workflow_type or _workflow_type_from_history(events)
@@ -1183,7 +1351,12 @@ class Replayer:
         replay_input = (
             list(start_input)
             if start_input is not None
-            else _start_input_from_history(events, payload_codec=payload_codec)
+            else _start_input_from_history(
+                events,
+                payload_codec=payload_codec,
+                external_storage=external_storage,
+                external_storage_cache=external_storage_cache,
+            )
         )
         return replay(
             workflow_cls,
@@ -1192,6 +1365,8 @@ class Replayer:
             workflow_id=workflow_id,
             run_id=run_id,
             payload_codec=payload_codec,
+            external_storage=external_storage,
+            external_storage_cache=external_storage_cache,
         )
 
     def _workflow_cls(self, workflow_type: str | None) -> type:
@@ -1213,9 +1388,20 @@ class _ReplayState:
     instance: Any
 
 
-def _decode_history_result(payload: dict[str, Any], fallback_codec: str | None) -> Any:
+def _decode_history_result(
+    payload: dict[str, Any],
+    fallback_codec: str | None,
+    *,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
+) -> Any:
     codec = payload.get("payload_codec") or fallback_codec
-    return serializer.decode_envelope(payload.get("result"), codec=codec)
+    return serializer.decode_envelope(
+        payload.get("result"),
+        codec=codec,
+        external_storage=external_storage,
+        external_storage_cache=external_storage_cache,
+    )
 
 
 def _version_marker_result(cmd: RecordVersionMarker, version: Any) -> Any:
@@ -1226,7 +1412,13 @@ def _version_marker_result(cmd: RecordVersionMarker, version: Any) -> Any:
     return version
 
 
-def _decode_signal_args(payload: dict[str, Any], fallback_codec: str | None) -> list[Any]:
+def _decode_signal_args(
+    payload: dict[str, Any],
+    fallback_codec: str | None,
+    *,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
+) -> list[Any]:
     codec = payload.get("payload_codec") or fallback_codec
     raw = payload.get("value")
     if raw is None:
@@ -1235,18 +1427,34 @@ def _decode_signal_args(payload: dict[str, Any], fallback_codec: str | None) -> 
         raw = payload.get("arguments")
     if raw is None:
         return []
-    decoded = serializer.decode_envelope(raw, codec=codec)
+    decoded = serializer.decode_envelope(
+        raw,
+        codec=codec,
+        external_storage=external_storage,
+        external_storage_cache=external_storage_cache,
+    )
     if isinstance(decoded, list):
         return decoded
     return [decoded]
 
 
-def _decode_update_args(payload: dict[str, Any], fallback_codec: str | None) -> list[Any]:
+def _decode_update_args(
+    payload: dict[str, Any],
+    fallback_codec: str | None,
+    *,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
+) -> list[Any]:
     codec = payload.get("payload_codec") or fallback_codec
     raw = payload.get("arguments")
     if raw is None:
         return []
-    decoded = serializer.decode_envelope(raw, codec=codec)
+    decoded = serializer.decode_envelope(
+        raw,
+        codec=codec,
+        external_storage=external_storage,
+        external_storage_cache=external_storage_cache,
+    )
     if isinstance(decoded, list):
         return decoded
     return [decoded]
@@ -1317,7 +1525,13 @@ def _workflow_type_from_history(events: Iterable[dict[str, Any]]) -> str | None:
     return None
 
 
-def _start_input_from_history(events: Iterable[dict[str, Any]], *, payload_codec: str | None) -> list[Any]:
+def _start_input_from_history(
+    events: Iterable[dict[str, Any]],
+    *,
+    payload_codec: str | None,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
+) -> list[Any]:
     for event in events:
         if event.get("event_type") != "WorkflowStarted":
             continue
@@ -1329,8 +1543,12 @@ def _start_input_from_history(events: Iterable[dict[str, Any]], *, payload_codec
             raw = payload.get(key)
             if raw is None:
                 continue
-            if isinstance(raw, Mapping) and "codec" in raw and "blob" in raw:
-                decoded = serializer.decode_envelope(raw)
+            if isinstance(raw, Mapping) and "codec" in raw:
+                decoded = serializer.decode_envelope(
+                    raw,
+                    external_storage=external_storage,
+                    external_storage_cache=external_storage_cache,
+                )
             elif isinstance(raw, str):
                 decoded = serializer.decode(raw, codec=codec)
             else:
@@ -1352,6 +1570,8 @@ def _decode_receiver_args(
     workflow_id: str | None,
     run_id: str,
     payload_codec: str | None,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
 ) -> list[Any]:
     payload = event.get("payload") or {}
     if not isinstance(payload, Mapping):
@@ -1359,8 +1579,18 @@ def _decode_receiver_args(
     codec = payload.get("payload_codec") or payload_codec
     try:
         if receiver_kind == "signal":
-            return _decode_signal_args(dict(payload), payload_codec)
-        return _decode_update_args(dict(payload), payload_codec)
+            return _decode_signal_args(
+                dict(payload),
+                payload_codec,
+                external_storage=external_storage,
+                external_storage_cache=external_storage_cache,
+            )
+        return _decode_update_args(
+            dict(payload),
+            payload_codec,
+            external_storage=external_storage,
+            external_storage_cache=external_storage_cache,
+        )
     except Exception as exc:
         payload_head = _history_payload_head(payload, receiver_kind)
         context = {
@@ -1399,6 +1629,8 @@ def replay(
     workflow_id: str | None = None,
     run_id: str = "",
     payload_codec: str | None = None,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
 ) -> ReplayOutcome:
     return _replay_state(
         workflow_cls,
@@ -1407,6 +1639,8 @@ def replay(
         workflow_id=workflow_id,
         run_id=run_id,
         payload_codec=payload_codec,
+        external_storage=external_storage,
+        external_storage_cache=external_storage_cache,
     ).outcome
 
 
@@ -1420,6 +1654,8 @@ def query_state(
     workflow_id: str | None = None,
     run_id: str = "",
     payload_codec: str | None = None,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
 ) -> Any:
     """Replay a workflow to current state and invoke a registered query.
 
@@ -1435,6 +1671,8 @@ def query_state(
             workflow_id=workflow_id,
             run_id=run_id,
             payload_codec=payload_codec,
+            external_storage=external_storage,
+            external_storage_cache=external_storage_cache,
         )
     except Exception as exc:
         raise QueryFailed(f"workflow replay failed before query: {exc}") from exc
@@ -1468,6 +1706,8 @@ def apply_update(
     workflow_id: str | None = None,
     run_id: str = "",
     payload_codec: str | None = None,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
 ) -> CompleteUpdate | FailUpdate:
     """Replay current workflow state and run one accepted update handler.
 
@@ -1486,6 +1726,8 @@ def apply_update(
             workflow_id=workflow_id,
             run_id=run_id,
             payload_codec=payload_codec,
+            external_storage=external_storage,
+            external_storage_cache=external_storage_cache,
         )
     except Exception as exc:
         return _fail_update_from_exception(
@@ -1526,6 +1768,8 @@ def apply_update(
             workflow_id=workflow_id or _workflow_id_from_history(events),
             run_id=run_id,
             payload_codec=payload_codec,
+            external_storage=external_storage,
+            external_storage_cache=external_storage_cache,
         )
     except Exception as exc:
         return _fail_update_from_exception(update_id, "update argument decode failed", exc)
@@ -1605,6 +1849,8 @@ def _replay_state(
     workflow_id: str | None = None,
     run_id: str = "",
     payload_codec: str | None = None,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
 ) -> _ReplayState:
     events = list(history_events)
     workflow_id = workflow_id or _workflow_id_from_history(events)
@@ -1642,7 +1888,14 @@ def _replay_state(
         etype = ev.get("event_type")
         payload = ev.get("payload") or {}
         if etype == "ActivityCompleted":
-            resolved_results.append(_decode_history_result(payload, payload_codec))
+            resolved_results.append(
+                _decode_history_result(
+                    payload,
+                    payload_codec,
+                    external_storage=external_storage,
+                    external_storage_cache=external_storage_cache,
+                )
+            )
         elif etype == "TimerFired":
             timer_kind = payload.get("timer_kind")
             if timer_kind == "condition_timeout":
@@ -1666,7 +1919,14 @@ def _replay_state(
             if isinstance(wait_id, str) and wait_id:
                 wait_resolutions[wait_id] = "timed_out"
         elif etype in ("SideEffectRecorded", "ChildRunCompleted"):
-            resolved_results.append(_decode_history_result(payload, payload_codec))
+            resolved_results.append(
+                _decode_history_result(
+                    payload,
+                    payload_codec,
+                    external_storage=external_storage,
+                    external_storage_cache=external_storage_cache,
+                )
+            )
         elif etype == "ChildRunFailed":
             resolved_results.append(ChildWorkflowFailed(
                 payload.get("message", "child workflow failed")
@@ -1690,6 +1950,8 @@ def _replay_state(
                             workflow_id=workflow_id,
                             run_id=run_id,
                             payload_codec=payload_codec,
+                            external_storage=external_storage,
+                            external_storage_cache=external_storage_cache,
                         ),
                     )
                 )
@@ -1708,6 +1970,8 @@ def _replay_state(
                             workflow_id=workflow_id,
                             run_id=run_id,
                             payload_codec=payload_codec,
+                            external_storage=external_storage,
+                            external_storage_cache=external_storage_cache,
                         ),
                     )
                 )

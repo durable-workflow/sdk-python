@@ -1,9 +1,11 @@
 import hashlib
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
-from durable_workflow import serializer
+from durable_workflow import Replayer, serializer, workflow
+from durable_workflow.client import Client
 from durable_workflow.external_storage import (
     EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
     AzureBlobExternalStorage,
@@ -19,6 +21,65 @@ from durable_workflow.external_storage import (
     fetch_external_payload,
     store_external_payload,
 )
+from durable_workflow.worker import Worker
+from durable_workflow.workflow import (
+    CompleteUpdate,
+    CompleteWorkflow,
+    ContinueAsNew,
+    RecordSideEffect,
+    ScheduleActivity,
+    StartChildWorkflow,
+    WorkflowContext,
+    commands_to_server_commands,
+)
+
+
+@workflow.defn(name="external-storage-replay")
+class ExternalStorageReplayWorkflow:
+    def run(self, ctx: WorkflowContext, seed: str):  # type: ignore[no-untyped-def]
+        result = yield ctx.schedule_activity("large-activity", [seed])
+        return result
+
+
+@workflow.defn(name="external-storage-query")
+class ExternalStorageQueryWorkflow:
+    def __init__(self) -> None:
+        self.message = "unset"
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.wait_condition(lambda: False)
+
+    @workflow.signal("set_message")
+    def set_message(self, message: str) -> None:
+        self.message = message
+
+    @workflow.query("message")
+    def get_message(self, suffix: str = "") -> str:
+        return f"{self.message}{suffix}"
+
+
+@workflow.defn(name="external-storage-complete")
+class ExternalStorageCompleteWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return {"message": "x" * 64}
+
+
+def external_storage_activity_result() -> dict[str, str]:
+    return {"message": "x" * 64}
+
+
+def _mock_worker_client(storage: LocalFilesystemExternalStorage, threshold: int = 1) -> AsyncMock:
+    client = AsyncMock()
+    client.metrics = None
+    client.external_storage = storage
+    client.external_storage_threshold_bytes = threshold
+    client.external_storage_cache = ExternalPayloadCache()
+    client.payload_size_warning_config = None
+    client.complete_workflow_task = AsyncMock(return_value={"outcome": "completed"})
+    client.complete_query_task = AsyncMock(return_value={"outcome": "completed"})
+    client.fail_workflow_task = AsyncMock(return_value={"outcome": "failed"})
+    client.fail_query_task = AsyncMock(return_value={"outcome": "failed"})
+    return client
 
 
 def test_external_storage_envelope_offloads_large_payload(tmp_path: Path) -> None:
@@ -38,6 +99,325 @@ def test_external_storage_envelope_offloads_large_payload(tmp_path: Path) -> Non
     assert reference["codec"] == "json"
     assert reference["size_bytes"] > 10
     assert serializer.decode_envelope(env, external_storage=storage) == {"message": "x" * 64}
+
+
+@pytest.mark.asyncio
+async def test_client_payload_envelope_uses_configured_external_storage(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    client = Client(
+        "http://durable-workflow.test",
+        external_storage=storage,
+        external_storage_threshold_bytes=10,
+    )
+
+    try:
+        env = client._payload_envelope(
+            {"message": "x" * 64},
+            kind="workflow_input",
+            codec="json",
+        )
+    finally:
+        await client.aclose()
+
+    assert env["codec"] == "json"
+    assert "blob" not in env
+    assert env["external_storage"]["schema"] == EXTERNAL_PAYLOAD_REFERENCE_SCHEMA
+    assert serializer.decode_envelope(env, external_storage=storage) == {"message": "x" * 64}
+
+
+@pytest.mark.asyncio
+async def test_client_decodes_external_activity_result(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    result = serializer.external_storage_envelope(
+        {"message": "x" * 64},
+        external_storage=storage,
+        threshold_bytes=1,
+        codec="json",
+    )
+    client = Client("http://durable-workflow.test", external_storage=storage)
+
+    async def fake_request(*args: object, **kwargs: object) -> dict[str, object]:
+        return {
+            "activity_id": "activity-1",
+            "workflow_type": "dw.standalone_activity",
+            "payload_codec": "json",
+            "result": result,
+        }
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    try:
+        activity = await client.describe_activity("activity-1")
+    finally:
+        await client.aclose()
+
+    assert activity.result == {"message": "x" * 64}
+
+
+def test_replayer_fetches_external_start_and_activity_payloads(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    start = serializer.external_storage_envelope(
+        ["seed"],
+        external_storage=storage,
+        threshold_bytes=1,
+        codec="json",
+    )
+    activity_result = serializer.external_storage_envelope(
+        {"message": "x" * 64},
+        external_storage=storage,
+        threshold_bytes=1,
+        codec="json",
+    )
+
+    first = Replayer(workflows=[ExternalStorageReplayWorkflow]).replay(
+        {
+            "events": [
+                {
+                    "event_type": "WorkflowStarted",
+                    "payload": {
+                        "workflow_type": "external-storage-replay",
+                        "arguments": start,
+                    },
+                },
+            ],
+        },
+        external_storage=storage,
+    )
+
+    assert isinstance(first.commands[0], ScheduleActivity)
+    assert first.commands[0].arguments == ["seed"]
+
+    completed = Replayer(workflows=[ExternalStorageReplayWorkflow]).replay(
+        {
+            "events": [
+                {
+                    "event_type": "WorkflowStarted",
+                    "payload": {
+                        "workflow_type": "external-storage-replay",
+                        "arguments": start,
+                    },
+                },
+                {
+                    "event_type": "ActivityCompleted",
+                    "payload": {
+                        "result": activity_result,
+                    },
+                },
+            ],
+        },
+        external_storage=storage,
+    )
+
+    assert isinstance(completed.commands[0], CompleteWorkflow)
+    assert completed.commands[0].result == {"message": "x" * 64}
+
+
+@pytest.mark.asyncio
+async def test_worker_query_task_replay_fetches_external_history_payload(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    client = _mock_worker_client(storage)
+    worker = Worker(client, task_queue="q1", workflows=[ExternalStorageQueryWorkflow], activities=[])
+    message = "x" * 64
+    signal_args = serializer.external_storage_envelope(
+        [message],
+        external_storage=storage,
+        threshold_bytes=1,
+        codec="json",
+    )
+    query_args = serializer.external_storage_envelope(
+        ["!"],
+        external_storage=storage,
+        threshold_bytes=1,
+        codec="json",
+    )
+
+    outcome = await worker._run_query_task(
+        {
+            "query_task_id": "qt-external-history",
+            "query_task_attempt": 1,
+            "workflow_type": "external-storage-query",
+            "query_name": "message",
+            "history_events": [
+                {
+                    "event_type": "SignalReceived",
+                    "payload": {
+                        "signal_name": "set_message",
+                        "value": signal_args,
+                    },
+                },
+            ],
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": query_args,
+            "payload_codec": "json",
+        }
+    )
+
+    assert outcome == "completed"
+    client.complete_query_task.assert_awaited_once()
+    assert client.complete_query_task.call_args.kwargs["result"] == f"{message}!"
+    client.fail_query_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_worker_workflow_commands_use_client_external_storage_threshold(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    client = _mock_worker_client(storage)
+    worker = Worker(client, task_queue="q1", workflows=[ExternalStorageCompleteWorkflow], activities=[])
+
+    commands = await worker._run_workflow_task(
+        {
+            "task_id": "wf-external-result",
+            "workflow_type": "external-storage-complete",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+    )
+
+    assert commands is not None
+    result = commands[0]["result"]
+    assert "external_storage" in result
+    assert "blob" not in result
+    assert serializer.decode_envelope(result, external_storage=storage) == {"message": "x" * 64}
+
+
+@pytest.mark.asyncio
+async def test_worker_activity_result_uses_worker_external_storage_threshold(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    client = Client("http://durable-workflow.test")
+    requests: list[dict[str, object]] = []
+
+    async def fake_request(*args: object, **kwargs: object) -> dict[str, str]:
+        requests.append(kwargs["json"])
+        return {"outcome": "completed"}
+
+    client._request = fake_request  # type: ignore[method-assign]
+    try:
+        worker = Worker(
+            client,
+            task_queue="q1",
+            workflows=[],
+            activities=[external_storage_activity_result],
+            external_storage=storage,
+            external_storage_threshold_bytes=1,
+        )
+        outcome = await worker._run_activity_task(
+            {
+                "task_id": "activity-external-result",
+                "activity_attempt_id": "attempt-1",
+                "activity_type": "external_storage_activity_result",
+                "arguments": serializer.envelope([], codec="json"),
+                "payload_codec": "json",
+            }
+        )
+    finally:
+        await client.aclose()
+
+    assert outcome == "completed"
+    result = requests[0]["result"]
+    assert isinstance(result, dict)
+    assert "external_storage" in result
+    assert "blob" not in result
+    assert serializer.decode_envelope(result, external_storage=storage) == {"message": "x" * 64}
+
+
+@pytest.mark.asyncio
+async def test_worker_query_result_uses_worker_external_storage_threshold(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    client = Client("http://durable-workflow.test")
+    requests: list[dict[str, object]] = []
+    message = "x" * 64
+
+    async def fake_request(*args: object, **kwargs: object) -> dict[str, str]:
+        requests.append(kwargs["json"])
+        return {"outcome": "completed"}
+
+    client._request = fake_request  # type: ignore[method-assign]
+    try:
+        worker = Worker(
+            client,
+            task_queue="q1",
+            workflows=[ExternalStorageQueryWorkflow],
+            activities=[],
+            external_storage=storage,
+            external_storage_threshold_bytes=1,
+        )
+        outcome = await worker._run_query_task(
+            {
+                "query_task_id": "query-external-result",
+                "query_task_attempt": 1,
+                "workflow_type": "external-storage-query",
+                "query_name": "message",
+                "history_events": [
+                    {
+                        "event_type": "SignalReceived",
+                        "payload": {
+                            "signal_name": "set_message",
+                            "value": serializer.envelope([message], codec="json"),
+                        },
+                    },
+                ],
+                "workflow_arguments": serializer.envelope([], codec="json"),
+                "query_arguments": serializer.envelope(["!"], codec="json"),
+                "payload_codec": "json",
+            }
+        )
+    finally:
+        await client.aclose()
+
+    assert outcome == "completed"
+    assert requests[0]["result"] == f"{message}!"
+    result_envelope = requests[0]["result_envelope"]
+    assert isinstance(result_envelope, dict)
+    assert "external_storage" in result_envelope
+    assert "blob" not in result_envelope
+    assert serializer.decode_envelope(result_envelope, external_storage=storage) == f"{message}!"
+
+
+def test_workflow_command_serialization_offloads_configured_payloads(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    large = "x" * 64
+
+    commands = commands_to_server_commands(
+        [
+            ScheduleActivity("large-activity", [large]),
+            CompleteWorkflow({"workflow": large}),
+            CompleteUpdate("update-1", {"update": large}),
+            StartChildWorkflow("child", [large]),
+            ContinueAsNew(arguments=[large]),
+            RecordSideEffect({"side_effect": large}),
+        ],
+        "q1",
+        payload_codec="json",
+        size_warning=None,
+        external_storage=storage,
+        external_storage_threshold_bytes=1,
+    )
+
+    assert serializer.decode_envelope(commands[0]["arguments"], external_storage=storage) == [large]
+    assert serializer.decode_envelope(commands[1]["result"], external_storage=storage) == {"workflow": large}
+    assert serializer.decode_envelope(commands[2]["result"], external_storage=storage) == {"update": large}
+    assert serializer.decode_envelope(commands[3]["arguments"], external_storage=storage) == [large]
+    assert serializer.decode_envelope(commands[4]["arguments"], external_storage=storage) == [large]
+    assert serializer.decode_envelope(commands[5]["result"], external_storage=storage) == {"side_effect": large}
+    assert all("external_storage" in command[key] for command, key in [
+        (commands[0], "arguments"),
+        (commands[1], "result"),
+        (commands[2], "result"),
+        (commands[3], "arguments"),
+        (commands[4], "arguments"),
+        (commands[5], "result"),
+    ])
+
+    direct_update = CompleteUpdate("update-2", {"direct": large}).to_server_command(
+        "q1",
+        payload_codec="json",
+        size_warning=None,
+        external_storage=storage,
+        external_storage_threshold_bytes=1,
+    )
+    assert serializer.decode_envelope(direct_update["result"], external_storage=storage) == {"direct": large}
 
 
 def test_external_storage_envelope_keeps_small_payload_inline(tmp_path: Path) -> None:

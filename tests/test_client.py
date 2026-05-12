@@ -356,10 +356,14 @@ class TestDescribeWorkflow:
         ):
             desc = await client.describe_workflow("wf-1")
 
-        decode_envelopes.assert_called_once_with([
-            {"codec": "json", "blob": '["Ada"]'},
-            {"codec": "json", "blob": '{"greeting":"Hello, Ada!"}'},
-        ])
+        decode_envelopes.assert_called_once_with(
+            [
+                {"codec": "json", "blob": '["Ada"]'},
+                {"codec": "json", "blob": '{"greeting":"Hello, Ada!"}'},
+            ],
+            external_storage=client.external_storage,
+            external_storage_cache=client.external_storage_cache,
+        )
         assert desc.input == ["Ada"]
         assert desc.output == {"greeting": "Hello, Ada!"}
 

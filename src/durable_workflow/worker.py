@@ -45,6 +45,7 @@ from .client import (
     WorkflowExecution,
 )
 from .errors import ActivityCancelled, AvroNotInstalledError, NonRetryableError, QueryFailed
+from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .interceptors import (
     ActivityInterceptorContext,
     QueryTaskInterceptorContext,
@@ -294,6 +295,9 @@ class Worker:
         heartbeat_interval: float = 60.0,
         metrics: MetricsRecorder | None = None,
         interceptors: Iterable[WorkerInterceptor] = (),
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
+        external_storage_cache: ExternalPayloadCache | None = None,
     ) -> None:
         self.client = client
         self.task_queue = task_queue
@@ -344,6 +348,33 @@ class Worker:
         configured_metrics = metrics if metrics is not None else getattr(client, "metrics", NOOP_METRICS)
         self.metrics: MetricsRecorder = configured_metrics or NOOP_METRICS
         self.interceptors = tuple(interceptors)
+        self.external_storage = (
+            external_storage
+            if external_storage is not None
+            else getattr(client, "external_storage", None)
+        )
+        if external_storage_threshold_bytes is not None and external_storage_threshold_bytes < 1:
+            raise ValueError("external_storage_threshold_bytes must be at least 1 when provided")
+        client_external_storage_threshold_bytes = getattr(client, "external_storage_threshold_bytes", None)
+        self.external_storage_threshold_bytes = (
+            external_storage_threshold_bytes
+            if external_storage_threshold_bytes is not None
+            else (
+                client_external_storage_threshold_bytes
+                if isinstance(client_external_storage_threshold_bytes, int)
+                else None
+            )
+        )
+        client_external_storage_cache = getattr(client, "external_storage_cache", None)
+        self.external_storage_cache = (
+            external_storage_cache
+            if external_storage_cache is not None
+            else (
+                client_external_storage_cache
+                if client_external_storage_cache is not None
+                else ExternalPayloadCache()
+            )
+        )
 
     def _record_poll_metrics(self, task_kind: str, outcome: str, duration: float) -> None:
         tags = {"task_kind": task_kind, "task_queue": self.task_queue, "outcome": outcome}
@@ -360,6 +391,14 @@ class Worker:
         if config is None or isinstance(config, serializer.PayloadSizeWarningConfig):
             return config
         return serializer.DEFAULT_PAYLOAD_SIZE_WARNING
+
+    def _external_storage_completion_kwargs(self) -> dict[str, Any]:
+        if self.external_storage is None or self.external_storage_threshold_bytes is None:
+            return {}
+        return {
+            "external_storage": self.external_storage,
+            "external_storage_threshold_bytes": self.external_storage_threshold_bytes,
+        }
 
     def _workflow_payload_warning_context(
         self,
@@ -486,7 +525,12 @@ class Worker:
         raw_args = task.get("arguments")
         try:
             codec = _validate_payload_codec(codec)
-            decoded = serializer.decode_envelope(raw_args, codec=codec)
+            decoded = serializer.decode_envelope(
+                raw_args,
+                codec=codec,
+                external_storage=self.external_storage,
+                external_storage_cache=self.external_storage_cache,
+            )
             if decoded is not None:
                 start_input = decoded if isinstance(decoded, list) else [decoded]
         except AvroNotInstalledError as e:
@@ -551,6 +595,8 @@ class Worker:
                 workflow_id=task.get("workflow_id"),
                 run_id=run_id,
                 payload_codec=codec,
+                external_storage=self.external_storage,
+                external_storage_cache=self.external_storage_cache,
             )
             command = update_command.to_server_command(
                 self.task_queue,
@@ -561,6 +607,8 @@ class Worker:
                     kind="workflow_command",
                     update_name=self._update_name_for_id(history, update_id),
                 ),
+                external_storage=self.external_storage,
+                external_storage_threshold_bytes=self.external_storage_threshold_bytes,
             )
             log.info(
                 "completing workflow update task %s for update %s with %s",
@@ -587,6 +635,8 @@ class Worker:
                 workflow_id=task.get("workflow_id"),
                 run_id=run_id,
                 payload_codec=codec,
+                external_storage=self.external_storage,
+                external_storage_cache=self.external_storage_cache,
             )
         except AvroNotInstalledError as e:
             log.exception("replay failed: Avro dependency unavailable")
@@ -629,6 +679,8 @@ class Worker:
                 task,
                 kind="workflow_command",
             ),
+            external_storage=self.external_storage,
+            external_storage_threshold_bytes=self.external_storage_threshold_bytes,
         )
         log.info(
             "completing workflow task %s with %d command(s): %s",
@@ -656,7 +708,12 @@ class Worker:
         inbound_codec = task.get("payload_codec")
         try:
             inbound_codec = _validate_payload_codec(inbound_codec) or serializer.JSON_CODEC
-            args = serializer.decode_envelope(raw_args, codec=inbound_codec) or []
+            args = serializer.decode_envelope(
+                raw_args,
+                codec=inbound_codec,
+                external_storage=self.external_storage,
+                external_storage_cache=self.external_storage_cache,
+            ) or []
         except AvroNotInstalledError as e:
             log.exception("activity %s arguments Avro decode failed (avro dependency unavailable)", task_id)
             try:
@@ -779,6 +836,7 @@ class Worker:
                 result=result,
                 codec=result_codec,
                 activity_name=activity_type,
+                **self._external_storage_completion_kwargs(),
             )
         except Exception as e:
             log.warning("failed to complete activity task %s: %s", task_id, e)
@@ -901,6 +959,8 @@ class Worker:
                 workflow_id=task.get("workflow_id"),
                 run_id=task.get("run_id", ""),
                 payload_codec=codec,
+                external_storage=self.external_storage,
+                external_storage_cache=self.external_storage_cache,
             )
         except AvroNotInstalledError as e:
             await self._fail_query_task(
@@ -946,12 +1006,18 @@ class Worker:
             workflow_id=task.get("workflow_id"),
             run_id=task.get("run_id"),
             query_name=query_name,
+            **self._external_storage_completion_kwargs(),
         )
         return "completed"
 
     def _decode_list_payload(self, raw: Any, *, codec: Any, context: str) -> list[Any]:
         try:
-            decoded = serializer.decode_envelope(raw, codec=codec)
+            decoded = serializer.decode_envelope(
+                raw,
+                codec=codec,
+                external_storage=self.external_storage,
+                external_storage_cache=self.external_storage_cache,
+            )
         except Exception:
             log.exception("%s decode failed", context)
             raise

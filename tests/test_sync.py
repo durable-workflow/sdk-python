@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -8,6 +9,7 @@ import httpx
 import pytest
 
 from durable_workflow.client import WorkflowHandle
+from durable_workflow.external_storage import ExternalPayloadCache, LocalFilesystemExternalStorage
 from durable_workflow.sync import Client, SyncWorkflowHandle
 
 
@@ -28,6 +30,23 @@ class TestSyncClientHealth:
         with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
             result = client.health()
             assert result["status"] == "ok"
+
+
+class TestSyncClientConstructor:
+    def test_external_storage_options_are_forwarded(self, tmp_path: Path) -> None:
+        storage = LocalFilesystemExternalStorage(tmp_path)
+        cache = ExternalPayloadCache(max_entries=2, max_bytes=1024)
+
+        client = Client(
+            "http://localhost:8080",
+            external_storage=storage,
+            external_storage_threshold_bytes=128,
+            external_storage_cache=cache,
+        )
+
+        assert client._async.external_storage is storage
+        assert client._async.external_storage_threshold_bytes == 128
+        assert client._async.external_storage_cache is cache
 
 
 class TestSyncClientStartWorkflow:

@@ -312,6 +312,43 @@ def external_storage_envelope(
     }
 
 
+def external_storage_envelope_many(
+    values: Sequence[Any],
+    *,
+    external_storage: ExternalStorageDriver,
+    threshold_bytes: int,
+    codec: str = AVRO_CODEC,
+    size_warning: PayloadSizeWarningConfig | None = DEFAULT_PAYLOAD_SIZE_WARNING,
+    warning_context: PayloadWarningContexts = None,
+) -> list[dict[str, Any]]:
+    """Wrap several values, offloading payloads above *threshold_bytes*."""
+    if threshold_bytes < 1:
+        raise ValueError("external storage threshold must be at least 1 byte")
+
+    contexts = _warning_contexts_for_values(values, warning_context)
+    blobs = encode_many(
+        values,
+        codec=codec,
+        size_warning=size_warning,
+        warning_context=contexts,
+    )
+    envelopes: list[dict[str, Any]] = []
+    for blob in blobs:
+        data = blob.encode("utf-8")
+        if len(data) <= threshold_bytes:
+            envelopes.append({"codec": codec, "blob": blob})
+            continue
+
+        reference = store_external_payload(external_storage, data, codec=codec)
+        envelopes.append(
+            {
+                "codec": codec,
+                "external_storage": reference.to_dict(),
+            }
+        )
+    return envelopes
+
+
 def envelope_many(
     values: Sequence[Any],
     codec: str = AVRO_CODEC,

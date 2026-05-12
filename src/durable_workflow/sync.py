@@ -28,6 +28,7 @@ from .client import (
     WorkflowRun,
     WorkflowRunList,
 )
+from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .metrics import MetricsRecorder
 from .retry_policy import TransportRetryPolicy
 
@@ -201,6 +202,9 @@ class Client:
         timeout: float = 60.0,
         retry_policy: TransportRetryPolicy | None = None,
         metrics: MetricsRecorder | None = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
+        external_storage_cache: ExternalPayloadCache | None = None,
     ) -> None:
         self._async = AsyncClient(
             base_url,
@@ -211,6 +215,9 @@ class Client:
             timeout=timeout,
             retry_policy=retry_policy,
             metrics=metrics,
+            external_storage=external_storage,
+            external_storage_threshold_bytes=external_storage_threshold_bytes,
+            external_storage_cache=external_storage_cache,
         )
 
     def close(self) -> None:
