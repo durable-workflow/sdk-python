@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Python workflow replay now throws terminal `ActivityFailed` history events
+  into the generator as a typed `ActivityFailed` exception, including the
+  recorded activity and failure metadata. Activity-only saga workflows can
+  catch the exception and schedule compensation instead of replaying the
+  original activity command again.
 - Worker heartbeat `process_metrics` now report instantaneous values
   instead of process-lifetime aggregates. `cpu_percent` is the share of
   wall time the worker spent on CPU during the interval since the

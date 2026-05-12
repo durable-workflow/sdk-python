@@ -53,6 +53,7 @@ from .client import (
 )
 from .errors import (
     ActivityCancelled,
+    ActivityFailed,
     ChildWorkflowFailed,
     DurableWorkflowError,
     InvalidArgument,
@@ -177,6 +178,7 @@ from .workflow import (
 __all__ = [
     "__version__",
     "ActivityCancelled",
+    "ActivityFailed",
     "ActivityContext",
     "ActivityHandler",
     "ActivityInfo",

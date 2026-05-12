@@ -166,6 +166,45 @@ class ChildWorkflowFailed(DurableWorkflowError):
         self.exception_class = exception_class
 
 
+class ActivityFailed(DurableWorkflowError):
+    """An activity finished in the ``failed`` state.
+
+    Raised inside workflow code when it awaits an activity that exhausted its
+    retry policy or reported a non-retryable failure. The attributes mirror
+    the stable failure fields recorded in workflow history so saga workflows
+    can branch or compensate without parsing raw history events.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        activity_type: str | None = None,
+        activity_execution_id: str | None = None,
+        activity_attempt_id: str | None = None,
+        failure_id: str | None = None,
+        failure_category: str | None = None,
+        exception_type: str | None = None,
+        exception_class: str | None = None,
+        non_retryable: bool = False,
+        code: Any | None = None,
+        exception_payload: dict[str, Any] | None = None,
+        activity: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.activity_type = activity_type
+        self.activity_execution_id = activity_execution_id
+        self.activity_attempt_id = activity_attempt_id
+        self.failure_id = failure_id
+        self.failure_category = failure_category
+        self.exception_type = exception_type
+        self.exception_class = exception_class
+        self.non_retryable = non_retryable
+        self.code = code
+        self.exception_payload = exception_payload
+        self.activity = activity
+
+
 class WorkflowTerminated(DurableWorkflowError):
     """A workflow was terminated by operator action.
 

@@ -31,7 +31,7 @@ from typing import Any
 
 from . import serializer
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
-from .errors import ChildWorkflowFailed, QueryFailed, WorkflowPayloadDecodeError
+from .errors import ActivityFailed, ChildWorkflowFailed, QueryFailed, WorkflowPayloadDecodeError
 
 _REGISTRY: dict[str, type] = {}
 
@@ -1841,6 +1841,51 @@ def _fail_update_from_exception(update_id: str, prefix: str, exc: Exception) -> 
     )
 
 
+def _optional_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value != "" else None
+
+
+def _activity_failed_from_payload(payload: Mapping[str, Any]) -> ActivityFailed:
+    exception_payload = payload.get("exception")
+    exception = dict(exception_payload) if isinstance(exception_payload, Mapping) else None
+    activity_payload = payload.get("activity")
+    activity = dict(activity_payload) if isinstance(activity_payload, Mapping) else None
+
+    message = _optional_str(payload.get("message"))
+    if message is None and exception is not None:
+        message = _optional_str(exception.get("message"))
+    exception_type = _optional_str(payload.get("exception_type"))
+    if exception_type is None and exception is not None:
+        exception_type = _optional_str(exception.get("type"))
+    exception_class = _optional_str(payload.get("exception_class"))
+    if exception_class is None and exception is not None:
+        exception_class = _optional_str(exception.get("class"))
+
+    return ActivityFailed(
+        message or "activity failed",
+        activity_type=_optional_str(payload.get("activity_type")),
+        activity_execution_id=_optional_str(payload.get("activity_execution_id")),
+        activity_attempt_id=_optional_str(payload.get("activity_attempt_id")),
+        failure_id=_optional_str(payload.get("failure_id")),
+        failure_category=_optional_str(payload.get("failure_category")),
+        exception_type=exception_type,
+        exception_class=exception_class,
+        non_retryable=payload.get("non_retryable") is True,
+        code=payload.get("code"),
+        exception_payload=exception,
+        activity=activity,
+    )
+
+
+def _first_yield_failure(values: Iterable[Any]) -> ActivityFailed | ChildWorkflowFailed | None:
+    for value in values:
+        if isinstance(value, ActivityFailed):
+            return value
+        if isinstance(value, ChildWorkflowFailed):
+            return value
+    return None
+
+
 def _replay_state(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
@@ -1896,6 +1941,8 @@ def _replay_state(
                     external_storage_cache=external_storage_cache,
                 )
             )
+        elif etype in ("ActivityFailed", "ActivityTimedOut"):
+            resolved_results.append(_activity_failed_from_payload(payload))
         elif etype == "TimerFired":
             timer_kind = payload.get("timer_kind")
             if timer_kind == "condition_timeout":
@@ -2032,10 +2079,7 @@ def _replay_state(
                 if result_cursor + needed <= len(resolved_results):
                     vals = resolved_results[result_cursor:result_cursor + needed]
                     result_cursor += needed
-                    failed = next(
-                        (v for v in vals if isinstance(v, ChildWorkflowFailed)),
-                        None,
-                    )
+                    failed = _first_yield_failure(vals)
                     if failed is not None:
                         try:
                             advanced_cmd = gen.throw(failed)
@@ -2133,7 +2177,7 @@ def _replay_state(
                 if result_cursor < len(resolved_results):
                     val = resolved_results[result_cursor]
                     result_cursor += 1
-                    if isinstance(val, ChildWorkflowFailed):
+                    if isinstance(val, (ActivityFailed, ChildWorkflowFailed)):
                         try:
                             advanced_cmd = gen.throw(val)
                             continue

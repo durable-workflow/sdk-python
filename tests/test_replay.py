@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from durable_workflow import Replayer, ReplayOutcome, serializer, workflow
-from durable_workflow.errors import ChildWorkflowFailed
+from durable_workflow.errors import ActivityFailed, ChildWorkflowFailed
 from durable_workflow.workflow import (
     ActivityRetryPolicy,
     ChildWorkflowRetryPolicy,
@@ -42,6 +42,31 @@ class OneActivity:
     def run(self, ctx: WorkflowContext, name: str):  # type: ignore[no-untyped-def]
         result = yield ctx.schedule_activity("greet", [name])
         return {"greeting": result}
+
+
+@workflow.defn(name="activity-failed-saga")
+class ActivityFailedSaga:
+    def run(self, ctx: WorkflowContext, order_id: str):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.schedule_activity("charge-card", [order_id])
+        except ActivityFailed as exc:
+            released = yield ctx.schedule_activity(
+                "release-inventory",
+                [
+                    order_id,
+                    exc.activity_type,
+                    exc.exception_type,
+                    exc.failure_id,
+                    exc.non_retryable,
+                    str(exc),
+                ],
+            )
+            return {
+                "released": released,
+                "failure_category": exc.failure_category,
+                "exception_class": exc.exception_class,
+            }
+        return {"charged": True}
 
 
 @workflow.defn(name="two-activities")
@@ -146,6 +171,67 @@ class TestOneActivity:
         cmd = outcome.commands[0]
         assert isinstance(cmd, CompleteWorkflow)
         assert cmd.result == {"greeting": "hello, avro"}
+
+    def test_failed_activity_is_thrown_into_workflow_for_compensation(self) -> None:
+        history = [
+            {
+                "event_type": "ActivityFailed",
+                "payload": {
+                    "activity_type": "charge-card",
+                    "activity_execution_id": "act-1",
+                    "activity_attempt_id": "attempt-1",
+                    "failure_id": "failure-1",
+                    "failure_category": "activity",
+                    "non_retryable": True,
+                    "exception_type": "PaymentDeclined",
+                    "exception_class": "payments.PaymentDeclined",
+                    "message": "card declined",
+                    "exception": {"type": "PaymentDeclined", "message": "card declined"},
+                },
+            }
+        ]
+
+        outcome = replay(ActivityFailedSaga, history, ["order-1"])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, ScheduleActivity)
+        assert cmd.activity_type == "release-inventory"
+        assert cmd.arguments == [
+            "order-1",
+            "charge-card",
+            "PaymentDeclined",
+            "failure-1",
+            True,
+            "card declined",
+        ]
+
+    def test_failed_activity_compensation_can_complete(self) -> None:
+        history = [
+            {
+                "event_type": "ActivityFailed",
+                "payload": {
+                    "activity_type": "charge-card",
+                    "failure_id": "failure-1",
+                    "failure_category": "activity",
+                    "exception_type": "PaymentDeclined",
+                    "exception_class": "payments.PaymentDeclined",
+                    "message": "card declined",
+                },
+            },
+            {"event_type": "ActivityCompleted", "payload": {"result": '"released"'}},
+        ]
+
+        outcome = replay(ActivityFailedSaga, history, ["order-1"])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {
+            "released": "released",
+            "failure_category": "activity",
+            "exception_class": "payments.PaymentDeclined",
+        }
 
     def test_server_command_shape(self) -> None:
         outcome = replay(OneActivity, [], ["world"])
@@ -1051,6 +1137,19 @@ class FanOutThenSequentialWorkflow:
         return final
 
 
+@workflow.defn(name="fan-out-activity-fail-wf")
+class FanOutActivityFailWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            results = yield [
+                ctx.schedule_activity("ok-activity", []),
+                ctx.schedule_activity("bad-activity", []),
+            ]
+            return {"results": results}
+        except ActivityFailed as exc:
+            return {"caught": exc.activity_type, "exception_type": exc.exception_type}
+
+
 class TestFanOut:
     def test_no_history_emits_batch(self) -> None:
         outcome = replay(FanOutWorkflow, [], [])
@@ -1107,6 +1206,29 @@ class TestFanOut:
         assert len(outcome.commands) == 1
         assert isinstance(outcome.commands[0], CompleteWorkflow)
         assert outcome.commands[0].result == "combined"
+
+    def test_fan_out_activity_failure_throws(self) -> None:
+        history = [
+            {"event_type": "ActivityCompleted", "payload": {"result": '"ok"'}},
+            {
+                "event_type": "ActivityFailed",
+                "payload": {
+                    "activity_type": "bad-activity",
+                    "exception_type": "DownstreamRejected",
+                    "message": "downstream rejected",
+                },
+            },
+        ]
+
+        outcome = replay(FanOutActivityFailWorkflow, history, [])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {
+            "caught": "bad-activity",
+            "exception_type": "DownstreamRejected",
+        }
 
 
 @workflow.defn(name="fan-out-child-fail-wf")
