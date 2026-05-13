@@ -445,6 +445,9 @@ class TestSyncStandaloneActivities:
                 input=[{"order_id": "o-42"}],
                 retry_policy={"max_attempts": 3},
                 start_to_close_timeout_seconds=120,
+                schedule_to_start_timeout_seconds=10,
+                schedule_to_close_timeout_seconds=180,
+                heartbeat_timeout_seconds=30,
             )
 
         assert isinstance(handle, SyncStandaloneActivityHandle)
@@ -460,6 +463,9 @@ class TestSyncStandaloneActivities:
         assert body["activity_id"] == "job-1"
         assert body["retry_policy"] == {"max_attempts": 3}
         assert body["start_to_close_timeout_seconds"] == 120
+        assert body["schedule_to_start_timeout_seconds"] == 10
+        assert body["schedule_to_close_timeout_seconds"] == 180
+        assert body["heartbeat_timeout_seconds"] == 30
         assert serializer.decode(body["input"]["blob"], codec=body["input"]["codec"]) == [{"order_id": "o-42"}]
 
     def test_get_activity_handle_wraps_existing_activity(self) -> None:
@@ -549,6 +555,35 @@ class TestSyncStandaloneActivities:
             handle = client.get_activity_handle("job-6")
             assert client.get_activity_result(handle, poll_interval=0.0, timeout=2.0) == 42
             assert handle.result(poll_interval=0.0, timeout=2.0) == 42
+
+    def test_cancel_forwards_to_standalone_activity_host_run(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(200, {"ok": True})
+
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            handle = client.get_activity_handle("job-7")
+            handle.cancel(reason="operator requested")
+
+        assert mock.call_args.args[:2] == ("POST", "/api/workflows/job-7/cancel")
+        assert mock.call_args.kwargs["json"] == {"reason": "operator requested"}
+
+    def test_get_activity_result_forwards_timeout(self) -> None:
+        client = Client("http://localhost:8080")
+        handle = client.get_activity_handle("job-8")
+
+        with patch.object(client._async, "get_activity_result", new_callable=AsyncMock, return_value="done") as mock:
+            assert client.get_activity_result(handle, poll_interval=0.25, timeout=1.5) == "done"
+
+        mock.assert_awaited_once_with(handle._handle, poll_interval=0.25, timeout=1.5)
+
+    def test_handle_result_forwards_timeout(self) -> None:
+        client = Client("http://localhost:8080")
+        handle = client.get_activity_handle("job-9")
+
+        with patch.object(handle._handle, "result", new_callable=AsyncMock, return_value="done") as mock:
+            assert handle.result(poll_interval=0.25, timeout=1.5) == "done"
+
+        mock.assert_awaited_once_with(poll_interval=0.25, timeout=1.5)
 
 
 class TestSyncHandleUpdate:
