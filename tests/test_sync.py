@@ -8,9 +8,10 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from durable_workflow import serializer
 from durable_workflow.client import WorkflowHandle
 from durable_workflow.external_storage import ExternalPayloadCache, LocalFilesystemExternalStorage
-from durable_workflow.sync import Client, SyncWorkflowHandle
+from durable_workflow.sync import Client, SyncStandaloneActivityHandle, SyncWorkflowHandle
 
 
 def _mock_response(status: int = 200, json_data: dict[str, Any] | None = None) -> httpx.Response:
@@ -421,6 +422,133 @@ class TestSyncClientUpdate:
         with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
             result = client.update_workflow("wf-1", "my-update", args=["data"], wait_for="completed")
             assert result["outcome"] == "completed"
+
+
+class TestSyncStandaloneActivities:
+    def test_start_activity_returns_sync_handle(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            201,
+            {
+                "activity_id": "job-1",
+                "activity_execution_id": "exec-1",
+                "workflow_run_id": "run-1",
+                "workflow_type": "dw.standalone_activity",
+                "activity_type": "shipping.send_invoice",
+            },
+        )
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            handle = client.start_activity(
+                activity_type="shipping.send_invoice",
+                task_queue="outbox",
+                activity_id="job-1",
+                input=[{"order_id": "o-42"}],
+                retry_policy={"max_attempts": 3},
+                start_to_close_timeout_seconds=120,
+            )
+
+        assert isinstance(handle, SyncStandaloneActivityHandle)
+        assert handle.activity_id == "job-1"
+        assert handle.workflow_run_id == "run-1"
+        assert handle.activity_execution_id == "exec-1"
+        assert handle.activity_type == "shipping.send_invoice"
+        assert handle.workflow_type == "dw.standalone_activity"
+
+        body = mock.call_args.kwargs.get("json")
+        assert body["activity_type"] == "shipping.send_invoice"
+        assert body["task_queue"] == "outbox"
+        assert body["activity_id"] == "job-1"
+        assert body["retry_policy"] == {"max_attempts": 3}
+        assert body["start_to_close_timeout_seconds"] == 120
+        assert serializer.decode(body["input"]["blob"], codec=body["input"]["codec"]) == [{"order_id": "o-42"}]
+
+    def test_get_activity_handle_wraps_existing_activity(self) -> None:
+        client = Client("http://localhost:8080")
+        handle = client.get_activity_handle(
+            "job-2",
+            workflow_run_id="run-2",
+            activity_execution_id="exec-2",
+            activity_type="billing.charge",
+        )
+
+        assert isinstance(handle, SyncStandaloneActivityHandle)
+        assert handle.activity_id == "job-2"
+        assert handle.workflow_run_id == "run-2"
+        assert handle.activity_execution_id == "exec-2"
+        assert handle.activity_type == "billing.charge"
+
+    def test_describe_activity_decodes_result(self) -> None:
+        client = Client("http://localhost:8080")
+        result_blob = serializer.envelope("sent", codec="avro")
+        resp = _mock_response(
+            200,
+            {
+                "activity_id": "job-3",
+                "workflow_run_id": "run-3",
+                "workflow_type": "dw.standalone_activity",
+                "activity_type": "shipping.send_invoice",
+                "status": "completed",
+                "activity_status": "completed",
+                "closed_reason": "completed",
+                "result": result_blob,
+                "payload_codec": "avro",
+            },
+        )
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
+            desc = client.describe_activity("job-3")
+
+        assert desc.activity_id == "job-3"
+        assert desc.status == "completed"
+        assert desc.result == "sent"
+
+    def test_list_activities_returns_page(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            200,
+            {
+                "activities": [
+                    {"activity_id": "job-4", "activity_type": "greeting", "status": "running"},
+                    {"activity_id": "job-5", "activity_type": "greeting", "status": "completed"},
+                ],
+                "activity_count": 2,
+                "next_page_token": "next",
+            },
+        )
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            page = client.list_activities(status="completed", page_size=20, next_page_token="cursor")
+
+        assert page.activity_count == 2
+        assert [activity.activity_id for activity in page.activities] == ["job-4", "job-5"]
+        assert page.next_page_token == "next"
+        assert "status=completed" in mock.call_args.args[1]
+        assert "page_size=20" in mock.call_args.args[1]
+        assert "next_page_token=cursor" in mock.call_args.args[1]
+
+    def test_get_activity_result_blocks_until_terminal(self) -> None:
+        client = Client("http://localhost:8080")
+        terminal_envelope = serializer.envelope(42, codec="avro")
+        running = _mock_response(200, {"activity_id": "job-6", "status": "running"})
+        completed = _mock_response(
+            200,
+            {
+                "activity_id": "job-6",
+                "status": "completed",
+                "activity_status": "completed",
+                "closed_reason": "completed",
+                "result": terminal_envelope,
+                "payload_codec": "avro",
+            },
+        )
+
+        with patch.object(
+            client._async._http,
+            "request",
+            new_callable=AsyncMock,
+            side_effect=[running, completed, running, completed],
+        ):
+            handle = client.get_activity_handle("job-6")
+            assert client.get_activity_result(handle, poll_interval=0.0, timeout=2.0) == 42
+            assert handle.result(poll_interval=0.0, timeout=2.0) == 42
 
 
 class TestSyncHandleUpdate:

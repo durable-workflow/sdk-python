@@ -16,6 +16,9 @@ from .client import (
     ScheduleList,
     ScheduleSpec,
     ScheduleTriggerResult,
+    StandaloneActivityExecution,
+    StandaloneActivityHandle,
+    StandaloneActivityList,
     StorageTestResult,
     TaskQueueBuildIdRollout,
     TaskQueueBuildIdRolloutState,
@@ -181,6 +184,28 @@ class SyncScheduleHandle:
             )
         )
         return result
+
+
+class SyncStandaloneActivityHandle:
+    """Blocking wrapper around an async standalone activity handle."""
+
+    def __init__(self, async_handle: StandaloneActivityHandle) -> None:
+        self._handle = async_handle
+        self.activity_id = async_handle.activity_id
+        self.workflow_run_id = async_handle.workflow_run_id
+        self.activity_execution_id = async_handle.activity_execution_id
+        self.workflow_type = async_handle.workflow_type
+        self.activity_type = async_handle.activity_type
+
+    def describe(self) -> StandaloneActivityExecution:
+        result: StandaloneActivityExecution = _run(self._handle.describe())
+        return result
+
+    def result(self, *, poll_interval: float = 0.5, timeout: float = 30.0) -> Any:
+        return _run(self._handle.result(poll_interval=poll_interval, timeout=timeout))
+
+    def cancel(self, *, reason: str | None = None) -> None:
+        _run(self._handle.cancel(reason=reason))
 
 
 class Client:
@@ -466,6 +491,91 @@ class Client:
         timeout: float = 30.0,
     ) -> Any:
         return _run(self._async.get_result(handle._handle, poll_interval=poll_interval, timeout=timeout))
+
+    # ── Standalone Activities ─────────────────────────────────────────
+    def start_activity(
+        self,
+        *,
+        activity_type: str,
+        task_queue: str,
+        activity_id: str | None = None,
+        activity_class: str | None = None,
+        input: list[Any] | None = None,
+        business_key: str | None = None,
+        retry_policy: dict[str, Any] | None = None,
+        start_to_close_timeout_seconds: int | None = None,
+        schedule_to_start_timeout_seconds: int | None = None,
+        schedule_to_close_timeout_seconds: int | None = None,
+        heartbeat_timeout_seconds: int | None = None,
+    ) -> SyncStandaloneActivityHandle:
+        handle = _run(
+            self._async.start_activity(
+                activity_type=activity_type,
+                task_queue=task_queue,
+                activity_id=activity_id,
+                activity_class=activity_class,
+                input=input,
+                business_key=business_key,
+                retry_policy=retry_policy,
+                start_to_close_timeout_seconds=start_to_close_timeout_seconds,
+                schedule_to_start_timeout_seconds=schedule_to_start_timeout_seconds,
+                schedule_to_close_timeout_seconds=schedule_to_close_timeout_seconds,
+                heartbeat_timeout_seconds=heartbeat_timeout_seconds,
+            )
+        )
+        return SyncStandaloneActivityHandle(handle)
+
+    def get_activity_handle(
+        self,
+        activity_id: str,
+        *,
+        workflow_run_id: str | None = None,
+        activity_execution_id: str | None = None,
+        activity_type: str = "",
+    ) -> SyncStandaloneActivityHandle:
+        return SyncStandaloneActivityHandle(
+            self._async.get_activity_handle(
+                activity_id,
+                workflow_run_id=workflow_run_id,
+                activity_execution_id=activity_execution_id,
+                activity_type=activity_type,
+            )
+        )
+
+    def describe_activity(self, activity_id: str) -> StandaloneActivityExecution:
+        result: StandaloneActivityExecution = _run(self._async.describe_activity(activity_id))
+        return result
+
+    def list_activities(
+        self,
+        *,
+        status: str | None = None,
+        page_size: int | None = None,
+        next_page_token: str | None = None,
+    ) -> StandaloneActivityList:
+        result: StandaloneActivityList = _run(
+            self._async.list_activities(
+                status=status,
+                page_size=page_size,
+                next_page_token=next_page_token,
+            )
+        )
+        return result
+
+    def get_activity_result(
+        self,
+        handle: SyncStandaloneActivityHandle,
+        *,
+        poll_interval: float = 0.5,
+        timeout: float = 30.0,
+    ) -> Any:
+        return _run(
+            self._async.get_activity_result(
+                handle._handle,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+        )
 
     # ── Schedules ─────────────────────────────────────────────────────
     def get_schedule_handle(self, schedule_id: str) -> SyncScheduleHandle:
