@@ -70,6 +70,17 @@ Retry and timeout settings are scoped to the layer where you configure them:
 
 Timeout names are also layer-specific. `start_to_close_timeout` limits one activity attempt, `schedule_to_start_timeout` limits queue wait before an activity starts, `schedule_to_close_timeout` limits the whole activity execution including retries, and `heartbeat_timeout` limits the gap between activity heartbeats. For child workflows, `execution_timeout_seconds` covers the overall child workflow execution and `run_timeout_seconds` covers one run.
 
+## Activity failure payloads
+
+When replay raises `ActivityFailed`, the top-level attributes expose the
+stable cross-language fields: `activity_type`, `failure_category`,
+`exception_type`, `message`, `non_retryable`, and `code`. The
+`exception_payload` dictionary is filtered to language-neutral keys such as
+`type`, `message`, `details`, `details_payload_codec`, and `non_retryable`.
+Runtime diagnostics like PHP or Python exception classes, source file paths,
+line numbers, and traces are not included by default unless the history event
+contains an explicit `diagnostics` or `runtime_diagnostics` envelope.
+
 ## Activity retries and timeouts
 
 Configure per-call activity retries and deadlines from workflow code:

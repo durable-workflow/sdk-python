@@ -69,6 +69,23 @@ class ActivityFailedSaga:
         return {"charged": True}
 
 
+@workflow.defn(name="activity-failure-payload-inspector")
+class ActivityFailurePayloadInspector:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.schedule_activity("polyglot.php.fail", [])
+        except ActivityFailed as exc:
+            return {
+                "activity_type": exc.activity_type,
+                "failure_category": exc.failure_category,
+                "exception_type": exc.exception_type,
+                "non_retryable": exc.non_retryable,
+                "message": str(exc),
+                "exception_payload": exc.exception_payload,
+            }
+        return {"ok": True}
+
+
 @workflow.defn(name="two-activities")
 class TwoActivities:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -231,6 +248,92 @@ class TestOneActivity:
             "released": "released",
             "failure_category": "activity",
             "exception_class": "payments.PaymentDeclined",
+        }
+
+    def test_php_activity_failure_payload_omits_runtime_diagnostics_by_default(self) -> None:
+        history = [
+            {
+                "event_type": "ActivityFailed",
+                "payload": {
+                    "activity_type": "polyglot.php.fail",
+                    "failure_category": "activity",
+                    "exception_type": "PolyglotPhpPlannedFailure",
+                    "exception_class": "RuntimeException",
+                    "message": "php activity planned failure",
+                    "non_retryable": True,
+                    "exception": {
+                        "class": "RuntimeException",
+                        "type": "PolyglotPhpPlannedFailure",
+                        "message": "php activity planned failure",
+                        "file": "/app/vendor/durable-workflow/workflow/src/V2/Support/FailureFactory.php",
+                        "line": 571,
+                        "trace": [
+                            {
+                                "file": "/app/vendor/durable-workflow/workflow/src/V2/Support/FailureFactory.php"
+                            }
+                        ],
+                        "properties": [],
+                        "details": "encoded-details",
+                        "details_payload_codec": "avro",
+                        "non_retryable": True,
+                    },
+                },
+            }
+        ]
+
+        outcome = replay(ActivityFailurePayloadInspector, history, [])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {
+            "activity_type": "polyglot.php.fail",
+            "failure_category": "activity",
+            "exception_type": "PolyglotPhpPlannedFailure",
+            "non_retryable": True,
+            "message": "php activity planned failure",
+            "exception_payload": {
+                "type": "PolyglotPhpPlannedFailure",
+                "message": "php activity planned failure",
+                "details": "encoded-details",
+                "details_payload_codec": "avro",
+                "non_retryable": True,
+            },
+        }
+
+    def test_activity_failure_payload_preserves_explicit_diagnostics_envelope(self) -> None:
+        history = [
+            {
+                "event_type": "ActivityFailed",
+                "payload": {
+                    "activity_type": "polyglot.php.fail",
+                    "failure_category": "activity",
+                    "exception_type": "PolyglotPhpPlannedFailure",
+                    "message": "php activity planned failure",
+                    "exception": {
+                        "type": "PolyglotPhpPlannedFailure",
+                        "message": "php activity planned failure",
+                        "runtime_diagnostics": {
+                            "class": "RuntimeException",
+                            "file": "/app/src/TimeoutActivity.php",
+                        },
+                    },
+                },
+            }
+        ]
+
+        outcome = replay(ActivityFailurePayloadInspector, history, [])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result["exception_payload"] == {
+            "type": "PolyglotPhpPlannedFailure",
+            "message": "php activity planned failure",
+            "runtime_diagnostics": {
+                "class": "RuntimeException",
+                "file": "/app/src/TimeoutActivity.php",
+            },
         }
 
     def test_server_command_shape(self) -> None:

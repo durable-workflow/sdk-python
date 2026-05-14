@@ -1845,9 +1845,35 @@ def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value != "" else None
 
 
+_NEUTRAL_EXCEPTION_PAYLOAD_KEYS = (
+    "type",
+    "message",
+    "code",
+    "details",
+    "details_payload_codec",
+    "non_retryable",
+)
+_EXPLICIT_DIAGNOSTICS_KEYS = ("diagnostics", "runtime_diagnostics")
+
+
+def _neutral_exception_payload(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, Mapping):
+        return None
+
+    neutral = {key: payload[key] for key in _NEUTRAL_EXCEPTION_PAYLOAD_KEYS if key in payload}
+
+    for key in _EXPLICIT_DIAGNOSTICS_KEYS:
+        diagnostics = payload.get(key)
+        if isinstance(diagnostics, Mapping):
+            neutral[key] = dict(diagnostics)
+
+    return neutral or None
+
+
 def _activity_failed_from_payload(payload: Mapping[str, Any]) -> ActivityFailed:
     exception_payload = payload.get("exception")
     exception = dict(exception_payload) if isinstance(exception_payload, Mapping) else None
+    exposed_exception = _neutral_exception_payload(exception_payload)
     activity_payload = payload.get("activity")
     activity = dict(activity_payload) if isinstance(activity_payload, Mapping) else None
 
@@ -1872,7 +1898,7 @@ def _activity_failed_from_payload(payload: Mapping[str, Any]) -> ActivityFailed:
         exception_class=exception_class,
         non_retryable=payload.get("non_retryable") is True,
         code=payload.get("code"),
-        exception_payload=exception,
+        exception_payload=exposed_exception,
         activity=activity,
     )
 
