@@ -21,6 +21,7 @@ from durable_workflow.client import (
     Client,
     WorkflowExecution,
 )
+from durable_workflow.errors import ServerError
 from durable_workflow.interceptors import (
     ActivityHandler,
     ActivityInterceptorContext,
@@ -673,6 +674,33 @@ class TestWorkflowTaskExecution:
         assert call_kwargs["query_task_id"] == "qt-missing"
         assert call_kwargs["query_task_attempt"] == 2
         assert call_kwargs["reason"] == "rejected_unknown_query"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reason",
+        ["lease_expired", "query_task_not_leased", "query_task_timed_out"],
+    )
+    async def test_query_task_completion_rejection_after_server_timeout_is_handled(
+        self, mock_client: AsyncMock, reason: str
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[QueryWorkflow], activities=[])
+        mock_client.complete_query_task.side_effect = ServerError(409, {"reason": reason})
+        task = {
+            "query_task_id": "qt-late",
+            "query_task_attempt": 1,
+            "workflow_type": "query-wf",
+            "query_name": "status",
+            "history_events": [],
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "expired"
+        mock_client.complete_query_task.assert_awaited_once()
+        mock_client.fail_query_task.assert_not_called()
 
 
 class TestActivityTaskExecution:

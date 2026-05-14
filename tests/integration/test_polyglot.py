@@ -9,11 +9,16 @@ Requires a running Durable Workflow server with PHP workflow package.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
+import os
+import shutil
 import uuid
 
 import pytest
 
-from durable_workflow import Client, serializer
+from durable_workflow import Client, Worker, serializer, workflow
 from durable_workflow.serializer import decode_envelope
 from durable_workflow.workflow import replay
 
@@ -21,6 +26,97 @@ from .polyglot_fixtures import (
     PolyglotPythonWorkflow,
     polyglot_python_activity,
 )
+
+
+@workflow.defn(name="tests.cli.query-waiting-python")
+class CliQueryableWaitingWorkflow:
+    def __init__(self) -> None:
+        self.state = "starting"
+        self.released = False
+
+    @workflow.signal("release")
+    def release(self) -> None:
+        self.released = True
+
+    @workflow.query("state")
+    def current_state(self) -> dict[str, object]:
+        return {"state": self.state, "released": self.released}
+
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        self.state = "waiting"
+        yield ctx.wait_condition(lambda: self.released, key="released", timeout=300)
+        self.state = "released"
+        return self.state
+
+
+@pytest.mark.asyncio
+async def test_dw_workflow_query_returns_waiting_python_workflow_state(
+    server_url: str,
+    server_token: str,
+) -> None:
+    cli = os.environ.get("DW_CLI_BIN") or shutil.which("dw")
+    if not cli:
+        pytest.skip("dw CLI binary not available; set DW_CLI_BIN to run this regression")
+
+    task_queue = f"cli-query-{uuid.uuid4().hex[:8]}"
+    wf_id = f"cli-query-python-{uuid.uuid4().hex[:8]}"
+    worker_id = f"py-cli-query-{uuid.uuid4().hex[:8]}"
+
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        worker = Worker(
+            client,
+            task_queue=task_queue,
+            workflows=[CliQueryableWaitingWorkflow],
+            activities=[],
+            worker_id=worker_id,
+            poll_timeout=1.0,
+            shutdown_timeout=5.0,
+        )
+        worker_task = asyncio.create_task(worker.run())
+
+        try:
+            await client.start_workflow(
+                workflow_type="tests.cli.query-waiting-python",
+                task_queue=task_queue,
+                workflow_id=wf_id,
+                input=[],
+            )
+
+            deadline = asyncio.get_running_loop().time() + 20
+            status = None
+            while asyncio.get_running_loop().time() < deadline:
+                desc = await client.describe_workflow(wf_id)
+                status = desc.status
+                if (status or "").lower() == "waiting":
+                    break
+                await asyncio.sleep(0.25)
+
+            assert (status or "").lower() == "waiting"
+
+            proc = await asyncio.create_subprocess_exec(
+                cli,
+                "workflow:query",
+                f"--server={server_url}",
+                f"--token={server_token}",
+                "--namespace=default",
+                "--json",
+                wf_id,
+                "state",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=45)
+
+            assert proc.returncode == 0, stderr.decode()
+            payload = json.loads(stdout.decode())
+            assert payload["workflow_id"] == wf_id
+            assert payload["query_name"] == "state"
+            assert payload["result"] == {"state": "waiting", "released": False}
+        finally:
+            await worker.stop()
+            worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker_task
 
 
 @pytest.mark.asyncio

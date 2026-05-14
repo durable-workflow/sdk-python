@@ -44,7 +44,7 @@ from .client import (
     Client,
     WorkflowExecution,
 )
-from .errors import ActivityCancelled, AvroNotInstalledError, NonRetryableError, QueryFailed
+from .errors import ActivityCancelled, AvroNotInstalledError, NonRetryableError, QueryFailed, ServerError
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .interceptors import (
     ActivityInterceptorContext,
@@ -65,6 +65,12 @@ from .workflow import apply_update, commands_to_server_commands, query_state, re
 log = logging.getLogger("durable_workflow.worker")
 
 _TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
+_QUERY_TASK_FINAL_REJECTION_REASONS = {
+    "lease_expired",
+    "query_task_not_found",
+    "query_task_not_leased",
+    "query_task_timed_out",
+}
 _WORKER_WORKFLOW_FINGERPRINTS: dict[tuple[str, str], str] = {}
 
 
@@ -92,6 +98,14 @@ def _workflow_name(cls: type) -> str:
 
 def _string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _is_final_query_task_rejection(error: BaseException) -> bool:
+    return (
+        isinstance(error, ServerError)
+        and error.status in {404, 409}
+        and error.reason() in _QUERY_TASK_FINAL_REJECTION_REASONS
+    )
 
 
 def _callable_fingerprint_payload(value: object) -> str:
@@ -997,17 +1011,28 @@ class Worker:
             )
             return "failed"
 
-        await self.client.complete_query_task(
-            query_task_id=query_task_id,
-            lease_owner=self.worker_id,
-            query_task_attempt=attempt,
-            result=result,
-            codec=result_codec,
-            workflow_id=task.get("workflow_id"),
-            run_id=task.get("run_id"),
-            query_name=query_name,
-            **self._external_storage_completion_kwargs(),
-        )
+        try:
+            await self.client.complete_query_task(
+                query_task_id=query_task_id,
+                lease_owner=self.worker_id,
+                query_task_attempt=attempt,
+                result=result,
+                codec=result_codec,
+                workflow_id=task.get("workflow_id"),
+                run_id=task.get("run_id"),
+                query_name=query_name,
+                **self._external_storage_completion_kwargs(),
+            )
+        except ServerError as e:
+            if _is_final_query_task_rejection(e):
+                log.info(
+                    "query task %s completion was rejected after the task ended server-side: %s",
+                    query_task_id,
+                    e.reason(),
+                )
+                return "expired"
+            raise
+
         return "completed"
 
     def _decode_list_payload(self, raw: Any, *, codec: Any, context: str) -> list[Any]:
@@ -1046,6 +1071,15 @@ class Worker:
                 failure_type=failure_type,
                 stack_trace=stack_trace,
             )
+        except ServerError as e:
+            if _is_final_query_task_rejection(e):
+                log.info(
+                    "query task %s failure report was rejected after the task ended server-side: %s",
+                    query_task_id,
+                    e.reason(),
+                )
+                return
+            log.warning("failed to report query task failure %s: %s", query_task_id, e)
         except Exception as e:
             log.warning("failed to report query task failure %s: %s", query_task_id, e)
 
