@@ -2043,7 +2043,34 @@ class TestFailWorkflowTask:
         assert task == fixture["response_body"]["task"]
         assert task["task_id"] == fixture["semantic_body"]["task_id"]
         assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
-        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+        request_body = mock.call_args.kwargs["json"]
+        assert request_body["worker_id"] == fixture["request"]["body"]["worker_id"]
+        assert request_body["task_queue"] == fixture["request"]["body"]["task_queue"]
+        assert isinstance(request_body["poll_request_id"], str)
+        assert request_body["poll_request_id"] != ""
+
+    @pytest.mark.asyncio
+    async def test_poll_workflow_task_retries_once_with_same_poll_request_id_after_timeout(
+        self, client: Client
+    ) -> None:
+        response_task = {"task": {"task_id": "task-123"}}
+
+        with patch.object(
+            client,
+            "_request",
+            new_callable=AsyncMock,
+            side_effect=[httpx.TimeoutException("timeout"), response_task],
+        ) as mock:
+            task = await client.poll_workflow_task(worker_id="worker-1", task_queue="queue-1")
+
+        assert task == response_task["task"]
+        assert mock.await_count == 2
+
+        first_body = mock.await_args_list[0].kwargs["json"]
+        second_body = mock.await_args_list[1].kwargs["json"]
+        assert first_body["worker_id"] == "worker-1"
+        assert first_body["task_queue"] == "queue-1"
+        assert first_body["poll_request_id"] == second_body["poll_request_id"]
 
     @pytest.mark.asyncio
     async def test_complete_workflow_task_matches_polyglot_fixture(self, client: Client) -> None:
