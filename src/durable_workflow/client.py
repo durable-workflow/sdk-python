@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 import warnings
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -3091,14 +3092,22 @@ class Client:
         endpoint — most applications use :class:`~durable_workflow.Worker`
         rather than calling this directly.
         """
-        body: dict[str, Any] = {"worker_id": worker_id, "task_queue": task_queue}
-        try:
-            data = await self._request(
-                "POST", "/worker/workflow-tasks/poll", worker=True, json=body, timeout=timeout
-            )
-        except httpx.TimeoutException:
-            return None
-        return (data or {}).get("task")
+        body: dict[str, Any] = {
+            "worker_id": worker_id,
+            "task_queue": task_queue,
+            "poll_request_id": f"wf-poll-{uuid.uuid4().hex}",
+        }
+        for _ in range(2):
+            try:
+                data = await self._request(
+                    "POST", "/worker/workflow-tasks/poll", worker=True, json=body, timeout=timeout
+                )
+            except httpx.TimeoutException:
+                continue
+
+            return (data or {}).get("task")
+
+        return None
 
     async def complete_workflow_task(
         self,
