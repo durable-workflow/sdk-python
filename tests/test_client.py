@@ -2073,6 +2073,43 @@ class TestFailWorkflowTask:
         assert first_body["poll_request_id"] == second_body["poll_request_id"]
 
     @pytest.mark.asyncio
+    async def test_poll_activity_task_sends_poll_request_id(self, client: Client) -> None:
+        response_task = {"task": {"task_id": "activity-task-123"}}
+
+        with patch.object(client, "_request", new_callable=AsyncMock, return_value=response_task) as mock:
+            task = await client.poll_activity_task(worker_id="worker-1", task_queue="queue-1")
+
+        assert task == response_task["task"]
+        request_body = mock.await_args.kwargs["json"]
+        assert request_body["worker_id"] == "worker-1"
+        assert request_body["task_queue"] == "queue-1"
+        assert isinstance(request_body["poll_request_id"], str)
+        assert request_body["poll_request_id"] != ""
+
+    @pytest.mark.asyncio
+    async def test_poll_activity_task_retries_once_with_same_poll_request_id_after_timeout(
+        self, client: Client
+    ) -> None:
+        response_task = {"task": {"task_id": "activity-task-123"}}
+
+        with patch.object(
+            client,
+            "_request",
+            new_callable=AsyncMock,
+            side_effect=[httpx.TimeoutException("timeout"), response_task],
+        ) as mock:
+            task = await client.poll_activity_task(worker_id="worker-1", task_queue="queue-1")
+
+        assert task == response_task["task"]
+        assert mock.await_count == 2
+
+        first_body = mock.await_args_list[0].kwargs["json"]
+        second_body = mock.await_args_list[1].kwargs["json"]
+        assert first_body["worker_id"] == "worker-1"
+        assert first_body["task_queue"] == "queue-1"
+        assert first_body["poll_request_id"] == second_body["poll_request_id"]
+
+    @pytest.mark.asyncio
     async def test_complete_workflow_task_matches_polyglot_fixture(self, client: Client) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-task-complete-parity.json"
         fixture = json.loads(fixture_path.read_text())

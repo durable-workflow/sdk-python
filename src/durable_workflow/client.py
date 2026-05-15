@@ -3276,14 +3276,22 @@ class Client:
         Returns the task payload, or ``None`` on poll timeout. Worker-plane
         endpoint — typically used by :class:`~durable_workflow.Worker`.
         """
-        body: dict[str, Any] = {"worker_id": worker_id, "task_queue": task_queue}
-        try:
-            data = await self._request(
-                "POST", "/worker/activity-tasks/poll", worker=True, json=body, timeout=timeout
-            )
-        except httpx.TimeoutException:
-            return None
-        return (data or {}).get("task")
+        body: dict[str, Any] = {
+            "worker_id": worker_id,
+            "task_queue": task_queue,
+            "poll_request_id": f"activity-poll-{uuid.uuid4().hex}",
+        }
+        for _ in range(2):
+            try:
+                data = await self._request(
+                    "POST", "/worker/activity-tasks/poll", worker=True, json=body, timeout=timeout
+                )
+            except httpx.TimeoutException:
+                continue
+
+            return (data or {}).get("task")
+
+        return None
 
     async def complete_activity_task(
         self,
