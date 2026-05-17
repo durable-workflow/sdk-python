@@ -3199,14 +3199,22 @@ class Client:
         Query tasks are ephemeral worker-plane requests created when the server
         must route a control-plane query to a non-PHP workflow runtime.
         """
-        body: dict[str, Any] = {"worker_id": worker_id, "task_queue": task_queue}
-        try:
-            data = await self._request(
-                "POST", "/worker/query-tasks/poll", worker=True, json=body, timeout=timeout
-            )
-        except httpx.TimeoutException:
-            return None
-        return (data or {}).get("task")
+        body: dict[str, Any] = {
+            "worker_id": worker_id,
+            "task_queue": task_queue,
+            "poll_request_id": f"query-poll-{uuid.uuid4().hex}",
+        }
+        for _ in range(2):
+            try:
+                data = await self._request(
+                    "POST", "/worker/query-tasks/poll", worker=True, json=body, timeout=timeout
+                )
+            except httpx.TimeoutException:
+                continue
+
+            return (data or {}).get("task")
+
+        return None
 
     async def complete_query_task(
         self,

@@ -2650,7 +2650,11 @@ class TestQueryTasks:
         assert task == fixture["response_body"]["task"]
         assert task["query_task_id"] == fixture["semantic_body"]["query_task_id"]
         assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
-        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+        request_body = mock.call_args.kwargs["json"]
+        assert request_body["worker_id"] == fixture["request"]["body"]["worker_id"]
+        assert request_body["task_queue"] == fixture["request"]["body"]["task_queue"]
+        assert isinstance(request_body["poll_request_id"], str)
+        assert request_body["poll_request_id"] != ""
 
     @pytest.mark.asyncio
     async def test_complete_query_task_matches_polyglot_fixture(self, client: Client) -> None:
@@ -2688,6 +2692,34 @@ class TestQueryTasks:
 
             assert task == {"query_task_id": "qt1"}
             assert mock.call_args.args[:2] == ("POST", "/api/worker/query-tasks/poll")
+            body = mock.call_args.kwargs["json"]
+            assert body["worker_id"] == "w1"
+            assert body["task_queue"] == "q1"
+            assert isinstance(body["poll_request_id"], str)
+            assert body["poll_request_id"] != ""
+
+    @pytest.mark.asyncio
+    async def test_poll_query_task_retries_once_with_same_poll_request_id_after_timeout(
+        self, client: Client
+    ) -> None:
+        response_task = {"task": {"query_task_id": "qt1"}}
+
+        with patch.object(
+            client._http,
+            "request",
+            new_callable=AsyncMock,
+            side_effect=[httpx.TimeoutException("timeout"), _mock_response(200, response_task)],
+        ) as mock:
+            task = await client.poll_query_task(worker_id="w1", task_queue="q1", timeout=5.0)
+
+        assert task == response_task["task"]
+        assert mock.await_count == 2
+
+        first_body = mock.await_args_list[0].kwargs["json"]
+        second_body = mock.await_args_list[1].kwargs["json"]
+        assert first_body["worker_id"] == "w1"
+        assert first_body["task_queue"] == "q1"
+        assert first_body["poll_request_id"] == second_body["poll_request_id"]
 
     @pytest.mark.asyncio
     async def test_complete_query_task_sends_result_and_envelope(self, client: Client) -> None:
