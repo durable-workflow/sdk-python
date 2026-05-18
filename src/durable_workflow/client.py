@@ -3009,6 +3009,9 @@ class Client:
         sdk_version: str | None = None,
         build_id: str | None = None,
         capabilities: list[str] | None = None,
+        task_slots: dict[str, int] | None = None,
+        process_metrics: dict[str, Any] | None = None,
+        heartbeat_interval_seconds: int | None = None,
     ) -> Any:
         """Register this process with the server as a worker for ``task_queue``.
 
@@ -3041,6 +3044,12 @@ class Client:
             body["max_concurrent_workflow_tasks"] = max_concurrent_workflow_tasks
         if max_concurrent_activity_tasks is not None:
             body["max_concurrent_activity_tasks"] = max_concurrent_activity_tasks
+        if task_slots is not None:
+            body["task_slots"] = task_slots
+        if process_metrics is not None:
+            body["process_metrics"] = process_metrics
+        if heartbeat_interval_seconds is not None:
+            body["heartbeat_interval_seconds"] = heartbeat_interval_seconds
         return await self._request("POST", "/worker/register", worker=True, json=body)
 
     async def heartbeat_worker(
@@ -3067,8 +3076,9 @@ class Client:
 
         ``process_metrics`` is an optional dict with any subset of
         ``cpu_percent``, ``memory_bytes``, ``process_uptime_seconds``,
-        ``process_id``, and ``host`` — the SDK reports only what it has
-        cheap access to, and the server records exactly what was reported.
+        ``process_id``, ``process_started_at``, and ``host`` — the SDK
+        reports only what it has cheap access to, and the server records
+        exactly what was reported.
 
         Returns the server acknowledgement, which includes the advertised
         ``heartbeat_interval_seconds`` and ``stale_after_seconds`` so the

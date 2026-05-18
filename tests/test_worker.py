@@ -227,6 +227,13 @@ class TestWorkerRegistration:
         assert call_kwargs["max_concurrent_workflow_tasks"] == 10
         assert call_kwargs["max_concurrent_activity_tasks"] == 10
         assert call_kwargs["capabilities"] == ["query_tasks"]
+        assert call_kwargs["task_slots"] == {
+            "workflow_available": 10,
+            "activity_available": 10,
+        }
+        process_metrics = call_kwargs["process_metrics"]
+        assert process_metrics["process_id"] > 0
+        assert "process_started_at" in process_metrics
 
     @pytest.mark.asyncio
     async def test_register_omits_query_task_capability_when_server_does_not_support_it(
@@ -1959,6 +1966,7 @@ class TestWorkerHeartbeats:
         assert "process_id" in process_metrics
         assert process_metrics["process_id"] > 0
         assert "process_uptime_seconds" in process_metrics
+        assert "process_started_at" in process_metrics
 
     @pytest.mark.asyncio
     async def test_register_adopts_server_advertised_heartbeat_cadence(

@@ -26,6 +26,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping
+from datetime import datetime, timezone
 from types import FunctionType
 from typing import Any
 
@@ -526,6 +527,11 @@ class Worker:
         self._activity_inflight = 0
         self._heartbeat_interval = float(heartbeat_interval)
         self._process_started_at = time.time()
+        self._process_started_at_iso = (
+            datetime.fromtimestamp(self._process_started_at, timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
         # CPU sampling baseline. The heartbeat reports an *instantaneous*
         # cpu_percent — CPU time burned in the interval since the previous
         # heartbeat, divided by that interval — rather than the lifetime
@@ -643,6 +649,8 @@ class Worker:
             max_concurrent_activity_tasks=self.max_concurrent_activity_tasks,
             build_id=self.build_id,
             capabilities=[QUERY_TASKS_CAPABILITY] if self._query_tasks_supported else None,
+            task_slots=self._current_task_slots(),
+            process_metrics=self._current_process_metrics(),
         )
         # Adapt to the server-advertised cadence when present so a cluster
         # can pin the worker fleet's heartbeat beat without each worker
@@ -1635,6 +1643,7 @@ class Worker:
         metrics: dict[str, Any] = {
             "process_uptime_seconds": int(now - self._process_started_at),
             "process_id": os.getpid(),
+            "process_started_at": self._process_started_at_iso,
         }
 
         # ``memory_bytes`` is the *current* resident set size, not the
