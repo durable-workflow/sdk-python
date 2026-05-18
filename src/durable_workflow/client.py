@@ -3007,6 +3007,7 @@ class Client:
         runtime: str = "python",
         sdk_version: str | None = None,
         build_id: str | None = None,
+        capabilities: list[str] | None = None,
     ) -> Any:
         """Register this process with the server as a worker for ``task_queue``.
 
@@ -3031,6 +3032,8 @@ class Client:
         }
         if workflow_definition_fingerprints is not None:
             body["workflow_definition_fingerprints"] = workflow_definition_fingerprints
+        if capabilities is not None:
+            body["capabilities"] = [capability for capability in capabilities if capability]
         if build_id is not None:
             body["build_id"] = build_id
         if max_concurrent_workflow_tasks is not None:

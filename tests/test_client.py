@@ -2514,6 +2514,18 @@ class TestRegisterWorker:
             assert body["workflow_definition_fingerprints"] == {"greeter": "sha256:abc"}
 
     @pytest.mark.asyncio
+    async def test_register_sends_worker_capabilities_when_configured(self, client: Client) -> None:
+        resp = _mock_response(201, {"worker_id": "w1", "registered": True})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.register_worker(
+                worker_id="w1",
+                task_queue="q1",
+                capabilities=["query_tasks"],
+            )
+            body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
+            assert body["capabilities"] == ["query_tasks"]
+
+    @pytest.mark.asyncio
     async def test_register_sends_worker_capacity_when_configured(self, client: Client) -> None:
         resp = _mock_response(201, {"worker_id": "w1", "registered": True})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:

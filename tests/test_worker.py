@@ -175,6 +175,27 @@ class TestWorkerRegistration:
         assert "test-act" in call_kwargs["supported_activity_types"]
         assert call_kwargs["max_concurrent_workflow_tasks"] == 10
         assert call_kwargs["max_concurrent_activity_tasks"] == 10
+        assert call_kwargs["capabilities"] == ["query_tasks"]
+
+    @pytest.mark.asyncio
+    async def test_register_omits_query_task_capability_when_server_does_not_support_it(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(worker_protocol={"version": PROTOCOL_VERSION})
+        )
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            worker_id="w-without-query-capability",
+        )
+
+        await worker._register()
+
+        call_kwargs = mock_client.register_worker.call_args.kwargs
+        assert call_kwargs["capabilities"] is None
 
     @pytest.mark.asyncio
     async def test_register_advertises_custom_concurrency_limits(self, mock_client: AsyncMock) -> None:

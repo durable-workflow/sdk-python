@@ -64,6 +64,8 @@ from .workflow import apply_update, commands_to_server_commands, query_state, re
 
 log = logging.getLogger("durable_workflow.worker")
 
+QUERY_TASKS_CAPABILITY = "query_tasks"
+
 _TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
 _QUERY_TASK_FINAL_REJECTION_REASONS = {
     "lease_expired",
@@ -468,6 +470,7 @@ class Worker:
             max_concurrent_workflow_tasks=self.max_concurrent_workflow_tasks,
             max_concurrent_activity_tasks=self.max_concurrent_activity_tasks,
             build_id=self.build_id,
+            capabilities=[QUERY_TASKS_CAPABILITY] if self._query_tasks_supported else None,
         )
         # Adapt to the server-advertised cadence when present so a cluster
         # can pin the worker fleet's heartbeat beat without each worker
