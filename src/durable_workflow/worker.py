@@ -979,6 +979,8 @@ class Worker:
                 external_storage=self.external_storage,
                 external_storage_cache=self.external_storage_cache,
             )
+            if inspect.isawaitable(result):
+                result = await result
         except AvroNotInstalledError as e:
             await self._fail_query_task(
                 query_task_id,
@@ -1034,7 +1036,49 @@ class Worker:
                     e.reason(),
                 )
                 return "expired"
-            raise
+            server_reason = e.reason()
+            await self._fail_query_task(
+                query_task_id,
+                attempt,
+                str(e) or "query result completion was rejected by the server",
+                reason=server_reason if server_reason else "query_result_completion_failed",
+                failure_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
+            )
+            return "failed"
+        except AvroNotInstalledError as e:
+            await self._fail_query_task(
+                query_task_id,
+                attempt,
+                (
+                    "cannot encode query result with codec 'avro': "
+                    f"{e}. Reinstall durable-workflow with its runtime dependencies."
+                ),
+                reason="query_result_encode_failed",
+                failure_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
+            )
+            return "failed"
+        except (TypeError, ValueError) as e:
+            await self._fail_query_task(
+                query_task_id,
+                attempt,
+                f"cannot encode query result with codec {result_codec!r}: {e}",
+                reason="query_result_encode_failed",
+                failure_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
+            )
+            return "failed"
+        except Exception as e:
+            await self._fail_query_task(
+                query_task_id,
+                attempt,
+                str(e) or "query result completion failed",
+                reason="query_result_completion_failed",
+                failure_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
+            )
+            return "failed"
 
         return "completed"
 

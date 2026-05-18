@@ -78,6 +78,17 @@ class QueryWorkflow:
         return self.status
 
 
+@workflow.defn(name="async-query-wf")
+class AsyncQueryWorkflow:
+    @workflow.query("current")
+    async def current(self) -> int:
+        await asyncio.sleep(0)
+        return 0
+
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        yield ctx.wait_condition(lambda: False)
+
+
 @activity.defn(name="test-act")
 def echo_activity(val: str) -> str:
     return f"result-{val}"
@@ -674,6 +685,35 @@ class TestWorkflowTaskExecution:
         mock_client.fail_query_task.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_query_task_awaits_async_query_result(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[AsyncQueryWorkflow], activities=[])
+        task = {
+            "query_task_id": "qt-async",
+            "query_task_attempt": 1,
+            "workflow_type": "async-query-wf",
+            "query_name": "current",
+            "history_events": [],
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "completed"
+        mock_client.complete_query_task.assert_awaited_once_with(
+            query_task_id="qt-async",
+            lease_owner=worker.worker_id,
+            query_task_attempt=1,
+            result=0,
+            codec="json",
+            workflow_id=None,
+            run_id=None,
+            query_name="current",
+        )
+        mock_client.fail_query_task.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_query_task_reports_unknown_query(self, mock_client: AsyncMock) -> None:
         worker = Worker(mock_client, task_queue="q1", workflows=[QueryWorkflow], activities=[])
         task = {
@@ -722,6 +762,33 @@ class TestWorkflowTaskExecution:
         assert outcome == "expired"
         mock_client.complete_query_task.assert_awaited_once()
         mock_client.fail_query_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_task_reports_query_result_completion_failure(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[QueryWorkflow], activities=[])
+        mock_client.complete_query_task.side_effect = TypeError("Object is not payload safe")
+        task = {
+            "query_task_id": "qt-result-encode-failure",
+            "query_task_attempt": 1,
+            "workflow_type": "query-wf",
+            "query_name": "status",
+            "history_events": [],
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "failed"
+        mock_client.fail_query_task.assert_awaited_once()
+        call_kwargs = mock_client.fail_query_task.call_args.kwargs
+        assert call_kwargs["query_task_id"] == "qt-result-encode-failure"
+        assert call_kwargs["query_task_attempt"] == 1
+        assert call_kwargs["reason"] == "query_result_encode_failed"
+        assert call_kwargs["failure_type"] == "TypeError"
 
 
 class TestActivityTaskExecution:
