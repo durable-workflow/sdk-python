@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Signal and update receivers recorded after an activity result now replay after
+  the workflow consumes that activity result, so receiver-mutated state is not
+  overwritten by deterministic post-activity setup before a `wait_condition`.
 - Python workflow replay now throws terminal `ActivityFailed` history events
   into the generator as a typed `ActivityFailed` exception, including the
   recorded activity and failure metadata. Activity-only saga workflows can

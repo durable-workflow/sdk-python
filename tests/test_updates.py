@@ -130,6 +130,16 @@ def _workflow_started_event() -> dict[str, object]:
     }
 
 
+def _activity_completed_event(result: object) -> dict[str, object]:
+    return {
+        "event_type": "ActivityCompleted",
+        "payload": {
+            "result": serializer.encode(result, codec="json"),
+            "payload_codec": "json",
+        },
+    }
+
+
 def _update_accepted_event(
     update_id: str,
     name: str,
@@ -209,6 +219,21 @@ class TestUpdateApplicationReplay:
             "count",
             payload_codec="json",
         ) == 7
+
+    def test_query_state_applies_update_after_final_activity_result(self) -> None:
+        history = [
+            _signal_received_event("increment", [1]),
+            _activity_completed_event(None),
+            _update_applied_event("upd-final", "increment", [5]),
+        ]
+
+        assert query_state(
+            StatefulUpdateReceiver,
+            history,
+            [],
+            "count",
+            payload_codec="json",
+        ) == 6
 
     def test_apply_update_completes_accepted_update_with_handler_result(self) -> None:
         history = [

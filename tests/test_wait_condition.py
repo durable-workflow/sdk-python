@@ -6,6 +6,7 @@ from durable_workflow.workflow import (
     FailWorkflow,
     WaitCondition,
     WorkflowContext,
+    query_state,
     replay,
 )
 
@@ -58,6 +59,38 @@ class WaitImmediateTrue:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
         satisfied = yield ctx.wait_condition(lambda: True, key="always")
         return "satisfied" if satisfied else "no"
+
+
+@workflow.defn(name="activity-then-wait-for-approval")
+class ActivityThenWaitForApproval:
+    def __init__(self) -> None:
+        self.activity_result: str | None = None
+        self.approved_by: str | None = None
+
+    @workflow.signal("approve")
+    def approve(self, approved_by: str) -> None:
+        self.approved_by = approved_by
+
+    @workflow.query("state")
+    def state(self) -> dict[str, str | None]:
+        return {
+            "activity_result": self.activity_result,
+            "approved_by": self.approved_by,
+        }
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        self.activity_result = yield ctx.schedule_activity("load-state", [])
+        self.approved_by = None
+        yield ctx.wait_condition(
+            lambda: self.approved_by == "alice",
+            key="approval",
+            timeout=30,
+        )
+
+        return {
+            "activity_result": self.activity_result,
+            "approved_by": self.approved_by,
+        }
 
 
 class TestCtxWaitCondition:
@@ -187,6 +220,32 @@ class TestReplayWaitCondition:
         assert len(outcome.commands) == 1
         assert isinstance(outcome.commands[0], CompleteWorkflow)
         assert outcome.commands[0].result == "approved"
+
+    def test_signal_after_activity_result_applies_after_result_is_consumed(self) -> None:
+        history = [
+            {
+                "event_type": "ActivityCompleted",
+                "payload": {"result": '"loaded"'},
+            },
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-1", "condition_key": "approval"},
+            },
+            _signal_received_event("approve", ["alice"]),
+        ]
+
+        outcome = replay(ActivityThenWaitForApproval, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == {
+            "activity_result": "loaded",
+            "approved_by": "alice",
+        }
+        assert query_state(ActivityThenWaitForApproval, history, [], "state") == {
+            "activity_result": "loaded",
+            "approved_by": "alice",
+        }
 
     def test_open_with_no_resolution_and_predicate_false_re_emits_wait_condition(self) -> None:
         history = [

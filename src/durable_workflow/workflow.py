@@ -2052,8 +2052,16 @@ def _replay_state(
     signal_registry: dict[str, str] = getattr(workflow_cls, "__workflow_signals__", {}) or {}
     update_registry: dict[str, str] = getattr(workflow_cls, "__workflow_updates__", {}) or {}
 
-    def _apply_due_receivers() -> None:
-        while pending_receivers and pending_receivers[0][0] <= result_cursor:
+    def _apply_due_receivers(*, before_consuming_result: bool = False) -> None:
+        while pending_receivers:
+            receiver_index = pending_receivers[0][0]
+            due = (
+                receiver_index < result_cursor
+                if before_consuming_result
+                else receiver_index <= result_cursor
+            )
+            if not due:
+                break
             _, kind, name, args = pending_receivers.pop(0)
             if kind == "signal":
                 method_name = signal_registry.get(name)
@@ -2085,6 +2093,14 @@ def _replay_state(
     pending: list[Command] = []
     advanced_cmd: Any = None
     wait_yield_count = 0
+
+    def _terminal_state(value: Any, *, include_pending: bool) -> _ReplayState:
+        _apply_due_receivers()
+        commands = list(pending) if include_pending else []
+        if isinstance(value, ContinueAsNew):
+            return _state(commands + [value])
+        return _state(commands + [CompleteWorkflow(result=value)])
+
     try:
         while True:
             # Cursor-0 receivers are start-boundary events. Enter run() once
@@ -2092,12 +2108,15 @@ def _replay_state(
             # same WorkflowStarted-before-Signal/Update ordering the server
             # records in history.
             if not first:
-                _apply_due_receivers()
+                _apply_due_receivers(before_consuming_result=True)
             if advanced_cmd is not None:
                 cmd = advanced_cmd
                 advanced_cmd = None
             else:
-                cmd = gen.send(None) if first else gen.send(next_value)
+                try:
+                    cmd = gen.send(None) if first else gen.send(next_value)
+                except StopIteration as stop:
+                    return _terminal_state(stop.value, include_pending=True)
                 first = False
             _apply_due_receivers()
             if isinstance(cmd, list):
@@ -2111,9 +2130,7 @@ def _replay_state(
                             advanced_cmd = gen.throw(failed)
                             continue
                         except StopIteration as stop:
-                            if isinstance(stop.value, ContinueAsNew):
-                                return _state([stop.value])
-                            return _state([CompleteWorkflow(result=stop.value)])
+                            return _terminal_state(stop.value, include_pending=False)
                     next_value = vals
                     continue
                 ctx.logger._set_replaying(False)
@@ -2208,9 +2225,7 @@ def _replay_state(
                             advanced_cmd = gen.throw(val)
                             continue
                         except StopIteration as stop:
-                            if isinstance(stop.value, ContinueAsNew):
-                                return _state([stop.value])
-                            return _state([CompleteWorkflow(result=stop.value)])
+                            return _terminal_state(stop.value, include_pending=False)
                     next_value = val
                     continue
                 ctx.logger._set_replaying(False)
@@ -2218,9 +2233,13 @@ def _replay_state(
                 return _state(pending)
             raise TypeError(f"workflow yielded unsupported command: {cmd!r}")
     except StopIteration as stop:
-        if isinstance(stop.value, ContinueAsNew):
-            return _state(pending + [stop.value])
-        return _state(pending + [CompleteWorkflow(result=stop.value)])
+        try:
+            return _terminal_state(stop.value, include_pending=True)
+        except Exception as exc:
+            return _state([FailWorkflow(
+                message=str(exc),
+                exception_type=type(exc).__name__,
+            )])
     except Exception as exc:
         return _state([FailWorkflow(
             message=str(exc),
