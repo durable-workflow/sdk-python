@@ -1388,6 +1388,15 @@ class _ReplayState:
     instance: Any
 
 
+@dataclass
+class _PendingReceiver:
+    result_index: int
+    kind: str
+    name: str
+    args: list[Any]
+    condition_wait_id: str | None = None
+
+
 def _decode_history_result(
     payload: dict[str, Any],
     fallback_codec: str | None,
@@ -1943,10 +1952,14 @@ def _replay_state(
         return _ReplayState(outcome=ReplayOutcome(commands=commands), instance=instance)
 
     resolved_results: list[Any] = []
+    # External receivers normally apply by resolved-result cursor. Receivers
+    # observed while a condition wait is open are pinned to that wait so
+    # sequential signal-driven waits do not collapse to the same cursor.
+    #
     # (resolved_result_index_before_apply, receiver_kind, name, decoded_args) —
     # external receivers apply before the generator consumes the resolved_result
     # at the stored index, preserving history interleaving with activities.
-    pending_receivers: list[tuple[int, str, str, list[Any]]] = []
+    pending_receivers: list[_PendingReceiver] = []
     # Ordered ``ConditionWaitOpened`` payloads, used by ``WaitCondition`` yields
     # to match against their corresponding opened wait in history
     # (Nth yield ↔ Nth opened).
@@ -1955,6 +1968,17 @@ def _replay_state(
     # in history, future server-recorded) or 'timed_out' (from a matching
     # condition_timeout TimerFired event).
     wait_resolutions: dict[str, str] = {}
+    open_condition_wait_ids: list[str] = []
+
+    def _current_condition_wait_id() -> str | None:
+        return open_condition_wait_ids[-1] if open_condition_wait_ids else None
+
+    def _close_condition_wait(wait_id: Any) -> None:
+        if not isinstance(wait_id, str) or not wait_id:
+            return
+        with contextlib.suppress(ValueError):
+            open_condition_wait_ids.remove(wait_id)
+
     for ev in events:
         etype = ev.get("event_type")
         payload = ev.get("payload") or {}
@@ -1975,6 +1999,7 @@ def _replay_state(
                 wait_id = payload.get("condition_wait_id")
                 if isinstance(wait_id, str) and wait_id:
                     wait_resolutions[wait_id] = "timed_out"
+                    _close_condition_wait(wait_id)
                 continue
             if timer_kind == "signal_timeout":
                 continue
@@ -1983,14 +2008,17 @@ def _replay_state(
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
                 wait_opened.append(dict(payload))
+                open_condition_wait_ids.append(wait_id)
         elif etype == "ConditionWaitSatisfied":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
                 wait_resolutions[wait_id] = "satisfied"
+                _close_condition_wait(wait_id)
         elif etype == "ConditionWaitTimedOut":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
                 wait_resolutions[wait_id] = "timed_out"
+                _close_condition_wait(wait_id)
         elif etype in ("SideEffectRecorded", "ChildRunCompleted"):
             resolved_results.append(
                 _decode_history_result(
@@ -2011,73 +2039,86 @@ def _replay_state(
         elif etype == "SignalReceived":
             signal_name = payload.get("signal_name")
             if isinstance(signal_name, str) and signal_name:
-                pending_receivers.append(
-                    (
-                        len(resolved_results),
-                        "signal",
-                        signal_name,
-                        _decode_receiver_args(
-                            ev,
-                            receiver_kind="signal",
-                            receiver_name=signal_name,
-                            workflow_id=workflow_id,
-                            run_id=run_id,
-                            payload_codec=payload_codec,
-                            external_storage=external_storage,
-                            external_storage_cache=external_storage_cache,
-                        ),
-                    )
-                )
+                pending_receivers.append(_PendingReceiver(
+                    result_index=len(resolved_results),
+                    kind="signal",
+                    name=signal_name,
+                    args=_decode_receiver_args(
+                        ev,
+                        receiver_kind="signal",
+                        receiver_name=signal_name,
+                        workflow_id=workflow_id,
+                        run_id=run_id,
+                        payload_codec=payload_codec,
+                        external_storage=external_storage,
+                        external_storage_cache=external_storage_cache,
+                    ),
+                    condition_wait_id=_current_condition_wait_id(),
+                ))
         elif etype == "UpdateApplied":
             update_name = payload.get("update_name")
             if isinstance(update_name, str) and update_name:
-                pending_receivers.append(
-                    (
-                        len(resolved_results),
-                        "update",
-                        update_name,
-                        _decode_receiver_args(
-                            ev,
-                            receiver_kind="update",
-                            receiver_name=update_name,
-                            workflow_id=workflow_id,
-                            run_id=run_id,
-                            payload_codec=payload_codec,
-                            external_storage=external_storage,
-                            external_storage_cache=external_storage_cache,
-                        ),
-                    )
-                )
+                pending_receivers.append(_PendingReceiver(
+                    result_index=len(resolved_results),
+                    kind="update",
+                    name=update_name,
+                    args=_decode_receiver_args(
+                        ev,
+                        receiver_kind="update",
+                        receiver_name=update_name,
+                        workflow_id=workflow_id,
+                        run_id=run_id,
+                        payload_codec=payload_codec,
+                        external_storage=external_storage,
+                        external_storage_cache=external_storage_cache,
+                    ),
+                    condition_wait_id=_current_condition_wait_id(),
+                ))
 
     signal_registry: dict[str, str] = getattr(workflow_cls, "__workflow_signals__", {}) or {}
     update_registry: dict[str, str] = getattr(workflow_cls, "__workflow_updates__", {}) or {}
 
+    def _apply_receiver(receiver: _PendingReceiver) -> None:
+        if receiver.kind == "signal":
+            method_name = signal_registry.get(receiver.name)
+            if method_name is None:
+                return
+        else:
+            method_name = update_registry.get(receiver.name)
+            if method_name is None:
+                raise TypeError(f"unknown update {receiver.name!r} in workflow history")
+        handler = getattr(instance, method_name, None)
+        if handler is None:
+            if receiver.kind == "signal":
+                return
+            raise TypeError(f"update handler {receiver.name!r} is not available")
+        ctx.logger._set_replaying(True)
+        handler(*receiver.args)
+
+    def _receiver_due(receiver: _PendingReceiver, *, before_consuming_result: bool) -> bool:
+        if receiver.condition_wait_id is not None:
+            return False
+        return (
+            receiver.result_index < result_cursor
+            if before_consuming_result
+            else receiver.result_index <= result_cursor
+        )
+
     def _apply_due_receivers(*, before_consuming_result: bool = False) -> None:
         while pending_receivers:
-            receiver_index = pending_receivers[0][0]
-            due = (
-                receiver_index < result_cursor
-                if before_consuming_result
-                else receiver_index <= result_cursor
-            )
-            if not due:
+            receiver = pending_receivers[0]
+            if not _receiver_due(receiver, before_consuming_result=before_consuming_result):
                 break
-            _, kind, name, args = pending_receivers.pop(0)
-            if kind == "signal":
-                method_name = signal_registry.get(name)
-                if method_name is None:
-                    continue
-            else:
-                method_name = update_registry.get(name)
-                if method_name is None:
-                    raise TypeError(f"unknown update {name!r} in workflow history")
-            handler = getattr(instance, method_name, None)
-            if handler is None:
-                if kind == "signal":
-                    continue
-                raise TypeError(f"update handler {name!r} is not available")
-            ctx.logger._set_replaying(True)
-            handler(*args)
+            _apply_receiver(pending_receivers.pop(0))
+
+    def _apply_condition_wait_receivers(condition_wait_id: str | None) -> None:
+        if condition_wait_id is None:
+            return
+        while pending_receivers:
+            receiver = pending_receivers[0]
+            if receiver.condition_wait_id != condition_wait_id:
+                break
+            _apply_receiver(pending_receivers.pop(0))
 
     result_cursor = 0
     gen = instance.run(ctx, *start_input)
@@ -2174,6 +2215,7 @@ def _replay_state(
                     opened_id = opened.get("condition_wait_id")
                     if isinstance(opened_id, str):
                         resolution = wait_resolutions.get(opened_id)
+                        _apply_condition_wait_receivers(opened_id)
                     opened_key = opened.get("condition_key")
                     if isinstance(opened_key, str) and opened_key != (cmd.condition_key or ""):
                         return _state([FailWorkflow(

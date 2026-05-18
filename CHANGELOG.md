@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Signal and update receivers recorded while a condition wait is open now
+  replay at that specific wait, so later signal-driven waits are not satisfied
+  or consumed too early when no activity or timer result separates them.
 - Signal and update receivers recorded after an activity result now replay after
   the workflow consumes that activity result, so receiver-mutated state is not
   overwritten by deterministic post-activity setup before a `wait_condition`.

@@ -93,6 +93,48 @@ class ActivityThenWaitForApproval:
         }
 
 
+@workflow.defn(name="two-stage-signal-wait")
+class TwoStageSignalWait:
+    def __init__(self) -> None:
+        self.stage = "booting"
+        self.name: str | None = None
+        self.finished = False
+        self.events: list[str] = []
+
+    @workflow.signal("advance")
+    def advance(self, name: str) -> None:
+        self.name = name
+        self.events.append(f"signal:{name}")
+
+    @workflow.signal("finish")
+    def finish(self) -> None:
+        self.finished = True
+        self.events.append("signal:finish")
+
+    @workflow.query("state")
+    def state(self) -> dict[str, object]:
+        return {
+            "stage": self.stage,
+            "name": self.name,
+            "finished": self.finished,
+            "events": list(self.events),
+        }
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        self.stage = "waiting-for-advance"
+        self.events.append("started")
+        yield ctx.wait_condition(lambda: self.name is not None, key="advance")
+
+        self.stage = "waiting-for-finish"
+        self.finished = False
+        self.events.append(f"advanced:{self.name}")
+        yield ctx.wait_condition(lambda: self.finished, key="finish")
+
+        self.stage = "completed"
+        self.events.append("finish")
+        return self.state()
+
+
 class TestCtxWaitCondition:
     def test_wait_condition_returns_dataclass_with_predicate_and_key(self) -> None:
         ctx = WorkflowContext(run_id="x")
@@ -246,6 +288,38 @@ class TestReplayWaitCondition:
             "activity_result": "loaded",
             "approved_by": "alice",
         }
+
+    def test_signals_scope_to_the_condition_wait_open_when_they_arrived(self) -> None:
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-advance", "condition_key": "advance"},
+            },
+            _signal_received_event("advance", ["Ada"]),
+            {
+                "event_type": "ConditionWaitSatisfied",
+                "payload": {"condition_wait_id": "wait-advance", "condition_key": "advance"},
+            },
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-finish", "condition_key": "finish"},
+            },
+            _signal_received_event("finish", []),
+        ]
+
+        expected = {
+            "stage": "completed",
+            "name": "Ada",
+            "finished": True,
+            "events": ["started", "signal:Ada", "advanced:Ada", "signal:finish", "finish"],
+        }
+
+        outcome = replay(TwoStageSignalWait, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == expected
+        assert query_state(TwoStageSignalWait, history, [], "state") == expected
 
     def test_open_with_no_resolution_and_predicate_false_re_emits_wait_condition(self) -> None:
         history = [
