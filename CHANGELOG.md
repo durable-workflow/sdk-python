@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Workflow-task completion now retries transient transport failures and server
+  throttling/5xx rejections before preserving emitted commands or reporting a
+  definite task failure, reducing stuck waiting runs when a signal-satisfied
+  wait completes immediately after replay-driven query activity.
 - Ambiguous workflow-task completion failures no longer get reported back as
   durable task failures after commands have been produced. Definite server
   rejections are still treated as failed workflow tasks even when the

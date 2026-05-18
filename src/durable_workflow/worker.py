@@ -91,6 +91,8 @@ _WORKFLOW_TASK_COMPLETION_AMBIGUOUS_REJECTION_REASONS = {
     "task_not_leased",
     "workflow_task_attempt_mismatch",
 }
+_WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS = 3
+_WORKFLOW_TASK_COMPLETION_RETRY_DELAYS = (0.05, 0.2)
 _WORKER_WORKFLOW_FINGERPRINTS: dict[tuple[str, str], str] = {}
 
 
@@ -139,6 +141,13 @@ def _should_fail_workflow_task_after_completion_error(error: BaseException) -> b
         return error.reason() not in _WORKFLOW_TASK_COMPLETION_AMBIGUOUS_REJECTION_REASONS
 
     return isinstance(error, DurableWorkflowError)
+
+
+def _should_retry_workflow_task_completion_error(error: BaseException) -> bool:
+    if isinstance(error, ServerError):
+        return error.status >= 500 or error.status == 429
+
+    return not isinstance(error, DurableWorkflowError)
 
 
 def _signal_arguments_envelope_from_export(
@@ -797,10 +806,9 @@ class Worker:
                 command["type"],
             )
             try:
-                await self.client.complete_workflow_task(
+                await self._complete_workflow_task_with_retry(
                     task_id=task_id,
-                    lease_owner=self.worker_id,
-                    workflow_task_attempt=attempt,
+                    attempt=attempt,
                     commands=[command],
                 )
             except Exception as e:
@@ -872,10 +880,9 @@ class Worker:
             [c["type"] for c in commands],
         )
         try:
-            await self.client.complete_workflow_task(
+            await self._complete_workflow_task_with_retry(
                 task_id=task_id,
-                lease_owner=self.worker_id,
-                workflow_task_attempt=attempt,
+                attempt=attempt,
                 commands=commands,
             )
         except Exception as e:
@@ -884,6 +891,42 @@ class Worker:
                 await self._report_workflow_task_after_completion_error(task_id, attempt, e)
                 return None
         return commands
+
+    async def _complete_workflow_task_with_retry(
+        self,
+        *,
+        task_id: str,
+        attempt: int,
+        commands: list[dict[str, Any]],
+    ) -> None:
+        for completion_attempt in range(1, _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS + 1):
+            try:
+                await self.client.complete_workflow_task(
+                    task_id=task_id,
+                    lease_owner=self.worker_id,
+                    workflow_task_attempt=attempt,
+                    commands=commands,
+                )
+                return
+            except Exception as error:
+                if (
+                    completion_attempt >= _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS
+                    or not _should_retry_workflow_task_completion_error(error)
+                ):
+                    raise
+
+                delay_index = min(
+                    completion_attempt - 1,
+                    len(_WORKFLOW_TASK_COMPLETION_RETRY_DELAYS) - 1,
+                )
+                log.warning(
+                    "retrying workflow task %s completion after attempt %d/%d failed: %s",
+                    task_id,
+                    completion_attempt,
+                    _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS,
+                    error,
+                )
+                await asyncio.sleep(_WORKFLOW_TASK_COMPLETION_RETRY_DELAYS[delay_index])
 
     async def _report_workflow_task_after_completion_error(
         self,

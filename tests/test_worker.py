@@ -527,10 +527,10 @@ class TestWorkflowTaskExecution:
     async def test_workflow_task_ambiguous_completion_error_preserves_commands(
         self, mock_client: AsyncMock
     ) -> None:
-        mock_client.complete_workflow_task.side_effect = TimeoutError("completion timed out")
+        mock_client.complete_workflow_task.side_effect = ServerError(409, {"reason": "task_not_leased"})
         worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
         task = {
-            "task_id": "t-complete-timeout",
+            "task_id": "t-complete-not-leased",
             "workflow_type": "test-wf",
             "workflow_task_attempt": 2,
             "history_events": [],
@@ -543,6 +543,31 @@ class TestWorkflowTaskExecution:
         assert result is not None
         assert result[0]["type"] == "schedule_activity"
         mock_client.complete_workflow_task.assert_awaited_once()
+        mock_client.fail_workflow_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workflow_task_retries_transient_completion_error(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.complete_workflow_task.side_effect = [
+            TimeoutError("completion timed out"),
+            {"outcome": "completed"},
+        ]
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        task = {
+            "task_id": "t-complete-retry",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 2,
+            "history_events": [],
+            "arguments": '["hello"]',
+            "payload_codec": "json",
+        }
+
+        result = await worker._run_workflow_task(task)
+
+        assert result is not None
+        assert result[0]["type"] == "schedule_activity"
+        assert mock_client.complete_workflow_task.await_count == 2
         mock_client.fail_workflow_task.assert_not_called()
 
     @pytest.mark.asyncio
@@ -807,10 +832,10 @@ class TestWorkflowTaskExecution:
     async def test_update_task_ambiguous_completion_error_preserves_command(
         self, mock_client: AsyncMock
     ) -> None:
-        mock_client.complete_workflow_task.side_effect = TimeoutError("update completion timed out")
+        mock_client.complete_workflow_task.side_effect = ServerError(409, {"reason": "task_not_leased"})
         worker = Worker(mock_client, task_queue="q1", workflows=[UpdateWorkflow], activities=[])
         task = {
-            "task_id": "t-update-timeout",
+            "task_id": "t-update-not-leased",
             "workflow_type": "update-wf",
             "workflow_task_attempt": 3,
             "workflow_update_id": "upd-worker-1",
@@ -835,6 +860,43 @@ class TestWorkflowTaskExecution:
         assert result is not None
         assert result[0]["type"] == "complete_update"
         mock_client.complete_workflow_task.assert_awaited_once()
+        mock_client.fail_workflow_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_task_retries_transient_completion_error(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.complete_workflow_task.side_effect = [
+            ServerError(503, {"reason": "server_busy"}),
+            {"outcome": "completed"},
+        ]
+        worker = Worker(mock_client, task_queue="q1", workflows=[UpdateWorkflow], activities=[])
+        task = {
+            "task_id": "t-update-retry",
+            "workflow_type": "update-wf",
+            "workflow_task_attempt": 3,
+            "workflow_update_id": "upd-worker-1",
+            "workflow_wait_kind": "update",
+            "history_events": [
+                {
+                    "event_type": "UpdateAccepted",
+                    "payload": {
+                        "update_id": "upd-worker-1",
+                        "update_name": "increment",
+                        "arguments": serializer.encode([6], codec="json"),
+                        "payload_codec": "json",
+                    },
+                },
+            ],
+            "arguments": "[]",
+            "payload_codec": "json",
+        }
+
+        result = await worker._run_workflow_task(task)
+
+        assert result is not None
+        assert result[0]["type"] == "complete_update"
+        assert mock_client.complete_workflow_task.await_count == 2
         mock_client.fail_workflow_task.assert_not_called()
 
     @pytest.mark.asyncio
