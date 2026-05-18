@@ -1607,3 +1607,60 @@ class TestRunUntil:
             await worker.run_until(workflow_id="wf-timeout", timeout=0.02, poll_interval=0.01)
 
         assert worker._stop.is_set()
+
+    @pytest.mark.asyncio
+    async def test_run_until_processes_query_tasks_while_waiting(self, mock_client: AsyncMock) -> None:
+        query_completed = asyncio.Event()
+        query_task = {
+            "query_task_id": "qt-run-until",
+            "query_task_attempt": 1,
+            "workflow_type": "query-wf",
+            "workflow_id": "wf-1",
+            "run_id": "run-1",
+            "query_name": "status",
+            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "history_events": [],
+        }
+        poll_count = 0
+
+        async def poll_query_task(**_: object) -> dict[str, object] | None:
+            nonlocal poll_count
+            poll_count += 1
+            if poll_count == 1:
+                return query_task
+            await asyncio.sleep(0)
+            return None
+
+        async def complete_query_task(**_: object) -> dict[str, str]:
+            query_completed.set()
+            return {"outcome": "completed"}
+
+        async def describe_workflow(_: str) -> WorkflowExecution:
+            return WorkflowExecution(
+                workflow_id="wf-1",
+                run_id="run-1",
+                workflow_type="query-wf",
+                status="completed" if query_completed.is_set() else "running",
+            )
+
+        mock_client.poll_query_task.side_effect = poll_query_task
+        mock_client.complete_query_task.side_effect = complete_query_task
+        mock_client.describe_workflow.side_effect = describe_workflow
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[QueryWorkflow],
+            activities=[],
+            poll_timeout=0.01,
+        )
+
+        desc = await worker.run_until(workflow_id="wf-1", timeout=1.0, poll_interval=0.01)
+
+        assert desc.status == "completed"
+        mock_client.complete_query_task.assert_awaited_once()
+        complete_kwargs = mock_client.complete_query_task.await_args.kwargs
+        assert complete_kwargs["query_task_id"] == "qt-run-until"
+        assert complete_kwargs["result"] == {"status": "ready"}

@@ -1336,9 +1336,14 @@ class Worker:
         """
         deadline = time.monotonic() + timeout
         next_task_kind = "workflow"
+        background_tasks: list[asyncio.Task[Any]] = []
 
         try:
             await self._register()
+            background_tasks.append(asyncio.create_task(self._heartbeat_loop()))
+            if self._query_tasks_supported:
+                background_tasks.append(asyncio.create_task(self._poll_query_tasks()))
+
             while True:
                 desc = await self.client.describe_workflow(workflow_id)
                 status = (desc.status or "").lower()
@@ -1405,6 +1410,12 @@ class Worker:
                     self._record_task_metrics("activity", outcome, time.perf_counter() - task_start)
                 next_task_kind = "workflow"
         finally:
+            self._stop.set()
+            for task in background_tasks:
+                task.cancel()
+            for task in background_tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
             await self.stop()
 
     async def stop(self) -> None:
