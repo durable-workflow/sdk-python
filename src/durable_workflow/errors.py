@@ -122,6 +122,11 @@ class ScheduleAlreadyExists(DurableWorkflowError):
 class QueryFailed(DurableWorkflowError):
     """A workflow query was rejected or the workflow raised while handling it."""
 
+    def __init__(self, message: str, *, reason: str | None = None, body: object | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.body = body
+
 
 class WorkflowPayloadDecodeError(DurableWorkflowError):
     """A committed workflow history payload could not be decoded during replay."""
@@ -281,9 +286,12 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
     if status == 401:
         raise Unauthorized(message or "unauthorized")
 
+    def query_failed(default: str) -> QueryFailed:
+        return QueryFailed(message or default, reason=reason if isinstance(reason, str) else None, body=body)
+
     if status == 404:
         if reason in ("query_not_found", "rejected_unknown_query"):
-            raise QueryFailed(message or "query not found")
+            raise query_failed("query not found")
         if reason == "schedule_not_found":
             raise ScheduleNotFound(context)
         if reason in ("instance_not_found", "workflow_not_found") or "workflow" in context.lower():
@@ -297,15 +305,24 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
             raise ScheduleAlreadyExists(context)
         if reason == "duplicate_not_allowed":
             raise WorkflowAlreadyStarted(context)
-        if reason in ("query_rejected", "query_worker_unavailable"):
-            raise QueryFailed(message or "query rejected")
+        if reason in (
+            "query_rejected",
+            "query_worker_unavailable",
+            "query_worker_incompatible",
+            "query_workflow_state_unavailable",
+        ):
+            raise query_failed("query rejected")
         if reason == "update_rejected":
             raise UpdateRejected(message or "update rejected")
         raise ServerError(status, body)
 
     if status == 504:
-        if reason == "query_worker_timeout":
-            raise QueryFailed(message or "query worker timed out")
+        if reason in (
+            "query_worker_timeout",
+            "query_worker_execution_timeout",
+            "query_task_not_claimed",
+        ):
+            raise query_failed("query worker timed out")
         raise ServerError(status, body)
 
     if status == 422:

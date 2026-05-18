@@ -79,6 +79,16 @@ class QueryWorkflow:
         return self.status
 
 
+@workflow.defn(name="query-state-unavailable-wf")
+class QueryStateUnavailableWorkflow:
+    @workflow.query("status")
+    def status_query(self) -> dict[str, str]:
+        return {"status": "ready"}
+
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        raise RuntimeError("state not ready")
+
+
 @workflow.defn(name="counter-query-wf")
 class CounterQueryWorkflow:
     def __init__(self) -> None:
@@ -1129,6 +1139,28 @@ class TestWorkflowTaskExecution:
         assert call_kwargs["query_task_id"] == "qt-missing"
         assert call_kwargs["query_task_attempt"] == 2
         assert call_kwargs["reason"] == "rejected_unknown_query"
+
+    @pytest.mark.asyncio
+    async def test_query_task_reports_state_unavailable_when_replay_fails(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[QueryStateUnavailableWorkflow], activities=[])
+        task = {
+            "query_task_id": "qt-state-unavailable",
+            "query_task_attempt": 1,
+            "workflow_type": "query-state-unavailable-wf",
+            "query_name": "status",
+            "history_events": [],
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "failed"
+        mock_client.fail_query_task.assert_awaited_once()
+        call_kwargs = mock_client.fail_query_task.call_args.kwargs
+        assert call_kwargs["query_task_id"] == "qt-state-unavailable"
+        assert call_kwargs["reason"] == "query_workflow_state_unavailable"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

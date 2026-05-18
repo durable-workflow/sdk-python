@@ -1245,11 +1245,17 @@ class Worker:
             )
             return "failed"
         except QueryFailed as e:
-            reason = "rejected_unknown_query" if "unknown query" in str(e) else "query_rejected"
+            message = str(e)
+            if "unknown query" in message:
+                reason = "rejected_unknown_query"
+            elif message.startswith("workflow replay failed before query:"):
+                reason = "query_workflow_state_unavailable"
+            else:
+                reason = "query_rejected"
             await self._fail_query_task(
                 query_task_id,
                 attempt,
-                str(e),
+                message,
                 reason=reason,
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),

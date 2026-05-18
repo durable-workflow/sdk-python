@@ -842,18 +842,90 @@ class TestQueryWorkflow:
         resp = _mock_response(409, {"reason": "query_worker_unavailable", "message": "no worker"})
         with (
             patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
-            pytest.raises(QueryFailed),
+            pytest.raises(QueryFailed) as excinfo,
         ):
             await client.query_workflow("wf-1", "status")
+
+        assert excinfo.value.reason == "query_worker_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_worker_routed_query_incompatible_raises_query_failed(self, client: Client) -> None:
+        resp = _mock_response(
+            409,
+            {
+                "reason": "query_worker_incompatible",
+                "message": "no compatible worker supports this workflow type",
+            },
+        )
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(QueryFailed) as excinfo,
+        ):
+            await client.query_workflow("wf-1", "status")
+
+        assert excinfo.value.reason == "query_worker_incompatible"
+
+    @pytest.mark.asyncio
+    async def test_worker_routed_query_state_unavailable_raises_query_failed(self, client: Client) -> None:
+        resp = _mock_response(
+            409,
+            {
+                "reason": "query_workflow_state_unavailable",
+                "message": "workflow state is not queryable yet",
+            },
+        )
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(QueryFailed) as excinfo,
+        ):
+            await client.query_workflow("wf-1", "status")
+
+        assert excinfo.value.reason == "query_workflow_state_unavailable"
 
     @pytest.mark.asyncio
     async def test_worker_routed_query_timeout_raises_query_failed(self, client: Client) -> None:
         resp = _mock_response(504, {"reason": "query_worker_timeout", "message": "timed out"})
         with (
             patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
-            pytest.raises(QueryFailed),
+            pytest.raises(QueryFailed) as excinfo,
         ):
             await client.query_workflow("wf-1", "status")
+
+        assert excinfo.value.reason == "query_worker_timeout"
+
+    @pytest.mark.asyncio
+    async def test_worker_routed_query_not_claimed_timeout_raises_query_failed(self, client: Client) -> None:
+        resp = _mock_response(
+            504,
+            {
+                "reason": "query_task_not_claimed",
+                "message": "timed out waiting for a compatible worker to claim the query",
+            },
+        )
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(QueryFailed) as excinfo,
+        ):
+            await client.query_workflow("wf-1", "status")
+
+        assert excinfo.value.reason == "query_task_not_claimed"
+
+    @pytest.mark.asyncio
+    async def test_worker_routed_query_execution_timeout_raises_query_failed(self, client: Client) -> None:
+        resp = _mock_response(
+            504,
+            {
+                "reason": "query_worker_execution_timeout",
+                "message": "worker leased the query but did not complete it",
+            },
+        )
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(QueryFailed) as excinfo,
+        ):
+            await client.query_workflow("wf-1", "status")
+
+        assert excinfo.value.reason == "query_worker_execution_timeout"
 
 
 class TestListWorkflows:
