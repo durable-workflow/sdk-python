@@ -79,6 +79,23 @@ class QueryWorkflow:
         return self.status
 
 
+@workflow.defn(name="counter-query-wf")
+class CounterQueryWorkflow:
+    def __init__(self) -> None:
+        self.count = 0
+
+    @workflow.signal("increment")
+    def increment(self, amount: int) -> None:
+        self.count += amount
+
+    @workflow.query("current")
+    def current(self) -> int:
+        return self.count
+
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        yield ctx.wait_condition(lambda: False)
+
+
 @workflow.defn(name="async-query-wf")
 class AsyncQueryWorkflow:
     @workflow.query("current")
@@ -682,6 +699,62 @@ class TestWorkflowTaskExecution:
             workflow_id=None,
             run_id=None,
             query_name="status",
+        )
+        mock_client.fail_query_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_task_replays_signal_arguments_from_history_export(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[CounterQueryWorkflow], activities=[])
+        signal_arguments = serializer.encode([3], codec="json")
+        task = {
+            "query_task_id": "qt-signal-export",
+            "query_task_attempt": 1,
+            "workflow_type": "counter-query-wf",
+            "workflow_id": "wf-counter",
+            "run_id": "run-counter",
+            "query_name": "current",
+            "history_events": [
+                {
+                    "event_type": "SignalReceived",
+                    "workflow_command_id": "cmd-increment",
+                    "payload": {
+                        "signal_id": "sig-increment",
+                        "workflow_command_id": "cmd-increment",
+                        "signal_name": "increment",
+                    },
+                },
+            ],
+            "history_export": {
+                "payloads": {"codec": "json"},
+                "signals": [
+                    {
+                        "id": "sig-increment",
+                        "command_id": "cmd-increment",
+                        "name": "increment",
+                        "payload_codec": "json",
+                        "arguments": signal_arguments,
+                    },
+                ],
+            },
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "completed"
+        mock_client.complete_query_task.assert_awaited_once_with(
+            query_task_id="qt-signal-export",
+            lease_owner=worker.worker_id,
+            query_task_attempt=1,
+            result=3,
+            codec="json",
+            workflow_id="wf-counter",
+            run_id="run-counter",
+            query_name="current",
         )
         mock_client.fail_query_task.assert_not_called()
 

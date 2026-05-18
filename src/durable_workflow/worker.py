@@ -25,7 +25,7 @@ import threading
 import time
 import traceback
 import uuid
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from types import FunctionType
 from typing import Any
 
@@ -109,6 +109,136 @@ def _is_final_query_task_rejection(error: BaseException) -> bool:
         and error.status in {404, 409}
         and error.reason() in _QUERY_TASK_FINAL_REJECTION_REASONS
     )
+
+
+def _signal_arguments_envelope_from_export(
+    signal: Mapping[str, Any],
+    *,
+    default_codec: str | None,
+) -> dict[str, Any] | None:
+    raw_arguments = signal.get("arguments")
+    if raw_arguments is None:
+        return None
+
+    codec = signal.get("payload_codec")
+    if not isinstance(codec, str) or codec == "":
+        codec = default_codec or serializer.AVRO_CODEC
+
+    if isinstance(raw_arguments, str):
+        if raw_arguments == "":
+            return None
+        return {"codec": codec, "blob": raw_arguments}
+
+    if not isinstance(raw_arguments, Mapping):
+        return None
+
+    envelope = dict(raw_arguments)
+    if "blob" not in envelope and "external_storage" not in envelope:
+        return None
+    envelope.setdefault("codec", codec)
+    return envelope
+
+
+def _query_history_with_export_signal_arguments(
+    history: Any,
+    history_export: Any,
+    *,
+    default_codec: str | None,
+) -> Any:
+    # Query-task history can carry compact SignalReceived rows; the full
+    # signal payload bytes are still present in the accompanying export.
+    if not isinstance(history, list) or not isinstance(history_export, Mapping):
+        return history
+
+    raw_signals = history_export.get("signals")
+    if not isinstance(raw_signals, list):
+        return history
+
+    export_payloads = history_export.get("payloads")
+    export_codec = (
+        export_payloads.get("codec")
+        if isinstance(export_payloads, Mapping)
+        else None
+    )
+    signal_default_codec = default_codec
+    if signal_default_codec is None and isinstance(export_codec, str) and export_codec:
+        signal_default_codec = export_codec
+
+    signals_by_id: dict[str, Mapping[str, Any]] = {}
+    signals_by_command_id: dict[str, Mapping[str, Any]] = {}
+    signals_by_name: dict[str, list[Mapping[str, Any]]] = {}
+    for raw_signal in raw_signals:
+        if not isinstance(raw_signal, Mapping):
+            continue
+        envelope = _signal_arguments_envelope_from_export(raw_signal, default_codec=signal_default_codec)
+        if envelope is None:
+            continue
+        signal_id = raw_signal.get("id")
+        if isinstance(signal_id, str) and signal_id:
+            signals_by_id[signal_id] = raw_signal
+        command_id = raw_signal.get("command_id")
+        if isinstance(command_id, str) and command_id:
+            signals_by_command_id[command_id] = raw_signal
+        name = raw_signal.get("name")
+        if isinstance(name, str) and name:
+            signals_by_name.setdefault(name, []).append(raw_signal)
+
+    if not signals_by_id and not signals_by_command_id and not signals_by_name:
+        return history
+
+    name_offsets: dict[str, int] = {}
+    enriched: list[Any] = []
+    changed = False
+    for raw_event in history:
+        if not isinstance(raw_event, Mapping):
+            enriched.append(raw_event)
+            continue
+        event_type = raw_event.get("event_type") or raw_event.get("type")
+        if event_type != "SignalReceived":
+            enriched.append(raw_event)
+            continue
+        raw_payload = raw_event.get("payload")
+        if not isinstance(raw_payload, Mapping):
+            enriched.append(dict(raw_event))
+            continue
+        if any(raw_payload.get(key) is not None for key in ("value", "input", "arguments")):
+            enriched.append(dict(raw_event))
+            continue
+
+        signal: Mapping[str, Any] | None = None
+        signal_id = raw_payload.get("signal_id")
+        if isinstance(signal_id, str) and signal_id:
+            signal = signals_by_id.get(signal_id)
+        if signal is None:
+            command_id = raw_payload.get("workflow_command_id") or raw_event.get("workflow_command_id")
+            if isinstance(command_id, str) and command_id:
+                signal = signals_by_command_id.get(command_id)
+        if signal is None:
+            signal_name = raw_payload.get("signal_name")
+            if isinstance(signal_name, str) and signal_name:
+                candidates = signals_by_name.get(signal_name, [])
+                offset = name_offsets.get(signal_name, 0)
+                if offset < len(candidates):
+                    signal = candidates[offset]
+                    name_offsets[signal_name] = offset + 1
+        if signal is None:
+            enriched.append(dict(raw_event))
+            continue
+
+        envelope = _signal_arguments_envelope_from_export(signal, default_codec=signal_default_codec)
+        if envelope is None:
+            enriched.append(dict(raw_event))
+            continue
+
+        payload = dict(raw_payload)
+        payload["arguments"] = envelope
+        payload.setdefault("payload_codec", envelope.get("codec"))
+        event = dict(raw_event)
+        event["payload"] = payload
+        enriched.append(event)
+        changed = True
+
+    return enriched if changed else history
 
 
 def _callable_fingerprint_payload(value: object) -> str:
@@ -948,7 +1078,11 @@ class Worker:
             return "failed"
 
         result_codec = _command_payload_codec(codec)
-        history = task.get("history_events", [])
+        history = _query_history_with_export_signal_arguments(
+            task.get("history_events", []),
+            task.get("history_export"),
+            default_codec=codec,
+        )
 
         cls = self.workflows.get(wf_type)
         if cls is None:
