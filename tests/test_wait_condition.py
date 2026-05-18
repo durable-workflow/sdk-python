@@ -135,6 +135,36 @@ class TwoStageSignalWait:
         return self.state()
 
 
+@workflow.defn(name="signal-counter-until-finished")
+class SignalCounterUntilFinished:
+    def __init__(self) -> None:
+        self.count = 0
+        self.done = False
+        self.events: list[dict[str, object]] = []
+
+    @workflow.signal("increment")
+    def increment(self, amount: int) -> None:
+        self.count += amount
+        self.events.append({"signal": "increment", "amount": amount, "count": self.count})
+
+    @workflow.signal("finish")
+    def finish(self) -> None:
+        self.done = True
+        self.events.append({"signal": "finish", "count": self.count})
+
+    @workflow.query("current")
+    def current(self) -> dict[str, object]:
+        return {
+            "count": self.count,
+            "done": self.done,
+            "events": list(self.events),
+        }
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.wait_condition(lambda: self.done, key="done")
+        return self.current()
+
+
 class TestCtxWaitCondition:
     def test_wait_condition_returns_dataclass_with_predicate_and_key(self) -> None:
         ctx = WorkflowContext(run_id="x")
@@ -320,6 +350,99 @@ class TestReplayWaitCondition:
         assert isinstance(outcome.commands[0], CompleteWorkflow)
         assert outcome.commands[0].result == expected
         assert query_state(TwoStageSignalWait, history, [], "state") == expected
+
+    def test_repeated_physical_waits_for_one_logical_condition_replay_all_signals(self) -> None:
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-count-3", "condition_key": "done"},
+            },
+            _signal_received_event("increment", [3]),
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-count-8", "condition_key": "done"},
+            },
+            _signal_received_event("increment", [5]),
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-finish", "condition_key": "done"},
+            },
+            _signal_received_event("finish", []),
+        ]
+
+        expected = {
+            "count": 8,
+            "done": True,
+            "events": [
+                {"signal": "increment", "amount": 3, "count": 3},
+                {"signal": "increment", "amount": 5, "count": 8},
+                {"signal": "finish", "count": 8},
+            ],
+        }
+
+        outcome = replay(SignalCounterUntilFinished, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == expected
+        assert query_state(SignalCounterUntilFinished, history, [], "current") == expected
+
+    def test_repeated_physical_waits_keep_query_state_current_before_finish(self) -> None:
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-count-3", "condition_key": "done"},
+            },
+            _signal_received_event("increment", [3]),
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-count-8", "condition_key": "done"},
+            },
+            _signal_received_event("increment", [5]),
+        ]
+
+        outcome = replay(SignalCounterUntilFinished, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], WaitCondition)
+        assert query_state(SignalCounterUntilFinished, history, [], "current") == {
+            "count": 8,
+            "done": False,
+            "events": [
+                {"signal": "increment", "amount": 3, "count": 3},
+                {"signal": "increment", "amount": 5, "count": 8},
+            ],
+        }
+
+    def test_repeated_wait_after_activity_can_be_satisfied_by_later_signal(self) -> None:
+        history = [
+            {
+                "event_type": "ActivityCompleted",
+                "payload": {"result": '"loaded"'},
+            },
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-before-query", "condition_key": "approval"},
+            },
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-after-query", "condition_key": "approval"},
+            },
+            _signal_received_event("approve", ["alice"]),
+        ]
+
+        outcome = replay(ActivityThenWaitForApproval, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == {
+            "activity_result": "loaded",
+            "approved_by": "alice",
+        }
+        assert query_state(ActivityThenWaitForApproval, history, [], "state") == {
+            "activity_result": "loaded",
+            "approved_by": "alice",
+        }
 
     def test_open_with_no_resolution_and_predicate_false_re_emits_wait_condition(self) -> None:
         history = [

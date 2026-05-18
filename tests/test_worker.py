@@ -93,7 +93,7 @@ class CounterQueryWorkflow:
         return self.count
 
     def run(self, ctx):  # type: ignore[no-untyped-def]
-        yield ctx.wait_condition(lambda: False)
+        yield ctx.wait_condition(lambda: False, key="done")
 
 
 @workflow.defn(name="async-query-wf")
@@ -751,6 +751,93 @@ class TestWorkflowTaskExecution:
             lease_owner=worker.worker_id,
             query_task_attempt=1,
             result=3,
+            codec="json",
+            workflow_id="wf-counter",
+            run_id="run-counter",
+            query_name="current",
+        )
+        mock_client.fail_query_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_task_replays_repeated_condition_wait_signal_arguments(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[CounterQueryWorkflow], activities=[])
+        first_signal_arguments = serializer.encode([3], codec="json")
+        second_signal_arguments = serializer.encode([5], codec="json")
+        task = {
+            "query_task_id": "qt-repeated-wait-signals",
+            "query_task_attempt": 1,
+            "workflow_type": "counter-query-wf",
+            "workflow_id": "wf-counter",
+            "run_id": "run-counter",
+            "query_name": "current",
+            "history_events": [
+                {
+                    "event_type": "ConditionWaitOpened",
+                    "payload": {
+                        "condition_wait_id": "wait-count-3",
+                        "condition_key": "done",
+                    },
+                },
+                {
+                    "event_type": "SignalReceived",
+                    "workflow_command_id": "cmd-increment-3",
+                    "payload": {
+                        "signal_id": "sig-increment-3",
+                        "workflow_command_id": "cmd-increment-3",
+                        "signal_name": "increment",
+                    },
+                },
+                {
+                    "event_type": "ConditionWaitOpened",
+                    "payload": {
+                        "condition_wait_id": "wait-count-8",
+                        "condition_key": "done",
+                    },
+                },
+                {
+                    "event_type": "SignalReceived",
+                    "workflow_command_id": "cmd-increment-5",
+                    "payload": {
+                        "signal_id": "sig-increment-5",
+                        "workflow_command_id": "cmd-increment-5",
+                        "signal_name": "increment",
+                    },
+                },
+            ],
+            "history_export": {
+                "payloads": {"codec": "json"},
+                "signals": [
+                    {
+                        "id": "sig-increment-3",
+                        "command_id": "cmd-increment-3",
+                        "name": "increment",
+                        "payload_codec": "json",
+                        "arguments": first_signal_arguments,
+                    },
+                    {
+                        "id": "sig-increment-5",
+                        "command_id": "cmd-increment-5",
+                        "name": "increment",
+                        "payload_codec": "json",
+                        "arguments": second_signal_arguments,
+                    },
+                ],
+            },
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "completed"
+        mock_client.complete_query_task.assert_awaited_once_with(
+            query_task_id="qt-repeated-wait-signals",
+            lease_owner=worker.worker_id,
+            query_task_attempt=1,
+            result=8,
             codec="json",
             workflow_id="wf-counter",
             run_id="run-counter",

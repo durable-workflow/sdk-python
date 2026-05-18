@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Repeated condition-wait openings for the same logical wait now replay through
+  every matching signal before deciding whether the wait is still pending, so
+  long-running signal/query workflows do not get stuck on the first signal.
 - Signal and update receivers recorded while a condition wait is open now
   replay at that specific wait, so later signal-driven waits are not satisfied
   or consumed too early when no activity or timer result separates them.

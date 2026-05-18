@@ -2120,6 +2120,49 @@ def _replay_state(
                 break
             _apply_receiver(pending_receivers.pop(0))
 
+    def _condition_wait_mismatch(opened: Mapping[str, Any], cmd: WaitCondition) -> FailWorkflow | None:
+        opened_key = opened.get("condition_key")
+        if isinstance(opened_key, str) and opened_key != (cmd.condition_key or ""):
+            return FailWorkflow(
+                message=(
+                    "wait_condition key changed during replay: "
+                    f"history has {opened_key!r}, workflow yielded "
+                    f"{cmd.condition_key!r}"
+                ),
+                exception_type="NonDeterministicWaitCondition",
+            )
+
+        opened_fingerprint = opened.get("condition_definition_fingerprint")
+        if (
+            isinstance(opened_fingerprint, str)
+            and cmd.condition_definition_fingerprint != opened_fingerprint
+        ):
+            return FailWorkflow(
+                message=(
+                    "wait_condition predicate fingerprint changed during replay: "
+                    f"history has {opened_fingerprint!r}, workflow yielded "
+                    f"{cmd.condition_definition_fingerprint!r}"
+                ),
+                exception_type="NonDeterministicWaitCondition",
+            )
+
+        return None
+
+    def _same_logical_condition_wait(opened: Mapping[str, Any], cmd: WaitCondition) -> bool:
+        if _condition_wait_mismatch(opened, cmd) is not None:
+            return False
+
+        opened_key = opened.get("condition_key")
+        if isinstance(opened_key, str) and opened_key and opened_key == (cmd.condition_key or ""):
+            return True
+
+        opened_fingerprint = opened.get("condition_definition_fingerprint")
+        return (
+            isinstance(opened_fingerprint, str)
+            and bool(opened_fingerprint)
+            and opened_fingerprint == cmd.condition_definition_fingerprint
+        )
+
     result_cursor = 0
     gen = instance.run(ctx, *start_input)
     if not hasattr(gen, "__next__"):
@@ -2208,56 +2251,52 @@ def _replay_state(
                 next_value = _version_marker_result(cmd, cmd.version)
                 continue
             if isinstance(cmd, WaitCondition):
-                resolution: str | None = None
-                opened: dict[str, Any] | None = None
-                if wait_yield_count < len(wait_opened):
-                    opened = wait_opened[wait_yield_count]
-                    opened_id = opened.get("condition_wait_id")
-                    if isinstance(opened_id, str):
-                        resolution = wait_resolutions.get(opened_id)
-                        _apply_condition_wait_receivers(opened_id)
-                    opened_key = opened.get("condition_key")
-                    if isinstance(opened_key, str) and opened_key != (cmd.condition_key or ""):
+                while True:
+                    resolution: str | None = None
+                    opened: dict[str, Any] | None = None
+                    if wait_yield_count < len(wait_opened):
+                        opened = wait_opened[wait_yield_count]
+                        mismatch = _condition_wait_mismatch(opened, cmd)
+                        if mismatch is not None:
+                            return _state([mismatch])
+                        opened_id = opened.get("condition_wait_id")
+                        if isinstance(opened_id, str):
+                            resolution = wait_resolutions.get(opened_id)
+                            _apply_condition_wait_receivers(opened_id)
+                    if resolution == "timed_out":
+                        next_value = False
+                        wait_yield_count += 1
+                        break
+                    try:
+                        satisfied = bool(cmd.predicate())
+                    except Exception as exc:
                         return _state([FailWorkflow(
-                            message=(
-                                "wait_condition key changed during replay: "
-                                f"history has {opened_key!r}, workflow yielded "
-                                f"{cmd.condition_key!r}"
-                            ),
-                            exception_type="NonDeterministicWaitCondition",
+                            message=f"wait_condition predicate raised: {exc}",
+                            exception_type=type(exc).__name__,
                         )])
-                    opened_fingerprint = opened.get("condition_definition_fingerprint")
+                    if satisfied or resolution == "satisfied":
+                        next_value = True
+                        wait_yield_count += 1
+                        break
+
+                    next_wait_index = wait_yield_count + 1
+                    # A single logical wait can be re-opened in history after
+                    # non-satisfying signals. Consume repeated physical opens
+                    # with the same key/fingerprint before declaring the
+                    # logical wait still pending.
                     if (
-                        isinstance(opened_fingerprint, str)
-                        and cmd.condition_definition_fingerprint != opened_fingerprint
+                        opened is not None
+                        and next_wait_index < len(wait_opened)
+                        and _same_logical_condition_wait(wait_opened[next_wait_index], cmd)
                     ):
-                        return _state([FailWorkflow(
-                            message=(
-                                "wait_condition predicate fingerprint changed during replay: "
-                                f"history has {opened_fingerprint!r}, workflow yielded "
-                                f"{cmd.condition_definition_fingerprint!r}"
-                            ),
-                            exception_type="NonDeterministicWaitCondition",
-                        )])
-                if resolution == "timed_out":
-                    next_value = False
-                    wait_yield_count += 1
-                    continue
-                try:
-                    satisfied = bool(cmd.predicate())
-                except Exception as exc:
-                    return _state([FailWorkflow(
-                        message=f"wait_condition predicate raised: {exc}",
-                        exception_type=type(exc).__name__,
-                    )])
-                if satisfied or resolution == "satisfied":
-                    next_value = True
-                    wait_yield_count += 1
-                    continue
-                ctx.logger._set_replaying(False)
-                pending.append(cmd)
-                wait_yield_count += 1
-                return _state(pending)
+                        wait_yield_count = next_wait_index
+                        continue
+
+                    ctx.logger._set_replaying(False)
+                    pending.append(cmd)
+                    wait_yield_count = next_wait_index
+                    return _state(pending)
+                continue
             if isinstance(cmd, (ScheduleActivity, StartTimer, StartChildWorkflow)):
                 if result_cursor < len(resolved_results):
                     val = resolved_results[result_cursor]
