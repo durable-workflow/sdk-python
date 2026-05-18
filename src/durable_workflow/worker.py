@@ -45,7 +45,15 @@ from .client import (
     Client,
     WorkflowExecution,
 )
-from .errors import ActivityCancelled, AvroNotInstalledError, NonRetryableError, QueryFailed, ServerError
+from .errors import (
+    ActivityCancelled,
+    AvroNotInstalledError,
+    DurableWorkflowError,
+    InvalidArgument,
+    NonRetryableError,
+    QueryFailed,
+    ServerError,
+)
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .interceptors import (
     ActivityInterceptorContext,
@@ -73,6 +81,15 @@ _QUERY_TASK_FINAL_REJECTION_REASONS = {
     "query_task_not_found",
     "query_task_not_leased",
     "query_task_timed_out",
+}
+_WORKFLOW_TASK_COMPLETION_AMBIGUOUS_REJECTION_REASONS = {
+    "lease_expired",
+    "lease_owner_mismatch",
+    "run_already_closed",
+    "run_closed",
+    "task_not_found",
+    "task_not_leased",
+    "workflow_task_attempt_mismatch",
 }
 _WORKER_WORKFLOW_FINGERPRINTS: dict[tuple[str, str], str] = {}
 
@@ -109,6 +126,19 @@ def _is_final_query_task_rejection(error: BaseException) -> bool:
         and error.status in {404, 409}
         and error.reason() in _QUERY_TASK_FINAL_REJECTION_REASONS
     )
+
+
+def _should_fail_workflow_task_after_completion_error(error: BaseException) -> bool:
+    if isinstance(error, InvalidArgument):
+        return True
+
+    if isinstance(error, ServerError):
+        if error.status >= 500 or error.status == 429:
+            return False
+
+        return error.reason() not in _WORKFLOW_TASK_COMPLETION_AMBIGUOUS_REJECTION_REASONS
+
+    return isinstance(error, DurableWorkflowError)
 
 
 def _signal_arguments_envelope_from_export(
@@ -775,8 +805,9 @@ class Worker:
                 )
             except Exception as e:
                 log.warning("failed to complete workflow update task %s: %s", task_id, e)
-                await self._fail_workflow_task_after_completion_error(task_id, attempt, e)
-                return None
+                if _should_fail_workflow_task_after_completion_error(e):
+                    await self._report_workflow_task_after_completion_error(task_id, attempt, e)
+                    return None
             return [command]
 
         try:
@@ -849,11 +880,12 @@ class Worker:
             )
         except Exception as e:
             log.warning("failed to complete workflow task %s: %s", task_id, e)
-            await self._fail_workflow_task_after_completion_error(task_id, attempt, e)
-            return None
+            if _should_fail_workflow_task_after_completion_error(e):
+                await self._report_workflow_task_after_completion_error(task_id, attempt, e)
+                return None
         return commands
 
-    async def _fail_workflow_task_after_completion_error(
+    async def _report_workflow_task_after_completion_error(
         self,
         task_id: str,
         attempt: int,

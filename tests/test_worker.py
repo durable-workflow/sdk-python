@@ -22,7 +22,7 @@ from durable_workflow.client import (
     Client,
     WorkflowExecution,
 )
-from durable_workflow.errors import ServerError
+from durable_workflow.errors import InvalidArgument, ServerError, Unauthorized, WorkflowNotFound
 from durable_workflow.interceptors import (
     ActivityHandler,
     ActivityInterceptorContext,
@@ -32,7 +32,7 @@ from durable_workflow.interceptors import (
     WorkflowTaskHandler,
     WorkflowTaskInterceptorContext,
 )
-from durable_workflow.worker import Worker
+from durable_workflow.worker import Worker, _should_fail_workflow_task_after_completion_error
 
 
 @workflow.defn(name="test-wf")
@@ -183,6 +183,28 @@ def compatible_cluster_info(**overrides: object) -> dict[str, object]:
     }
     info.update(overrides)
     return info
+
+
+class TestWorkflowTaskCompletionErrorClassification:
+    @pytest.mark.parametrize(
+        ("error", "should_fail"),
+        [
+            (TimeoutError("completion timed out"), False),
+            (RuntimeError("connection reset"), False),
+            (ServerError(409, {"reason": "lease_expired"}), False),
+            (ServerError(409, {"reason": "workflow_task_attempt_mismatch"}), False),
+            (ServerError(429, {"reason": "rate_limited"}), False),
+            (ServerError(503, {"reason": "server_busy"}), False),
+            (ServerError(409, {"reason": "invalid_commands"}), True),
+            (InvalidArgument("invalid command payload"), True),
+            (Unauthorized("missing bearer token"), True),
+            (WorkflowNotFound("wf-missing"), True),
+        ],
+    )
+    def test_classifies_definite_and_ambiguous_completion_errors(
+        self, error: BaseException, should_fail: bool
+    ) -> None:
+        assert _should_fail_workflow_task_after_completion_error(error) is should_fail
 
 
 class TestWorkerRegistration:
@@ -502,7 +524,7 @@ class TestWorkflowTaskExecution:
         assert serializer.decode(commands[0]["arguments"]["blob"], codec="json") == ["hello"]
 
     @pytest.mark.asyncio
-    async def test_workflow_task_completion_error_fails_task_for_fast_redispatch(
+    async def test_workflow_task_ambiguous_completion_error_preserves_commands(
         self, mock_client: AsyncMock
     ) -> None:
         mock_client.complete_workflow_task.side_effect = TimeoutError("completion timed out")
@@ -518,15 +540,96 @@ class TestWorkflowTaskExecution:
 
         result = await worker._run_workflow_task(task)
 
+        assert result is not None
+        assert result[0]["type"] == "schedule_activity"
+        mock_client.complete_workflow_task.assert_awaited_once()
+        mock_client.fail_workflow_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workflow_task_definite_completion_rejection_fails_task(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.complete_workflow_task.side_effect = ServerError(409, {"reason": "invalid_commands"})
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        task = {
+            "task_id": "t-complete-invalid",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 2,
+            "history_events": [],
+            "arguments": '["hello"]',
+            "payload_codec": "json",
+        }
+
+        result = await worker._run_workflow_task(task)
+
+        assert result is None
+        mock_client.fail_workflow_task.assert_awaited_once()
+        call_kwargs = mock_client.fail_workflow_task.await_args.kwargs
+        assert call_kwargs["task_id"] == "t-complete-invalid"
+        assert call_kwargs["workflow_task_attempt"] == 2
+        assert call_kwargs["lease_owner"] == worker.worker_id
+        assert call_kwargs["failure_type"] == "ServerError"
+        assert "invalid_commands" in call_kwargs["message"]
+
+    @pytest.mark.parametrize(
+        ("completion_error", "failure_type", "message_fragment"),
+        [
+            (Unauthorized("missing bearer token"), "Unauthorized", "missing bearer token"),
+            (WorkflowNotFound("wf-typed-missing"), "WorkflowNotFound", "wf-typed-missing"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_workflow_task_typed_completion_rejection_fails_task(
+        self,
+        mock_client: AsyncMock,
+        completion_error: Exception,
+        failure_type: str,
+        message_fragment: str,
+    ) -> None:
+        mock_client.complete_workflow_task.side_effect = completion_error
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        task = {
+            "task_id": "t-complete-typed-rejection",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 2,
+            "history_events": [],
+            "arguments": '["hello"]',
+            "payload_codec": "json",
+        }
+
+        result = await worker._run_workflow_task(task)
+
         assert result is None
         mock_client.complete_workflow_task.assert_awaited_once()
         mock_client.fail_workflow_task.assert_awaited_once()
         call_kwargs = mock_client.fail_workflow_task.await_args.kwargs
-        assert call_kwargs["task_id"] == "t-complete-timeout"
+        assert call_kwargs["task_id"] == "t-complete-typed-rejection"
         assert call_kwargs["workflow_task_attempt"] == 2
         assert call_kwargs["lease_owner"] == worker.worker_id
-        assert call_kwargs["failure_type"] == "TimeoutError"
-        assert "completion timed out" in call_kwargs["message"]
+        assert call_kwargs["failure_type"] == failure_type
+        assert message_fragment in call_kwargs["message"]
+
+    @pytest.mark.asyncio
+    async def test_workflow_task_definite_completion_rejection_stays_failed_when_report_fails(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.complete_workflow_task.side_effect = ServerError(409, {"reason": "invalid_commands"})
+        mock_client.fail_workflow_task.side_effect = RuntimeError("failure report unavailable")
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        task = {
+            "task_id": "t-complete-invalid-report-fails",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 2,
+            "history_events": [],
+            "arguments": '["hello"]',
+            "payload_codec": "json",
+        }
+
+        result = await worker._run_workflow_task(task)
+
+        assert result is None
+        mock_client.complete_workflow_task.assert_awaited_once()
+        mock_client.fail_workflow_task.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_workflow_command_payload_warning_uses_client_policy(
@@ -701,7 +804,7 @@ class TestWorkflowTaskExecution:
         mock_client.fail_workflow_task.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_update_task_completion_error_fails_task_for_fast_redispatch(
+    async def test_update_task_ambiguous_completion_error_preserves_command(
         self, mock_client: AsyncMock
     ) -> None:
         mock_client.complete_workflow_task.side_effect = TimeoutError("update completion timed out")
@@ -729,14 +832,10 @@ class TestWorkflowTaskExecution:
 
         result = await worker._run_workflow_task(task)
 
-        assert result is None
+        assert result is not None
+        assert result[0]["type"] == "complete_update"
         mock_client.complete_workflow_task.assert_awaited_once()
-        mock_client.fail_workflow_task.assert_awaited_once()
-        call_kwargs = mock_client.fail_workflow_task.await_args.kwargs
-        assert call_kwargs["task_id"] == "t-update-timeout"
-        assert call_kwargs["workflow_task_attempt"] == 3
-        assert call_kwargs["failure_type"] == "TimeoutError"
-        assert "update completion timed out" in call_kwargs["message"]
+        mock_client.fail_workflow_task.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_query_task_executes_registered_query(self, mock_client: AsyncMock) -> None:
