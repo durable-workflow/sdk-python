@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Workflow-task completion transport failures now cause the worker to report
+  the task as failed instead of treating the local replay as completed. This
+  lets the server re-dispatch quickly instead of leaving a workflow task leased
+  until timeout when the completion request never records.
 - Repeated condition-wait openings for the same logical wait now replay through
   every matching signal before deciding whether the wait is still pending, so
   long-running signal/query workflows do not get stuck on the first signal.

@@ -502,6 +502,33 @@ class TestWorkflowTaskExecution:
         assert serializer.decode(commands[0]["arguments"]["blob"], codec="json") == ["hello"]
 
     @pytest.mark.asyncio
+    async def test_workflow_task_completion_error_fails_task_for_fast_redispatch(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.complete_workflow_task.side_effect = TimeoutError("completion timed out")
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        task = {
+            "task_id": "t-complete-timeout",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 2,
+            "history_events": [],
+            "arguments": '["hello"]',
+            "payload_codec": "json",
+        }
+
+        result = await worker._run_workflow_task(task)
+
+        assert result is None
+        mock_client.complete_workflow_task.assert_awaited_once()
+        mock_client.fail_workflow_task.assert_awaited_once()
+        call_kwargs = mock_client.fail_workflow_task.await_args.kwargs
+        assert call_kwargs["task_id"] == "t-complete-timeout"
+        assert call_kwargs["workflow_task_attempt"] == 2
+        assert call_kwargs["lease_owner"] == worker.worker_id
+        assert call_kwargs["failure_type"] == "TimeoutError"
+        assert "completion timed out" in call_kwargs["message"]
+
+    @pytest.mark.asyncio
     async def test_workflow_command_payload_warning_uses_client_policy(
         self, mock_client: AsyncMock, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -672,6 +699,44 @@ class TestWorkflowTaskExecution:
             },
         ]
         mock_client.fail_workflow_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_task_completion_error_fails_task_for_fast_redispatch(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.complete_workflow_task.side_effect = TimeoutError("update completion timed out")
+        worker = Worker(mock_client, task_queue="q1", workflows=[UpdateWorkflow], activities=[])
+        task = {
+            "task_id": "t-update-timeout",
+            "workflow_type": "update-wf",
+            "workflow_task_attempt": 3,
+            "workflow_update_id": "upd-worker-1",
+            "workflow_wait_kind": "update",
+            "history_events": [
+                {
+                    "event_type": "UpdateAccepted",
+                    "payload": {
+                        "update_id": "upd-worker-1",
+                        "update_name": "increment",
+                        "arguments": serializer.encode([6], codec="json"),
+                        "payload_codec": "json",
+                    },
+                },
+            ],
+            "arguments": "[]",
+            "payload_codec": "json",
+        }
+
+        result = await worker._run_workflow_task(task)
+
+        assert result is None
+        mock_client.complete_workflow_task.assert_awaited_once()
+        mock_client.fail_workflow_task.assert_awaited_once()
+        call_kwargs = mock_client.fail_workflow_task.await_args.kwargs
+        assert call_kwargs["task_id"] == "t-update-timeout"
+        assert call_kwargs["workflow_task_attempt"] == 3
+        assert call_kwargs["failure_type"] == "TimeoutError"
+        assert "update completion timed out" in call_kwargs["message"]
 
     @pytest.mark.asyncio
     async def test_query_task_executes_registered_query(self, mock_client: AsyncMock) -> None:

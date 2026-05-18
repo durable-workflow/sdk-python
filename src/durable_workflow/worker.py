@@ -775,6 +775,8 @@ class Worker:
                 )
             except Exception as e:
                 log.warning("failed to complete workflow update task %s: %s", task_id, e)
+                await self._fail_workflow_task_after_completion_error(task_id, attempt, e)
+                return None
             return [command]
 
         try:
@@ -847,7 +849,31 @@ class Worker:
             )
         except Exception as e:
             log.warning("failed to complete workflow task %s: %s", task_id, e)
+            await self._fail_workflow_task_after_completion_error(task_id, attempt, e)
+            return None
         return commands
+
+    async def _fail_workflow_task_after_completion_error(
+        self,
+        task_id: str,
+        attempt: int,
+        error: Exception,
+    ) -> None:
+        try:
+            await self.client.fail_workflow_task(
+                task_id=task_id,
+                lease_owner=self.worker_id,
+                workflow_task_attempt=attempt,
+                message=f"workflow task completion failed after commands were produced: {error}",
+                failure_type=type(error).__name__,
+                stack_trace=traceback.format_exc(),
+            )
+        except Exception as fail_error:
+            log.warning(
+                "failed to report workflow task %s completion failure: %s",
+                task_id,
+                fail_error,
+            )
 
     async def _run_activity_task(self, task: dict[str, Any]) -> str:
         task_id: str = task["task_id"]
