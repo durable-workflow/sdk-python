@@ -1171,6 +1171,7 @@ class Client:
         self.control_token = control_token
         self.worker_token = worker_token
         self.namespace = namespace
+        self.timeout = timeout
         self.retry_policy = retry_policy or TransportRetryPolicy()
         self.metrics = metrics or NOOP_METRICS
         self.payload_size_warning_config = (

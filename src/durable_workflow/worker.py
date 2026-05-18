@@ -21,6 +21,7 @@ import hashlib
 import inspect
 import logging
 import sys
+import threading
 import time
 import traceback
 import uuid
@@ -347,6 +348,8 @@ class Worker:
         self._shutdown_timeout = shutdown_timeout
         self._in_flight: set[asyncio.Task[Any]] = set()
         self._query_tasks_supported = False
+        self._query_thread_stop = threading.Event()
+        self._query_thread: threading.Thread | None = None
         # In-flight slot accounting feeds the periodic heartbeat so operators
         # see free-slot counts without the worker having to re-derive them at
         # shutdown. Counters are bumped/decremented around dispatch.
@@ -897,7 +900,7 @@ class Worker:
 
         return await handler(context)
 
-    async def _run_query_task(self, task: dict[str, Any]) -> str:
+    async def _run_query_task(self, task: dict[str, Any], *, client: Client | None = None) -> str:
         context = QueryTaskInterceptorContext(
             worker_id=self.worker_id,
             task_queue=self.task_queue,
@@ -905,7 +908,7 @@ class Worker:
         )
 
         async def call_core(ctx: QueryTaskInterceptorContext) -> str:
-            return await self._run_query_task_core(ctx.task)
+            return await self._run_query_task_core(ctx.task, client=client)
 
         handler = call_core
         for interceptor in reversed(self.interceptors):
@@ -923,7 +926,8 @@ class Worker:
 
         return await handler(context)
 
-    async def _run_query_task_core(self, task: dict[str, Any]) -> str:
+    async def _run_query_task_core(self, task: dict[str, Any], *, client: Client | None = None) -> str:
+        client = client or self.client
         query_task_id: str = task["query_task_id"]
         attempt: int = task.get("query_task_attempt", 1)
         wf_type: str = task.get("workflow_type", "")
@@ -939,6 +943,7 @@ class Worker:
                 reason="query_payload_decode_failed",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
+                client=client,
             )
             return "failed"
 
@@ -953,6 +958,7 @@ class Worker:
                 f"no workflow registered for type {wf_type!r}",
                 reason="query_workflow_type_not_registered",
                 failure_type="WorkflowTypeNotRegistered",
+                client=client,
             )
             return "failed"
 
@@ -992,6 +998,7 @@ class Worker:
                 reason="query_payload_decode_failed",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
+                client=client,
             )
             return "failed"
         except QueryFailed as e:
@@ -1003,6 +1010,7 @@ class Worker:
                 reason=reason,
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
+                client=client,
             )
             return "failed"
         except Exception as e:
@@ -1013,11 +1021,12 @@ class Worker:
                 reason="query_rejected",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
+                client=client,
             )
             return "failed"
 
         try:
-            await self.client.complete_query_task(
+            await client.complete_query_task(
                 query_task_id=query_task_id,
                 lease_owner=self.worker_id,
                 query_task_attempt=attempt,
@@ -1044,6 +1053,7 @@ class Worker:
                 reason=server_reason if server_reason else "query_result_completion_failed",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
+                client=client,
             )
             return "failed"
         except AvroNotInstalledError as e:
@@ -1057,6 +1067,7 @@ class Worker:
                 reason="query_result_encode_failed",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
+                client=client,
             )
             return "failed"
         except (TypeError, ValueError) as e:
@@ -1067,6 +1078,7 @@ class Worker:
                 reason="query_result_encode_failed",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
+                client=client,
             )
             return "failed"
         except Exception as e:
@@ -1077,6 +1089,7 @@ class Worker:
                 reason="query_result_completion_failed",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
+                client=client,
             )
             return "failed"
 
@@ -1107,9 +1120,11 @@ class Worker:
         reason: str,
         failure_type: str | None = None,
         stack_trace: str | None = None,
+        client: Client | None = None,
     ) -> None:
+        client = client or self.client
         try:
-            await self.client.fail_query_task(
+            await client.fail_query_task(
                 query_task_id=query_task_id,
                 lease_owner=self.worker_id,
                 query_task_attempt=attempt,
@@ -1217,11 +1232,12 @@ class Worker:
             self._record_task_metrics("activity", outcome, time.perf_counter() - task_start)
             self._act_semaphore.release()
 
-    async def _poll_query_tasks(self) -> None:
-        while not self._stop.is_set():
+    async def _poll_query_tasks(self, *, client: Client | None = None, track_tasks: bool = True) -> None:
+        client = client or self.client
+        while not self._stop.is_set() and not self._query_thread_stop.is_set():
             try:
                 poll_start = time.perf_counter()
-                task = await self.client.poll_query_task(
+                task = await client.poll_query_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
                     timeout=self._poll_timeout,
@@ -1236,17 +1252,85 @@ class Worker:
                 await asyncio.sleep(0)
                 continue
             self._record_poll_metrics("query", "task", time.perf_counter() - poll_start)
-            self._track(self._dispatch_query_task(task))
+            if track_tasks:
+                self._track(self._dispatch_query_task(task, client=client))
+            else:
+                await self._dispatch_query_task(task, client=client)
 
-    async def _dispatch_query_task(self, task: dict[str, Any]) -> None:
+    async def _dispatch_query_task(self, task: dict[str, Any], *, client: Client | None = None) -> None:
         task_start = time.perf_counter()
         outcome = "error"
         try:
-            outcome = await self._run_query_task(task)
+            outcome = await self._run_query_task(task, client=client)
         except Exception:
             log.exception("unhandled error in query task execution")
         finally:
             self._record_task_metrics("query", outcome, time.perf_counter() - task_start)
+
+    def _clone_client_for_query_tasks(self) -> Client:
+        warning_config = self._payload_size_warning_config()
+
+        return Client(
+            self.client.base_url,
+            token=self.client.token,
+            control_token=self.client.control_token,
+            worker_token=self.client.worker_token,
+            namespace=self.client.namespace,
+            timeout=getattr(self.client, "timeout", 60.0),
+            retry_policy=self.client.retry_policy,
+            metrics=self.metrics,
+            payload_size_limit_bytes=(
+                warning_config.limit_bytes
+                if warning_config is not None
+                else serializer.DEFAULT_PAYLOAD_SIZE_BYTES
+            ),
+            payload_size_warning_threshold_percent=(
+                warning_config.threshold_percent
+                if warning_config is not None
+                else serializer.DEFAULT_WARNING_THRESHOLD_PERCENT
+            ),
+            payload_size_warnings=warning_config is not None,
+            external_storage=self.external_storage,
+            external_storage_threshold_bytes=self.external_storage_threshold_bytes,
+            external_storage_cache=self.external_storage_cache,
+        )
+
+    def _can_clone_client_for_query_tasks(self) -> bool:
+        return type(self.client) is Client
+
+    def _start_query_task_thread(self) -> None:
+        if self._query_thread is not None and self._query_thread.is_alive():
+            return
+
+        self._query_thread_stop.clear()
+        self._query_thread = threading.Thread(
+            target=self._run_query_task_thread,
+            name=f"durable-workflow-query-poller-{self.worker_id}",
+            daemon=True,
+        )
+        self._query_thread.start()
+
+    def _run_query_task_thread(self) -> None:
+        try:
+            asyncio.run(self._query_task_thread_main())
+        except Exception:
+            log.exception("query task poller thread stopped unexpectedly")
+
+    async def _query_task_thread_main(self) -> None:
+        async with self._clone_client_for_query_tasks() as client:
+            await self._poll_query_tasks(client=client, track_tasks=False)
+
+    async def _stop_query_task_thread(self) -> None:
+        self._query_thread_stop.set()
+        thread = self._query_thread
+
+        if thread is None or not thread.is_alive():
+            return
+
+        await asyncio.to_thread(
+            thread.join,
+            min(self._shutdown_timeout, self._poll_timeout + 1),
+        )
 
     async def run(self) -> None:
         """Register the worker and poll until `stop()` is called or the task is cancelled."""
@@ -1256,9 +1340,15 @@ class Worker:
         hb_loop = asyncio.create_task(self._heartbeat_loop())
         loops = [wf_loop, act_loop, hb_loop]
         if self._query_tasks_supported:
-            loops.append(asyncio.create_task(self._poll_query_tasks()))
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.gather(*loops)
+            if self._can_clone_client_for_query_tasks():
+                self._start_query_task_thread()
+            else:
+                loops.append(asyncio.create_task(self._poll_query_tasks()))
+        try:
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.gather(*loops)
+        finally:
+            await self._stop_query_task_thread()
 
     async def _heartbeat_loop(self) -> None:
         """Periodically refresh the server-side worker registration.
@@ -1386,7 +1476,10 @@ class Worker:
             await self._register()
             background_tasks.append(asyncio.create_task(self._heartbeat_loop()))
             if self._query_tasks_supported:
-                background_tasks.append(asyncio.create_task(self._poll_query_tasks()))
+                if self._can_clone_client_for_query_tasks():
+                    self._start_query_task_thread()
+                else:
+                    background_tasks.append(asyncio.create_task(self._poll_query_tasks()))
 
             while True:
                 desc = await self.client.describe_workflow(workflow_id)
@@ -1465,6 +1558,7 @@ class Worker:
     async def stop(self) -> None:
         """Stop polling and drain in-flight tasks up to the configured shutdown timeout."""
         self._stop.set()
+        await self._stop_query_task_thread()
         if self._in_flight:
             log.info("draining %d in-flight task(s)…", len(self._in_flight))
             done, pending = await asyncio.wait(

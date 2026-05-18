@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import sys
+import threading
 from unittest.mock import AsyncMock
 
 import pytest
@@ -1475,6 +1476,70 @@ class TestPollLoops:
         assert mock_client.poll_workflow_task.call_count >= 1
         assert mock_client.poll_activity_task.call_count >= 1
         mock_client.poll_query_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_thread_processes_tasks_while_event_loop_is_blocked(
+        self, mock_client: AsyncMock
+    ) -> None:
+        completed = threading.Event()
+        query_task = {
+            "query_task_id": "qt-thread",
+            "query_task_attempt": 1,
+            "workflow_type": "query-wf",
+            "workflow_id": "wf-1",
+            "run_id": "run-1",
+            "query_name": "status",
+            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "history_events": [],
+        }
+
+        class QueryThreadClient:
+            def __init__(self) -> None:
+                self.polled = False
+                self.completed_kwargs: dict[str, object] | None = None
+
+            async def __aenter__(self) -> "QueryThreadClient":
+                return self
+
+            async def __aexit__(self, *_: object) -> None:
+                return None
+
+            async def poll_query_task(self, **_: object) -> dict[str, object] | None:
+                if not self.polled:
+                    self.polled = True
+                    return query_task
+                await asyncio.sleep(0.01)
+                return None
+
+            async def complete_query_task(self, **kwargs: object) -> dict[str, str]:
+                self.completed_kwargs = kwargs
+                completed.set()
+                return {"outcome": "completed"}
+
+            async def fail_query_task(self, **_: object) -> dict[str, str]:
+                raise AssertionError("query task should complete")
+
+        query_client = QueryThreadClient()
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[QueryWorkflow],
+            activities=[],
+            poll_timeout=0.01,
+            shutdown_timeout=0.2,
+        )
+        worker._clone_client_for_query_tasks = lambda: query_client  # type: ignore[method-assign]
+
+        worker._start_query_task_thread()
+
+        assert completed.wait(timeout=1.0)
+        await worker.stop()
+
+        assert query_client.completed_kwargs is not None
+        assert query_client.completed_kwargs["query_task_id"] == "qt-thread"
+        assert query_client.completed_kwargs["result"] == {"status": "ready"}
 
 
 class TestWorkerHeartbeats:
