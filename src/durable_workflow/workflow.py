@@ -31,7 +31,13 @@ from typing import Any
 
 from . import serializer
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
-from .errors import ActivityFailed, ChildWorkflowFailed, QueryFailed, WorkflowPayloadDecodeError
+from .errors import (
+    ActivityFailed,
+    ChildWorkflowFailed,
+    NonDeterministicReplayError,
+    QueryFailed,
+    WorkflowPayloadDecodeError,
+)
 
 _REGISTRY: dict[str, type] = {}
 
@@ -1397,6 +1403,14 @@ class _PendingReceiver:
     condition_wait_id: str | None = None
 
 
+@dataclass(frozen=True)
+class _RecordedStep:
+    workflow_sequence: int
+    shape: str
+    event_types: list[str]
+    details: dict[str, Any]
+
+
 def _decode_history_result(
     payload: dict[str, Any],
     fallback_codec: str | None,
@@ -1850,6 +1864,110 @@ def _fail_update_from_exception(update_id: str, prefix: str, exc: Exception) -> 
     )
 
 
+def _history_event_type(event: Mapping[str, Any]) -> str | None:
+    value = event.get("event_type") or event.get("type")
+    return value if isinstance(value, str) and value else None
+
+
+def _workflow_sequence(payload: Mapping[str, Any]) -> int | None:
+    value = payload.get("sequence") or payload.get("workflow_sequence")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    for key in (
+        "activity_type",
+        "workflow_type",
+        "child_workflow_type",
+        "timer_kind",
+        "change_id",
+        "condition_key",
+        "condition_definition_fingerprint",
+    ):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            details[key] = value
+    return details
+
+
+def _is_resolved_step_event(event_type: str | None, payload: Mapping[str, Any]) -> bool:
+    if event_type in (
+        "ActivityCompleted",
+        "ActivityFailed",
+        "ActivityTimedOut",
+        "ChildRunCompleted",
+        "ChildRunFailed",
+        "ChildRunCancelled",
+        "ChildRunTerminated",
+        "SideEffectRecorded",
+        "VersionMarkerRecorded",
+        "SearchAttributesUpserted",
+    ):
+        return True
+    if event_type == "TimerFired":
+        return payload.get("timer_kind") not in ("condition_timeout", "signal_timeout")
+    return False
+
+
+def _command_history_shape(command: Any) -> str | None:
+    if isinstance(command, ScheduleActivity):
+        return "activity"
+    if isinstance(command, StartTimer):
+        return "timer"
+    if isinstance(command, StartChildWorkflow):
+        return "child workflow"
+    if isinstance(command, RecordSideEffect):
+        return "side effect"
+    if isinstance(command, RecordVersionMarker):
+        return "version marker"
+    if isinstance(command, UpsertSearchAttributes):
+        return "search attributes upsert"
+    if isinstance(command, WaitCondition):
+        return "condition wait"
+    return None
+
+
+def _command_diagnostic_shape(command: Any) -> str:
+    shape = _command_history_shape(command) or type(command).__name__
+    if isinstance(command, ScheduleActivity):
+        return f"{shape}:{command.activity_type}"
+    if isinstance(command, StartChildWorkflow):
+        return f"{shape}:{command.workflow_type}"
+    if isinstance(command, RecordVersionMarker):
+        return f"{shape}:{command.change_id}"
+    return shape
+
+
+def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
+    if isinstance(command, ScheduleActivity):
+        recorded = step.details.get("activity_type")
+        if isinstance(recorded, str) and recorded != command.activity_type:
+            return (
+                f"Recorded activity_type {recorded!r}, but current workflow "
+                f"scheduled {command.activity_type!r}."
+            )
+    elif isinstance(command, StartChildWorkflow):
+        recorded = step.details.get("workflow_type") or step.details.get("child_workflow_type")
+        if isinstance(recorded, str) and recorded != command.workflow_type:
+            return (
+                f"Recorded child workflow_type {recorded!r}, but current workflow "
+                f"started {command.workflow_type!r}."
+            )
+    elif isinstance(command, RecordVersionMarker):
+        recorded = step.details.get("change_id")
+        if isinstance(recorded, str) and recorded != command.change_id:
+            return (
+                f"Recorded version change_id {recorded!r}, but current workflow "
+                f"requested {command.change_id!r}."
+            )
+    return None
+
+
 def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value != "" else None
 
@@ -1934,10 +2052,27 @@ def _replay_state(
 ) -> _ReplayState:
     events = list(history_events)
     workflow_id = workflow_id or _workflow_id_from_history(events)
+    event_types_by_sequence: dict[int, list[str]] = {}
+    details_by_sequence: dict[int, dict[str, Any]] = {}
+    resolved_sequences: set[int] = set()
+
+    for event in events:
+        event_type = _history_event_type(event)
+        payload = event.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            payload = {}
+        sequence = _workflow_sequence(payload)
+        if sequence is None:
+            continue
+        if event_type is not None:
+            event_types_by_sequence.setdefault(sequence, []).append(event_type)
+        details_by_sequence.setdefault(sequence, {}).update(_recorded_step_details(payload))
+        if _is_resolved_step_event(event_type, payload):
+            resolved_sequences.add(sequence)
 
     workflow_start_time: datetime | None = None
     for ev in events:
-        etype = ev.get("event_type")
+        etype = _history_event_type(ev)
         if etype == "WorkflowStarted":
             ts = (ev.get("payload") or {}).get("timestamp")
             if ts:
@@ -1952,6 +2087,10 @@ def _replay_state(
         return _ReplayState(outcome=ReplayOutcome(commands=commands), instance=instance)
 
     resolved_results: list[Any] = []
+    recorded_steps: list[_RecordedStep] = []
+    recorded_wait_steps: list[_RecordedStep] = []
+    recorded_pending_steps: list[_RecordedStep] = []
+    pending_sequences_added: set[int] = set()
     # External receivers normally apply by resolved-result cursor. Receivers
     # observed while a condition wait is open are pinned to that wait so
     # sequential signal-driven waits do not collapse to the same cursor.
@@ -1970,6 +2109,122 @@ def _replay_state(
     wait_resolutions: dict[str, str] = {}
     open_condition_wait_ids: list[str] = []
 
+    def _append_resolved_result(value: Any, shape: str, event: Mapping[str, Any]) -> None:
+        payload = event.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            payload = {}
+        fallback_sequence = len(recorded_steps) + 1
+        workflow_sequence = _workflow_sequence(payload) or fallback_sequence
+        event_type = _history_event_type(event)
+        event_types = list(event_types_by_sequence.get(workflow_sequence, []))
+        if not event_types and event_type is not None:
+            event_types = [event_type]
+        if not event_types:
+            event_types = ["<unknown>"]
+        details = dict(details_by_sequence.get(workflow_sequence, {}))
+        details.update(_recorded_step_details(payload))
+        resolved_results.append(value)
+        recorded_steps.append(_RecordedStep(
+            workflow_sequence=workflow_sequence,
+            shape=shape,
+            event_types=event_types,
+            details=details,
+        ))
+
+    def _recorded_step(shape: str, event: Mapping[str, Any]) -> _RecordedStep:
+        payload = event.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            payload = {}
+        fallback_sequence = len(recorded_steps) + len(recorded_wait_steps) + 1
+        workflow_sequence = _workflow_sequence(payload) or fallback_sequence
+        event_type = _history_event_type(event)
+        event_types = list(event_types_by_sequence.get(workflow_sequence, []))
+        if not event_types and event_type is not None:
+            event_types = [event_type]
+        if not event_types:
+            event_types = ["<unknown>"]
+        details = dict(details_by_sequence.get(workflow_sequence, {}))
+        details.update(_recorded_step_details(payload))
+        return _RecordedStep(
+            workflow_sequence=workflow_sequence,
+            shape=shape,
+            event_types=event_types,
+            details=details,
+        )
+
+    def _append_pending_step(shape: str, event: Mapping[str, Any]) -> None:
+        payload = event.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            payload = {}
+        sequence = _workflow_sequence(payload)
+        if sequence is None:
+            return
+        if sequence in resolved_sequences or sequence in pending_sequences_added:
+            return
+        pending_sequences_added.add(sequence)
+        recorded_pending_steps.append(_recorded_step(shape, event))
+
+    def _assert_step_matches(command: Any, step: _RecordedStep) -> None:
+        expected_shape = _command_history_shape(command)
+        if expected_shape is None:
+            return
+        if step.shape != expected_shape:
+            raise NonDeterministicReplayError(
+                step.workflow_sequence,
+                expected_shape,
+                step.event_types,
+            )
+
+        mismatch = _recorded_detail_mismatch(command, step)
+        if mismatch is not None:
+            raise NonDeterministicReplayError(
+                step.workflow_sequence,
+                _command_diagnostic_shape(command),
+                step.event_types,
+                detail=mismatch,
+            )
+
+    def _assert_next_step_matches(command: Any, offset: int = 0) -> None:
+        step_index = result_cursor + offset
+        if step_index >= len(recorded_steps):
+            return
+        _assert_step_matches(command, recorded_steps[step_index])
+
+    def _next_unconsumed_recorded_step() -> _RecordedStep | None:
+        candidates: list[_RecordedStep] = []
+        if result_cursor < len(recorded_steps):
+            candidates.append(recorded_steps[result_cursor])
+        if wait_yield_count < len(recorded_wait_steps):
+            candidates.append(recorded_wait_steps[wait_yield_count])
+        if pending_step_cursor < len(recorded_pending_steps):
+            candidates.append(recorded_pending_steps[pending_step_cursor])
+        if not candidates:
+            return None
+        return min(candidates, key=lambda step: step.workflow_sequence)
+
+    def _assert_pending_step_matches(command: Any, offset: int = 0) -> None:
+        if offset == 0:
+            step = _next_unconsumed_recorded_step()
+            if step is None:
+                return
+            _assert_step_matches(command, step)
+            return
+
+        step_index = pending_step_cursor + offset
+        if step_index >= len(recorded_pending_steps):
+            return
+        _assert_step_matches(command, recorded_pending_steps[step_index])
+
+    def _assert_no_unconsumed_history(terminal_shape: str) -> None:
+        step = _next_unconsumed_recorded_step()
+        if step is None:
+            return
+        raise NonDeterministicReplayError(
+            step.workflow_sequence,
+            terminal_shape,
+            step.event_types,
+        )
+
     def _current_condition_wait_id() -> str | None:
         return open_condition_wait_ids[-1] if open_condition_wait_ids else None
 
@@ -1980,19 +2235,23 @@ def _replay_state(
             open_condition_wait_ids.remove(wait_id)
 
     for ev in events:
-        etype = ev.get("event_type")
+        etype = _history_event_type(ev)
         payload = ev.get("payload") or {}
         if etype == "ActivityCompleted":
-            resolved_results.append(
+            _append_resolved_result(
                 _decode_history_result(
                     payload,
                     payload_codec,
                     external_storage=external_storage,
                     external_storage_cache=external_storage_cache,
-                )
+                ),
+                "activity",
+                ev,
             )
         elif etype in ("ActivityFailed", "ActivityTimedOut"):
-            resolved_results.append(_activity_failed_from_payload(payload))
+            _append_resolved_result(_activity_failed_from_payload(payload), "activity", ev)
+        elif etype in ("ActivityScheduled", "ActivityStarted"):
+            _append_pending_step("activity", ev)
         elif etype == "TimerFired":
             timer_kind = payload.get("timer_kind")
             if timer_kind == "condition_timeout":
@@ -2003,10 +2262,15 @@ def _replay_state(
                 continue
             if timer_kind == "signal_timeout":
                 continue
-            resolved_results.append(None)
+            _append_resolved_result(None, "timer", ev)
+        elif etype == "TimerScheduled":
+            timer_kind = payload.get("timer_kind")
+            if timer_kind not in ("condition_timeout", "signal_timeout"):
+                _append_pending_step("timer", ev)
         elif etype == "ConditionWaitOpened":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
+                recorded_wait_steps.append(_recorded_step("condition wait", ev))
                 wait_opened.append(dict(payload))
                 open_condition_wait_ids.append(wait_id)
         elif etype == "ConditionWaitSatisfied":
@@ -2020,22 +2284,29 @@ def _replay_state(
                 wait_resolutions[wait_id] = "timed_out"
                 _close_condition_wait(wait_id)
         elif etype in ("SideEffectRecorded", "ChildRunCompleted"):
-            resolved_results.append(
+            shape = "side effect" if etype == "SideEffectRecorded" else "child workflow"
+            _append_resolved_result(
                 _decode_history_result(
                     payload,
                     payload_codec,
                     external_storage=external_storage,
                     external_storage_cache=external_storage_cache,
-                )
+                ),
+                shape,
+                ev,
             )
         elif etype == "ChildRunFailed":
-            resolved_results.append(ChildWorkflowFailed(
-                payload.get("message", "child workflow failed")
-            ))
+            _append_resolved_result(
+                ChildWorkflowFailed(payload.get("message", "child workflow failed")),
+                "child workflow",
+                ev,
+            )
+        elif etype in ("ChildWorkflowScheduled", "ChildRunStarted"):
+            _append_pending_step("child workflow", ev)
         elif etype == "VersionMarkerRecorded":
-            resolved_results.append(payload.get("version", 0))
+            _append_resolved_result(payload.get("version", 0), "version marker", ev)
         elif etype == "SearchAttributesUpserted":
-            resolved_results.append(None)
+            _append_resolved_result(None, "search attributes upsert", ev)
         elif etype == "SignalReceived":
             signal_name = payload.get("signal_name")
             if isinstance(signal_name, str) and signal_name:
@@ -2164,10 +2435,14 @@ def _replay_state(
         )
 
     result_cursor = 0
+    pending_step_cursor = 0
+    wait_yield_count = 0
     gen = instance.run(ctx, *start_input)
     if not hasattr(gen, "__next__"):
         if isinstance(gen, ContinueAsNew):
+            _assert_no_unconsumed_history("continue as new")
             return _state([gen])
+        _assert_no_unconsumed_history("complete workflow")
         return _state([CompleteWorkflow(result=gen)])
 
     ctx.logger._set_replaying(True)
@@ -2176,13 +2451,14 @@ def _replay_state(
     first = True
     pending: list[Command] = []
     advanced_cmd: Any = None
-    wait_yield_count = 0
 
     def _terminal_state(value: Any, *, include_pending: bool) -> _ReplayState:
         _apply_due_receivers()
         commands = list(pending) if include_pending else []
         if isinstance(value, ContinueAsNew):
+            _assert_no_unconsumed_history("continue as new")
             return _state(commands + [value])
+        _assert_no_unconsumed_history("complete workflow")
         return _state(commands + [CompleteWorkflow(result=value)])
 
     try:
@@ -2206,6 +2482,8 @@ def _replay_state(
             if isinstance(cmd, list):
                 needed = len(cmd)
                 if result_cursor + needed <= len(resolved_results):
+                    for offset, child_command in enumerate(cmd):
+                        _assert_next_step_matches(child_command, offset)
                     vals = resolved_results[result_cursor:result_cursor + needed]
                     result_cursor += needed
                     failed = _first_yield_failure(vals)
@@ -2218,43 +2496,57 @@ def _replay_state(
                     next_value = vals
                     continue
                 ctx.logger._set_replaying(False)
+                for offset, child_command in enumerate(cmd):
+                    _assert_pending_step_matches(child_command, offset)
                 pending.extend(cmd)
                 return _state(pending)
             if isinstance(cmd, ContinueAsNew):
                 return _state([cmd])
             if isinstance(cmd, RecordSideEffect):
                 if result_cursor < len(resolved_results):
+                    _assert_next_step_matches(cmd)
                     next_value = resolved_results[result_cursor]
                     result_cursor += 1
                     continue
                 ctx.logger._set_replaying(False)
+                _assert_pending_step_matches(cmd)
                 pending.append(cmd)
                 next_value = cmd.result
                 continue
             if isinstance(cmd, UpsertSearchAttributes):
                 if result_cursor < len(resolved_results):
+                    _assert_next_step_matches(cmd)
                     next_value = resolved_results[result_cursor]
                     result_cursor += 1
                     continue
                 ctx.logger._set_replaying(False)
+                _assert_pending_step_matches(cmd)
                 pending.append(cmd)
                 next_value = None
                 continue
             if isinstance(cmd, RecordVersionMarker):
                 if result_cursor < len(resolved_results):
+                    _assert_next_step_matches(cmd)
                     val = resolved_results[result_cursor]
                     result_cursor += 1
                     next_value = _version_marker_result(cmd, val)
                     continue
                 ctx.logger._set_replaying(False)
+                _assert_pending_step_matches(cmd)
                 pending.append(cmd)
                 next_value = _version_marker_result(cmd, cmd.version)
                 continue
             if isinstance(cmd, WaitCondition):
+                if wait_yield_count >= len(wait_opened):
+                    step = _next_unconsumed_recorded_step()
+                    if step is not None:
+                        _assert_step_matches(cmd, step)
                 while True:
                     resolution: str | None = None
                     opened: dict[str, Any] | None = None
                     if wait_yield_count < len(wait_opened):
+                        if wait_yield_count < len(recorded_wait_steps):
+                            _assert_step_matches(cmd, recorded_wait_steps[wait_yield_count])
                         opened = wait_opened[wait_yield_count]
                         mismatch = _condition_wait_mismatch(opened, cmd)
                         if mismatch is not None:
@@ -2299,6 +2591,7 @@ def _replay_state(
                 continue
             if isinstance(cmd, (ScheduleActivity, StartTimer, StartChildWorkflow)):
                 if result_cursor < len(resolved_results):
+                    _assert_next_step_matches(cmd)
                     val = resolved_results[result_cursor]
                     result_cursor += 1
                     if isinstance(val, (ActivityFailed, ChildWorkflowFailed)):
@@ -2310,6 +2603,7 @@ def _replay_state(
                     next_value = val
                     continue
                 ctx.logger._set_replaying(False)
+                _assert_pending_step_matches(cmd)
                 pending.append(cmd)
                 return _state(pending)
             raise TypeError(f"workflow yielded unsupported command: {cmd!r}")
@@ -2317,10 +2611,14 @@ def _replay_state(
         try:
             return _terminal_state(stop.value, include_pending=True)
         except Exception as exc:
+            if isinstance(exc, NonDeterministicReplayError):
+                raise
             return _state([FailWorkflow(
                 message=str(exc),
                 exception_type=type(exc).__name__,
             )])
+    except NonDeterministicReplayError:
+        raise
     except Exception as exc:
         return _state([FailWorkflow(
             message=str(exc),

@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .errors import ChildWorkflowFailed, WorkflowFailed
+from .errors import ChildWorkflowFailed, NonDeterministicReplayError, WorkflowFailed
 from .workflow import (
     CompleteWorkflow,
     ReplayOutcome,
@@ -172,6 +172,7 @@ class CaseReport:
     workflow_type: str | None
     family: str | None
     source: Mapping[str, Any] | None = None
+    divergence: Mapping[str, Any] | None = None
     expected: Mapping[str, Any] | None = None
     observed: Mapping[str, Any] | None = None
     error: Mapping[str, Any] | None = None
@@ -196,6 +197,7 @@ class CaseReport:
             "workflow_type": self.workflow_type,
             "family": self.family,
             "source": dict(self.source) if self.source is not None else None,
+            "divergence": dict(self.divergence) if self.divergence is not None else None,
             "expected": dict(self.expected) if self.expected is not None else None,
             "observed": dict(self.observed) if self.observed is not None else None,
             "error": dict(self.error) if self.error is not None else None,
@@ -549,6 +551,30 @@ def _replay_case(replayer: Replayer, case: Mapping[str, Any]) -> CaseReport:
             case["history"],
             case.get("start_input") or [],
             workflow_type=workflow_type,
+        )
+    except NonDeterministicReplayError as exc:
+        divergence = {
+            "workflow_sequence": exc.workflow_sequence,
+            "expected_shape": exc.expected_shape,
+            "recorded_event_types": list(exc.recorded_event_types),
+            "message": str(exc),
+        }
+        return CaseReport(
+            id=case_id,
+            status=STATUS_DRIFTED,
+            reason=REASON_SHAPE_MISMATCH,
+            workflow_type=workflow_type,
+            family=family,
+            source=source,
+            divergence=divergence,
+            expected=case.get("expected"),
+            error={
+                "class": type(exc).__name__,
+                "message": str(exc),
+                "workflow_sequence": exc.workflow_sequence,
+                "expected_shape": exc.expected_shape,
+                "recorded_event_types": list(exc.recorded_event_types),
+            },
         )
     except (TypeError, ValueError, ChildWorkflowFailed, WorkflowFailed) as exc:
         return CaseReport(

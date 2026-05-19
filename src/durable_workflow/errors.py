@@ -198,6 +198,33 @@ class WorkflowPayloadDecodeError(DurableWorkflowError):
         self.exception_type = exception_type
 
 
+class NonDeterministicReplayError(DurableWorkflowError):
+    """Current workflow code yielded a command shape that does not match history."""
+
+    def __init__(
+        self,
+        workflow_sequence: int,
+        expected_shape: str,
+        recorded_event_types: list[str],
+        *,
+        detail: str | None = None,
+    ) -> None:
+        message = (
+            f"workflow history at workflow sequence {workflow_sequence} recorded "
+            f"{recorded_event_types!r}, but the current workflow yielded {expected_shape}."
+        )
+        if detail:
+            message = f"{message} {detail}"
+        message = (
+            f"{message} Keep yielded workflow steps stable across deployments or "
+            "run this workflow on a compatible build."
+        )
+        super().__init__(message)
+        self.workflow_sequence = workflow_sequence
+        self.expected_shape = expected_shape
+        self.recorded_event_types = list(recorded_event_types)
+
+
 class UpdateRejected(DurableWorkflowError):
     """A workflow update was rejected by the workflow's validator."""
 

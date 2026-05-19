@@ -44,6 +44,32 @@ class GreetWorkflow:
         return (yield ctx.schedule_activity("greet", [name]))
 
 
+@workflow.defn(name="replay-verify.timer-divergence")
+class TimerDivergenceWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.start_timer(5)
+        return "timer-fired"
+
+
+@workflow.defn(name="replay-verify.activity-divergence")
+class ActivityDivergenceWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return (yield ctx.schedule_activity("farewell", []))
+
+
+@workflow.defn(name="replay-verify.no-wait")
+class NoWaitWorkflow:
+    def run(self, ctx: WorkflowContext) -> str:
+        return "done"
+
+
+@workflow.defn(name="replay-verify.wait-divergence")
+class WaitDivergenceWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        approved = yield ctx.wait_condition(lambda: False, key="approval")
+        return approved
+
+
 def test_verify_replay_reports_clean_replay_with_expectation_match() -> None:
     history = [
         {"event_type": "ActivityCompleted", "payload": {"result": "\"hello Ada\""}},
@@ -62,6 +88,165 @@ def test_verify_replay_reports_clean_replay_with_expectation_match() -> None:
     assert report.workflow_type == "replay-verify.greet"
     assert report.observed == {"command_type": "CompleteWorkflow", "result": "hello Ada"}
     assert report.error is None
+
+
+def test_verify_replay_refuses_different_command_shape_with_actionable_diagnostics() -> None:
+    history = [
+        {
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "sequence": 1,
+                "activity_type": "greet",
+                "result": "\"hello Ada\"",
+            },
+        }
+    ]
+
+    report = verify_replay(
+        TimerDivergenceWorkflow,
+        history,
+        case_id="timer-divergence",
+    )
+
+    assert report.status == STATUS_DRIFTED
+    assert report.reason == REASON_SHAPE_MISMATCH
+    assert report.error is not None
+    assert report.error["class"] == "NonDeterministicReplayError"
+    assert report.error["workflow_sequence"] == 1
+    assert report.error["expected_shape"] == "timer"
+    assert report.error["recorded_event_types"] == ["ActivityCompleted"]
+    assert "current workflow yielded timer" in report.error["message"]
+    assert report.divergence == {
+        "workflow_sequence": 1,
+        "expected_shape": "timer",
+        "recorded_event_types": ["ActivityCompleted"],
+        "message": report.error["message"],
+    }
+
+
+def test_verify_replay_refuses_in_flight_scheduled_command_drift() -> None:
+    history = [
+        {
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "sequence": 1,
+                "activity_type": "greet",
+            },
+        }
+    ]
+
+    report = verify_replay(
+        TimerDivergenceWorkflow,
+        history,
+        case_id="in-flight-divergence",
+    )
+
+    assert report.status == STATUS_DRIFTED
+    assert report.reason == REASON_SHAPE_MISMATCH
+    assert report.error is not None
+    assert report.error["workflow_sequence"] == 1
+    assert report.error["expected_shape"] == "timer"
+    assert report.error["recorded_event_types"] == ["ActivityScheduled"]
+
+
+def test_verify_replay_refuses_same_shape_activity_name_drift() -> None:
+    history = [
+        {
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "sequence": 1,
+                "activity_type": "greet",
+                "result": "\"hello Ada\"",
+            },
+        }
+    ]
+
+    report = verify_replay(
+        ActivityDivergenceWorkflow,
+        history,
+        case_id="activity-divergence",
+    )
+
+    assert report.status == STATUS_DRIFTED
+    assert report.reason == REASON_SHAPE_MISMATCH
+    assert report.error is not None
+    assert report.error["workflow_sequence"] == 1
+    assert report.error["expected_shape"] == "activity:farewell"
+    assert "Recorded activity_type 'greet'" in report.error["message"]
+
+
+def test_verify_replay_refuses_removed_wait_condition_history() -> None:
+    history = [
+        {
+            "event_type": "ConditionWaitOpened",
+            "payload": {
+                "condition_wait_id": "wait-1",
+                "condition_key": "approval",
+            },
+        }
+    ]
+
+    report = verify_replay(
+        NoWaitWorkflow,
+        history,
+        case_id="removed-wait",
+    )
+
+    assert report.status == STATUS_DRIFTED
+    assert report.reason == REASON_SHAPE_MISMATCH
+    assert report.error is not None
+    assert report.error["expected_shape"] == "complete workflow"
+    assert report.error["recorded_event_types"] == ["ConditionWaitOpened"]
+
+
+def test_verify_replay_refuses_wait_replacing_in_flight_activity() -> None:
+    history = [
+        {
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "sequence": 1,
+                "activity_type": "greet",
+            },
+        }
+    ]
+
+    report = verify_replay(
+        WaitDivergenceWorkflow,
+        history,
+        case_id="wait-replaced-activity",
+    )
+
+    assert report.status == STATUS_DRIFTED
+    assert report.reason == REASON_SHAPE_MISMATCH
+    assert report.error is not None
+    assert report.error["workflow_sequence"] == 1
+    assert report.error["expected_shape"] == "condition wait"
+    assert report.error["recorded_event_types"] == ["ActivityScheduled"]
+
+
+def test_verify_replay_refuses_activity_replacing_open_wait() -> None:
+    history = [
+        {
+            "event_type": "ConditionWaitOpened",
+            "payload": {
+                "condition_wait_id": "wait-1",
+                "condition_key": "approval",
+            },
+        }
+    ]
+
+    report = verify_replay(
+        ActivityDivergenceWorkflow,
+        history,
+        case_id="activity-replaced-wait",
+    )
+
+    assert report.status == STATUS_DRIFTED
+    assert report.reason == REASON_SHAPE_MISMATCH
+    assert report.error is not None
+    assert report.error["workflow_sequence"] == 1
+    assert report.error["expected_shape"] == "activity"
+    assert report.error["recorded_event_types"] == ["ConditionWaitOpened"]
 
 
 def test_verify_replay_surfaces_expectation_mismatch_as_drift() -> None:
