@@ -1442,12 +1442,48 @@ class Worker:
         try:
             commands = await self._run_workflow_task(task)
             outcome = "completed" if commands is not None else "failed"
-        except Exception:
+        except Exception as exc:
             log.exception("unhandled error in workflow task execution")
+            await self._report_unhandled_workflow_task_error(task, exc)
+            outcome = "failed"
         finally:
             self._workflow_inflight = max(0, self._workflow_inflight - 1)
             self._record_task_metrics("workflow", outcome, time.perf_counter() - task_start)
             self._wf_semaphore.release()
+
+    async def _report_unhandled_workflow_task_error(
+        self,
+        task: dict[str, Any],
+        error: Exception,
+    ) -> None:
+        task_id = _string_or_none(task.get("task_id"))
+        if task_id is None:
+            return
+
+        attempt = task.get("workflow_task_attempt", 1)
+        if not isinstance(attempt, int) or attempt < 1:
+            attempt = 1
+
+        try:
+            await self.client.fail_workflow_task(
+                task_id=task_id,
+                lease_owner=self.worker_id,
+                workflow_task_attempt=attempt,
+                message=(
+                    "unhandled workflow task execution error: "
+                    f"{str(error) or type(error).__name__}"
+                ),
+                failure_type=type(error).__name__,
+                stack_trace="".join(
+                    traceback.format_exception(type(error), error, error.__traceback__)
+                ),
+            )
+        except Exception as report_error:
+            log.warning(
+                "failed to report unhandled workflow task error for %s: %s",
+                task_id,
+                report_error,
+            )
 
     async def _poll_activity_tasks(self) -> None:
         while not self._stop.is_set():

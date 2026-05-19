@@ -55,6 +55,31 @@ class FanOutWorkflow:
         ]
 
 
+@workflow.defn(name="two-cross-queue-wf")
+class TwoCrossQueueWorkflow:
+    def run(self, ctx, request):  # type: ignore[no-untyped-def]
+        marker = yield ctx.schedule_activity(
+            "external.marker",
+            [request],
+            queue="external-queue",
+        )
+        description = yield ctx.schedule_activity(
+            "external.describe",
+            [marker],
+            queue="external-queue",
+        )
+        return {
+            "marker": marker,
+            "description": description,
+        }
+
+
+@workflow.defn(name="unserializable-result-wf")
+class UnserializableResultWorkflow:
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        return object()
+
+
 @workflow.defn(name="update-wf")
 class UpdateWorkflow:
     def __init__(self) -> None:
@@ -779,6 +804,124 @@ class TestWorkflowTaskExecution:
         assert commands[0]["type"] == "complete_workflow"
         assert commands[0]["result"]["codec"] == "json"
         assert serializer.decode(commands[0]["result"]["blob"], codec="json") == "done"
+
+    @pytest.mark.asyncio
+    async def test_cross_queue_second_activity_uses_completed_first_result(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="workflow-queue", workflows=[TwoCrossQueueWorkflow], activities=[])
+        marker = {"runtime": "external", "name": "Grace", "message": "hello"}
+        task = {
+            "task_id": "t-cross-queue-second",
+            "workflow_type": "two-cross-queue-wf",
+            "workflow_task_attempt": 2,
+            "history_events": [
+                {
+                    "event_type": "ActivityCompleted",
+                    "payload": {
+                        "sequence": 1,
+                        "activity_type": "external.marker",
+                        "payload_codec": "json",
+                        "result": serializer.envelope(marker, codec="json"),
+                    },
+                },
+            ],
+            "arguments": serializer.encode([{"name": "Grace"}], codec="json"),
+            "payload_codec": "json",
+        }
+
+        await worker._run_workflow_task(task)
+
+        mock_client.complete_workflow_task.assert_called_once()
+        commands = mock_client.complete_workflow_task.call_args.kwargs["commands"]
+        assert commands == [
+            {
+                "type": "schedule_activity",
+                "activity_type": "external.describe",
+                "queue": "external-queue",
+                "arguments": commands[0]["arguments"],
+            }
+        ]
+        assert commands[0]["arguments"]["codec"] == "json"
+        assert serializer.decode(commands[0]["arguments"]["blob"], codec="json") == [marker]
+
+    @pytest.mark.asyncio
+    async def test_cross_queue_workflow_completes_after_second_activity(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="workflow-queue", workflows=[TwoCrossQueueWorkflow], activities=[])
+        marker = {"runtime": "external", "name": "Grace", "message": "hello"}
+        description = {"runtime": "external", "description": "Grace handled by external activity"}
+        task = {
+            "task_id": "t-cross-queue-complete",
+            "workflow_type": "two-cross-queue-wf",
+            "workflow_task_attempt": 3,
+            "history_events": [
+                {
+                    "event_type": "ActivityCompleted",
+                    "payload": {
+                        "sequence": 1,
+                        "activity_type": "external.marker",
+                        "payload_codec": "json",
+                        "result": serializer.envelope(marker, codec="json"),
+                    },
+                },
+                {
+                    "event_type": "ActivityCompleted",
+                    "payload": {
+                        "sequence": 2,
+                        "activity_type": "external.describe",
+                        "payload_codec": "json",
+                        "result": serializer.envelope(description, codec="json"),
+                    },
+                },
+            ],
+            "arguments": serializer.encode([{"name": "Grace"}], codec="json"),
+            "payload_codec": "json",
+        }
+
+        await worker._run_workflow_task(task)
+
+        mock_client.complete_workflow_task.assert_called_once()
+        commands = mock_client.complete_workflow_task.call_args.kwargs["commands"]
+        assert commands[0]["type"] == "complete_workflow"
+        assert commands[0]["result"]["codec"] == "json"
+        assert serializer.decode(commands[0]["result"]["blob"], codec="json") == {
+            "marker": marker,
+            "description": description,
+        }
+
+    @pytest.mark.asyncio
+    async def test_dispatch_reports_unhandled_workflow_task_error(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[UnserializableResultWorkflow],
+            activities=[],
+            worker_id="w-unserializable",
+        )
+        task = {
+            "task_id": "t-unserializable",
+            "workflow_type": "unserializable-result-wf",
+            "workflow_task_attempt": 4,
+            "history_events": [],
+            "arguments": "[]",
+            "payload_codec": "json",
+        }
+
+        await worker._dispatch_workflow_task(task)
+
+        mock_client.complete_workflow_task.assert_not_called()
+        mock_client.fail_workflow_task.assert_awaited_once()
+        call_kwargs = mock_client.fail_workflow_task.await_args.kwargs
+        assert call_kwargs["task_id"] == "t-unserializable"
+        assert call_kwargs["workflow_task_attempt"] == 4
+        assert call_kwargs["lease_owner"] == worker.worker_id
+        assert call_kwargs["failure_type"] == "TypeError"
+        assert "unhandled workflow task execution error" in call_kwargs["message"]
+        assert "Object of type object" in call_kwargs["message"]
 
     @pytest.mark.asyncio
     async def test_unknown_workflow_type_fails_task(self, mock_client: AsyncMock) -> None:

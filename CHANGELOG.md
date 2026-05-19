@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Workflow workers now report unhandled workflow-task execution errors back to
+  the server instead of leaving the leased task pending until the lease or CLI
+  wait times out. This lets the server observe and retry or fail the task
+  promptly when command serialization or interceptor code raises after a task
+  has been claimed.
 - Workflow-task completion now retries transient transport failures and server
   throttling/5xx rejections before preserving emitted commands or reporting a
   definite task failure, reducing stuck waiting runs when a signal-satisfied
