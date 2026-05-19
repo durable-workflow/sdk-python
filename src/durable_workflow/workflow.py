@@ -2278,7 +2278,9 @@ def _replay_state(
                     # When multiple signals arrive while the task woken by the
                     # first signal is still leased, the server records those
                     # later SignalReceived rows before the task's next
-                    # ConditionWaitOpened row. Replay them at that next wait.
+                    # ConditionWaitOpened row. Replay them at that next wait
+                    # even if their stored workflow_sequence still points at
+                    # the wait that was open when the signal was accepted.
                     for receiver_index in receivers_since_wait[1:]:
                         if receiver_index is not None:
                             bindings[receiver_index] = wait_id
@@ -2296,8 +2298,8 @@ def _replay_state(
                         prefix_receivers.append(index)
                     continue
 
-                receivers_since_wait.append(None if explicit_sequence else index)
-                if len(receivers_since_wait) == 1 and not explicit_sequence:
+                receivers_since_wait.append(index)
+                if len(receivers_since_wait) == 1:
                     bindings[index] = current_wait_id
                 continue
 
@@ -2404,11 +2406,12 @@ def _replay_state(
             signal_name = payload.get("signal_name")
             if isinstance(signal_name, str) and signal_name:
                 workflow_sequence = _workflow_sequence(payload)
-                condition_wait_id = (
-                    condition_wait_ids_by_sequence.get(workflow_sequence)
-                    if workflow_sequence is not None
-                    else receiver_condition_wait_ids.get(event_index)
-                )
+                if event_index in receiver_condition_wait_ids:
+                    condition_wait_id = receiver_condition_wait_ids[event_index]
+                elif workflow_sequence is not None:
+                    condition_wait_id = condition_wait_ids_by_sequence.get(workflow_sequence)
+                else:
+                    condition_wait_id = None
                 pending_receivers.append(_PendingReceiver(
                     result_index=len(resolved_results),
                     kind="signal",
@@ -2429,11 +2432,12 @@ def _replay_state(
             update_name = payload.get("update_name")
             if isinstance(update_name, str) and update_name:
                 workflow_sequence = _workflow_sequence(payload)
-                condition_wait_id = (
-                    condition_wait_ids_by_sequence.get(workflow_sequence)
-                    if workflow_sequence is not None
-                    else receiver_condition_wait_ids.get(event_index)
-                )
+                if event_index in receiver_condition_wait_ids:
+                    condition_wait_id = receiver_condition_wait_ids[event_index]
+                elif workflow_sequence is not None:
+                    condition_wait_id = condition_wait_ids_by_sequence.get(workflow_sequence)
+                else:
+                    condition_wait_id = None
                 pending_receivers.append(_PendingReceiver(
                     result_index=len(resolved_results),
                     kind="update",

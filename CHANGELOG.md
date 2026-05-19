@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   those signals before the task's `ConditionWaitOpened` row. This avoids
   applying rapid signal batches to the previous wait and prevents replay from
   completing with a later wait/timer history step left unconsumed.
+- Condition-wait replay now prefers the recorded event-order wait binding over
+  a signal's stored `workflow_sequence` when several signals arrive before a
+  reopened wait. This handles server histories where later signals are accepted
+  while the previous wait is still open but must replay against the next
+  physical wait.
 - Workflow workers now report unhandled workflow-task execution errors back to
   the server instead of leaving the leased task pending until the lease or CLI
   wait times out. This lets the server observe and retry or fail the task
