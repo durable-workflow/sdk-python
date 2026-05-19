@@ -2112,8 +2112,6 @@ def _replay_state(
     # in history, future server-recorded) or 'timed_out' (from a matching
     # condition_timeout TimerFired event).
     wait_resolutions: dict[str, str] = {}
-    open_condition_wait_ids: list[str] = []
-
     def _append_resolved_result(value: Any, shape: str, event: Mapping[str, Any]) -> None:
         payload = event.get("payload") or {}
         if not isinstance(payload, Mapping):
@@ -2227,16 +2225,113 @@ def _replay_state(
             step.event_types,
         )
 
-    def _current_condition_wait_id() -> str | None:
-        return open_condition_wait_ids[-1] if open_condition_wait_ids else None
+    def _is_external_receiver_event(event_type: str | None) -> bool:
+        return event_type in ("SignalReceived", "UpdateApplied")
 
-    def _close_condition_wait(wait_id: Any) -> None:
-        if not isinstance(wait_id, str) or not wait_id:
-            return
-        with contextlib.suppress(ValueError):
-            open_condition_wait_ids.remove(wait_id)
+    def _receiver_binding_boundary_kind(event_type: str | None, payload: Mapping[str, Any]) -> str | None:
+        if event_type in (
+            "ConditionWaitSatisfied",
+            "ConditionWaitTimedOut",
+        ):
+            return "condition"
+        if (
+            event_type in ("TimerFired", "TimerCancelled")
+            and payload.get("timer_kind") == "condition_timeout"
+        ):
+            return "condition"
+        if event_type in (
+            "WorkflowCompleted",
+            "WorkflowFailed",
+            "WorkflowContinuedAsNew",
+            "ActivityScheduled",
+            "ActivityStarted",
+            "ChildWorkflowScheduled",
+            "ChildRunStarted",
+        ):
+            return "step"
+        if event_type == "TimerScheduled":
+            return "step" if payload.get("timer_kind") not in ("condition_timeout", "signal_timeout") else None
+        return "step" if _is_resolved_step_event(event_type, payload) else None
 
-    for ev in events:
+    def _receiver_condition_wait_bindings() -> dict[int, str | None]:
+        bindings: dict[int, str | None] = {}
+        prefix_receivers: list[int] = []
+        prefix_can_bind_to_first_wait = True
+        current_wait_id: str | None = None
+        receivers_since_wait: list[int | None] = []
+
+        for index, event in enumerate(events):
+            event_type = _history_event_type(event)
+            payload = event.get("payload") or {}
+            if not isinstance(payload, Mapping):
+                payload = {}
+
+            if event_type == "ConditionWaitOpened":
+                wait_id = payload.get("condition_wait_id")
+                if not isinstance(wait_id, str) or not wait_id:
+                    continue
+
+                if current_wait_id is None:
+                    for receiver_index in prefix_receivers:
+                        bindings[receiver_index] = wait_id if prefix_can_bind_to_first_wait else None
+                else:
+                    # When multiple signals arrive while the task woken by the
+                    # first signal is still leased, the server records those
+                    # later SignalReceived rows before the task's next
+                    # ConditionWaitOpened row. Replay them at that next wait.
+                    for receiver_index in receivers_since_wait[1:]:
+                        if receiver_index is not None:
+                            bindings[receiver_index] = wait_id
+
+                prefix_receivers = []
+                prefix_can_bind_to_first_wait = True
+                current_wait_id = wait_id
+                receivers_since_wait = []
+                continue
+
+            if _is_external_receiver_event(event_type):
+                explicit_sequence = _workflow_sequence(payload) is not None
+                if current_wait_id is None:
+                    if not explicit_sequence:
+                        prefix_receivers.append(index)
+                    continue
+
+                receivers_since_wait.append(None if explicit_sequence else index)
+                if len(receivers_since_wait) == 1 and not explicit_sequence:
+                    bindings[index] = current_wait_id
+                continue
+
+            boundary_kind = _receiver_binding_boundary_kind(event_type, payload)
+            if boundary_kind is None:
+                continue
+
+            if current_wait_id is None:
+                if boundary_kind == "step":
+                    for receiver_index in prefix_receivers:
+                        bindings[receiver_index] = None
+                    prefix_receivers = []
+                    prefix_can_bind_to_first_wait = False
+                continue
+
+            for receiver_index in receivers_since_wait:
+                if receiver_index is not None and receiver_index not in bindings:
+                    bindings[receiver_index] = current_wait_id
+            current_wait_id = None
+            receivers_since_wait = []
+            prefix_can_bind_to_first_wait = boundary_kind == "condition"
+
+        for receiver_index in prefix_receivers:
+            bindings[receiver_index] = None
+        if current_wait_id is not None:
+            for receiver_index in receivers_since_wait:
+                if receiver_index is not None and receiver_index not in bindings:
+                    bindings[receiver_index] = current_wait_id
+
+        return bindings
+
+    receiver_condition_wait_ids = _receiver_condition_wait_bindings()
+
+    for event_index, ev in enumerate(events):
         etype = _history_event_type(ev)
         payload = ev.get("payload") or {}
         if etype == "ActivityCompleted":
@@ -2260,7 +2355,6 @@ def _replay_state(
                 wait_id = payload.get("condition_wait_id")
                 if isinstance(wait_id, str) and wait_id:
                     wait_resolutions[wait_id] = "timed_out"
-                    _close_condition_wait(wait_id)
                 continue
             if timer_kind == "signal_timeout":
                 continue
@@ -2274,17 +2368,14 @@ def _replay_state(
             if isinstance(wait_id, str) and wait_id:
                 recorded_wait_steps.append(_recorded_step("condition wait", ev))
                 wait_opened.append(dict(payload))
-                open_condition_wait_ids.append(wait_id)
         elif etype == "ConditionWaitSatisfied":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
                 wait_resolutions[wait_id] = "satisfied"
-                _close_condition_wait(wait_id)
         elif etype == "ConditionWaitTimedOut":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
                 wait_resolutions[wait_id] = "timed_out"
-                _close_condition_wait(wait_id)
         elif etype in ("SideEffectRecorded", "ChildRunCompleted"):
             shape = "side effect" if etype == "SideEffectRecorded" else "child workflow"
             _append_resolved_result(
@@ -2316,7 +2407,7 @@ def _replay_state(
                 condition_wait_id = (
                     condition_wait_ids_by_sequence.get(workflow_sequence)
                     if workflow_sequence is not None
-                    else None
+                    else receiver_condition_wait_ids.get(event_index)
                 )
                 pending_receivers.append(_PendingReceiver(
                     result_index=len(resolved_results),
@@ -2332,11 +2423,17 @@ def _replay_state(
                         external_storage=external_storage,
                         external_storage_cache=external_storage_cache,
                     ),
-                    condition_wait_id=condition_wait_id or _current_condition_wait_id(),
+                    condition_wait_id=condition_wait_id,
                 ))
         elif etype == "UpdateApplied":
             update_name = payload.get("update_name")
             if isinstance(update_name, str) and update_name:
+                workflow_sequence = _workflow_sequence(payload)
+                condition_wait_id = (
+                    condition_wait_ids_by_sequence.get(workflow_sequence)
+                    if workflow_sequence is not None
+                    else receiver_condition_wait_ids.get(event_index)
+                )
                 pending_receivers.append(_PendingReceiver(
                     result_index=len(resolved_results),
                     kind="update",
@@ -2351,7 +2448,7 @@ def _replay_state(
                         external_storage=external_storage,
                         external_storage_cache=external_storage_cache,
                     ),
-                    condition_wait_id=_current_condition_wait_id(),
+                    condition_wait_id=condition_wait_id,
                 ))
 
     signal_registry: dict[str, str] = getattr(workflow_cls, "__workflow_signals__", {}) or {}
