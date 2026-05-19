@@ -160,6 +160,29 @@ server. Query routing and synchronous pre-accept update validator execution are
 still server-side follow-ups; use those paths only with deployments that
 advertise support for the target workflow type.
 
+Malformed signal and query payloads are reported as typed client errors with
+the server's documented reason and status preserved:
+
+```python
+from durable_workflow import Client, QueryFailed, SignalFailed
+
+client = Client("http://localhost:8080")
+
+try:
+    await client.signal_workflow("counter-1", "increment", args=["not-an-int"])
+except SignalFailed as exc:
+    assert exc.reason == "invalid_signal_arguments"
+    assert exc.status == 422
+    assert exc.validation_errors is not None
+
+try:
+    await client.query_workflow("counter-1", "current-at", args=["not-an-int"])
+except QueryFailed as exc:
+    assert exc.reason == "invalid_query_arguments"
+    assert exc.status == 422
+    assert exc.validation_errors is not None
+```
+
 Use `yield ctx.wait_condition(lambda: self.approved, key="approved",
 timeout=30)` to wait for signal- or update-mutated workflow state without
 polling timers by hand. The SDK sends a stable predicate fingerprint with the

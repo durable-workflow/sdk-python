@@ -122,10 +122,53 @@ class ScheduleAlreadyExists(DurableWorkflowError):
 class QueryFailed(DurableWorkflowError):
     """A workflow query was rejected or the workflow raised while handling it."""
 
-    def __init__(self, message: str, *, reason: str | None = None, body: object | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str | None = None,
+        status: int | None = None,
+        body: object | None = None,
+    ) -> None:
         super().__init__(message)
         self.reason = reason
+        self.status = status
         self.body = body
+
+    @property
+    def validation_errors(self) -> dict[str, Any] | None:
+        """Return structured query argument validation errors, if the server provided them."""
+        if isinstance(self.body, dict):
+            errors = self.body.get("validation_errors") or self.body.get("errors")
+            if isinstance(errors, dict):
+                return errors
+        return None
+
+
+class SignalFailed(DurableWorkflowError):
+    """A workflow signal was rejected before it could be delivered."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str | None = None,
+        status: int | None = None,
+        body: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.status = status
+        self.body = body
+
+    @property
+    def validation_errors(self) -> dict[str, Any] | None:
+        """Return structured signal argument validation errors, if the server provided them."""
+        if isinstance(self.body, dict):
+            errors = self.body.get("validation_errors") or self.body.get("errors")
+            if isinstance(errors, dict):
+                return errors
+        return None
 
 
 class WorkflowPayloadDecodeError(DurableWorkflowError):
@@ -282,14 +325,30 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
 
     reason = body.get("reason") if isinstance(body, dict) else None
     message = body.get("message", "") if isinstance(body, dict) else str(body)
+    operation = _control_plane_operation(body)
 
     if status == 401:
         raise Unauthorized(message or "unauthorized")
 
     def query_failed(default: str) -> QueryFailed:
-        return QueryFailed(message or default, reason=reason if isinstance(reason, str) else None, body=body)
+        return QueryFailed(
+            message or default,
+            reason=reason if isinstance(reason, str) else None,
+            status=status,
+            body=body,
+        )
+
+    def signal_failed(default: str) -> SignalFailed:
+        return SignalFailed(
+            message or default,
+            reason=reason if isinstance(reason, str) else None,
+            status=status,
+            body=body,
+        )
 
     if status == 404:
+        if reason == "unknown_signal":
+            raise signal_failed("signal not found")
         if reason in ("query_not_found", "rejected_unknown_query"):
             raise query_failed("query not found")
         if reason == "schedule_not_found":
@@ -305,6 +364,11 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
             raise ScheduleAlreadyExists(context)
         if reason == "duplicate_not_allowed":
             raise WorkflowAlreadyStarted(context)
+        if reason == "run_not_active":
+            if operation == "signal":
+                raise signal_failed("signal rejected")
+            if operation == "query":
+                raise query_failed("query rejected")
         if reason in (
             "query_rejected",
             "query_worker_unavailable",
@@ -326,9 +390,30 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
         raise ServerError(status, body)
 
     if status == 422:
+        if reason == "invalid_signal_arguments":
+            raise signal_failed("signal argument validation failed")
+        if reason == "invalid_query_arguments":
+            raise query_failed("query argument validation failed")
         errors = None
         if isinstance(body, dict):
             errors = body.get("errors") or body.get("validation_errors")
         raise InvalidArgument(message, errors)
 
     raise ServerError(status, body)
+
+
+def _control_plane_operation(body: object) -> str | None:
+    if not isinstance(body, dict):
+        return None
+
+    control_plane = body.get("control_plane")
+    if isinstance(control_plane, dict):
+        operation = control_plane.get("operation")
+        if isinstance(operation, str) and operation:
+            return operation
+
+    operation = body.get("control_plane_operation")
+    if isinstance(operation, str) and operation:
+        return operation
+
+    return None

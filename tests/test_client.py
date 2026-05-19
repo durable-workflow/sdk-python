@@ -23,6 +23,7 @@ from durable_workflow.errors import (
     InvalidArgument,
     QueryFailed,
     ServerError,
+    SignalFailed,
     Unauthorized,
     UpdateRejected,
     WorkflowAlreadyStarted,
@@ -573,6 +574,36 @@ class TestSignalWorkflow:
         assert sdk["args"]["workflow_id"] == semantic["workflow_id"]
         assert sdk["args"]["signal_name"] == semantic["signal_name"]
 
+    @pytest.mark.asyncio
+    async def test_unknown_signal_raises_signal_failed(self, client: Client) -> None:
+        resp = _mock_response(404, {"reason": "unknown_signal", "message": "signal [missing] not declared"})
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(SignalFailed) as excinfo,
+        ):
+            await client.signal_workflow("wf-1", "missing")
+
+        assert excinfo.value.reason == "unknown_signal"
+        assert excinfo.value.status == 404
+
+    @pytest.mark.asyncio
+    async def test_malformed_signal_payload_raises_signal_failed(self, client: Client) -> None:
+        body = {
+            "reason": "invalid_signal_arguments",
+            "message": "signal argument validation failed",
+            "validation_errors": {"n": ["The n argument must be an integer."]},
+        }
+        resp = _mock_response(422, body)
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(SignalFailed) as excinfo,
+        ):
+            await client.signal_workflow("wf-1", "increment", args=["not-an-int"])
+
+        assert excinfo.value.reason == "invalid_signal_arguments"
+        assert excinfo.value.status == 422
+        assert excinfo.value.validation_errors == {"n": ["The n argument must be an integer."]}
+
 
 class TestWebhookBridgeAdapters:
     @pytest.mark.asyncio
@@ -827,6 +858,25 @@ class TestQueryWorkflow:
             pytest.raises(QueryFailed),
         ):
             await client.query_workflow("wf-1", "status")
+
+    @pytest.mark.asyncio
+    async def test_malformed_query_payload_raises_query_failed(self, client: Client) -> None:
+        body = {
+            "reason": "invalid_query_arguments",
+            "message": "query argument validation failed",
+            "validation_errors": {"n": ["The n argument must be an integer."]},
+        }
+        resp = _mock_response(422, body)
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(QueryFailed) as excinfo,
+        ):
+            await client.query_workflow("wf-1", "current", args=["not-an-int"])
+
+        assert excinfo.value.reason == "invalid_query_arguments"
+        assert excinfo.value.status == 422
+        assert excinfo.value.body == body
+        assert excinfo.value.validation_errors == {"n": ["The n argument must be an integer."]}
 
     @pytest.mark.asyncio
     async def test_query_rejected(self, client: Client) -> None:

@@ -9,6 +9,7 @@ from durable_workflow.errors import (
     NamespaceNotFound,
     QueryFailed,
     ServerError,
+    SignalFailed,
     Unauthorized,
     UpdateRejected,
     WorkflowAlreadyStarted,
@@ -38,6 +39,12 @@ class TestRaiseForStatus:
         with pytest.raises(QueryFailed):
             _raise_for_status(404, {"reason": "query_not_found", "message": "query [status] not declared"})
 
+    def test_404_unknown_signal(self) -> None:
+        with pytest.raises(SignalFailed) as exc_info:
+            _raise_for_status(404, {"reason": "unknown_signal", "message": "signal [advance] not declared"})
+        assert exc_info.value.reason == "unknown_signal"
+        assert exc_info.value.status == 404
+
     def test_404_namespace(self) -> None:
         with pytest.raises(NamespaceNotFound):
             _raise_for_status(404, {"reason": "namespace_not_found", "message": "ns missing"})
@@ -54,6 +61,32 @@ class TestRaiseForStatus:
         with pytest.raises(QueryFailed):
             _raise_for_status(409, {"reason": "query_rejected", "message": "workflow unavailable"})
 
+    def test_409_terminal_signal_rejected(self) -> None:
+        with pytest.raises(SignalFailed) as exc_info:
+            _raise_for_status(
+                409,
+                {
+                    "reason": "run_not_active",
+                    "message": "workflow is completed",
+                    "control_plane": {"operation": "signal"},
+                },
+            )
+        assert exc_info.value.reason == "run_not_active"
+        assert exc_info.value.status == 409
+
+    def test_409_terminal_query_rejected(self) -> None:
+        with pytest.raises(QueryFailed) as exc_info:
+            _raise_for_status(
+                409,
+                {
+                    "reason": "run_not_active",
+                    "message": "workflow is completed",
+                    "control_plane": {"operation": "query"},
+                },
+            )
+        assert exc_info.value.reason == "run_not_active"
+        assert exc_info.value.status == 409
+
     def test_409_update_rejected(self) -> None:
         with pytest.raises(UpdateRejected):
             _raise_for_status(409, {"reason": "update_rejected", "message": "rejected by handler"})
@@ -66,6 +99,32 @@ class TestRaiseForStatus:
         with pytest.raises(InvalidArgument) as exc_info:
             _raise_for_status(422, {"message": "bad", "errors": {"f": ["req"]}})
         assert exc_info.value.errors == {"f": ["req"]}
+
+    def test_422_invalid_signal_arguments(self) -> None:
+        body = {
+            "reason": "invalid_signal_arguments",
+            "message": "signal argument validation failed",
+            "validation_errors": {"name": ["The name argument must be a string."]},
+        }
+        with pytest.raises(SignalFailed) as exc_info:
+            _raise_for_status(422, body)
+        assert exc_info.value.reason == "invalid_signal_arguments"
+        assert exc_info.value.status == 422
+        assert exc_info.value.body == body
+        assert exc_info.value.validation_errors == {"name": ["The name argument must be a string."]}
+
+    def test_422_invalid_query_arguments(self) -> None:
+        body = {
+            "reason": "invalid_query_arguments",
+            "message": "query argument validation failed",
+            "validation_errors": {"prefix": ["The prefix argument is required."]},
+        }
+        with pytest.raises(QueryFailed) as exc_info:
+            _raise_for_status(422, body)
+        assert exc_info.value.reason == "invalid_query_arguments"
+        assert exc_info.value.status == 422
+        assert exc_info.value.body == body
+        assert exc_info.value.validation_errors == {"prefix": ["The prefix argument is required."]}
 
     def test_500_server_error(self) -> None:
         with pytest.raises(ServerError) as exc_info:
