@@ -51,7 +51,7 @@ result document before tag, with the conformance level at `full` or
 | Field | Value |
 | --- | --- |
 | Required claimed targets | `official_sdk`, `worker_protocol_implementation` |
-| Required suite version | `PlatformConformanceSuite::VERSION` (currently `3`, mirrored at `/platform-conformance-contract.json`) |
+| Required suite version | `PlatformConformanceSuite::VERSION` (currently `4`, mirrored at `/platform-conformance-contract.json`) |
 | CI job | `platform-conformance` (lands when the harness reference implementation publishes; until then `cli-parity` and `test_history_event_contract.py` cover the same ground) |
 | Block on `nonconforming` | yes |
 | Artifact attached to release | harness result document, schema `durable-workflow.v2.platform-conformance.result` |
