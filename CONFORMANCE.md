@@ -24,6 +24,7 @@ The Python SDK claims two targets from the suite's matrix:
 | Category | Source path | Status |
 | --- | --- | --- |
 | `control_plane_request_response` | `tests/fixtures/control-plane/` | stable, parity-shared with `cli` |
+| `signal_query_runtime_contract` | `tests/test_signals.py`, `tests/test_queries.py`, `tests/test_worker.py` | stable, parity-shared with PHP worker, CLI, and server routes |
 | `worker_task_lifecycle` | `tests/fixtures/external-task-input/`, `tests/fixtures/external-task-result/` | stable |
 | `history_replay_bundles` | `tests/fixtures/golden_history/` | stable, parity-shared with `workflow` golden bundles |
 
@@ -31,6 +32,9 @@ The fixtures in this repo are exercised today by:
 
 - `tests/test_control_plane_parity_fixtures.py`
 - `tests/test_history_event_contract.py`
+- `tests/test_signals.py`
+- `tests/test_queries.py`
+- `tests/test_worker.py`
 - `scripts/check-cli-parity.py`
 - the `cli-parity` job in `.github/workflows/ci.yml`
 
@@ -47,7 +51,7 @@ result document before tag, with the conformance level at `full` or
 | Field | Value |
 | --- | --- |
 | Required claimed targets | `official_sdk`, `worker_protocol_implementation` |
-| Required suite version | `PlatformConformanceSuite::VERSION` (currently `1`) |
+| Required suite version | `PlatformConformanceSuite::VERSION` (currently `2`, mirrored at `/platform-conformance-contract.json`) |
 | CI job | `platform-conformance` (lands when the harness reference implementation publishes; until then `cli-parity` and `test_history_event_contract.py` cover the same ground) |
 | Block on `nonconforming` | yes |
 | Artifact attached to release | harness result document, schema `durable-workflow.v2.platform-conformance.result` |
@@ -87,7 +91,12 @@ no test in this repo notices.
   `workflow/docs/architecture/sdk-neutrality.md`, manifest class
   `Workflow\V2\Support\SdkNeutralityContract`, public docs page at
   <https://durable-workflow.github.io/docs/2.0/sdk-neutrality>
-- Public docs page: <https://durable-workflow.github.io/docs/2.0/compatibility>
+- Public conformance docs page:
+  <https://durable-workflow.github.io/docs/2.0/platform-conformance>
+- Public static suite manifest:
+  <https://durable-workflow.github.io/platform-conformance-contract.json>
+- Compatibility authority:
+  <https://durable-workflow.github.io/docs/2.0/compatibility>
 - Polyglot parity doc:
   <https://durable-workflow.github.io/docs/polyglot/cli-python-parity>
 - Existing per-repo gates: `tests/test_control_plane_parity_fixtures.py`,
