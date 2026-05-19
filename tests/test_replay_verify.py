@@ -149,6 +149,31 @@ def test_verify_replay_refuses_in_flight_scheduled_command_drift() -> None:
     assert report.error["recorded_event_types"] == ["ActivityScheduled"]
 
 
+def test_verify_replay_refuses_single_command_replacing_pending_timer() -> None:
+    history = [
+        {
+            "event_type": "TimerScheduled",
+            "payload": {
+                "sequence": 1,
+                "timer_kind": "durable_timer",
+            },
+        }
+    ]
+
+    report = verify_replay(
+        ActivityDivergenceWorkflow,
+        history,
+        case_id="activity-replaced-timer",
+    )
+
+    assert report.status == STATUS_DRIFTED
+    assert report.reason == REASON_SHAPE_MISMATCH
+    assert report.error is not None
+    assert report.error["workflow_sequence"] == 1
+    assert report.error["expected_shape"] == "activity"
+    assert report.error["recorded_event_types"] == ["TimerScheduled"]
+
+
 def test_verify_replay_refuses_same_shape_activity_name_drift() -> None:
     history = [
         {

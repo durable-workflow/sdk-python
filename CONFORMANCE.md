@@ -26,7 +26,7 @@ The Python SDK claims two targets from the suite's matrix:
 | `control_plane_request_response` | `tests/fixtures/control-plane/` | stable, parity-shared with `cli` |
 | `signal_query_runtime_contract` | `tests/test_signals.py`, `tests/test_queries.py`, `tests/test_worker.py` | stable, parity-shared with PHP worker, CLI, and server routes |
 | `worker_task_lifecycle` | `tests/fixtures/external-task-input/`, `tests/fixtures/external-task-result/` | stable |
-| `history_replay_bundles` | `tests/fixtures/golden_history/` | stable, parity-shared with `workflow` golden bundles |
+| `history_replay_bundles` | `tests/fixtures/golden_history/` and the public replay scenario manifest at <https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json> | stable, parity-shared with `workflow` golden bundles and the full runtime replay scenario matrix |
 
 The fixtures in this repo are exercised today by:
 
@@ -51,7 +51,7 @@ result document before tag, with the conformance level at `full` or
 | Field | Value |
 | --- | --- |
 | Required claimed targets | `official_sdk`, `worker_protocol_implementation` |
-| Required suite version | `PlatformConformanceSuite::VERSION` (currently `2`, mirrored at `/platform-conformance-contract.json`) |
+| Required suite version | `PlatformConformanceSuite::VERSION` (currently `3`, mirrored at `/platform-conformance-contract.json`) |
 | CI job | `platform-conformance` (lands when the harness reference implementation publishes; until then `cli-parity` and `test_history_event_contract.py` cover the same ground) |
 | Block on `nonconforming` | yes |
 | Artifact attached to release | harness result document, schema `durable-workflow.v2.platform-conformance.result` |

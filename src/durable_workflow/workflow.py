@@ -2190,30 +2190,27 @@ def _replay_state(
             return
         _assert_step_matches(command, recorded_steps[step_index])
 
-    def _next_unconsumed_recorded_step() -> _RecordedStep | None:
+    def _unconsumed_recorded_steps() -> list[_RecordedStep]:
         candidates: list[_RecordedStep] = []
         if result_cursor < len(recorded_steps):
-            candidates.append(recorded_steps[result_cursor])
+            candidates.extend(recorded_steps[result_cursor:])
         if wait_yield_count < len(recorded_wait_steps):
-            candidates.append(recorded_wait_steps[wait_yield_count])
+            candidates.extend(recorded_wait_steps[wait_yield_count:])
         if pending_step_cursor < len(recorded_pending_steps):
-            candidates.append(recorded_pending_steps[pending_step_cursor])
+            candidates.extend(recorded_pending_steps[pending_step_cursor:])
+        return sorted(candidates, key=lambda step: step.workflow_sequence)
+
+    def _next_unconsumed_recorded_step() -> _RecordedStep | None:
+        candidates = _unconsumed_recorded_steps()
         if not candidates:
             return None
-        return min(candidates, key=lambda step: step.workflow_sequence)
+        return candidates[0]
 
     def _assert_pending_step_matches(command: Any, offset: int = 0) -> None:
-        if offset == 0:
-            step = _next_unconsumed_recorded_step()
-            if step is None:
-                return
-            _assert_step_matches(command, step)
+        candidates = _unconsumed_recorded_steps()
+        if offset >= len(candidates):
             return
-
-        step_index = pending_step_cursor + offset
-        if step_index >= len(recorded_pending_steps):
-            return
-        _assert_step_matches(command, recorded_pending_steps[step_index])
+        _assert_step_matches(command, candidates[offset])
 
     def _assert_no_unconsumed_history(terminal_shape: str) -> None:
         step = _next_unconsumed_recorded_step()

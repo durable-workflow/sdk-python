@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from durable_workflow import Replayer, ReplayOutcome, serializer, workflow
-from durable_workflow.errors import ActivityFailed, ChildWorkflowFailed
+from durable_workflow.errors import ActivityFailed, ChildWorkflowFailed, NonDeterministicReplayError
 from durable_workflow.workflow import (
     ActivityRetryPolicy,
     ChildWorkflowRetryPolicy,
@@ -164,6 +164,21 @@ class TestOneActivity:
         assert isinstance(cmd, ScheduleActivity)
         assert cmd.activity_type == "greet"
         assert cmd.arguments == ["world"]
+
+    def test_pending_timer_history_rejects_single_activity_drift(self) -> None:
+        history = [
+            {
+                "event_type": "TimerScheduled",
+                "payload": {"sequence": 1, "timer_kind": "durable_timer"},
+            },
+        ]
+
+        with pytest.raises(NonDeterministicReplayError) as exc_info:
+            replay(OneActivity, history, ["world"])
+
+        assert exc_info.value.workflow_sequence == 1
+        assert exc_info.value.expected_shape == "activity"
+        assert exc_info.value.recorded_event_types == ["TimerScheduled"]
 
     def test_completed_activity_triggers_completion(self) -> None:
         history = [{"event_type": "ActivityCompleted", "payload": {"result": '"hello, world"'}}]
@@ -1229,6 +1244,13 @@ class FanOutTimersWorkflow:
         return result
 
 
+@workflow.defn(name="fan-out-activity-timer-wf")
+class FanOutActivityTimerWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield [ctx.schedule_activity("fetch", []), ctx.start_timer(5)]
+        return "done"
+
+
 @workflow.defn(name="fan-out-then-sequential-wf")
 class FanOutThenSequentialWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -1287,6 +1309,24 @@ class TestFanOut:
         assert len(outcome.commands) == 1
         assert isinstance(outcome.commands[0], ScheduleActivity)
         assert outcome.commands[0].activity_type == "after-timers"
+
+    def test_pending_batch_history_matches_by_workflow_sequence(self) -> None:
+        history = [
+            {
+                "event_type": "TimerScheduled",
+                "payload": {"sequence": 2, "timer_kind": "durable_timer"},
+            },
+            {
+                "event_type": "ActivityScheduled",
+                "payload": {"sequence": 1, "activity_type": "fetch"},
+            },
+        ]
+
+        outcome = replay(FanOutActivityTimerWorkflow, history, [])
+
+        assert len(outcome.commands) == 2
+        assert isinstance(outcome.commands[0], ScheduleActivity)
+        assert isinstance(outcome.commands[1], StartTimer)
 
     def test_fan_out_then_sequential(self) -> None:
         history = [
