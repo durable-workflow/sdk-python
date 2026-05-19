@@ -11,14 +11,18 @@ from durable_workflow.workflow import (
 )
 
 
-def _signal_received_event(name: str, args: list) -> dict:
+def _signal_received_event(name: str, args: list, workflow_sequence: int | None = None) -> dict:
+    payload = {
+        "signal_name": name,
+        "value": serializer.envelope(args),
+        "payload_codec": serializer.AVRO_CODEC,
+    }
+    if workflow_sequence is not None:
+        payload["workflow_sequence"] = workflow_sequence
+
     return {
         "event_type": "SignalReceived",
-        "payload": {
-            "signal_name": name,
-            "value": serializer.envelope(args),
-            "payload_codec": serializer.AVRO_CODEC,
-        },
+        "payload": payload,
     }
 
 
@@ -413,6 +417,52 @@ class TestReplayWaitCondition:
                 {"signal": "increment", "amount": 5, "count": 8},
             ],
         }
+
+    def test_signal_received_before_next_wait_uses_declared_workflow_sequence(self) -> None:
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-count-3",
+                    "condition_key": "done",
+                    "sequence": 1,
+                },
+            },
+            _signal_received_event("increment", [3], workflow_sequence=1),
+            _signal_received_event("finish", [], workflow_sequence=2),
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-finish",
+                    "condition_key": "done",
+                    "sequence": 2,
+                },
+            },
+            {
+                "event_type": "ConditionWaitSatisfied",
+                "payload": {
+                    "condition_wait_id": "wait-finish",
+                    "condition_key": "done",
+                    "sequence": 2,
+                },
+            },
+        ]
+
+        expected = {
+            "count": 3,
+            "done": True,
+            "events": [
+                {"signal": "increment", "amount": 3, "count": 3},
+                {"signal": "finish", "count": 3},
+            ],
+        }
+
+        outcome = replay(SignalCounterUntilFinished, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == expected
+        assert query_state(SignalCounterUntilFinished, history, [], "current") == expected
 
     def test_repeated_wait_after_activity_can_be_satisfied_by_later_signal(self) -> None:
         history = [

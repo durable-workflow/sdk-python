@@ -2055,6 +2055,7 @@ def _replay_state(
     event_types_by_sequence: dict[int, list[str]] = {}
     details_by_sequence: dict[int, dict[str, Any]] = {}
     resolved_sequences: set[int] = set()
+    condition_wait_ids_by_sequence: dict[int, str] = {}
 
     for event in events:
         event_type = _history_event_type(event)
@@ -2069,6 +2070,10 @@ def _replay_state(
         details_by_sequence.setdefault(sequence, {}).update(_recorded_step_details(payload))
         if _is_resolved_step_event(event_type, payload):
             resolved_sequences.add(sequence)
+        if event_type == "ConditionWaitOpened":
+            wait_id = payload.get("condition_wait_id")
+            if isinstance(wait_id, str) and wait_id:
+                condition_wait_ids_by_sequence[sequence] = wait_id
 
     workflow_start_time: datetime | None = None
     for ev in events:
@@ -2307,6 +2312,12 @@ def _replay_state(
         elif etype == "SignalReceived":
             signal_name = payload.get("signal_name")
             if isinstance(signal_name, str) and signal_name:
+                workflow_sequence = _workflow_sequence(payload)
+                condition_wait_id = (
+                    condition_wait_ids_by_sequence.get(workflow_sequence)
+                    if workflow_sequence is not None
+                    else None
+                )
                 pending_receivers.append(_PendingReceiver(
                     result_index=len(resolved_results),
                     kind="signal",
@@ -2321,7 +2332,7 @@ def _replay_state(
                         external_storage=external_storage,
                         external_storage_cache=external_storage_cache,
                     ),
-                    condition_wait_id=_current_condition_wait_id(),
+                    condition_wait_id=condition_wait_id or _current_condition_wait_id(),
                 ))
         elif etype == "UpdateApplied":
             update_name = payload.get("update_name")

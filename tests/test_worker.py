@@ -32,7 +32,11 @@ from durable_workflow.interceptors import (
     WorkflowTaskHandler,
     WorkflowTaskInterceptorContext,
 )
-from durable_workflow.worker import Worker, _should_fail_workflow_task_after_completion_error
+from durable_workflow.worker import (
+    Worker,
+    _query_history_with_export_signal_arguments,
+    _should_fail_workflow_task_after_completion_error,
+)
 
 
 @workflow.defn(name="test-wf")
@@ -915,6 +919,39 @@ class TestWorkflowTaskExecution:
         assert result[0]["type"] == "complete_update"
         assert mock_client.complete_workflow_task.await_count == 2
         mock_client.fail_workflow_task.assert_not_called()
+
+    def test_query_history_enrichment_copies_signal_workflow_sequence_from_export(self) -> None:
+        history = [
+            {
+                "event_type": "SignalReceived",
+                "workflow_command_id": "cmd-finish",
+                "payload": {
+                    "signal_id": "sig-finish",
+                    "workflow_command_id": "cmd-finish",
+                    "signal_name": "finish",
+                },
+            },
+        ]
+        export = {
+            "payloads": {"codec": "json"},
+            "signals": [
+                {
+                    "id": "sig-finish",
+                    "command_id": "cmd-finish",
+                    "name": "finish",
+                    "workflow_sequence": 2,
+                    "payload_codec": "json",
+                    "arguments": serializer.encode([], codec="json"),
+                },
+            ],
+        }
+
+        enriched = _query_history_with_export_signal_arguments(history, export, default_codec="json")
+
+        assert isinstance(enriched, list)
+        payload = enriched[0]["payload"]
+        assert payload["workflow_sequence"] == 2
+        assert payload["arguments"]["codec"] == "json"
 
     @pytest.mark.asyncio
     async def test_query_task_executes_registered_query(self, mock_client: AsyncMock) -> None:

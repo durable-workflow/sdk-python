@@ -241,10 +241,6 @@ def _query_history_with_export_signal_arguments(
         if not isinstance(raw_payload, Mapping):
             enriched.append(dict(raw_event))
             continue
-        if any(raw_payload.get(key) is not None for key in ("value", "input", "arguments")):
-            enriched.append(dict(raw_event))
-            continue
-
         signal: Mapping[str, Any] | None = None
         signal_id = raw_payload.get("signal_id")
         if isinstance(signal_id, str) and signal_id:
@@ -265,14 +261,26 @@ def _query_history_with_export_signal_arguments(
             enriched.append(dict(raw_event))
             continue
 
+        payload = dict(raw_payload)
+        payload_changed = False
+        workflow_sequence = signal.get("workflow_sequence")
+        if isinstance(workflow_sequence, int):
+            payload.setdefault("workflow_sequence", workflow_sequence)
+            payload_changed = True
+        elif isinstance(workflow_sequence, str) and workflow_sequence.isdigit():
+            payload.setdefault("workflow_sequence", int(workflow_sequence))
+            payload_changed = True
+
         envelope = _signal_arguments_envelope_from_export(signal, default_codec=signal_default_codec)
-        if envelope is None:
+        if envelope is not None:
+            payload.setdefault("arguments", envelope)
+            payload.setdefault("payload_codec", envelope.get("codec"))
+            payload_changed = True
+
+        if not payload_changed:
             enriched.append(dict(raw_event))
             continue
 
-        payload = dict(raw_payload)
-        payload["arguments"] = envelope
-        payload.setdefault("payload_codec", envelope.get("codec"))
         event = dict(raw_event)
         event["payload"] = payload
         enriched.append(event)
