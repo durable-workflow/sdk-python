@@ -1419,8 +1419,10 @@ def _decode_history_result(
     external_storage_cache: ExternalPayloadCache | None = None,
 ) -> Any:
     codec = payload.get("payload_codec") or fallback_codec
+    value = payload["result"] if "result" in payload else payload.get("output")
+
     return serializer.decode_envelope(
-        payload.get("result"),
+        value,
         codec=codec,
         external_storage=external_storage,
         external_storage_cache=external_storage_cache,

@@ -925,8 +925,16 @@ class TestChildWorkflow:
         assert cmd.workflow_type == "sub-workflow"
         assert cmd.arguments == ["alice"]
 
-    def test_child_completed(self) -> None:
-        history = [{"event_type": "ChildRunCompleted", "payload": {"result": '"sub-result"'}}]
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"output": '"sub-result"'},
+            {"output": serializer.envelope("sub-result", codec="json")},
+            {"result": '"sub-result"'},
+        ],
+    )
+    def test_child_completed(self, payload: dict[str, object]) -> None:
+        history = [{"event_type": "ChildRunCompleted", "payload": payload}]
         outcome = replay(ChildWorkflow, history, ["alice"])
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]

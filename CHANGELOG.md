@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Python parent workflows now decode successful child workflow completions from
+  the server's documented `ChildRunCompleted.output` history payload, while
+  still accepting the older `result` alias. This prevents completed child
+  workflow returns from replaying as `None`.
 - Condition-wait replay now binds signals that arrive during a leased
   workflow task to the next recorded wait when the server history records
   those signals before the task's `ConditionWaitOpened` row. This avoids
