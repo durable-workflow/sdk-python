@@ -33,7 +33,9 @@ from . import serializer
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .errors import (
     ActivityFailed,
+    ChildWorkflowCancelled,
     ChildWorkflowFailed,
+    ChildWorkflowTerminated,
     NonDeterministicReplayError,
     QueryFailed,
     WorkflowPayloadDecodeError,
@@ -2009,6 +2011,8 @@ def _activity_failed_from_payload(payload: Mapping[str, Any]) -> ActivityFailed:
     message = _optional_str(payload.get("message"))
     if message is None and exception is not None:
         message = _optional_str(exception.get("message"))
+    if message is None:
+        message = _optional_str(payload.get("closed_reason"))
     exception_type = _optional_str(payload.get("exception_type"))
     if exception_type is None and exception is not None:
         exception_type = _optional_str(exception.get("type"))
@@ -2029,6 +2033,51 @@ def _activity_failed_from_payload(payload: Mapping[str, Any]) -> ActivityFailed:
         code=payload.get("code"),
         exception_payload=exposed_exception,
         activity=activity,
+    )
+
+
+def _child_workflow_failed_from_payload(
+    payload: Mapping[str, Any],
+    event_type: str,
+) -> ChildWorkflowFailed:
+    exception_payload = payload.get("exception")
+    exception = dict(exception_payload) if isinstance(exception_payload, Mapping) else None
+
+    message = _optional_str(payload.get("message"))
+    if message is None and exception is not None:
+        message = _optional_str(exception.get("message"))
+
+    exception_class = _optional_str(payload.get("exception_class"))
+    if exception_class is None:
+        exception_class = _optional_str(payload.get("exception_type"))
+    if exception_class is None and exception is not None:
+        exception_class = _optional_str(exception.get("class")) or _optional_str(exception.get("type"))
+
+    child_workflow_run_id = _optional_str(payload.get("child_workflow_run_id"))
+    child_workflow_type = _optional_str(payload.get("child_workflow_type"))
+
+    if event_type == "ChildRunCancelled":
+        return ChildWorkflowCancelled(
+            message or "child workflow was cancelled",
+            exception_class,
+            child_workflow_run_id=child_workflow_run_id,
+            child_workflow_type=child_workflow_type,
+        )
+
+    if event_type == "ChildRunTerminated":
+        return ChildWorkflowTerminated(
+            message or "child workflow was terminated",
+            exception_class,
+            child_workflow_run_id=child_workflow_run_id,
+            child_workflow_type=child_workflow_type,
+        )
+
+    return ChildWorkflowFailed(
+        message or "child workflow failed",
+        exception_class,
+        failure_kind=_optional_str(payload.get("failure_category")) or "child_workflow",
+        child_workflow_run_id=child_workflow_run_id,
+        child_workflow_type=child_workflow_type,
     )
 
 
@@ -2392,9 +2441,9 @@ def _replay_state(
                 shape,
                 ev,
             )
-        elif etype == "ChildRunFailed":
+        elif etype in ("ChildRunFailed", "ChildRunCancelled", "ChildRunTerminated"):
             _append_resolved_result(
-                ChildWorkflowFailed(payload.get("message", "child workflow failed")),
+                _child_workflow_failed_from_payload(payload, etype),
                 "child workflow",
                 ev,
             )

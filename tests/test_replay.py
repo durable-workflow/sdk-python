@@ -6,7 +6,13 @@ from datetime import datetime, timezone
 import pytest
 
 from durable_workflow import Replayer, ReplayOutcome, serializer, workflow
-from durable_workflow.errors import ActivityFailed, ChildWorkflowFailed, NonDeterministicReplayError
+from durable_workflow.errors import (
+    ActivityFailed,
+    ChildWorkflowCancelled,
+    ChildWorkflowFailed,
+    ChildWorkflowTerminated,
+    NonDeterministicReplayError,
+)
 from durable_workflow.workflow import (
     ActivityRetryPolicy,
     ChildWorkflowRetryPolicy,
@@ -837,6 +843,48 @@ class ChildWorkflowFailedWf:
             return "handled"
 
 
+@workflow.defn(name="child-wf-failure-details")
+class ChildWorkflowFailureDetailsWf:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.start_child_workflow("sub-workflow", [])
+        except ChildWorkflowFailed as exc:
+            return {
+                "message": str(exc),
+                "exception_class": exc.exception_class,
+                "failure_kind": exc.failure_kind,
+                "child_workflow_run_id": exc.child_workflow_run_id,
+                "child_workflow_type": exc.child_workflow_type,
+            }
+
+
+@workflow.defn(name="child-wf-cancelled")
+class ChildWorkflowCancelledWf:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.start_child_workflow("sub-workflow", [])
+        except ChildWorkflowCancelled as exc:
+            return {
+                "message": str(exc),
+                "failure_kind": exc.failure_kind,
+                "child_workflow_run_id": exc.child_workflow_run_id,
+                "child_workflow_type": exc.child_workflow_type,
+            }
+
+
+@workflow.defn(name="child-wf-terminated")
+class ChildWorkflowTerminatedWf:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.start_child_workflow("sub-workflow", [])
+        except ChildWorkflowTerminated as exc:
+            return {
+                "message": str(exc),
+                "failure_kind": exc.failure_kind,
+                "child_workflow_run_id": exc.child_workflow_run_id,
+            }
+
+
 @workflow.defn(name="child-wf-failed-fallback")
 class ChildWorkflowFailedFallbackWf:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -948,6 +996,79 @@ class TestChildWorkflow:
         cmd = outcome.commands[0]
         assert isinstance(cmd, CompleteWorkflow)
         assert cmd.result == "handled"
+
+    def test_child_failed_preserves_typed_details(self) -> None:
+        history = [
+            {
+                "event_type": "ChildRunFailed",
+                "payload": {
+                    "message": "child failed",
+                    "exception_class": "ExampleChildError",
+                    "failure_category": "child_workflow",
+                    "child_workflow_run_id": "child-run-1",
+                    "child_workflow_type": "sub-workflow",
+                },
+            },
+        ]
+
+        outcome = replay(ChildWorkflowFailureDetailsWf, history, [])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {
+            "message": "child failed",
+            "exception_class": "ExampleChildError",
+            "failure_kind": "child_workflow",
+            "child_workflow_run_id": "child-run-1",
+            "child_workflow_type": "sub-workflow",
+        }
+
+    def test_child_cancelled_is_observed_by_parent_as_typed_cancellation(self) -> None:
+        history = [
+            {
+                "event_type": "ChildRunCancelled",
+                "payload": {
+                    "message": "cancelled by operator",
+                    "child_workflow_run_id": "child-run-1",
+                    "child_workflow_type": "sub-workflow",
+                },
+            },
+        ]
+
+        outcome = replay(ChildWorkflowCancelledWf, history, [])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {
+            "message": "cancelled by operator",
+            "failure_kind": "cancelled",
+            "child_workflow_run_id": "child-run-1",
+            "child_workflow_type": "sub-workflow",
+        }
+
+    def test_child_terminated_is_observed_by_parent_as_typed_child_failure(self) -> None:
+        history = [
+            {
+                "event_type": "ChildRunTerminated",
+                "payload": {
+                    "message": "terminated by operator",
+                    "child_workflow_run_id": "child-run-1",
+                },
+            },
+        ]
+
+        outcome = replay(ChildWorkflowTerminatedWf, history, [])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {
+            "message": "terminated by operator",
+            "failure_kind": "terminated",
+            "child_workflow_run_id": "child-run-1",
+        }
 
     def test_child_failed_then_fallback_yields_command(self) -> None:
         history = [{"event_type": "ChildRunFailed", "payload": {"message": "child failed"}}]

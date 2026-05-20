@@ -236,9 +236,66 @@ class ChildWorkflowFailed(DurableWorkflowError):
     :attr:`exception_class` mirrors the child's recorded exception class.
     """
 
-    def __init__(self, message: str, exception_class: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        exception_class: str | None = None,
+        *,
+        failure_kind: str | None = None,
+        child_workflow_run_id: str | None = None,
+        child_workflow_type: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.exception_class = exception_class
+        self.failure_kind = failure_kind
+        self.failure_category = failure_kind
+        self.child_workflow_run_id = child_workflow_run_id
+        self.child_workflow_type = child_workflow_type
+
+
+class ChildWorkflowCancelled(ChildWorkflowFailed):
+    """A child workflow finished in the ``cancelled`` state.
+
+    Raised inside the parent workflow when it awaits a child that was
+    cancelled directly or by parent-close policy. It is a child outcome, so it
+    remains catchable as :class:`ChildWorkflowFailed`.
+    """
+
+    def __init__(
+        self,
+        message: str = "child workflow was cancelled",
+        exception_class: str | None = None,
+        *,
+        child_workflow_run_id: str | None = None,
+        child_workflow_type: str | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            exception_class,
+            failure_kind="cancelled",
+            child_workflow_run_id=child_workflow_run_id,
+            child_workflow_type=child_workflow_type,
+        )
+
+
+class ChildWorkflowTerminated(ChildWorkflowFailed):
+    """A child workflow finished in the ``terminated`` state."""
+
+    def __init__(
+        self,
+        message: str = "child workflow was terminated",
+        exception_class: str | None = None,
+        *,
+        child_workflow_run_id: str | None = None,
+        child_workflow_type: str | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            exception_class,
+            failure_kind="terminated",
+            child_workflow_run_id=child_workflow_run_id,
+            child_workflow_type=child_workflow_type,
+        )
 
 
 class ActivityFailed(DurableWorkflowError):
