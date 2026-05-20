@@ -135,6 +135,32 @@ class CounterQueryWorkflow:
         yield ctx.wait_condition(lambda: False, key="done")
 
 
+@workflow.defn(name="replay-query-snapshot-wf")
+class ReplayQuerySnapshotWorkflow:
+    def __init__(self) -> None:
+        self.activity_result: str | None = None
+        self.approved_by: str | None = None
+        self.finished = False
+
+    @workflow.signal("approve")
+    def approve(self, approved_by: str) -> None:
+        self.approved_by = approved_by
+
+    @workflow.query("state")
+    def state(self) -> dict[str, object]:
+        return {
+            "activity_result": self.activity_result,
+            "approved_by": self.approved_by,
+            "finished": self.finished,
+        }
+
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        self.activity_result = yield ctx.schedule_activity("load-state", [])
+        yield ctx.wait_condition(lambda: self.approved_by is not None, key="approval")
+        self.finished = True
+        yield ctx.schedule_activity("after-signal", [self.approved_by])
+
+
 @workflow.defn(name="async-query-wf")
 class AsyncQueryWorkflow:
     @workflow.query("current")
@@ -1265,6 +1291,139 @@ class TestWorkflowTaskExecution:
             workflow_id="wf-counter",
             run_id="run-counter",
             query_name="current",
+        )
+        mock_client.fail_query_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_task_replays_history_from_export_after_worker_restart(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[ReplayQuerySnapshotWorkflow], activities=[])
+        approval_arguments = serializer.encode(["alice"], codec="json")
+        task = {
+            "query_task_id": "qt-export-history",
+            "query_task_attempt": 1,
+            "workflow_type": "replay-query-snapshot-wf",
+            "workflow_id": "wf-replay-query",
+            "run_id": "run-replay-query",
+            "query_name": "state",
+            "history_events": [],
+            "history_export": {
+                "payloads": {"codec": "json"},
+                "history_events": [
+                    {
+                        "type": "ActivityCompleted",
+                        "payload": {
+                            "sequence": 1,
+                            "activity_type": "load-state",
+                            "payload_codec": "json",
+                            "result": serializer.encode("loaded", codec="json"),
+                        },
+                    },
+                    {
+                        "type": "ConditionWaitOpened",
+                        "payload": {
+                            "sequence": 2,
+                            "condition_wait_id": "wait-approval",
+                            "condition_key": "approval",
+                        },
+                    },
+                    {
+                        "type": "SignalReceived",
+                        "payload": {
+                            "signal_id": "sig-approve",
+                            "workflow_command_id": "cmd-approve",
+                            "signal_name": "approve",
+                        },
+                    },
+                ],
+                "signals": [
+                    {
+                        "id": "sig-approve",
+                        "command_id": "cmd-approve",
+                        "name": "approve",
+                        "payload_codec": "json",
+                        "arguments": approval_arguments,
+                    },
+                ],
+            },
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "completed"
+        mock_client.complete_query_task.assert_awaited_once_with(
+            query_task_id="qt-export-history",
+            lease_owner=worker.worker_id,
+            query_task_attempt=1,
+            result={
+                "activity_result": "loaded",
+                "approved_by": "alice",
+                "finished": True,
+            },
+            codec="json",
+            workflow_id="wf-replay-query",
+            run_id="run-replay-query",
+            query_name="state",
+        )
+        mock_client.fail_query_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_task_enriches_compact_activity_completion_from_export(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[ReplayQuerySnapshotWorkflow], activities=[])
+        task = {
+            "query_task_id": "qt-compact-activity",
+            "query_task_attempt": 1,
+            "workflow_type": "replay-query-snapshot-wf",
+            "workflow_id": "wf-compact-activity",
+            "run_id": "run-compact-activity",
+            "query_name": "state",
+            "history_events": [
+                {
+                    "event_type": "ActivityCompleted",
+                    "payload": {
+                        "sequence": 1,
+                        "activity_type": "load-state",
+                    },
+                },
+            ],
+            "history_export": {
+                "payloads": {"codec": "json"},
+                "activities": [
+                    {
+                        "sequence": 1,
+                        "activity_type": "load-state",
+                        "payload_codec": "json",
+                        "result": serializer.encode("loaded", codec="json"),
+                    },
+                ],
+            },
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "completed"
+        mock_client.complete_query_task.assert_awaited_once_with(
+            query_task_id="qt-compact-activity",
+            lease_owner=worker.worker_id,
+            query_task_attempt=1,
+            result={
+                "activity_result": "loaded",
+                "approved_by": None,
+                "finished": False,
+            },
+            codec="json",
+            workflow_id="wf-compact-activity",
+            run_id="run-compact-activity",
+            query_name="state",
         )
         mock_client.fail_query_task.assert_not_called()
 

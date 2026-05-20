@@ -179,20 +179,75 @@ def _signal_arguments_envelope_from_export(
     return envelope
 
 
+def _history_events_from_query_export(history: Any, history_export: Any) -> Any:
+    if isinstance(history, list) and history:
+        return history
+    if not isinstance(history_export, Mapping):
+        return history
+
+    raw_events = history_export.get("history_events")
+    if not isinstance(raw_events, list):
+        return history
+
+    events: list[Any] = []
+    changed = False
+    for raw_event in raw_events:
+        if not isinstance(raw_event, Mapping):
+            events.append(raw_event)
+            continue
+
+        event = dict(raw_event)
+        if "event_type" not in event:
+            export_type = event.get("type")
+            if isinstance(export_type, str) and export_type:
+                event["event_type"] = export_type
+                changed = True
+        events.append(event)
+
+    if events:
+        return events
+    return history if isinstance(history, list) or not changed else events
+
+
+def _activity_result_by_sequence_from_export(
+    history_export: Mapping[str, Any],
+) -> dict[int, Mapping[str, Any]]:
+    raw_activities = history_export.get("activities")
+    if not isinstance(raw_activities, list):
+        return {}
+
+    results: dict[int, Mapping[str, Any]] = {}
+    for raw_activity in raw_activities:
+        if not isinstance(raw_activity, Mapping):
+            continue
+        sequence = raw_activity.get("sequence")
+        if isinstance(sequence, str) and sequence.isdigit():
+            sequence = int(sequence)
+        if not isinstance(sequence, int):
+            continue
+        if raw_activity.get("result") is None:
+            continue
+        results.setdefault(sequence, raw_activity)
+
+    return results
+
+
 def _query_history_with_export_signal_arguments(
     history: Any,
     history_export: Any,
     *,
     default_codec: str | None,
 ) -> Any:
-    # Query-task history can carry compact SignalReceived rows; the full
-    # signal payload bytes are still present in the accompanying export.
+    # Query-task history may be omitted or compact when the server routes a
+    # completed/in-flight query to a fresh worker. The attached export remains
+    # the durable source for replay payloads needed to rebuild workflow state.
+    history = _history_events_from_query_export(history, history_export)
     if not isinstance(history, list) or not isinstance(history_export, Mapping):
         return history
 
     raw_signals = history_export.get("signals")
     if not isinstance(raw_signals, list):
-        return history
+        raw_signals = []
 
     export_payloads = history_export.get("payloads")
     export_codec = (
@@ -224,7 +279,11 @@ def _query_history_with_export_signal_arguments(
             signals_by_name.setdefault(name, []).append(raw_signal)
 
     if not signals_by_id and not signals_by_command_id and not signals_by_name:
-        return history
+        signals_available = False
+    else:
+        signals_available = True
+
+    activity_results_by_sequence = _activity_result_by_sequence_from_export(history_export)
 
     name_offsets: dict[str, int] = {}
     enriched: list[Any] = []
@@ -234,12 +293,47 @@ def _query_history_with_export_signal_arguments(
             enriched.append(raw_event)
             continue
         event_type = raw_event.get("event_type") or raw_event.get("type")
+        base_event = dict(raw_event)
+        if "event_type" not in base_event and isinstance(event_type, str) and event_type:
+            base_event["event_type"] = event_type
+            changed = True
+        raw_event = base_event
+        raw_payload = raw_event.get("payload")
+        if not isinstance(raw_payload, Mapping):
+            enriched.append(raw_event)
+            continue
+
+        if event_type == "ActivityCompleted":
+            payload = dict(raw_payload)
+            sequence = payload.get("sequence") or payload.get("workflow_sequence")
+            if isinstance(sequence, str) and sequence.isdigit():
+                sequence = int(sequence)
+            activity = activity_results_by_sequence.get(sequence) if isinstance(sequence, int) else None
+            if activity is not None:
+                payload_changed = False
+                if "result" not in payload and activity.get("result") is not None:
+                    payload["result"] = activity["result"]
+                    payload_changed = True
+                if "payload_codec" not in payload and isinstance(activity.get("payload_codec"), str):
+                    payload["payload_codec"] = activity["payload_codec"]
+                    payload_changed = True
+                if "activity_type" not in payload and isinstance(activity.get("activity_type"), str):
+                    payload["activity_type"] = activity["activity_type"]
+                    payload_changed = True
+                if payload_changed:
+                    event = dict(raw_event)
+                    event["payload"] = payload
+                    enriched.append(event)
+                    changed = True
+                    continue
+            enriched.append(raw_event)
+            continue
+
         if event_type != "SignalReceived":
             enriched.append(raw_event)
             continue
-        raw_payload = raw_event.get("payload")
-        if not isinstance(raw_payload, Mapping):
-            enriched.append(dict(raw_event))
+        if not signals_available:
+            enriched.append(raw_event)
             continue
         signal: Mapping[str, Any] | None = None
         signal_id = raw_payload.get("signal_id")
@@ -278,7 +372,7 @@ def _query_history_with_export_signal_arguments(
             payload_changed = True
 
         if not payload_changed:
-            enriched.append(dict(raw_event))
+            enriched.append(raw_event)
             continue
 
         event = dict(raw_event)
