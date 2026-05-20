@@ -1090,6 +1090,7 @@ class TestNamespaces:
             result = await client.delete_namespace(**fixture["sdk_python"]["args"])
 
         assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert mock.call_args.kwargs.get("json") is None
         assert result.name == fixture["semantic_body"]["name"]
         assert result.status == fixture["semantic_body"]["status"]
         assert result.deleted is not None

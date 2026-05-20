@@ -320,6 +320,32 @@ class TestSyncClientList:
             assert mock.call_args.kwargs.get("json") == {"build_id": None}
 
 
+class TestSyncClientNamespaces:
+    def test_delete_namespace(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            200,
+            {
+                "name": "billing reports",
+                "status": "deleted",
+                "deleted": {"workflow_runs": 2},
+            },
+        )
+        with patch.object(
+            client._async._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = client.delete_namespace("billing reports")
+
+        assert result.name == "billing reports"
+        assert result.status == "deleted"
+        assert result.deleted == {"workflow_runs": 2}
+        assert mock.call_args.args[:2] == (
+            "DELETE",
+            "/api/namespaces/billing%20reports",
+        )
+        assert mock.call_args.kwargs.get("json") is None
+
+
 class TestSyncClientRunVisibility:
     def test_list_workflow_runs(self) -> None:
         client = Client("http://localhost:8080")

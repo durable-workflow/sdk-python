@@ -390,6 +390,10 @@ class Client:
         )
         return result
 
+    def delete_namespace(self, name: str) -> NamespaceDescription:
+        result: NamespaceDescription = _run(self._async.delete_namespace(name))
+        return result
+
     def set_namespace_external_storage(
         self,
         name: str | None = None,
