@@ -1468,6 +1468,106 @@ class TestWorkflowTaskExecution:
         mock_client.fail_query_task.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("placeholder", "query_task_id", "workflow_id", "run_id"),
+        [
+            (None, "qt-null-placeholders", "wf-null-placeholders", "run-null-placeholders"),
+            ("", "qt-empty-placeholders", "wf-empty-placeholders", "run-empty-placeholders"),
+        ],
+    )
+    async def test_query_task_replaces_missing_history_payload_placeholders_from_export(
+        self,
+        mock_client: AsyncMock,
+        placeholder: object,
+        query_task_id: str,
+        workflow_id: str,
+        run_id: str,
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[ReplayQuerySnapshotWorkflow], activities=[])
+        approval_arguments = serializer.encode(["alice"], codec="json")
+        task = {
+            "query_task_id": query_task_id,
+            "query_task_attempt": 1,
+            "workflow_type": "replay-query-snapshot-wf",
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "query_name": "state",
+            "history_events": [
+                {
+                    "event_type": "ActivityCompleted",
+                    "payload": {
+                        "sequence": 1,
+                        "activity_type": "",
+                        "payload_codec": None,
+                        "result": placeholder,
+                    },
+                },
+                {
+                    "event_type": "ConditionWaitOpened",
+                    "payload": {
+                        "sequence": 2,
+                        "condition_wait_id": "wait-approval",
+                        "condition_key": "approval",
+                    },
+                },
+                {
+                    "event_type": "SignalReceived",
+                    "payload": {
+                        "signal_id": "sig-approve",
+                        "workflow_command_id": "cmd-approve",
+                        "signal_name": "approve",
+                        "workflow_sequence": None,
+                        "payload_codec": "",
+                        "arguments": placeholder,
+                    },
+                },
+            ],
+            "history_export": {
+                "payloads": {"codec": "json"},
+                "activities": [
+                    {
+                        "sequence": 1,
+                        "activity_type": "load-state",
+                        "payload_codec": "json",
+                        "result": serializer.encode("loaded", codec="json"),
+                    },
+                ],
+                "signals": [
+                    {
+                        "id": "sig-approve",
+                        "command_id": "cmd-approve",
+                        "name": "approve",
+                        "workflow_sequence": 2,
+                        "payload_codec": "json",
+                        "arguments": approval_arguments,
+                    },
+                ],
+            },
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "completed"
+        mock_client.complete_query_task.assert_awaited_once_with(
+            query_task_id=query_task_id,
+            lease_owner=worker.worker_id,
+            query_task_attempt=1,
+            result={
+                "activity_result": "loaded",
+                "approved_by": "alice",
+                "finished": True,
+            },
+            codec="json",
+            workflow_id=workflow_id,
+            run_id=run_id,
+            query_name="state",
+        )
+        mock_client.fail_query_task.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_query_task_enriches_compact_activity_completion_from_export(
         self, mock_client: AsyncMock
     ) -> None:

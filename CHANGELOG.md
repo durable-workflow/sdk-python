@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Worker query tasks now treat null or empty compact history payload fields as
+  missing when a history export carries the durable activity result or signal
+  arguments, so cold replay after worker restart does not answer queries from
+  an unmodified workflow instance.
 - Worker query tasks now replay from the bundled history export when the
   inline task history is empty or truncated, so cold query replay reconstructs
   activity-derived state instead of answering from a fresh workflow instance.

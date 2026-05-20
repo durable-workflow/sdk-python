@@ -123,6 +123,10 @@ def _string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _is_missing_payload_placeholder(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value == "")
+
+
 def _is_final_query_task_rejection(error: BaseException) -> bool:
     return (
         isinstance(error, ServerError)
@@ -225,7 +229,7 @@ def _activity_result_by_sequence_from_export(
             sequence = int(sequence)
         if not isinstance(sequence, int):
             continue
-        if raw_activity.get("result") is None:
+        if _is_missing_payload_placeholder(raw_activity.get("result")):
             continue
         results.setdefault(sequence, raw_activity)
 
@@ -311,13 +315,22 @@ def _query_history_with_export_signal_arguments(
             activity = activity_results_by_sequence.get(sequence) if isinstance(sequence, int) else None
             if activity is not None:
                 payload_changed = False
-                if "result" not in payload and activity.get("result") is not None:
+                if (
+                    _is_missing_payload_placeholder(payload.get("result"))
+                    and not _is_missing_payload_placeholder(activity.get("result"))
+                ):
                     payload["result"] = activity["result"]
                     payload_changed = True
-                if "payload_codec" not in payload and isinstance(activity.get("payload_codec"), str):
+                if not (
+                    isinstance(payload.get("payload_codec"), str)
+                    and payload.get("payload_codec")
+                ) and isinstance(activity.get("payload_codec"), str):
                     payload["payload_codec"] = activity["payload_codec"]
                     payload_changed = True
-                if "activity_type" not in payload and isinstance(activity.get("activity_type"), str):
+                if not (
+                    isinstance(payload.get("activity_type"), str)
+                    and payload.get("activity_type")
+                ) and isinstance(activity.get("activity_type"), str):
                     payload["activity_type"] = activity["activity_type"]
                     payload_changed = True
                 if payload_changed:
@@ -358,18 +371,28 @@ def _query_history_with_export_signal_arguments(
         payload = dict(raw_payload)
         payload_changed = False
         workflow_sequence = signal.get("workflow_sequence")
-        if isinstance(workflow_sequence, int):
-            payload.setdefault("workflow_sequence", workflow_sequence)
+        if isinstance(workflow_sequence, int) and not isinstance(payload.get("workflow_sequence"), int):
+            payload["workflow_sequence"] = workflow_sequence
             payload_changed = True
-        elif isinstance(workflow_sequence, str) and workflow_sequence.isdigit():
-            payload.setdefault("workflow_sequence", int(workflow_sequence))
+        elif (
+            isinstance(workflow_sequence, str)
+            and workflow_sequence.isdigit()
+            and not isinstance(payload.get("workflow_sequence"), int)
+        ):
+            payload["workflow_sequence"] = int(workflow_sequence)
             payload_changed = True
 
         envelope = _signal_arguments_envelope_from_export(signal, default_codec=signal_default_codec)
         if envelope is not None:
-            payload.setdefault("arguments", envelope)
-            payload.setdefault("payload_codec", envelope.get("codec"))
-            payload_changed = True
+            if _is_missing_payload_placeholder(payload.get("arguments")):
+                payload["arguments"] = envelope
+                payload_changed = True
+            if not (
+                isinstance(payload.get("payload_codec"), str)
+                and payload.get("payload_codec")
+            ):
+                payload["payload_codec"] = envelope.get("codec")
+                payload_changed = True
 
         if not payload_changed:
             enriched.append(raw_event)
