@@ -257,6 +257,7 @@ def compatible_cluster_info(**overrides: object) -> dict[str, object]:
             "version": PROTOCOL_VERSION,
             "server_capabilities": {
                 "query_tasks": True,
+                "long_poll_timeout": 30,
             },
         },
     }
@@ -313,6 +314,39 @@ class TestWorkerRegistration:
         process_metrics = call_kwargs["process_metrics"]
         assert process_metrics["process_id"] > 0
         assert "process_started_at" in process_metrics
+
+    @pytest.mark.asyncio
+    async def test_register_keeps_http_timeout_above_server_long_poll(self, mock_client: AsyncMock) -> None:
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(
+                worker_protocol={
+                    "version": PROTOCOL_VERSION,
+                    "server_capabilities": {
+                        "query_tasks": True,
+                        "long_poll_timeout": 12,
+                    },
+                }
+            )
+        )
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            worker_id="w-short-poll",
+            poll_timeout=0.01,
+        )
+
+        async def poll_once(**_: object) -> None:
+            worker._stop.set()
+            return None
+
+        mock_client.poll_workflow_task.side_effect = poll_once
+
+        await worker._register()
+        await worker._poll_workflow_tasks()
+
+        assert mock_client.poll_workflow_task.call_args.kwargs["timeout"] == 17.0
 
     @pytest.mark.asyncio
     async def test_register_omits_query_task_capability_when_server_does_not_support_it(
