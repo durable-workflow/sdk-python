@@ -1,0 +1,40 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "namespace.delete",
+  "request": {
+    "method": "DELETE",
+    "path": "/namespaces/billing"
+  },
+  "cli": {
+    "argv": {
+      "name": "billing",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "args": {
+      "name": "billing"
+    }
+  },
+  "response_body": {
+    "name": "billing",
+    "status": "deleted",
+    "deleted": {
+      "workflow_runs": 2,
+      "workflow_schedules": 1,
+      "search_attribute_definitions": 3,
+      "workflow_worker_registrations": 1
+    }
+  },
+  "semantic_body": {
+    "name": "billing",
+    "status": "deleted",
+    "deleted_keys": [
+      "workflow_runs",
+      "workflow_schedules",
+      "search_attribute_definitions",
+      "workflow_worker_registrations"
+    ]
+  }
+}

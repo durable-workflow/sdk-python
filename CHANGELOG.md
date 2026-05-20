@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `Client.delete_namespace()` now exercises the namespace lifecycle cleanup
+  control-plane surface and returns the server's per-table cleanup counts on
+  `NamespaceDescription.deleted`.
+
 ### Fixed
 - Python parent workflows now decode successful child workflow completions from
   the server's documented `ChildRunCompleted.output` history payload, while

@@ -1081,6 +1081,21 @@ class TestNamespaces:
         assert result.retention_days == fixture["semantic_body"]["retention_days"]
 
     @pytest.mark.asyncio
+    async def test_delete_namespace_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "namespace-delete-parity.json"
+        fixture = json.loads(fixture_path.read_text())
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.delete_namespace(**fixture["sdk_python"]["args"])
+
+        assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
+        assert result.name == fixture["semantic_body"]["name"]
+        assert result.status == fixture["semantic_body"]["status"]
+        assert result.deleted is not None
+        assert sorted(result.deleted) == sorted(fixture["semantic_body"]["deleted_keys"])
+
+    @pytest.mark.asyncio
     async def test_set_namespace_external_storage_matches_polyglot_fixture(self, client: Client) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "namespace-set-storage-driver-parity.json"
         fixture = json.loads(fixture_path.read_text())

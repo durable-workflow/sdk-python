@@ -148,6 +148,7 @@ class NamespaceDescription:
     status: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    deleted: dict[str, int] | None = None
     external_payload_storage: ExternalPayloadStoragePolicy | None = None
 
     @classmethod
@@ -155,6 +156,13 @@ class NamespaceDescription:
         external_payload_storage = None
         if isinstance(data.get("external_payload_storage"), dict):
             external_payload_storage = ExternalPayloadStoragePolicy.from_dict(data)
+        deleted = None
+        if isinstance(data.get("deleted"), dict):
+            deleted = {
+                str(key): value
+                for key, value in data["deleted"].items()
+                if isinstance(value, int)
+            }
 
         return cls(
             name=str(data.get("name", "")),
@@ -163,6 +171,7 @@ class NamespaceDescription:
             status=data.get("status"),
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
+            deleted=deleted,
             external_payload_storage=external_payload_storage,
         )
 
@@ -1562,6 +1571,19 @@ class Client:
             body["retention_days"] = retention_days
 
         data = await self._request("PUT", f"/namespaces/{quote(name, safe='')}", json=body, context=name)
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_namespace_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return NamespaceDescription.from_dict(data)
+
+    async def delete_namespace(self, name: str) -> NamespaceDescription:
+        """Delete a namespace through the server lifecycle surface."""
+        data = await self._request("DELETE", f"/namespaces/{quote(name, safe='')}", context=name)
         if not isinstance(data, dict):
             raise ServerError(
                 200,
