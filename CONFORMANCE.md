@@ -24,15 +24,11 @@ The Python SDK claims two targets from the suite's matrix:
 | Category | Source path | Status |
 | --- | --- | --- |
 | `control_plane_request_response` | `tests/fixtures/control-plane/` | stable, parity-shared with `cli` |
-| `signal_query_runtime_contract` | `tests/test_signals.py`, `tests/test_queries.py`, `tests/test_worker.py` | stable, parity-shared with PHP worker, CLI, and server routes |
-| `namespace_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/namespace-runtime-scenarios.json> | stable, suite v6 runtime coverage for namespace isolation and SDK namespace selection |
+| `signal_query_runtime_contract` | `tests/test_signals.py`, `tests/test_queries.py`, `tests/test_worker.py` and the public scenario manifest at <https://durable-workflow.github.io/platform-conformance/signal-query-runtime-scenarios.json> | stable, parity-shared with PHP worker, CLI, and server routes |
+| `namespace_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/namespace-runtime-scenarios.json> | stable, suite v7 runtime coverage for namespace isolation and SDK namespace selection |
+| `child_workflow_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/child-workflow-runtime-scenarios.json> | stable, parity-shared with PHP worker and server child-workflow runtime behavior |
 | `worker_task_lifecycle` | `tests/fixtures/external-task-input/`, `tests/fixtures/external-task-result/` | stable |
 | `history_replay_bundles` | `tests/fixtures/golden_history/` and the public replay scenario manifest at <https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json> | stable, parity-shared with `workflow` golden bundles and the full runtime replay scenario matrix |
-
-Suite version 6 does not publish a separate child-workflow runtime
-scenario category. Child-workflow behavior remains covered by the
-worker task lifecycle and history replay gates until a public suite
-manifest declares a dedicated runtime scenario source.
 
 The fixtures in this repo are exercised today by:
 
@@ -59,7 +55,7 @@ result document before tag, with the conformance level at `full` or
 | Field | Value |
 | --- | --- |
 | Required claimed targets | `official_sdk`, `worker_protocol_implementation` |
-| Required suite version | `PlatformConformanceSuite::VERSION` (currently `6`, mirrored at `/platform-conformance-contract.json`) |
+| Required suite version | `PlatformConformanceSuite::VERSION` (currently `7`, mirrored at `/platform-conformance-contract.json`) |
 | CI job | `platform-conformance` (lands when the harness reference implementation publishes; until then `cli-parity` and `test_history_event_contract.py` cover the same ground) |
 | Block on `nonconforming` | yes |
 | Artifact attached to release | harness result document, schema `durable-workflow.v2.platform-conformance.result` |
@@ -103,8 +99,14 @@ no test in this repo notices.
   <https://durable-workflow.github.io/docs/2.0/platform-conformance>
 - Public static suite manifest:
   <https://durable-workflow.github.io/platform-conformance-contract.json>
+- Signal/query runtime scenarios:
+  <https://durable-workflow.github.io/platform-conformance/signal-query-runtime-scenarios.json>
+- Replay runtime scenarios:
+  <https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json>
 - Namespace runtime scenarios:
   <https://durable-workflow.github.io/platform-conformance/namespace-runtime-scenarios.json>
+- Child workflow runtime scenarios:
+  <https://durable-workflow.github.io/platform-conformance/child-workflow-runtime-scenarios.json>
 - Compatibility authority:
   <https://durable-workflow.github.io/docs/2.0/compatibility>
 - Polyglot parity doc:
