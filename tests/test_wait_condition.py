@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from durable_workflow import serializer, workflow
+from durable_workflow.errors import NonDeterministicReplayError
 from durable_workflow.workflow import (
     CompleteWorkflow,
     FailWorkflow,
@@ -167,6 +170,40 @@ class SignalCounterUntilFinished:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
         yield ctx.wait_condition(lambda: self.done, key="done")
         return self.current()
+
+
+@workflow.defn(name="two-same-key-signal-waits")
+class TwoSameKeySignalWaits:
+    def __init__(self) -> None:
+        self.ready = False
+        self.stage = "booting"
+        self.events: list[str] = []
+
+    @workflow.signal("release")
+    def release(self, label: str) -> None:
+        self.ready = True
+        self.events.append(f"signal:{label}")
+
+    @workflow.query("state")
+    def state(self) -> dict[str, object]:
+        return {
+            "ready": self.ready,
+            "stage": self.stage,
+            "events": list(self.events),
+        }
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        self.stage = "first"
+        yield ctx.wait_condition(lambda: self.ready, key="gate")
+        self.events.append("passed:first")
+
+        self.ready = False
+        self.stage = "second"
+        yield ctx.wait_condition(lambda: self.ready, key="gate")
+        self.events.append("passed:second")
+
+        self.stage = "completed"
+        return self.state()
 
 
 class TestCtxWaitCondition:
@@ -561,6 +598,341 @@ class TestReplayWaitCondition:
         assert isinstance(outcome.commands[0], CompleteWorkflow)
         assert outcome.commands[0].result == expected
         assert query_state(SignalCounterUntilFinished, history, [], "current") == expected
+
+    def test_stale_sequence_after_condition_resolution_binds_to_next_wait(self) -> None:
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-advance",
+                    "condition_key": "advance",
+                    "sequence": 21,
+                },
+            },
+            _signal_received_event("advance", ["Ada"], workflow_sequence=21),
+            {
+                "event_type": "ConditionWaitSatisfied",
+                "payload": {
+                    "condition_wait_id": "wait-advance",
+                    "condition_key": "advance",
+                    "sequence": 21,
+                },
+            },
+            _signal_received_event("finish", [], workflow_sequence=21),
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-finish",
+                    "condition_key": "finish",
+                    "sequence": 22,
+                },
+            },
+        ]
+
+        expected = {
+            "stage": "completed",
+            "name": "Ada",
+            "finished": True,
+            "events": ["started", "signal:Ada", "advanced:Ada", "signal:finish", "finish"],
+        }
+
+        outcome = replay(TwoStageSignalWait, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == expected
+        assert query_state(TwoStageSignalWait, history, [], "state") == expected
+
+    def test_terminal_pending_same_key_wait_without_prior_reopen_remains_history(self) -> None:
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-before-finish",
+                    "condition_key": "done",
+                    "sequence": 21,
+                    "timeout_seconds": 30,
+                },
+            },
+            {
+                "event_type": "TimerScheduled",
+                "payload": {
+                    "timer_kind": "condition_timeout",
+                    "condition_wait_id": "wait-before-finish",
+                    "condition_key": "done",
+                    "sequence": 21,
+                    "delay_seconds": 30,
+                },
+            },
+            _signal_received_event("finish", [], workflow_sequence=21),
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-after-finish",
+                    "condition_key": "done",
+                    "sequence": 22,
+                    "timeout_seconds": 30,
+                },
+            },
+            {
+                "event_type": "TimerScheduled",
+                "payload": {
+                    "timer_kind": "condition_timeout",
+                    "condition_wait_id": "wait-after-finish",
+                    "condition_key": "done",
+                    "sequence": 22,
+                    "delay_seconds": 30,
+                },
+            },
+        ]
+
+        with pytest.raises(NonDeterministicReplayError) as exc_info:
+            replay(SignalCounterUntilFinished, history, [])
+
+        assert exc_info.value.workflow_sequence == 22
+        assert exc_info.value.expected_shape == "complete workflow"
+        assert "ConditionWaitOpened" in exc_info.value.recorded_event_types
+        assert "TimerScheduled" in exc_info.value.recorded_event_types
+
+    def test_terminal_stale_reopened_wait_after_false_reopen_is_consumed(self) -> None:
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-count-3",
+                    "condition_key": "done",
+                    "sequence": 20,
+                    "timeout_seconds": 30,
+                },
+            },
+            {
+                "event_type": "TimerScheduled",
+                "payload": {
+                    "timer_kind": "condition_timeout",
+                    "condition_wait_id": "wait-count-3",
+                    "condition_key": "done",
+                    "sequence": 20,
+                    "delay_seconds": 30,
+                },
+            },
+            _signal_received_event("increment", [3], workflow_sequence=20),
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-before-finish",
+                    "condition_key": "done",
+                    "sequence": 21,
+                    "timeout_seconds": 30,
+                },
+            },
+            {
+                "event_type": "TimerScheduled",
+                "payload": {
+                    "timer_kind": "condition_timeout",
+                    "condition_wait_id": "wait-before-finish",
+                    "condition_key": "done",
+                    "sequence": 21,
+                    "delay_seconds": 30,
+                },
+            },
+            _signal_received_event("finish", [], workflow_sequence=21),
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-after-finish",
+                    "condition_key": "done",
+                    "sequence": 22,
+                    "timeout_seconds": 30,
+                },
+            },
+            {
+                "event_type": "TimerScheduled",
+                "payload": {
+                    "timer_kind": "condition_timeout",
+                    "condition_wait_id": "wait-after-finish",
+                    "condition_key": "done",
+                    "sequence": 22,
+                    "delay_seconds": 30,
+                },
+            },
+        ]
+
+        expected = {
+            "count": 3,
+            "done": True,
+            "events": [
+                {"signal": "increment", "amount": 3, "count": 3},
+                {"signal": "finish", "count": 3},
+            ],
+        }
+
+        outcome = replay(SignalCounterUntilFinished, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == expected
+        assert query_state(SignalCounterUntilFinished, history, [], "current") == expected
+
+    @pytest.mark.parametrize(
+        ("resolution_event_type", "resolution_payload"),
+        [
+            (
+                "ConditionWaitTimedOut",
+                {
+                    "condition_wait_id": "wait-after-finish",
+                    "condition_key": "done",
+                    "sequence": 22,
+                },
+            ),
+            (
+                "ConditionWaitSatisfied",
+                {
+                    "condition_wait_id": "wait-after-finish",
+                    "condition_key": "done",
+                    "sequence": 22,
+                },
+            ),
+            (
+                "TimerFired",
+                {
+                    "timer_kind": "condition_timeout",
+                    "condition_wait_id": "wait-after-finish",
+                    "condition_key": "done",
+                    "sequence": 22,
+                },
+            ),
+        ],
+    )
+    def test_terminal_reopened_wait_with_resolution_remains_replay_history(
+        self,
+        resolution_event_type: str,
+        resolution_payload: dict[str, object],
+    ) -> None:
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-before-finish",
+                    "condition_key": "done",
+                    "sequence": 21,
+                    "timeout_seconds": 30,
+                },
+            },
+            {
+                "event_type": "TimerScheduled",
+                "payload": {
+                    "timer_kind": "condition_timeout",
+                    "condition_wait_id": "wait-before-finish",
+                    "condition_key": "done",
+                    "sequence": 21,
+                    "delay_seconds": 30,
+                },
+            },
+            _signal_received_event("finish", [], workflow_sequence=21),
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-after-finish",
+                    "condition_key": "done",
+                    "sequence": 22,
+                    "timeout_seconds": 30,
+                },
+            },
+            {
+                "event_type": "TimerScheduled",
+                "payload": {
+                    "timer_kind": "condition_timeout",
+                    "condition_wait_id": "wait-after-finish",
+                    "condition_key": "done",
+                    "sequence": 22,
+                    "delay_seconds": 30,
+                },
+            },
+            {
+                "event_type": resolution_event_type,
+                "payload": resolution_payload,
+            },
+        ]
+
+        with pytest.raises(NonDeterministicReplayError) as exc_info:
+            replay(SignalCounterUntilFinished, history, [])
+
+        assert exc_info.value.workflow_sequence == 22
+        assert exc_info.value.expected_shape == "complete workflow"
+        assert "ConditionWaitOpened" in exc_info.value.recorded_event_types
+        assert resolution_event_type in exc_info.value.recorded_event_types
+
+    def test_sequential_same_key_waits_do_not_consume_second_wait_as_reopen(self) -> None:
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-first",
+                    "condition_key": "gate",
+                    "sequence": 21,
+                },
+            },
+            _signal_received_event("release", ["first"], workflow_sequence=21),
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-second",
+                    "condition_key": "gate",
+                    "sequence": 22,
+                },
+            },
+            _signal_received_event("release", ["second"], workflow_sequence=22),
+        ]
+
+        expected = {
+            "ready": True,
+            "stage": "completed",
+            "events": [
+                "signal:first",
+                "passed:first",
+                "signal:second",
+                "passed:second",
+            ],
+        }
+
+        outcome = replay(TwoSameKeySignalWaits, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == expected
+        assert query_state(TwoSameKeySignalWaits, history, [], "state") == expected
+
+    def test_pending_sequential_same_key_wait_replays_as_pending_wait(self) -> None:
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-first",
+                    "condition_key": "gate",
+                    "sequence": 21,
+                },
+            },
+            _signal_received_event("release", ["first"], workflow_sequence=21),
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "condition_wait_id": "wait-second",
+                    "condition_key": "gate",
+                    "sequence": 22,
+                },
+            },
+        ]
+
+        outcome = replay(TwoSameKeySignalWaits, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], WaitCondition)
+        assert outcome.commands[0].condition_key == "gate"
+        assert query_state(TwoSameKeySignalWaits, history, [], "state") == {
+            "ready": False,
+            "stage": "second",
+            "events": ["signal:first", "passed:first"],
+        }
 
     def test_repeated_wait_after_activity_can_be_satisfied_by_later_signal(self) -> None:
         history = [

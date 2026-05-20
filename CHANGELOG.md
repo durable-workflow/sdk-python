@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reopened wait. This handles server histories where later signals are accepted
   while the previous wait is still open but must replay against the next
   physical wait.
+- Condition-wait replay now lets a true predicate finish the current wait
+  before any following same-key wait is considered stale terminal history.
+  This keeps query and signal replay aligned with histories that include
+  unresolved `ConditionWaitOpened` plus condition-timeout `TimerScheduled`
+  rows after a replayed false reopen, while preserving pending sequential
+  same-key waits and resolved reopens that must remain replay history.
 - Workflow workers now report unhandled workflow-task execution errors back to
   the server instead of leaving the leased task pending until the lease or CLI
   wait times out. This lets the server observe and retry or fail the task

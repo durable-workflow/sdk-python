@@ -2296,7 +2296,7 @@ def _replay_state(
             if _is_external_receiver_event(event_type):
                 explicit_sequence = _workflow_sequence(payload) is not None
                 if current_wait_id is None:
-                    if not explicit_sequence:
+                    if prefix_can_bind_to_first_wait or not explicit_sequence:
                         prefix_receivers.append(index)
                     continue
 
@@ -2562,9 +2562,31 @@ def _replay_state(
     first = True
     pending: list[Command] = []
     advanced_cmd: Any = None
+    terminal_condition_reopen_cmd: WaitCondition | None = None
+
+    def _condition_wait_has_pending_receivers(condition_wait_id: str | None) -> bool:
+        if condition_wait_id is None:
+            return False
+        return any(receiver.condition_wait_id == condition_wait_id for receiver in pending_receivers)
+
+    def _consume_terminal_condition_reopens() -> None:
+        nonlocal wait_yield_count
+        if terminal_condition_reopen_cmd is None:
+            return
+        while wait_yield_count < len(wait_opened):
+            opened = wait_opened[wait_yield_count]
+            if not _same_logical_condition_wait(opened, terminal_condition_reopen_cmd):
+                break
+            opened_id = opened.get("condition_wait_id")
+            if not isinstance(opened_id, str):
+                break
+            if opened_id in wait_resolutions or _condition_wait_has_pending_receivers(opened_id):
+                break
+            wait_yield_count += 1
 
     def _terminal_state(value: Any, *, include_pending: bool) -> _ReplayState:
         _apply_due_receivers()
+        _consume_terminal_condition_reopens()
         commands = list(pending) if include_pending else []
         if isinstance(value, ContinueAsNew):
             _assert_no_unconsumed_history("continue as new")
@@ -2652,6 +2674,9 @@ def _replay_state(
                     step = _next_unconsumed_recorded_step()
                     if step is not None:
                         _assert_step_matches(cmd, step)
+                # Terminal cleanup may only skip a later open after this
+                # yielded wait has already replayed at least one false reopen.
+                consumed_reopen_for_current_wait = False
                 while True:
                     resolution: str | None = None
                     opened: dict[str, Any] | None = None
@@ -2666,7 +2691,15 @@ def _replay_state(
                         if isinstance(opened_id, str):
                             resolution = wait_resolutions.get(opened_id)
                             _apply_condition_wait_receivers(opened_id)
+                    next_wait_index = wait_yield_count + 1
+                    has_reopened_same_wait = (
+                        opened is not None
+                        and next_wait_index < len(wait_opened)
+                        and _same_logical_condition_wait(wait_opened[next_wait_index], cmd)
+                    )
+
                     if resolution == "timed_out":
+                        terminal_condition_reopen_cmd = None
                         next_value = False
                         wait_yield_count += 1
                         break
@@ -2677,21 +2710,27 @@ def _replay_state(
                             message=f"wait_condition predicate raised: {exc}",
                             exception_type=type(exc).__name__,
                         )])
-                    if satisfied or resolution == "satisfied":
+                    if resolution == "satisfied":
+                        terminal_condition_reopen_cmd = None
+                        next_value = True
+                        wait_yield_count += 1
+                        break
+                    if satisfied:
+                        terminal_condition_reopen_cmd = (
+                            cmd
+                            if has_reopened_same_wait and consumed_reopen_for_current_wait
+                            else None
+                        )
                         next_value = True
                         wait_yield_count += 1
                         break
 
-                    next_wait_index = wait_yield_count + 1
                     # A single logical wait can be re-opened in history after
                     # non-satisfying signals. Consume repeated physical opens
                     # with the same key/fingerprint before declaring the
                     # logical wait still pending.
-                    if (
-                        opened is not None
-                        and next_wait_index < len(wait_opened)
-                        and _same_logical_condition_wait(wait_opened[next_wait_index], cmd)
-                    ):
+                    if has_reopened_same_wait:
+                        consumed_reopen_for_current_wait = True
                         wait_yield_count = next_wait_index
                         continue
 
