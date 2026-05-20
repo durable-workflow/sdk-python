@@ -383,6 +383,29 @@ def _query_history_with_export_signal_arguments(
     return enriched if changed else history
 
 
+def _query_history_events(
+    history: Any,
+    history_export: Any,
+    *,
+    default_codec: str | None,
+) -> Any:
+    if isinstance(history, list):
+        events = history
+    else:
+        events = []
+
+    if isinstance(history_export, Mapping):
+        export_events = history_export.get("history_events")
+        if isinstance(export_events, list) and len(export_events) > len(events):
+            events = export_events
+
+    return _query_history_with_export_signal_arguments(
+        events,
+        history_export,
+        default_codec=default_codec,
+    )
+
+
 def _callable_fingerprint_payload(value: object) -> str:
     if isinstance(value, staticmethod | classmethod):
         value = value.__func__
@@ -1289,7 +1312,7 @@ class Worker:
             return "failed"
 
         result_codec = _command_payload_codec(codec)
-        history = _query_history_with_export_signal_arguments(
+        history = _query_history_events(
             task.get("history_events", []),
             task.get("history_export"),
             default_codec=codec,

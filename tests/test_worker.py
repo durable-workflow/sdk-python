@@ -108,6 +108,20 @@ class QueryWorkflow:
         return self.status
 
 
+@workflow.defn(name="activity-query-wf")
+class ActivityQueryWorkflow:
+    def __init__(self) -> None:
+        self.activity_result: str | None = None
+
+    @workflow.query("state")
+    def state(self) -> dict[str, str | None]:
+        return {"activity_result": self.activity_result}
+
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        self.activity_result = yield ctx.schedule_activity("load", [])
+        return self.activity_result
+
+
 @workflow.defn(name="query-state-unavailable-wf")
 class QueryStateUnavailableWorkflow:
     @workflow.query("status")
@@ -1204,6 +1218,54 @@ class TestWorkflowTaskExecution:
             workflow_id="wf-counter",
             run_id="run-counter",
             query_name="current",
+        )
+        mock_client.fail_query_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_task_uses_export_history_when_inline_history_is_empty(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[ActivityQueryWorkflow], activities=[])
+        activity_result = serializer.envelope("loaded", codec="json")
+        task = {
+            "query_task_id": "qt-export-history",
+            "query_task_attempt": 1,
+            "workflow_type": "activity-query-wf",
+            "workflow_id": "wf-export-history",
+            "run_id": "run-export-history",
+            "query_name": "state",
+            "history_events": [],
+            "history_export": {
+                "payloads": {"codec": "json"},
+                "history_events": [
+                    {
+                        "type": "ActivityCompleted",
+                        "payload": {
+                            "sequence": 1,
+                            "activity_type": "load",
+                            "payload_codec": "json",
+                            "result": activity_result,
+                        },
+                    }
+                ],
+            },
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+
+        outcome = await worker._run_query_task(task)
+
+        assert outcome == "completed"
+        mock_client.complete_query_task.assert_awaited_once_with(
+            query_task_id="qt-export-history",
+            lease_owner=worker.worker_id,
+            query_task_attempt=1,
+            result={"activity_result": "loaded"},
+            codec="json",
+            workflow_id="wf-export-history",
+            run_id="run-export-history",
+            query_name="state",
         )
         mock_client.fail_query_task.assert_not_called()
 

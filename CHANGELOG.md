@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Worker query tasks now replay from the bundled history export when the
+  inline task history is empty or truncated, so cold query replay reconstructs
+  activity-derived state instead of answering from a fresh workflow instance.
 - Python parent workflows now decode successful child workflow completions from
   the server's documented `ChildRunCompleted.output` history payload, while
   still accepting the older `result` alias. This prevents completed child
