@@ -29,6 +29,11 @@ The Python SDK claims two targets from the suite's matrix:
 | `worker_task_lifecycle` | `tests/fixtures/external-task-input/`, `tests/fixtures/external-task-result/` | stable |
 | `history_replay_bundles` | `tests/fixtures/golden_history/` and the public replay scenario manifest at <https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json> | stable, parity-shared with `workflow` golden bundles and the full runtime replay scenario matrix |
 
+Suite version 6 does not publish a separate child-workflow runtime
+scenario category. Child-workflow behavior remains covered by the
+worker task lifecycle and history replay gates until a public suite
+manifest declares a dedicated runtime scenario source.
+
 The fixtures in this repo are exercised today by:
 
 - `tests/test_control_plane_parity_fixtures.py`
