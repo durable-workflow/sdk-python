@@ -59,6 +59,7 @@ Issues = "https://github.com/durable-workflow/sdk-python/issues"
 [project.scripts]
 durable-workflow-replay-verify = "durable_workflow.replay_verify:main"
 durable-workflow-history-bundle-verify = "durable_workflow.history_bundle_verify:main"
+durable-workflow-python-conformance = "durable_workflow.python_conformance:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

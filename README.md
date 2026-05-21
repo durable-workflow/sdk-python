@@ -262,6 +262,21 @@ bundle simulation does not execute workflow code in Python, a clean
 integrity-only simulation recommends `review_before_promote` rather than
 `safe_to_promote`.
 
+## Python conformance gate
+
+The package includes the Python SDK published-artifact parity contract used by
+host conformance runners:
+
+```bash
+durable-workflow-python-conformance --manifest --pretty
+durable-workflow-python-conformance --evaluate python-conformance-result.json --pretty
+```
+
+The evaluator rejects smoke-only evidence. A passing record must include the
+official CLI install/start/result path, cold first-user setup, concrete
+artifact versions, protocol traces, a no-PHP-assumption audit, and the complete
+Python capability table.
+
 ## External payload storage
 
 Large payload offload is opt-in. `serializer.external_storage_envelope(...)`

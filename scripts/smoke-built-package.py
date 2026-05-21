@@ -89,6 +89,7 @@ reference_modules = [
     "durable_workflow.external_task_result",
     "durable_workflow.invocable",
     "durable_workflow.metrics",
+    "durable_workflow.python_conformance",
     "durable_workflow.retry_policy",
     "durable_workflow.serializer",
     "durable_workflow.sync",

@@ -40,11 +40,41 @@ The fixtures in this repo are exercised today by:
 - `tests/test_replay.py`
 - `tests/test_golden_history_replay.py`
 - `scripts/check-cli-parity.py`
+- `durable-workflow-python-conformance --manifest`
 - the `cli-parity` job in `.github/workflows/ci.yml`
 
 These are the per-repo gates that already enforce the contract; the
 public conformance harness, when it lands, will read the same fixtures
 from this repo's declared paths.
+
+## Published-artifact Python parity contract
+
+The package ships a machine-readable contract in
+`durable_workflow.python_conformance` and exposes it through the
+`durable-workflow-python-conformance` console script. Host conformance
+runners use this contract to distinguish a Python worker smoke test from
+the full published-artifact property.
+
+The result gate requires one result for every scenario below, all marked
+`pass`, before the Python SDK conformance property can pass:
+
+- `published_artifact_install_only`
+- `official_cli_install_start_result_path`
+- `cold_first_user_setup`
+- `python_worker_registration`
+- `activity_backed_workflow_execution`
+- `workflow_result_surface`
+- `worker_restart_activity_and_signal_state`
+- `protocol_trace_capture`
+- `php_assumption_audit`
+- `capability_table_complete`
+
+A passing result must also record concrete artifact versions for
+`server`, `cli`, `sdk-python`, `workflow`, and `waterline`; run
+timestamps; protocol traces; a no-PHP-assumption audit; and the complete
+capability table. Any omitted scenario, placeholder artifact version,
+runner-blocked cell, unsupported public surface, or non-pass scenario
+without linked findings is nonconforming.
 
 ## Release gate
 
@@ -56,7 +86,7 @@ result document before tag, with the conformance level at `full` or
 | --- | --- |
 | Required claimed targets | `official_sdk`, `worker_protocol_implementation` |
 | Required suite version | `PlatformConformanceSuite::VERSION` (currently `8`, mirrored at `/platform-conformance-contract.json`) |
-| CI job | `platform-conformance` (lands when the harness reference implementation publishes; until then `cli-parity` and `test_history_event_contract.py` cover the same ground) |
+| CI job | `platform-conformance` (lands when the harness reference implementation publishes; until then `cli-parity`, `test_history_event_contract.py`, and `durable-workflow-python-conformance --evaluate` cover the same ground) |
 | Block on `nonconforming` | yes |
 | Artifact attached to release | harness result document, schema `durable-workflow.v2.platform-conformance.result` |
 

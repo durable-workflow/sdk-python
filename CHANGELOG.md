@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `durable-workflow-python-conformance` now exposes the Python SDK
+  published-artifact parity contract and evaluates host result documents,
+  rejecting smoke-only evidence unless the official CLI path, cold first-user
+  setup, protocol traces, no-PHP-assumption audit, concrete artifact versions,
+  and complete capability table are all present.
 - `Client.delete_namespace()` now exercises the namespace lifecycle cleanup
   control-plane surface and returns the server's per-table cleanup counts on
   `NamespaceDescription.deleted`.
