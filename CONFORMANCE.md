@@ -71,7 +71,9 @@ evidence look complete.
 Runner-native aliases such as `scenarioEvidence`, `capabilityResults`,
 `officialCli`, `firstUserFlow`, `traces`, and `languageNeutralityAudit` are
 accepted as input to the composer; they are normalized into the canonical
-result fields before evaluation.
+result fields before evaluation. Scenario and capability IDs may use the
+canonical snake_case names or the runbook-style hyphenated names such as
+`server-up`, `python-worker-connects`, and `result-returned`.
 
 The result gate requires one result for every scenario below, all marked
 `pass`, before the Python SDK conformance property can pass:

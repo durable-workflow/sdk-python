@@ -211,6 +211,7 @@ def test_manifest_names_full_python_parity_surface() -> None:
     assert "capability_table_complete" in payload["required_scenarios"]
     assert payload["host_evidence"]["schema"] == "durable-workflow.v2.python-sdk-parity.host-evidence"
     assert payload["host_evidence"]["missing_scenario_status"] == "not_covered"
+    assert "server-up" in payload["host_evidence"]["entry_id_aliases"]["capability_ids"]["server_up"]
 
 
 def test_evaluate_result_accepts_complete_published_artifact_evidence() -> None:
@@ -303,6 +304,91 @@ def test_compose_result_accepts_runner_native_host_evidence_aliases() -> None:
     }
     assert composed["scenario_results"]["cold_first_user_setup"]["fresh_state"] is True
     assert composed["scenario_results"]["php_assumption_audit"]["server_cli_audit"] == {"status": "pass"}
+    assert evaluation["status"] == "pass"
+    assert evaluation["gate_failures"] == []
+
+
+def test_compose_result_accepts_runbook_style_ids_and_statuses() -> None:
+    result = complete_result()
+    derived_scenarios = {
+        "published_artifact_install_only",
+        "official_cli_install_start_result_path",
+        "cold_first_user_setup",
+        "protocol_trace_capture",
+        "php_assumption_audit",
+        "capability_table_complete",
+    }
+    scenario_evidence = []
+    for scenario in REQUIRED_SCENARIOS:
+        if scenario in derived_scenarios:
+            continue
+        entry = dict(result["scenario_results"][scenario])
+        entry.pop("scenario_id", None)
+        entry["scenario"] = scenario.replace("_", "-")
+        entry["status"] = "succeeded"
+        scenario_evidence.append(entry)
+
+    def capability_alias(capability: str) -> str:
+        if capability == "official_cli_installed":
+            return "cli-installed"
+        if capability == "workflow_result_returned":
+            return "result-returned"
+        return capability.replace("_", "-")
+
+    evidence = {
+        "startedAt": result["started_at"],
+        "finishedAt": result["finished_at"],
+        "generatedAt": result["generated_at"],
+        "artifactVersions": result["artifact_versions"],
+        "sourcePolicy": result["source_policy"],
+        "installChannels": result["scenario_results"]["published_artifact_install_only"]["install_channels"],
+        "officialCli": {
+            "installCommand": "curl -fsSL https://durable-workflow.com/install.sh | sh",
+            "startCommand": "dw workflow:start --json",
+            "resultCommand": "dw workflow:result --json",
+            "jsonOutputs": [{"workflow_id": "py-parity", "status": "completed"}],
+        },
+        "firstUserFlow": {
+            "freshState": True,
+            "namespaceCreated": "default",
+            "firstWorkflowStarted": "py-parity",
+            "resultObserved": {"status": "completed"},
+        },
+        "traces": [
+            {"plane": "control-plane", "request": "POST /workflows", "response": 201},
+            {"plane": "worker-protocol", "request": "POST /worker/workflow-tasks/poll", "response": 200},
+        ],
+        "languageNeutralityAudit": {
+            "status": "succeeded",
+            "serverAudit": {"status": "ok"},
+            "sdkAudit": {"status": "ok"},
+            "checks": {
+                "noPhpRuntimeRequired": True,
+                "noPhpPathsRequired": True,
+                "noPhpSerializerRequired": True,
+                "noPhpOnlyErrorShapes": True,
+            },
+        },
+        "scenarioEvidence": scenario_evidence,
+        "capabilityResults": [
+            {
+                "capability": capability_alias(capability),
+                "status": "passed",
+                "evidence": {"observed": True},
+            }
+            for capability in REQUIRED_CAPABILITIES
+        ],
+        "findings": [],
+        "findingLinks": [],
+    }
+
+    composed = compose_result(evidence)
+    evaluation = evaluate_result(composed)
+
+    assert composed["outcome"] == "pass"
+    assert composed["scenario_results"]["worker_restart_activity_and_signal_state"]["status"] == "pass"
+    assert composed["scenario_results"]["protocol_trace_capture"]["worker_protocol_traces"] == [evidence["traces"][1]]
+    assert {entry["id"] for entry in composed["capability_table"]} == set(REQUIRED_CAPABILITIES)
     assert evaluation["status"] == "pass"
     assert evaluation["gate_failures"] == []
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
 import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -70,6 +71,17 @@ PLACEHOLDER_VERSION_TOKENS = {
     "unresolved",
 }
 
+
+def _normalize_identifier(value: str) -> str:
+    split = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    normalized = re.sub(r"[^0-9A-Za-z]+", "_", split).strip("_").lower()
+    return re.sub(r"_+", "_", normalized)
+
+
+def _kebabize(value: str) -> str:
+    return _normalize_identifier(value).replace("_", "-")
+
+
 REQUIRED_SCENARIOS = (
     PUBLISHED_ARTIFACT_INSTALL_ONLY_SCENARIO,
     "official_cli_install_start_result_path",
@@ -102,6 +114,35 @@ REQUIRED_CAPABILITIES = (
     "protocol_traces_recorded",
     "php_assumptions_absent",
 )
+
+SCENARIO_ID_ALIASES: Mapping[str, tuple[str, ...]] = {
+    scenario: (_kebabize(scenario),)
+    for scenario in REQUIRED_SCENARIOS
+}
+
+CAPABILITY_ID_ALIASES: Mapping[str, tuple[str, ...]] = {
+    capability: (_kebabize(capability),)
+    for capability in REQUIRED_CAPABILITIES
+}
+CAPABILITY_ID_ALIASES = {
+    **CAPABILITY_ID_ALIASES,
+    "official_cli_installed": (
+        *CAPABILITY_ID_ALIASES["official_cli_installed"],
+        "cli-installed",
+        "cli_installed",
+    ),
+    "cli_reads_workflow_result": (
+        *CAPABILITY_ID_ALIASES["cli_reads_workflow_result"],
+        "cli-reads-result",
+        "cli_result",
+        "cli-result",
+    ),
+    "workflow_result_returned": (
+        *CAPABILITY_ID_ALIASES["workflow_result_returned"],
+        "result-returned",
+        "result_returned",
+    ),
+}
 
 SCENARIO_REQUIRED_EVIDENCE: Mapping[str, tuple[str, ...]] = {
     "published_artifact_install_only": (
@@ -267,6 +308,16 @@ def host_evidence_spec() -> dict[str, Any]:
             "capability_table": list(CAPABILITY_TABLE_FIELDS),
             "declared_outcome": list(DECLARED_OUTCOME_FIELDS),
         },
+        "entry_id_aliases": {
+            "scenario_ids": {
+                scenario: list(SCENARIO_ID_ALIASES.get(scenario, ()))
+                for scenario in REQUIRED_SCENARIOS
+            },
+            "capability_ids": {
+                capability: list(CAPABILITY_ID_ALIASES.get(capability, ()))
+                for capability in REQUIRED_CAPABILITIES
+            },
+        },
         "top_level_evidence_fields": [
             "install_channels",
             "source_policy",
@@ -353,7 +404,7 @@ def compose_result(evidence: Mapping[str, Any], contract: Mapping[str, Any] | No
         "finding_links": _deepcopy_json_like(_first_present(evidence, ("finding_links", "findingLinks"))),
     }
 
-    declared = _string_value(_first_present(evidence, DECLARED_OUTCOME_FIELDS))
+    declared = _status_value_or_raw(_first_present(evidence, DECLARED_OUTCOME_FIELDS))
     result["outcome"] = declared or _composed_outcome(result, contract)
     return result
 
@@ -365,8 +416,13 @@ def _compose_scenario_results(
     source_policy: Mapping[str, Any],
 ) -> dict[str, dict[str, Any]]:
     duplicates: dict[str, int] = {}
-    raw_scenarios = _entries_by_id(evidence, SCENARIO_RESULTS_FIELDS, duplicates)
     required_scenarios = _string_list(contract.get("required_scenarios", []))
+    raw_scenarios = _entries_by_id(
+        evidence,
+        SCENARIO_RESULTS_FIELDS,
+        duplicates,
+        canonical_aliases=_entry_aliases(required_scenarios, SCENARIO_ID_ALIASES),
+    )
     required_evidence = _scenario_required_evidence(contract)
     scenario_results: dict[str, dict[str, Any]] = {}
 
@@ -374,14 +430,14 @@ def _compose_scenario_results(
         scenario = _copy_mapping(raw_scenarios.get(scenario_id))
         scenario["scenario_id"] = scenario_id
         _apply_top_level_scenario_evidence(scenario_id, scenario, evidence, artifacts, source_policy, contract)
-        status = _string_value(scenario.get("status"))
+        status = _status_value_or_raw(scenario.get("status"), scenario.get("result"), scenario.get("outcome"))
         if status == "":
             status = (
                 "pass"
                 if _scenario_has_required_evidence(scenario, required_evidence.get(scenario_id, []))
                 else "not_covered"
             )
-            scenario["status"] = status
+        scenario["status"] = status
         if status == "pass" and not _has_observed_outputs(scenario):
             scenario["observed_outputs"] = {
                 "summary": "required Python SDK conformance evidence recorded",
@@ -495,23 +551,22 @@ def _apply_top_level_scenario_evidence(
 
 
 def _compose_capability_table(evidence: Mapping[str, Any], contract: Mapping[str, Any]) -> list[dict[str, Any]]:
-    raw_capabilities = _raw_capability_entries(evidence)
     required_capabilities = _required_capabilities(contract)
+    raw_capabilities = _raw_capability_entries(evidence, contract)
     capability_table: list[dict[str, Any]] = []
 
     for capability_id in required_capabilities:
         capability = _copy_mapping(raw_capabilities.get(capability_id))
         capability["id"] = capability_id
-        status = _string_value(
-            capability.get("status")
-            or capability.get("result")
-            or capability.get("outcome")
+        status = _status_value_or_raw(
+            capability.get("status"),
+            capability.get("result"),
+            capability.get("outcome"),
+            capability.get("verdict"),
         )
         if status == "":
             status = "not_covered"
-            capability["status"] = status
-        else:
-            capability.setdefault("status", status)
+        capability["status"] = status
         capability_table.append(capability)
 
     for capability_id, capability in raw_capabilities.items():
@@ -524,8 +579,10 @@ def _compose_capability_table(evidence: Mapping[str, Any], contract: Mapping[str
     return capability_table
 
 
-def _raw_capability_entries(evidence: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+def _raw_capability_entries(evidence: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     raw = _first_present(evidence, CAPABILITY_TABLE_FIELDS)
+    required_capabilities = _required_capabilities(contract)
+    aliases = _entry_aliases(required_capabilities, CAPABILITY_ID_ALIASES)
     if isinstance(raw, Mapping):
         entries: dict[str, dict[str, Any]] = {}
         for key, value in raw.items():
@@ -539,12 +596,18 @@ def _raw_capability_entries(evidence: Mapping[str, Any]) -> dict[str, dict[str, 
                 entry = {"status": value}
             else:
                 continue
-            entry.setdefault("id", key)
-            entries[key] = entry
+            capability_id = _canonical_entry_id(key, aliases)
+            entry.setdefault("id", capability_id)
+            entries[capability_id] = entry
         return entries
 
     duplicates: dict[str, int] = {}
-    return _entries_by_id(evidence, CAPABILITY_TABLE_FIELDS, duplicates)
+    return _entries_by_id(
+        evidence,
+        CAPABILITY_TABLE_FIELDS,
+        duplicates,
+        canonical_aliases=aliases,
+    )
 
 
 def _scenario_has_required_evidence(scenario: Mapping[str, Any], required_fields: Iterable[str]) -> bool:
@@ -562,13 +625,18 @@ def _attach_scenario_findings(scenario: dict[str, Any], evidence: Mapping[str, A
     links = _first_present(evidence, ("finding_links", "findingLinks", "findings"))
     linked: Any = None
     if isinstance(links, Mapping):
-        linked = links.get(scenario_id)
+        linked = _entry_mapping_value(links, scenario_id, SCENARIO_ID_ALIASES)
     elif isinstance(links, list):
+        aliases = _entry_aliases((scenario_id,), SCENARIO_ID_ALIASES)
         linked = [
             item
             for item in links
             if isinstance(item, Mapping)
-            and _string_value(item.get("scenario_id") or item.get("scenario") or item.get("id")) == scenario_id
+            and _canonical_entry_id(
+                _string_value(item.get("scenario_id") or item.get("scenario") or item.get("id")),
+                aliases,
+            )
+            == _canonical_entry_id(scenario_id, aliases)
         ]
     if linked not in (None, "", [], {}):
         scenario["linked_findings"] = _deepcopy_json_like(linked)
@@ -581,8 +649,30 @@ def _filtered_traces(traces: Any, plane: str) -> Any:
         trace
         for trace in traces
         if isinstance(trace, Mapping)
-        and _string_value(trace.get("plane")).lower() == plane
+        and _trace_plane_matches(trace.get("plane"), plane)
     ]
+
+
+def _trace_plane_matches(value: Any, plane: str) -> bool:
+    normalized = _normalize_identifier(_string_value(value))
+    if plane == "control":
+        return normalized in {
+            "control",
+            "control_plane",
+            "control_protocol",
+            "control_plane_protocol",
+            "api",
+            "cli",
+            "client",
+        }
+    if plane == "worker":
+        return normalized in {
+            "worker",
+            "worker_plane",
+            "worker_protocol",
+            "worker_plane_protocol",
+        }
+    return normalized == _normalize_identifier(plane)
 
 
 def _timestamp_value(evidence: Mapping[str, Any], field: str) -> str:
@@ -620,7 +710,12 @@ def evaluate_result(result: Mapping[str, Any], contract: Mapping[str, Any] | Non
     required_capabilities = _required_capabilities(contract)
 
     duplicate_scenarios: dict[str, int] = {}
-    scenario_results = _entries_by_id(result, SCENARIO_RESULTS_FIELDS, duplicate_scenarios)
+    scenario_results = _entries_by_id(
+        result,
+        SCENARIO_RESULTS_FIELDS,
+        duplicate_scenarios,
+        canonical_aliases=_entry_aliases(required_scenarios, SCENARIO_ID_ALIASES),
+    )
     scenario_statuses: dict[str, str] = {}
     missing_scenarios: list[str] = []
     non_pass_scenarios: list[str] = []
@@ -636,7 +731,12 @@ def evaluate_result(result: Mapping[str, Any], contract: Mapping[str, Any] | Non
             failures.append({"code": "missing_required_scenario", "scenario_id": scenario_id})
             continue
 
-        status = _string_value(scenario_result.get("status"))
+        status = _status_value_or_raw(
+            scenario_result.get("status"),
+            scenario_result.get("result"),
+            scenario_result.get("outcome"),
+            scenario_result.get("verdict"),
+        )
         scenario_statuses[scenario_id] = status
         if status not in allowed_statuses:
             failures.append(
@@ -665,7 +765,12 @@ def evaluate_result(result: Mapping[str, Any], contract: Mapping[str, Any] | Non
             non_pass_scenarios.append(scenario_id)
 
     for scenario_id, scenario_result in scenario_results.items():
-        status = _string_value(scenario_result.get("status"))
+        status = _status_value_or_raw(
+            scenario_result.get("status"),
+            scenario_result.get("result"),
+            scenario_result.get("outcome"),
+            scenario_result.get("verdict"),
+        )
         if status in NON_PASS_SCENARIO_STATUSES and not _has_linked_findings(scenario_result, result):
             failures.append(
                 {
@@ -689,6 +794,7 @@ def evaluate_result(result: Mapping[str, Any], contract: Mapping[str, Any] | Non
         result,
         CAPABILITY_TABLE_FIELDS,
         duplicate_capabilities,
+        canonical_aliases=_entry_aliases(required_capabilities, CAPABILITY_ID_ALIASES),
     )
     capability_statuses: dict[str, str] = {}
     missing_capabilities: list[str] = []
@@ -704,7 +810,12 @@ def evaluate_result(result: Mapping[str, Any], contract: Mapping[str, Any] | Non
             failures.append({"code": "missing_required_capability", "capability_id": capability_id})
             continue
 
-        status = _string_value(capability.get("status") or capability.get("result") or capability.get("outcome"))
+        status = _status_value_or_raw(
+            capability.get("status"),
+            capability.get("result"),
+            capability.get("outcome"),
+            capability.get("verdict"),
+        )
         capability_statuses[capability_id] = status
         if status != "pass":
             non_pass_capabilities.append(capability_id)
@@ -793,9 +904,12 @@ def _entries_by_id(
     result: Mapping[str, Any],
     field_names: Iterable[str],
     duplicates: dict[str, int],
+    *,
+    canonical_aliases: Mapping[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     entries: dict[str, dict[str, Any]] = {}
     seen: set[str] = set()
+    aliases = canonical_aliases or {}
     raw = _first_present(result, field_names)
     if isinstance(raw, Mapping):
         iterable: Iterable[tuple[Any, Any]] = raw.items()
@@ -813,7 +927,8 @@ def _entries_by_id(
             entry = {"status": value}
         else:
             continue
-        entry_id = key if isinstance(key, str) else _entry_id(entry)
+        raw_entry_id = key if isinstance(key, str) else _entry_id(entry)
+        entry_id = _canonical_entry_id(raw_entry_id, aliases) if isinstance(raw_entry_id, str) else ""
         if not isinstance(entry_id, str) or entry_id == "":
             continue
         if entry_id in seen:
@@ -828,10 +943,50 @@ def _entry_id(entry: Mapping[str, Any]) -> str:
     return _string_value(
         entry.get("scenario_id")
         or entry.get("scenarioId")
+        or entry.get("scenario")
+        or entry.get("scenario_name")
+        or entry.get("scenarioName")
+        or entry.get("case_id")
+        or entry.get("caseId")
         or entry.get("capability_id")
         or entry.get("capabilityId")
+        or entry.get("capability")
+        or entry.get("capability_name")
+        or entry.get("capabilityName")
         or entry.get("id")
+        or entry.get("name")
+        or entry.get("key")
     )
+
+
+def _entry_aliases(
+    canonical_ids: Iterable[str],
+    explicit_aliases: Mapping[str, Iterable[str]],
+) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for canonical_id in canonical_ids:
+        aliases[_normalize_identifier(canonical_id)] = canonical_id
+        for alias in explicit_aliases.get(canonical_id, ()):
+            aliases[_normalize_identifier(alias)] = canonical_id
+    return aliases
+
+
+def _canonical_entry_id(entry_id: str, aliases: Mapping[str, str]) -> str:
+    normalized = _normalize_identifier(entry_id)
+    return aliases.get(normalized, normalized)
+
+
+def _entry_mapping_value(
+    values: Mapping[Any, Any],
+    canonical_id: str,
+    explicit_aliases: Mapping[str, Iterable[str]],
+) -> Any:
+    aliases = _entry_aliases((canonical_id,), explicit_aliases)
+    target = _canonical_entry_id(canonical_id, aliases)
+    for key, value in values.items():
+        if isinstance(key, str) and _canonical_entry_id(key, aliases) == target:
+            return value
+    return None
 
 
 def _run_record_failures(result: Mapping[str, Any], contract: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -917,7 +1072,8 @@ def _source_policy_failures(
                 scenario_id=scenario_id,
                 require_published_artifact_policy=(
                     scenario_id == PUBLISHED_ARTIFACT_INSTALL_ONLY_SCENARIO
-                    and _string_value(scenario.get("status")) == "pass"
+                    and _status_value_or_raw(scenario.get("status"), scenario.get("result"), scenario.get("outcome"))
+                    == "pass"
                 ),
             )
         )
@@ -1088,7 +1244,7 @@ def _php_assumption_audit_failures(
     if not audit:
         return [{"code": "missing_php_assumption_audit"}]
 
-    status = _string_value(audit.get("status") or audit.get("outcome") or audit.get("verdict"))
+    status = _status_value_or_raw(audit.get("status"), audit.get("outcome"), audit.get("verdict"))
     failures: list[dict[str, Any]] = []
     if status != "pass":
         failures.append({"code": "non_pass_php_assumption_audit", "status": status})
@@ -1101,7 +1257,7 @@ def _php_assumption_audit_failures(
         "no_php_only_error_shapes",
     )
     for check in required_checks:
-        if checks.get(check) is not True:
+        if not _pass_bool_value(_first_present(checks, (check, _camelize(check), _kebabize(check)))):
             failures.append({"code": "missing_php_assumption_check", "check": check})
     return failures
 
@@ -1236,9 +1392,7 @@ def _sdk_runtime_audit_fields() -> tuple[str, ...]:
 
 
 def _declared_outcome_failures(result: Mapping[str, Any], evaluated_status: str) -> list[dict[str, Any]]:
-    declared = _string_value(
-        _first_present(result, DECLARED_OUTCOME_FIELDS)
-    )
+    declared = _status_value_or_raw(_first_present(result, DECLARED_OUTCOME_FIELDS))
     if declared == "":
         return [{"code": "missing_declared_outcome"}]
     if _normal_outcome(declared) != evaluated_status:
@@ -1253,7 +1407,7 @@ def _declared_outcome_failures(result: Mapping[str, Any], evaluated_status: str)
 
 
 def _normal_outcome(value: str) -> str:
-    return "pass" if value == "pass" else "non_passing"
+    return "pass" if _status_value(value) == "pass" else "non_passing"
 
 
 def _has_observed_outputs(entry: Mapping[str, Any]) -> bool:
@@ -1284,7 +1438,7 @@ def _has_linked_findings(scenario_result: Mapping[str, Any], result: Mapping[str
     for field in ("finding_links", "findingLinks", "findings"):
         links = _first_present(result, (field,))
         if isinstance(links, Mapping):
-            value = links.get(scenario_id)
+            value = _entry_mapping_value(links, scenario_id, SCENARIO_ID_ALIASES)
             if value not in (None, "", [], {}):
                 return True
         elif isinstance(links, list):
@@ -1292,7 +1446,8 @@ def _has_linked_findings(scenario_result: Mapping[str, Any], result: Mapping[str
                 if not isinstance(item, Mapping):
                     continue
                 linked = _string_value(item.get("scenario_id") or item.get("scenario") or item.get("id"))
-                if linked == scenario_id:
+                aliases = _entry_aliases((scenario_id,), SCENARIO_ID_ALIASES)
+                if _canonical_entry_id(linked, aliases) == _canonical_entry_id(scenario_id, aliases):
                     return True
     return False
 
@@ -1337,6 +1492,58 @@ def _string_list(value: Any) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
+def _status_value(*values: Any) -> str:
+    for value in values:
+        normalized = _normal_status_value(value)
+        if normalized:
+            return normalized
+    return ""
+
+
+def _status_value_or_raw(*values: Any) -> str:
+    normalized = _status_value(*values)
+    if normalized:
+        return normalized
+    for value in values:
+        raw = _string_value(value)
+        if raw:
+            return raw
+    return ""
+
+
+def _normal_status_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "pass" if value else "fail"
+    normalized = _normalize_identifier(_string_value(value))
+    return {
+        "ok": "pass",
+        "true": "pass",
+        "yes": "pass",
+        "passed": "pass",
+        "pass": "pass",
+        "success": "pass",
+        "successful": "pass",
+        "succeeded": "pass",
+        "failed": "fail",
+        "false": "fail",
+        "no": "fail",
+        "failure": "fail",
+        "fail": "fail",
+        "error": "fail",
+        "non_pass": "fail",
+        "non_passing": "fail",
+        "unsupported": "unsupported",
+        "not_covered": "not_covered",
+        "uncovered": "not_covered",
+        "runner_blocked": "runner_blocked",
+        "blocked": "runner_blocked",
+    }.get(normalized, "")
+
+
+def _pass_bool_value(value: Any) -> bool:
+    return value is True or _status_value(value) == "pass"
+
+
 def _string_value(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -1346,7 +1553,7 @@ def _string_value(value: Any) -> str:
 
 
 def _has_non_empty_field(mapping: Mapping[str, Any], field: str) -> bool:
-    value = _first_present(mapping, (field, _camelize(field)))
+    value = _first_present(mapping, (field, _camelize(field), _kebabize(field)))
     return value not in (None, "", [], {})
 
 

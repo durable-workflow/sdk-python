@@ -280,7 +280,9 @@ artifact versions, protocol traces, a no-PHP-assumption audit, and the complete
 Python capability table. Host runners can feed their raw published-artifact
 observations to `--compose`; omitted parity cells become explicit
 `not_covered` entries so the gate reports the remaining scenario or capability
-instead of accepting a smoke-only result.
+instead of accepting a smoke-only result. The composer accepts canonical
+snake_case IDs and runbook-style hyphenated IDs such as `server-up` and
+`result-returned`.
 
 ## External payload storage
 

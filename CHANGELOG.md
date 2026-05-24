@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `durable-workflow-python-conformance --compose` now normalizes runbook-style
+  scenario and capability identifiers such as `server-up` and
+  `result-returned`, plus common status, trace-plane, and no-PHP audit aliases,
+  before evaluating host evidence.
 - `durable-workflow-python-conformance --compose` now accepts runner-native
   host evidence aliases such as `scenarioEvidence`, `capabilityResults`,
   `officialCli`, `firstUserFlow`, `traces`, and `languageNeutralityAudit`,
