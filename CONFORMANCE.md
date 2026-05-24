@@ -25,8 +25,11 @@ The Python SDK claims two targets from the suite's matrix:
 | --- | --- | --- |
 | `control_plane_request_response` | `tests/fixtures/control-plane/` | stable, parity-shared with `cli` |
 | `signal_query_runtime_contract` | `tests/test_signals.py`, `tests/test_queries.py`, `tests/test_worker.py` and the public scenario manifest at <https://durable-workflow.github.io/platform-conformance/signal-query-runtime-scenarios.json> | stable, parity-shared with PHP worker, CLI, and server routes |
-| `namespace_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/namespace-runtime-scenarios.json> | stable, suite v8 runtime coverage for namespace isolation and SDK namespace selection |
+| `search_attribute_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/search-attribute-runtime-scenarios.json> | stable, parity-shared with PHP worker, CLI, Waterline, and server query behavior |
+| `namespace_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/namespace-runtime-scenarios.json> | stable, suite v12 runtime coverage for namespace isolation and SDK namespace selection |
 | `child_workflow_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/child-workflow-runtime-scenarios.json> | stable, parity-shared with PHP worker and server child-workflow runtime behavior |
+| `saga_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/saga-runtime-scenarios.json> | stable, parity-shared with PHP workflow compensation, cross-language activities, replay, CLI, and Waterline visibility |
+| `worker_versioning_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/worker-versioning-runtime-scenarios.json> | stable, parity-shared with PHP workers, CLI, Waterline, and server worker routing behavior |
 | `worker_task_lifecycle` | `tests/fixtures/external-task-input/`, `tests/fixtures/external-task-result/` | stable |
 | `history_replay_bundles` | `tests/fixtures/golden_history/` and the public replay scenario manifest at <https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json> | stable, parity-shared with `workflow` golden bundles and the full runtime replay scenario matrix |
 
@@ -105,7 +108,7 @@ result document before tag, with the conformance level at `full` or
 | Field | Value |
 | --- | --- |
 | Required claimed targets | `official_sdk`, `worker_protocol_implementation` |
-| Required suite version | `PlatformConformanceSuite::VERSION` (currently `8`, mirrored at `/platform-conformance-contract.json`) |
+| Required suite version | `PlatformConformanceSuite::VERSION` (currently `12`, mirrored at `/platform-conformance-contract.json`) |
 | CI job | `platform-conformance` (lands when the harness reference implementation publishes; until then `cli-parity`, `test_history_event_contract.py`, and `durable-workflow-python-conformance --evaluate` cover the same ground) |
 | Block on `nonconforming` | yes |
 | Artifact attached to release | harness result document, schema `durable-workflow.v2.platform-conformance.result` |
@@ -151,15 +154,21 @@ no test in this repo notices.
   <https://durable-workflow.github.io/platform-conformance-contract.json>
 - Signal/query runtime scenarios:
   <https://durable-workflow.github.io/platform-conformance/signal-query-runtime-scenarios.json>
+- Search-attribute runtime scenarios:
+  <https://durable-workflow.github.io/platform-conformance/search-attribute-runtime-scenarios.json>
 - Replay runtime scenarios:
   <https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json>
 - Namespace runtime scenarios:
   <https://durable-workflow.github.io/platform-conformance/namespace-runtime-scenarios.json>
 - Child workflow runtime scenarios:
   <https://durable-workflow.github.io/platform-conformance/child-workflow-runtime-scenarios.json>
+- Saga runtime scenarios:
+  <https://durable-workflow.github.io/platform-conformance/saga-runtime-scenarios.json>
+- Worker-versioning runtime scenarios:
+  <https://durable-workflow.github.io/platform-conformance/worker-versioning-runtime-scenarios.json>
 - Compatibility authority:
   <https://durable-workflow.github.io/docs/2.0/compatibility>
 - Polyglot parity doc:
-  <https://durable-workflow.github.io/docs/polyglot/cli-python-parity>
+  <https://durable-workflow.github.io/docs/2.0/polyglot/cli-python-parity>
 - Existing per-repo gates: `tests/test_control_plane_parity_fixtures.py`,
   `tests/test_history_event_contract.py`, `scripts/check-cli-parity.py`.
