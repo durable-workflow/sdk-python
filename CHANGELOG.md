@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `durable-workflow-python-conformance` now exposes a host-evidence
+  composition contract and `--compose` mode so published-artifact runners can
+  turn raw observations into a complete Python parity result document before
+  evaluation.
 - `durable-workflow-python-conformance` now exposes the Python SDK
   published-artifact parity contract and evaluates host result documents,
   rejecting smoke-only evidence unless the official CLI path, cold first-user

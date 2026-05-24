@@ -10,6 +10,7 @@ from durable_workflow.python_conformance import (
     REQUIRED_ARTIFACTS,
     REQUIRED_CAPABILITIES,
     REQUIRED_SCENARIOS,
+    compose_result,
     evaluate_result,
     manifest,
 )
@@ -154,6 +155,48 @@ def complete_result() -> dict[str, Any]:
     }
 
 
+def complete_host_evidence() -> dict[str, Any]:
+    result = complete_result()
+    return {
+        "started_at": result["started_at"],
+        "finished_at": result["finished_at"],
+        "generated_at": result["generated_at"],
+        "artifact_versions": result["artifact_versions"],
+        "source_policy": result["source_policy"],
+        "install_channels": result["scenario_results"]["published_artifact_install_only"]["install_channels"],
+        "cli_evidence": result["scenario_results"]["official_cli_install_start_result_path"]["cli_evidence"],
+        "cold_setup": result["scenario_results"]["cold_first_user_setup"]["cold_setup"],
+        "protocol_traces": [
+            {"plane": "control", "request": "POST /workflows", "response": 201},
+            {"plane": "worker", "request": "POST /worker/workflow-tasks/poll", "response": 200},
+        ],
+        "php_assumption_audit": {
+            **result["php_assumption_audit"],
+            "server_cli_audit": {"status": "pass"},
+            "sdk_runtime_audit": {"status": "pass"},
+        },
+        "scenario_results": {
+            scenario: scenario_result
+            for scenario, scenario_result in result["scenario_results"].items()
+            if scenario
+            not in {
+                "published_artifact_install_only",
+                "official_cli_install_start_result_path",
+                "cold_first_user_setup",
+                "protocol_trace_capture",
+                "php_assumption_audit",
+                "capability_table_complete",
+            }
+        },
+        "capabilities": {
+            capability: {"status": "pass", "evidence": {"observed": True}}
+            for capability in REQUIRED_CAPABILITIES
+        },
+        "findings": [],
+        "finding_links": [],
+    }
+
+
 def test_manifest_names_full_python_parity_surface() -> None:
     payload = manifest()
 
@@ -166,6 +209,8 @@ def test_manifest_names_full_python_parity_surface() -> None:
     assert "protocol_trace_capture" in payload["required_scenarios"]
     assert "php_assumption_audit" in payload["required_scenarios"]
     assert "capability_table_complete" in payload["required_scenarios"]
+    assert payload["host_evidence"]["schema"] == "durable-workflow.v2.python-sdk-parity.host-evidence"
+    assert payload["host_evidence"]["missing_scenario_status"] == "not_covered"
 
 
 def test_evaluate_result_accepts_complete_published_artifact_evidence() -> None:
@@ -175,6 +220,103 @@ def test_evaluate_result_accepts_complete_published_artifact_evidence() -> None:
     assert evaluation["missing_scenarios"] == []
     assert evaluation["missing_capabilities"] == []
     assert evaluation["gate_failures"] == []
+
+
+def test_compose_result_accepts_full_host_runner_evidence() -> None:
+    evidence = complete_host_evidence()
+
+    composed = compose_result(evidence)
+    evaluation = evaluate_result(composed)
+
+    assert composed["schema"] == "durable-workflow.v2.python-sdk-parity.result"
+    assert composed["outcome"] == "pass"
+    assert composed["scenario_results"]["official_cli_install_start_result_path"]["status"] == "pass"
+    assert composed["scenario_results"]["protocol_trace_capture"]["status"] == "pass"
+    assert len(composed["capability_table"]) == len(REQUIRED_CAPABILITIES)
+    assert evaluation["status"] == "pass"
+    assert evaluation["gate_failures"] == []
+
+
+def test_compose_result_rejects_protocol_trace_evidence_without_both_planes() -> None:
+    evidence = complete_host_evidence()
+    evidence["protocol_traces"] = [
+        {"plane": "control", "request": "POST /workflows", "response": 201},
+    ]
+    evidence["finding_links"] = {
+        "protocol_trace_capture": [{"summary": "worker protocol trace plane was not captured"}],
+    }
+
+    composed = compose_result(evidence)
+    evaluation = evaluate_result(composed)
+
+    assert composed["outcome"] == "fail"
+    protocol_scenario = composed["scenario_results"]["protocol_trace_capture"]
+    assert protocol_scenario["status"] == "not_covered"
+    assert protocol_scenario["control_plane_traces"] == evidence["protocol_traces"]
+    assert "worker_protocol_traces" not in protocol_scenario
+    assert evaluation["status"] == "non_passing"
+    assert "protocol_trace_capture" in evaluation["non_pass_scenarios"]
+    assert {"code": "missing_protocol_trace_plane", "plane": "worker"} in evaluation["gate_failures"]
+
+
+def test_compose_result_rejects_pass_capabilities_without_recorded_evidence() -> None:
+    evidence = complete_host_evidence()
+    evidence["capabilities"] = {
+        capability: {"status": "pass"}
+        for capability in REQUIRED_CAPABILITIES
+    }
+
+    composed = compose_result(evidence)
+    evaluation = evaluate_result(composed)
+
+    assert composed["outcome"] == "fail"
+    assert composed["capability_table"][0] == {"id": REQUIRED_CAPABILITIES[0], "status": "pass"}
+    assert evaluation["status"] == "non_passing"
+    assert {
+        "code": "missing_capability_evidence",
+        "capability_id": REQUIRED_CAPABILITIES[0],
+    } in evaluation["gate_failures"]
+
+
+def test_compose_result_keeps_smoke_only_host_evidence_non_passing() -> None:
+    result = complete_result()
+    evidence = {
+        "started_at": result["started_at"],
+        "finished_at": result["finished_at"],
+        "generated_at": result["generated_at"],
+        "artifact_versions": result["artifact_versions"],
+        "source_policy": result["source_policy"],
+        "scenario_results": {
+            "python_worker_registration": result["scenario_results"]["python_worker_registration"],
+            "activity_backed_workflow_execution": result["scenario_results"]["activity_backed_workflow_execution"],
+            "workflow_result_surface": result["scenario_results"]["workflow_result_surface"],
+            "worker_restart_activity_and_signal_state": result["scenario_results"][
+                "worker_restart_activity_and_signal_state"
+            ],
+        },
+        "capabilities": {
+            "python_workflow_runs": {"status": "pass", "evidence": {"observed": True}},
+            "python_activity_runs": {"status": "pass", "evidence": {"observed": True}},
+            "workflow_result_returned": {"status": "pass", "evidence": {"observed": True}},
+        },
+        "findings": {
+            scenario: [{"summary": "expanded Python conformance scenario was not covered"}]
+            for scenario in REQUIRED_SCENARIOS
+        },
+        "finding_links": {
+            scenario: [{"summary": "expanded Python conformance scenario was not covered"}]
+            for scenario in REQUIRED_SCENARIOS
+        },
+    }
+
+    composed = compose_result(evidence)
+    evaluation = evaluate_result(composed)
+
+    assert composed["outcome"] == "fail"
+    assert composed["scenario_results"]["official_cli_install_start_result_path"]["status"] == "not_covered"
+    assert evaluation["status"] == "non_passing"
+    assert "official_cli_install_start_result_path" in evaluation["non_pass_scenarios"]
+    assert "official_cli_installed" in evaluation["non_pass_capabilities"]
 
 
 def test_evaluate_result_accepts_advertised_artifact_version_run_record_alias() -> None:

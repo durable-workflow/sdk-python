@@ -10,6 +10,7 @@ server, CLI, or worker runtime so a runner can import it from the installed
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from collections.abc import Iterable, Mapping
@@ -22,6 +23,8 @@ RESULT_SCHEMA = "durable-workflow.v2.python-sdk-parity.result"
 RESULT_VERSION = 1
 RESULT_GATE_SCHEMA = "durable-workflow.v2.python-sdk-parity.result-gate"
 RESULT_GATE_VERSION = 1
+HOST_EVIDENCE_SCHEMA = "durable-workflow.v2.python-sdk-parity.host-evidence"
+HOST_EVIDENCE_VERSION = 1
 PUBLISHED_ARTIFACT_INSTALL_ONLY_SCENARIO = "published_artifact_install_only"
 
 ALLOWED_SCENARIO_STATUSES = ("pass", "fail", "unsupported", "not_covered", "runner_blocked")
@@ -217,6 +220,7 @@ def manifest() -> dict[str, Any]:
             "runner_blocked_outcome": "non_passing_runner_blocked",
         },
         "result_gate": result_gate_spec(),
+        "host_evidence": host_evidence_spec(),
     }
 
 
@@ -236,6 +240,42 @@ def result_gate_spec() -> dict[str, Any]:
         "non_pass_statuses": list(NON_PASS_SCENARIO_STATUSES),
         "pass_requires": manifest_pass_requirements(),
         "smoke_subset_outcome": "non_passing",
+    }
+
+
+def host_evidence_spec() -> dict[str, Any]:
+    """Return the host-evidence composition contract consumed by runners."""
+
+    return {
+        "schema": HOST_EVIDENCE_SCHEMA,
+        "version": HOST_EVIDENCE_VERSION,
+        "composes_result_schema": RESULT_SCHEMA,
+        "compose_command": "durable-workflow-python-conformance --compose host-evidence.json",
+        "evaluate_command": "durable-workflow-python-conformance --evaluate python-conformance-result.json",
+        "input_fields": {
+            "artifact_versions": list(ARTIFACT_VERSION_FIELDS),
+            "scenario_results": list(SCENARIO_RESULTS_FIELDS),
+            "capability_table": list(CAPABILITY_TABLE_FIELDS),
+            "declared_outcome": list(DECLARED_OUTCOME_FIELDS),
+        },
+        "top_level_evidence_fields": [
+            "install_channels",
+            "source_policy",
+            "cli_evidence",
+            "cold_setup",
+            "protocol_traces",
+            "control_plane_traces",
+            "worker_protocol_traces",
+            "php_assumption_audit",
+            "findings",
+            "finding_links",
+        ],
+        "scenario_evidence_fields": {
+            scenario: list(fields)
+            for scenario, fields in SCENARIO_REQUIRED_EVIDENCE.items()
+        },
+        "missing_scenario_status": "not_covered",
+        "missing_capability_status": "not_covered",
     }
 
 
@@ -260,6 +300,293 @@ def manifest_pass_requirements() -> list[str]:
         "no_local_product_source_artifacts_are_reported",
         "overall_outcome_matches_gate_status",
     ]
+
+
+def compose_result(evidence: Mapping[str, Any], contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Compose a full Python conformance result from host-runner evidence.
+
+    Host runners collect observations from published artifacts. This function
+    gives them one stable shape to emit: every required scenario and
+    capability is represented, pass cells carry their evidence, and omitted
+    cells are explicit ``not_covered`` results that the gate rejects with
+    focused failures instead of silently accepting smoke-only output.
+    """
+
+    contract = contract or manifest()
+    artifacts = dict(_artifact_versions(evidence))
+    source_policy = _copy_mapping(_first_present(evidence, ("source_policy", "sourcePolicy")))
+    scenario_results = _compose_scenario_results(evidence, contract, artifacts, source_policy)
+    capability_table = _compose_capability_table(evidence, contract)
+    protocol_traces = _deepcopy_json_like(
+        _first_present(evidence, ("protocol_traces", "protocolTraces", "api_captures", "apiCaptures"))
+    )
+    php_assumption_audit = _deepcopy_json_like(
+        _first_present(evidence, ("php_assumption_audit", "phpAssumptionAudit"))
+    )
+
+    result: dict[str, Any] = {
+        "schema": RESULT_SCHEMA,
+        "version": RESULT_VERSION,
+        "started_at": _timestamp_value(evidence, "started_at"),
+        "finished_at": _timestamp_value(evidence, "finished_at"),
+        "generated_at": _timestamp_value(evidence, "generated_at"),
+        "artifact_versions": artifacts,
+        "source_policy": source_policy,
+        "scenario_results": scenario_results,
+        "capability_table": capability_table,
+        "protocol_traces": protocol_traces,
+        "php_assumption_audit": php_assumption_audit,
+        "findings": _deepcopy_json_like(_first_present(evidence, ("findings",))),
+        "finding_links": _deepcopy_json_like(_first_present(evidence, ("finding_links", "findingLinks"))),
+    }
+
+    declared = _string_value(_first_present(evidence, DECLARED_OUTCOME_FIELDS))
+    result["outcome"] = declared or _composed_outcome(result, contract)
+    return result
+
+
+def _compose_scenario_results(
+    evidence: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    artifacts: Mapping[str, Any],
+    source_policy: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    duplicates: dict[str, int] = {}
+    raw_scenarios = _entries_by_id(evidence, SCENARIO_RESULTS_FIELDS, duplicates)
+    required_scenarios = _string_list(contract.get("required_scenarios", []))
+    required_evidence = _scenario_required_evidence(contract)
+    scenario_results: dict[str, dict[str, Any]] = {}
+
+    for scenario_id in required_scenarios:
+        scenario = _copy_mapping(raw_scenarios.get(scenario_id))
+        scenario["scenario_id"] = scenario_id
+        _apply_top_level_scenario_evidence(scenario_id, scenario, evidence, artifacts, source_policy, contract)
+        status = _string_value(scenario.get("status"))
+        if status == "":
+            status = (
+                "pass"
+                if _scenario_has_required_evidence(scenario, required_evidence.get(scenario_id, []))
+                else "not_covered"
+            )
+            scenario["status"] = status
+        if status == "pass" and not _has_observed_outputs(scenario):
+            scenario["observed_outputs"] = {
+                "summary": "required Python SDK conformance evidence recorded",
+                "evidence_fields": [
+                    field
+                    for field in required_evidence.get(scenario_id, [])
+                    if _has_non_empty_field(scenario, field)
+                ],
+            }
+        _attach_scenario_findings(scenario, evidence)
+        scenario_results[scenario_id] = scenario
+
+    for scenario_id, scenario in raw_scenarios.items():
+        if scenario_id in scenario_results:
+            continue
+        extra = _copy_mapping(scenario)
+        extra.setdefault("scenario_id", scenario_id)
+        _attach_scenario_findings(extra, evidence)
+        scenario_results[scenario_id] = extra
+
+    return scenario_results
+
+
+def _apply_top_level_scenario_evidence(
+    scenario_id: str,
+    scenario: dict[str, Any],
+    evidence: Mapping[str, Any],
+    artifacts: Mapping[str, Any],
+    source_policy: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> None:
+    if scenario_id == PUBLISHED_ARTIFACT_INSTALL_ONLY_SCENARIO:
+        _setdefault_non_empty(
+            scenario,
+            "install_channels",
+            _first_present(evidence, ("install_channels", "installChannels")),
+        )
+        _setdefault_non_empty(scenario, "artifact_versions", artifacts)
+        _setdefault_non_empty(scenario, "source_policy", source_policy)
+        return
+
+    if scenario_id == "official_cli_install_start_result_path":
+        cli_evidence = _copy_mapping(_first_present(evidence, ("cli_evidence", "cliEvidence")))
+        _setdefault_non_empty(scenario, "cli_evidence", cli_evidence)
+        _setdefault_non_empty(
+            scenario,
+            "cli_install",
+            _first_present(cli_evidence, ("cli_install", "cliInstall", "install_command", "installCommand")),
+        )
+        _setdefault_non_empty(
+            scenario,
+            "cli_start",
+            _first_present(cli_evidence, ("cli_start", "cliStart", "start_command", "startCommand")),
+        )
+        _setdefault_non_empty(
+            scenario,
+            "cli_result",
+            _first_present(cli_evidence, ("cli_result", "cliResult", "result_command", "resultCommand")),
+        )
+        return
+
+    if scenario_id == "cold_first_user_setup":
+        cold_setup = _copy_mapping(
+            _first_present(evidence, ("cold_setup", "coldSetup", "first_user_setup", "firstUserSetup"))
+        )
+        _setdefault_non_empty(scenario, "cold_setup", cold_setup)
+        _setdefault_non_empty(scenario, "fresh_state", _first_present(cold_setup, ("fresh_state", "freshState")))
+        _setdefault_non_empty(scenario, "first_user_flow", cold_setup)
+        return
+
+    if scenario_id == "protocol_trace_capture":
+        traces = _deepcopy_json_like(
+            _first_present(evidence, ("protocol_traces", "protocolTraces", "api_captures", "apiCaptures"))
+        )
+        control_traces = _first_present(evidence, ("control_plane_traces", "controlPlaneTraces"))
+        worker_traces = _first_present(evidence, ("worker_protocol_traces", "workerProtocolTraces"))
+        _setdefault_non_empty(scenario, "protocol_traces", traces)
+        _setdefault_non_empty(scenario, "control_plane_traces", control_traces or _filtered_traces(traces, "control"))
+        _setdefault_non_empty(
+            scenario,
+            "worker_protocol_traces",
+            worker_traces or _filtered_traces(traces, "worker"),
+        )
+        return
+
+    if scenario_id == "php_assumption_audit":
+        audit = _copy_mapping(_first_present(evidence, ("php_assumption_audit", "phpAssumptionAudit")))
+        _setdefault_non_empty(scenario, "php_assumption_audit", audit)
+        _setdefault_non_empty(
+            scenario,
+            "server_cli_audit",
+            _first_present(audit, ("server_cli_audit", "serverCliAudit")),
+        )
+        _setdefault_non_empty(
+            scenario,
+            "sdk_runtime_audit",
+            _first_present(audit, ("sdk_runtime_audit", "sdkRuntimeAudit")),
+        )
+        return
+
+    if scenario_id == "capability_table_complete":
+        _setdefault_non_empty(scenario, "capability_table", _compose_capability_table(evidence, contract))
+
+
+def _compose_capability_table(evidence: Mapping[str, Any], contract: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_capabilities = _raw_capability_entries(evidence)
+    required_capabilities = _required_capabilities(contract)
+    capability_table: list[dict[str, Any]] = []
+
+    for capability_id in required_capabilities:
+        capability = _copy_mapping(raw_capabilities.get(capability_id))
+        capability["id"] = capability_id
+        status = _string_value(
+            capability.get("status")
+            or capability.get("result")
+            or capability.get("outcome")
+        )
+        if status == "":
+            status = "not_covered"
+            capability["status"] = status
+        else:
+            capability.setdefault("status", status)
+        capability_table.append(capability)
+
+    for capability_id, capability in raw_capabilities.items():
+        if capability_id in required_capabilities:
+            continue
+        extra = _copy_mapping(capability)
+        extra.setdefault("id", capability_id)
+        capability_table.append(extra)
+
+    return capability_table
+
+
+def _raw_capability_entries(evidence: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = _first_present(evidence, CAPABILITY_TABLE_FIELDS)
+    if isinstance(raw, Mapping):
+        entries: dict[str, dict[str, Any]] = {}
+        for key, value in raw.items():
+            if not isinstance(key, str) or key == "":
+                continue
+            if isinstance(value, Mapping):
+                entry = dict(value)
+            elif isinstance(value, bool):
+                entry = {"status": "pass" if value else "fail", "evidence": {"observed": value}}
+            elif isinstance(value, str):
+                entry = {"status": value}
+            else:
+                continue
+            entry.setdefault("id", key)
+            entries[key] = entry
+        return entries
+
+    duplicates: dict[str, int] = {}
+    return _entries_by_id(evidence, CAPABILITY_TABLE_FIELDS, duplicates)
+
+
+def _scenario_has_required_evidence(scenario: Mapping[str, Any], required_fields: Iterable[str]) -> bool:
+    return all(_has_non_empty_field(scenario, field) for field in required_fields)
+
+
+def _attach_scenario_findings(scenario: dict[str, Any], evidence: Mapping[str, Any]) -> None:
+    if any(
+        _has_non_empty_field(scenario, field)
+        for field in ("linked_findings", "linkedFindings", "finding_links", "findingLinks")
+    ):
+        return
+
+    scenario_id = _entry_id(scenario)
+    links = _first_present(evidence, ("finding_links", "findingLinks", "findings"))
+    linked: Any = None
+    if isinstance(links, Mapping):
+        linked = links.get(scenario_id)
+    elif isinstance(links, list):
+        linked = [
+            item
+            for item in links
+            if isinstance(item, Mapping)
+            and _string_value(item.get("scenario_id") or item.get("scenario") or item.get("id")) == scenario_id
+        ]
+    if linked not in (None, "", [], {}):
+        scenario["linked_findings"] = _deepcopy_json_like(linked)
+
+
+def _filtered_traces(traces: Any, plane: str) -> Any:
+    if not isinstance(traces, list):
+        return []
+    return [
+        trace
+        for trace in traces
+        if isinstance(trace, Mapping)
+        and _string_value(trace.get("plane")).lower() == plane
+    ]
+
+
+def _timestamp_value(evidence: Mapping[str, Any], field: str) -> str:
+    return _string_value(_first_present(evidence, (field, _camelize(field))))
+
+
+def _composed_outcome(result: Mapping[str, Any], contract: Mapping[str, Any]) -> str:
+    provisional = dict(result)
+    provisional["outcome"] = "pass"
+    if evaluate_result(provisional, contract).get("status") == "pass":
+        return "pass"
+    return "fail"
+
+
+def _setdefault_non_empty(mapping: dict[str, Any], key: str, value: Any) -> None:
+    if mapping.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
+        mapping[key] = _deepcopy_json_like(value)
+
+
+def _copy_mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _deepcopy_json_like(value: Any) -> Any:
+    return copy.deepcopy(value)
 
 
 def evaluate_result(result: Mapping[str, Any], contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -691,9 +1018,26 @@ def _protocol_trace_failures(
     )
     if traces in (None, "", [], {}):
         traces = _first_present(result, ("protocol_traces", "protocolTraces", "api_captures", "apiCaptures"))
+    control_traces = _first_present(scenario, ("control_plane_traces", "controlPlaneTraces"))
+    worker_traces = _first_present(scenario, ("worker_protocol_traces", "workerProtocolTraces"))
+
+    if control_traces in (None, "", [], {}):
+        control_traces = _first_present(result, ("control_plane_traces", "controlPlaneTraces"))
+    if worker_traces in (None, "", [], {}):
+        worker_traces = _first_present(result, ("worker_protocol_traces", "workerProtocolTraces"))
+    if control_traces in (None, "", [], {}):
+        control_traces = _filtered_traces(traces, "control")
+    if worker_traces in (None, "", [], {}):
+        worker_traces = _filtered_traces(traces, "worker")
+
+    failures: list[dict[str, Any]] = []
     if traces in (None, "", [], {}):
-        return [{"code": "missing_protocol_traces"}]
-    return []
+        failures.append({"code": "missing_protocol_traces"})
+    if control_traces in (None, "", [], {}):
+        failures.append({"code": "missing_protocol_trace_plane", "plane": "control"})
+    if worker_traces in (None, "", [], {}):
+        failures.append({"code": "missing_protocol_trace_plane", "plane": "worker"})
+    return failures
 
 
 def _php_assumption_audit_failures(
@@ -853,12 +1197,28 @@ def main(argv: list[str] | None = None) -> int:
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--manifest", action="store_true", help="Print the Python SDK conformance manifest.")
     action.add_argument("--result-gate", action="store_true", help="Print the result-gate specification.")
+    action.add_argument("--host-evidence", action="store_true", help="Print the host-evidence composition contract.")
+    action.add_argument(
+        "--compose",
+        type=Path,
+        metavar="EVIDENCE.json",
+        help="Compose a result document from host evidence.",
+    )
     action.add_argument("--evaluate", type=Path, metavar="RESULT.json", help="Evaluate a conformance result document.")
+    parser.add_argument("--evaluate-composed", action="store_true", help="Evaluate the result produced by --compose.")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
     args = parser.parse_args(argv)
 
+    if args.evaluate_composed and args.compose is None:
+        parser.error("--evaluate-composed requires --compose")
+
     if args.result_gate:
         payload = result_gate_spec()
+    elif args.host_evidence:
+        payload = host_evidence_spec()
+    elif args.compose is not None:
+        composed = compose_result(json.loads(args.compose.read_text(encoding="utf-8")))
+        payload = evaluate_result(composed) if args.evaluate_composed else composed
     elif args.evaluate is not None:
         payload = evaluate_result(json.loads(args.evaluate.read_text(encoding="utf-8")))
     else:
@@ -866,7 +1226,7 @@ def main(argv: list[str] | None = None) -> int:
 
     json.dump(payload, sys.stdout, indent=2 if args.pretty else None, sort_keys=True)
     sys.stdout.write("\n")
-    if args.evaluate is not None and payload.get("status") != "pass":
+    if (args.evaluate is not None or args.evaluate_composed) and payload.get("status") != "pass":
         return 1
     return 0
 

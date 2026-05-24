@@ -269,13 +269,18 @@ host conformance runners:
 
 ```bash
 durable-workflow-python-conformance --manifest --pretty
+durable-workflow-python-conformance --host-evidence --pretty
+durable-workflow-python-conformance --compose host-evidence.json --pretty > python-conformance-result.json
 durable-workflow-python-conformance --evaluate python-conformance-result.json --pretty
 ```
 
 The evaluator rejects smoke-only evidence. A passing record must include the
 official CLI install/start/result path, cold first-user setup, concrete
 artifact versions, protocol traces, a no-PHP-assumption audit, and the complete
-Python capability table.
+Python capability table. Host runners can feed their raw published-artifact
+observations to `--compose`; omitted parity cells become explicit
+`not_covered` entries so the gate reports the remaining scenario or capability
+instead of accepting a smoke-only result.
 
 ## External payload storage
 

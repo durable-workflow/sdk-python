@@ -55,6 +55,20 @@ The package ships a machine-readable contract in
 runners use this contract to distinguish a Python worker smoke test from
 the full published-artifact property.
 
+Host runners should collect their published-artifact observations into the
+host-evidence shape exposed by:
+
+```bash
+durable-workflow-python-conformance --host-evidence --pretty
+durable-workflow-python-conformance --compose host-evidence.json --pretty > python-conformance-result.json
+durable-workflow-python-conformance --evaluate python-conformance-result.json --pretty
+```
+
+The composer materializes one row for every required scenario and capability.
+Rows with no recorded evidence are emitted as `not_covered`, preserving a
+non-passing result with focused gate failures instead of letting smoke-only
+evidence look complete.
+
 The result gate requires one result for every scenario below, all marked
 `pass`, before the Python SDK conformance property can pass:
 
