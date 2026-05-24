@@ -1533,6 +1533,17 @@ class TestTaskQueues:
                         "total_worker_count": 3,
                         "runtimes": ["worker-runtime"],
                         "sdk_versions": ["polyglot-sdk/2.0.0"],
+                        "drain_intent": "active",
+                        "drained_at": None,
+                        "promoted_at": "2026-04-22T10:00:00Z",
+                        "new_start_selected": True,
+                        "workflow_definition_fingerprint_count": 2,
+                        "workflow_definition_fingerprint_conflicts": [
+                            {
+                                "workflow_type": "orders.Checkout",
+                                "fingerprint_count": 2,
+                            }
+                        ],
                         "last_heartbeat_at": "2026-04-22T09:30:00Z",
                         "first_seen_at": "2026-04-22T08:00:00Z",
                     },
@@ -1571,6 +1582,16 @@ class TestTaskQueues:
         assert alpha.total_worker_count == 3
         assert alpha.runtimes == ["worker-runtime"]
         assert alpha.sdk_versions == ["polyglot-sdk/2.0.0"]
+        assert alpha.drain_intent == "active"
+        assert alpha.promoted_at == "2026-04-22T10:00:00Z"
+        assert alpha.new_start_selected is True
+        assert alpha.workflow_definition_fingerprint_count == 2
+        assert alpha.workflow_definition_fingerprint_conflicts == [
+            {
+                "workflow_type": "orders.Checkout",
+                "fingerprint_count": 2,
+            }
+        ]
         assert unversioned.build_id is None
         assert unversioned.rollout_status == "stale_only"
         assert unversioned.stale_worker_count == 1
@@ -1606,6 +1627,38 @@ class TestTaskQueues:
         assert result.build_id == semantic["build_id"]
         assert result.drain_intent == semantic["drain_intent"]
         assert result.drained_at == semantic["drained_at"]
+
+    @pytest.mark.asyncio
+    async def test_promote_task_queue_build_id_matches_polyglot_fixture(self, client: Client) -> None:
+        fixture_path = (
+            Path(__file__).parent
+            / "fixtures"
+            / "control-plane"
+            / "task-queue-build-id-promote-parity.json"
+        )
+        fixture = json.loads(fixture_path.read_text())
+        assert fixture["operation"] == "task_queue.build_id.promote"
+        sdk = fixture["sdk_python"]
+        resp = _mock_response(200, fixture["response_body"])
+
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = await client.promote_task_queue_build_id(**sdk["args"])
+
+        assert mock.call_args.args[0] == fixture["request"]["method"]
+        assert mock.call_args.args[1] == f"/api{fixture['request']['path']}"
+        body = mock.call_args.kwargs.get("json")
+        assert body == fixture["request"]["body"]
+
+        semantic = fixture["semantic_body"]
+        assert result.namespace == semantic["namespace"]
+        assert result.task_queue == semantic["task_queue"]
+        assert result.build_id == semantic["build_id"]
+        assert result.drain_intent == semantic["drain_intent"]
+        assert result.drained_at is None
+        assert result.promoted_at == semantic["promoted_at"]
+        assert result.new_start_selected == semantic["new_start_selected"]
 
     @pytest.mark.asyncio
     async def test_resume_task_queue_build_id_matches_polyglot_fixture(self, client: Client) -> None:

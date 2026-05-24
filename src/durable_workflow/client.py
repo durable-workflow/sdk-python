@@ -597,12 +597,29 @@ class TaskQueueBuildIdCohort:
     sdk_versions: list[str]
     last_heartbeat_at: str | None = None
     first_seen_at: str | None = None
+    drain_intent: str | None = None
+    drained_at: str | None = None
+    promoted_at: str | None = None
+    rolled_back_at: str | None = None
+    new_start_selected: bool = False
+    workflow_definition_fingerprint_count: int = 0
+    workflow_definition_fingerprint_conflicts: list[dict[str, Any]] | None = None
     raw: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TaskQueueBuildIdCohort:
         runtimes = data.get("runtimes")
         sdk_versions = data.get("sdk_versions")
+        fingerprint_conflicts_raw = data.get("workflow_definition_fingerprint_conflicts")
+        fingerprint_conflicts: list[dict[str, Any]] | None = None
+        if isinstance(fingerprint_conflicts_raw, list):
+            fingerprint_conflicts = []
+            for item in fingerprint_conflicts_raw:
+                if not isinstance(item, dict):
+                    continue
+                fingerprint_conflicts.append(
+                    {str(key): value for key, value in item.items() if isinstance(key, str)}
+                )
         return cls(
             build_id=data.get("build_id"),
             rollout_status=str(data.get("rollout_status") or ""),
@@ -614,6 +631,15 @@ class TaskQueueBuildIdCohort:
             sdk_versions=[v for v in sdk_versions if isinstance(v, str)] if isinstance(sdk_versions, list) else [],
             last_heartbeat_at=data.get("last_heartbeat_at"),
             first_seen_at=data.get("first_seen_at"),
+            drain_intent=data.get("drain_intent") if isinstance(data.get("drain_intent"), str) else None,
+            drained_at=data.get("drained_at") if isinstance(data.get("drained_at"), str) else None,
+            promoted_at=data.get("promoted_at") if isinstance(data.get("promoted_at"), str) else None,
+            rolled_back_at=data.get("rolled_back_at") if isinstance(data.get("rolled_back_at"), str) else None,
+            new_start_selected=bool(data.get("new_start_selected")),
+            workflow_definition_fingerprint_count=int(
+                data.get("workflow_definition_fingerprint_count") or 0
+            ),
+            workflow_definition_fingerprint_conflicts=fingerprint_conflicts,
             raw=data,
         )
 
@@ -650,11 +676,14 @@ class TaskQueueBuildIdRollout:
 class TaskQueueBuildIdRolloutState:
     """Operator-recorded drain intent for one ``(task_queue, build_id)`` cohort.
 
-    Returned by ``drain_task_queue_build_id`` and ``resume_task_queue_build_id``.
+    Returned by ``drain_task_queue_build_id``,
+    ``promote_task_queue_build_id``, and ``resume_task_queue_build_id``.
     ``build_id`` is ``None`` for the unversioned cohort (workers registered
     without a build identifier). ``drain_intent`` is ``"active"`` or
     ``"draining"``. ``drained_at`` is set only when ``drain_intent`` is
     ``"draining"``; repeated drains do not shift the timestamp.
+    ``promoted_at`` and ``new_start_selected`` identify the cohort currently
+    selected for fresh workflow starts.
     """
 
     namespace: str | None
@@ -662,16 +691,26 @@ class TaskQueueBuildIdRolloutState:
     build_id: str | None
     drain_intent: str
     drained_at: str | None
+    promoted_at: str | None = None
+    rolled_back_at: str | None = None
+    new_start_selected: bool = False
+    deployment: dict[str, Any] | None = None
     raw: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TaskQueueBuildIdRolloutState:
+        deployment_raw = data.get("deployment")
+        deployment = dict(deployment_raw) if isinstance(deployment_raw, dict) else None
         return cls(
             namespace=data.get("namespace"),
             task_queue=str(data.get("task_queue") or ""),
             build_id=data.get("build_id") if isinstance(data.get("build_id"), str) else None,
             drain_intent=str(data.get("drain_intent") or ""),
             drained_at=data.get("drained_at") if isinstance(data.get("drained_at"), str) else None,
+            promoted_at=data.get("promoted_at") if isinstance(data.get("promoted_at"), str) else None,
+            rolled_back_at=data.get("rolled_back_at") if isinstance(data.get("rolled_back_at"), str) else None,
+            new_start_selected=bool(data.get("new_start_selected")),
+            deployment=deployment,
             raw=data,
         )
 
@@ -1893,6 +1932,24 @@ class Client:
             task_queue,
             build_id,
             action="drain",
+        )
+
+    async def promote_task_queue_build_id(
+        self,
+        task_queue: str,
+        build_id: str | None,
+    ) -> TaskQueueBuildIdRolloutState:
+        """Select a build-id cohort for fresh workflow starts on a task queue.
+
+        New workflow starts pin to ``build_id`` after promotion. Existing
+        workflow runs keep their stamped compatibility marker and continue
+        routing only to compatible workers. Pass ``None`` to promote the
+        unversioned cohort.
+        """
+        return await self._mutate_task_queue_build_id_rollout(
+            task_queue,
+            build_id,
+            action="promote",
         )
 
     async def resume_task_queue_build_id(

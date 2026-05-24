@@ -1,0 +1,44 @@
+{
+  "schema": "durable-workflow.polyglot.control-plane-request-fixture",
+  "version": 1,
+  "operation": "task_queue.build_id.promote",
+  "request": {
+    "method": "POST",
+    "path": "/task-queues/orders-critical/build-ids/promote",
+    "body": {
+      "build_id": "build-2026.04.21-z9"
+    }
+  },
+  "semantic_body": {
+    "namespace": "orders-prod",
+    "task_queue": "orders-critical",
+    "build_id": "build-2026.04.21-z9",
+    "drain_intent": "active",
+    "drained_at": null,
+    "promoted_at": "2026-04-22T10:00:00Z",
+    "new_start_selected": true
+  },
+  "response_body": {
+    "namespace": "orders-prod",
+    "task_queue": "orders-critical",
+    "build_id": "build-2026.04.21-z9",
+    "drain_intent": "active",
+    "drained_at": null,
+    "promoted_at": "2026-04-22T10:00:00Z",
+    "new_start_selected": true
+  },
+  "cli": {
+    "argv": {
+      "task-queue": "orders-critical",
+      "--build-id": "build-2026.04.21-z9",
+      "--json": true
+    }
+  },
+  "sdk_python": {
+    "method": "promote_task_queue_build_id",
+    "args": {
+      "task_queue": "orders-critical",
+      "build_id": "build-2026.04.21-z9"
+    }
+  }
+}

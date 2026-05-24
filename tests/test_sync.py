@@ -294,6 +294,34 @@ class TestSyncClientList:
             )
             assert mock.call_args.kwargs.get("json") == {"build_id": "build-alpha"}
 
+    def test_promote_task_queue_build_id(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            200,
+            {
+                "namespace": "default",
+                "task_queue": "orders",
+                "build_id": "build-alpha",
+                "drain_intent": "active",
+                "drained_at": None,
+                "promoted_at": "2026-04-22T10:00:00Z",
+                "new_start_selected": True,
+            },
+        )
+        with patch.object(
+            client._async._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            result = client.promote_task_queue_build_id("orders", "build-alpha")
+            assert result.drain_intent == "active"
+            assert result.promoted_at == "2026-04-22T10:00:00Z"
+            assert result.new_start_selected is True
+            assert result.build_id == "build-alpha"
+            assert mock.call_args.args[:2] == (
+                "POST",
+                "/api/task-queues/orders/build-ids/promote",
+            )
+            assert mock.call_args.kwargs.get("json") == {"build_id": "build-alpha"}
+
     def test_resume_task_queue_build_id_for_unversioned_cohort(self) -> None:
         client = Client("http://localhost:8080")
         resp = _mock_response(

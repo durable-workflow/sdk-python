@@ -340,6 +340,16 @@ class Client:
         )
         return result
 
+    def promote_task_queue_build_id(
+        self,
+        task_queue: str,
+        build_id: str | None,
+    ) -> TaskQueueBuildIdRolloutState:
+        result: TaskQueueBuildIdRolloutState = _run(
+            self._async.promote_task_queue_build_id(task_queue, build_id)
+        )
+        return result
+
     def resume_task_queue_build_id(
         self,
         task_queue: str,
