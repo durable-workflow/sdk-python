@@ -27,7 +27,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypeVar
 
 from . import serializer
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
@@ -41,10 +41,12 @@ from .errors import (
     WorkflowPayloadDecodeError,
 )
 
+_WorkflowT = TypeVar("_WorkflowT")
+
 _REGISTRY: dict[str, type] = {}
 
 
-def defn(*, name: str):  # type: ignore[no-untyped-def]
+def defn(*, name: str) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
     """Register a class as a workflow type under a language-neutral name.
 
     Scans the class for ``@signal``, ``@query``, and ``@update`` decorated
@@ -53,7 +55,7 @@ def defn(*, name: str):  # type: ignore[no-untyped-def]
     history event or control-plane request.
     """
 
-    def wrap(cls: type) -> type:
+    def wrap(cls: type[_WorkflowT]) -> type[_WorkflowT]:
         cls.__workflow_name__ = name  # type: ignore[attr-defined]
         signals: dict[str, str] = {}
         queries: dict[str, str] = {}
