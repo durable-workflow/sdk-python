@@ -39,11 +39,20 @@ ARTIFACT_VERSION_FIELDS = (
 SCENARIO_RESULTS_FIELDS = (
     "scenario_results",
     "scenarioResults",
+    "scenario_evidence",
+    "scenarioEvidence",
+    "scenarios",
 )
 CAPABILITY_TABLE_FIELDS = (
     "capability_table",
     "capabilityTable",
     "capabilities",
+    "capability_results",
+    "capabilityResults",
+    "capability_evidence",
+    "capabilityEvidence",
+    "capability_checks",
+    "capabilityChecks",
 )
 DECLARED_OUTCOME_FIELDS = (
     "outcome",
@@ -262,11 +271,15 @@ def host_evidence_spec() -> dict[str, Any]:
             "install_channels",
             "source_policy",
             "cli_evidence",
+            "official_cli",
             "cold_setup",
+            "first_user_flow",
             "protocol_traces",
             "control_plane_traces",
             "worker_protocol_traces",
+            "traces",
             "php_assumption_audit",
+            "language_neutrality_audit",
             "findings",
             "finding_links",
         ],
@@ -318,10 +331,10 @@ def compose_result(evidence: Mapping[str, Any], contract: Mapping[str, Any] | No
     scenario_results = _compose_scenario_results(evidence, contract, artifacts, source_policy)
     capability_table = _compose_capability_table(evidence, contract)
     protocol_traces = _deepcopy_json_like(
-        _first_present(evidence, ("protocol_traces", "protocolTraces", "api_captures", "apiCaptures"))
+        _first_present(evidence, _protocol_trace_fields())
     )
     php_assumption_audit = _deepcopy_json_like(
-        _first_present(evidence, ("php_assumption_audit", "phpAssumptionAudit"))
+        _first_present(evidence, _php_assumption_audit_fields())
     )
 
     result: dict[str, Any] = {
@@ -411,40 +424,48 @@ def _apply_top_level_scenario_evidence(
         return
 
     if scenario_id == "official_cli_install_start_result_path":
-        cli_evidence = _copy_mapping(_first_present(evidence, ("cli_evidence", "cliEvidence")))
+        cli_evidence = _copy_mapping(_first_present(evidence, _cli_evidence_fields()))
         _setdefault_non_empty(scenario, "cli_evidence", cli_evidence)
         _setdefault_non_empty(
             scenario,
             "cli_install",
-            _first_present(cli_evidence, ("cli_install", "cliInstall", "install_command", "installCommand")),
+            _first_present(cli_evidence, _cli_install_fields())
+            or _first_present(evidence, _cli_install_fields()),
         )
         _setdefault_non_empty(
             scenario,
             "cli_start",
-            _first_present(cli_evidence, ("cli_start", "cliStart", "start_command", "startCommand")),
+            _first_present(cli_evidence, _cli_start_fields())
+            or _first_present(evidence, _cli_start_fields()),
         )
         _setdefault_non_empty(
             scenario,
             "cli_result",
-            _first_present(cli_evidence, ("cli_result", "cliResult", "result_command", "resultCommand")),
+            _first_present(cli_evidence, _cli_result_fields())
+            or _first_present(evidence, _cli_result_fields()),
         )
         return
 
     if scenario_id == "cold_first_user_setup":
-        cold_setup = _copy_mapping(
-            _first_present(evidence, ("cold_setup", "coldSetup", "first_user_setup", "firstUserSetup"))
-        )
+        cold_setup = _copy_mapping(_first_present(evidence, _cold_setup_fields()))
         _setdefault_non_empty(scenario, "cold_setup", cold_setup)
-        _setdefault_non_empty(scenario, "fresh_state", _first_present(cold_setup, ("fresh_state", "freshState")))
-        _setdefault_non_empty(scenario, "first_user_flow", cold_setup)
+        _setdefault_non_empty(
+            scenario,
+            "fresh_state",
+            _first_present(cold_setup, ("fresh_state", "freshState"))
+            or _first_present(evidence, ("fresh_state", "freshState")),
+        )
+        _setdefault_non_empty(
+            scenario,
+            "first_user_flow",
+            _first_present(evidence, ("first_user_flow", "firstUserFlow")) or cold_setup,
+        )
         return
 
     if scenario_id == "protocol_trace_capture":
-        traces = _deepcopy_json_like(
-            _first_present(evidence, ("protocol_traces", "protocolTraces", "api_captures", "apiCaptures"))
-        )
-        control_traces = _first_present(evidence, ("control_plane_traces", "controlPlaneTraces"))
-        worker_traces = _first_present(evidence, ("worker_protocol_traces", "workerProtocolTraces"))
+        traces = _deepcopy_json_like(_first_present(evidence, _protocol_trace_fields()))
+        control_traces = _first_present(evidence, _control_trace_fields())
+        worker_traces = _first_present(evidence, _worker_trace_fields())
         _setdefault_non_empty(scenario, "protocol_traces", traces)
         _setdefault_non_empty(scenario, "control_plane_traces", control_traces or _filtered_traces(traces, "control"))
         _setdefault_non_empty(
@@ -455,17 +476,17 @@ def _apply_top_level_scenario_evidence(
         return
 
     if scenario_id == "php_assumption_audit":
-        audit = _copy_mapping(_first_present(evidence, ("php_assumption_audit", "phpAssumptionAudit")))
+        audit = _copy_mapping(_first_present(evidence, _php_assumption_audit_fields()))
         _setdefault_non_empty(scenario, "php_assumption_audit", audit)
         _setdefault_non_empty(
             scenario,
             "server_cli_audit",
-            _first_present(audit, ("server_cli_audit", "serverCliAudit")),
+            _first_present(audit, _server_cli_audit_fields()),
         )
         _setdefault_non_empty(
             scenario,
             "sdk_runtime_audit",
-            _first_present(audit, ("sdk_runtime_audit", "sdkRuntimeAudit")),
+            _first_present(audit, _sdk_runtime_audit_fields()),
         )
         return
 
@@ -784,9 +805,14 @@ def _entries_by_id(
         iterable = ()
 
     for key, value in iterable:
-        if not isinstance(value, Mapping):
+        if isinstance(value, Mapping):
+            entry = dict(value)
+        elif isinstance(value, bool):
+            entry = {"status": "pass" if value else "fail", "evidence": {"observed": value}}
+        elif isinstance(value, str):
+            entry = {"status": value}
+        else:
             continue
-        entry = dict(value)
         entry_id = key if isinstance(key, str) else _entry_id(entry)
         if not isinstance(entry_id, str) or entry_id == "":
             continue
@@ -818,8 +844,8 @@ def _run_record_failures(result: Mapping[str, Any], contract: Mapping[str, Any])
         "scenario_results": SCENARIO_RESULTS_FIELDS,
         "capability_table": CAPABILITY_TABLE_FIELDS,
         "outcome": DECLARED_OUTCOME_FIELDS,
-        "protocol_traces": ("protocol_traces", "protocolTraces", "api_captures", "apiCaptures"),
-        "php_assumption_audit": ("php_assumption_audit", "phpAssumptionAudit"),
+        "protocol_traces": _protocol_trace_fields(),
+        "php_assumption_audit": _php_assumption_audit_fields(),
         "finding_links": ("finding_links", "findingLinks"),
     }
     for field in required:
@@ -979,15 +1005,25 @@ def _cli_evidence_failures(
 ) -> list[dict[str, Any]]:
     scenario = scenario_results.get("official_cli_install_start_result_path", {})
     evidence = _mapping_value(
-        _first_present(scenario, ("cli_evidence", "cliEvidence"))
-        or _first_present(result, ("cli_evidence", "cliEvidence"))
+        _first_present(scenario, _cli_evidence_fields())
+        or _first_present(result, _cli_evidence_fields())
     )
-    required = ("install_command", "start_command", "result_command", "json_outputs")
-    return [
-        {"code": "missing_cli_evidence", "field": field}
-        for field in required
-        if not _has_non_empty_field(evidence, field)
-    ]
+    failures: list[dict[str, Any]] = []
+    if (
+        not _first_present(evidence, _cli_install_fields())
+        and not _first_present(scenario, ("cli_install", "cliInstall"))
+    ):
+        failures.append({"code": "missing_cli_evidence", "field": "install_command"})
+    if not _first_present(evidence, _cli_start_fields()) and not _first_present(scenario, ("cli_start", "cliStart")):
+        failures.append({"code": "missing_cli_evidence", "field": "start_command"})
+    if (
+        not _first_present(evidence, _cli_result_fields())
+        and not _first_present(scenario, ("cli_result", "cliResult"))
+    ):
+        failures.append({"code": "missing_cli_evidence", "field": "result_command"})
+    if not _has_non_empty_field(evidence, "json_outputs") and not _has_non_empty_field(evidence, "outputs"):
+        failures.append({"code": "missing_cli_evidence", "field": "json_outputs"})
+    return failures
 
 
 def _cold_setup_failures(
@@ -996,8 +1032,8 @@ def _cold_setup_failures(
 ) -> list[dict[str, Any]]:
     scenario = scenario_results.get("cold_first_user_setup", {})
     evidence = _mapping_value(
-        _first_present(scenario, ("cold_setup", "coldSetup", "first_user_setup", "firstUserSetup"))
-        or _first_present(result, ("cold_setup", "coldSetup", "first_user_setup", "firstUserSetup"))
+        _first_present(scenario, _cold_setup_fields())
+        or _first_present(result, _cold_setup_fields())
     )
     required = ("fresh_state", "namespace_created", "first_workflow_started", "result_observed")
     return [
@@ -1014,17 +1050,17 @@ def _protocol_trace_failures(
     scenario = scenario_results.get("protocol_trace_capture", {})
     traces = _first_present(
         scenario,
-        ("protocol_traces", "protocolTraces", "api_captures", "apiCaptures", "observed_outputs"),
+        _protocol_trace_fields() + ("observed_outputs",),
     )
     if traces in (None, "", [], {}):
-        traces = _first_present(result, ("protocol_traces", "protocolTraces", "api_captures", "apiCaptures"))
-    control_traces = _first_present(scenario, ("control_plane_traces", "controlPlaneTraces"))
-    worker_traces = _first_present(scenario, ("worker_protocol_traces", "workerProtocolTraces"))
+        traces = _first_present(result, _protocol_trace_fields())
+    control_traces = _first_present(scenario, _control_trace_fields())
+    worker_traces = _first_present(scenario, _worker_trace_fields())
 
     if control_traces in (None, "", [], {}):
-        control_traces = _first_present(result, ("control_plane_traces", "controlPlaneTraces"))
+        control_traces = _first_present(result, _control_trace_fields())
     if worker_traces in (None, "", [], {}):
-        worker_traces = _first_present(result, ("worker_protocol_traces", "workerProtocolTraces"))
+        worker_traces = _first_present(result, _worker_trace_fields())
     if control_traces in (None, "", [], {}):
         control_traces = _filtered_traces(traces, "control")
     if worker_traces in (None, "", [], {}):
@@ -1046,8 +1082,8 @@ def _php_assumption_audit_failures(
 ) -> list[dict[str, Any]]:
     scenario = scenario_results.get("php_assumption_audit", {})
     audit = _mapping_value(
-        _first_present(scenario, ("php_assumption_audit", "phpAssumptionAudit", "observed_outputs"))
-        or _first_present(result, ("php_assumption_audit", "phpAssumptionAudit"))
+        _first_present(scenario, _php_assumption_audit_fields() + ("observed_outputs",))
+        or _first_present(result, _php_assumption_audit_fields())
     )
     if not audit:
         return [{"code": "missing_php_assumption_audit"}]
@@ -1068,6 +1104,135 @@ def _php_assumption_audit_failures(
         if checks.get(check) is not True:
             failures.append({"code": "missing_php_assumption_check", "check": check})
     return failures
+
+
+def _cli_evidence_fields() -> tuple[str, ...]:
+    return ("cli_evidence", "cliEvidence", "official_cli", "officialCli", "cli")
+
+
+def _cli_install_fields() -> tuple[str, ...]:
+    return (
+        "cli_install",
+        "cliInstall",
+        "install_command",
+        "installCommand",
+        "install",
+        "installed",
+        "install_output",
+        "installOutput",
+    )
+
+
+def _cli_start_fields() -> tuple[str, ...]:
+    return (
+        "cli_start",
+        "cliStart",
+        "start_command",
+        "startCommand",
+        "workflow_start",
+        "workflowStart",
+        "start_workflow",
+        "startWorkflow",
+        "start_output",
+        "startOutput",
+    )
+
+
+def _cli_result_fields() -> tuple[str, ...]:
+    return (
+        "cli_result",
+        "cliResult",
+        "result_command",
+        "resultCommand",
+        "workflow_result",
+        "workflowResult",
+        "read_result",
+        "readResult",
+        "result_output",
+        "resultOutput",
+    )
+
+
+def _cold_setup_fields() -> tuple[str, ...]:
+    return (
+        "cold_setup",
+        "coldSetup",
+        "first_user_setup",
+        "firstUserSetup",
+        "first_user_flow",
+        "firstUserFlow",
+        "cold_start",
+        "coldStart",
+        "fresh_setup",
+        "freshSetup",
+    )
+
+
+def _protocol_trace_fields() -> tuple[str, ...]:
+    return (
+        "protocol_traces",
+        "protocolTraces",
+        "api_captures",
+        "apiCaptures",
+        "http_traces",
+        "httpTraces",
+        "traces",
+    )
+
+
+def _control_trace_fields() -> tuple[str, ...]:
+    return (
+        "control_plane_traces",
+        "controlPlaneTraces",
+        "control_traces",
+        "controlTraces",
+        "control_plane_protocol_traces",
+        "controlPlaneProtocolTraces",
+    )
+
+
+def _worker_trace_fields() -> tuple[str, ...]:
+    return (
+        "worker_protocol_traces",
+        "workerProtocolTraces",
+        "worker_traces",
+        "workerTraces",
+        "worker_plane_traces",
+        "workerPlaneTraces",
+    )
+
+
+def _php_assumption_audit_fields() -> tuple[str, ...]:
+    return (
+        "php_assumption_audit",
+        "phpAssumptionAudit",
+        "language_neutrality_audit",
+        "languageNeutralityAudit",
+        "php_audit",
+        "phpAudit",
+    )
+
+
+def _server_cli_audit_fields() -> tuple[str, ...]:
+    return (
+        "server_cli_audit",
+        "serverCliAudit",
+        "server_audit",
+        "serverAudit",
+        "cli_audit",
+        "cliAudit",
+    )
+
+
+def _sdk_runtime_audit_fields() -> tuple[str, ...]:
+    return (
+        "sdk_runtime_audit",
+        "sdkRuntimeAudit",
+        "sdk_audit",
+        "sdkAudit",
+        "runtime_audit",
+        "runtimeAudit",
+    )
 
 
 def _declared_outcome_failures(result: Mapping[str, Any], evaluated_status: str) -> list[dict[str, Any]]:

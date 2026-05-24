@@ -237,6 +237,76 @@ def test_compose_result_accepts_full_host_runner_evidence() -> None:
     assert evaluation["gate_failures"] == []
 
 
+def test_compose_result_accepts_runner_native_host_evidence_aliases() -> None:
+    result = complete_result()
+    evidence = {
+        "startedAt": result["started_at"],
+        "finishedAt": result["finished_at"],
+        "generatedAt": result["generated_at"],
+        "publishedArtifactVersions": result["artifact_versions"],
+        "sourcePolicy": result["source_policy"],
+        "installChannels": result["scenario_results"]["published_artifact_install_only"]["install_channels"],
+        "officialCli": {
+            "install": {"command": "curl -fsSL https://durable-workflow.com/install.sh | sh"},
+            "workflowStart": {"command": "dw workflow:start --json"},
+            "workflowResult": {"command": "dw workflow:result --json"},
+            "outputs": [{"workflow_id": "py-parity", "status": "completed"}],
+        },
+        "firstUserFlow": {
+            "freshState": True,
+            "namespace_created": "default",
+            "first_workflow_started": "py-parity",
+            "result_observed": {"status": "completed"},
+        },
+        "traces": [
+            {"plane": "control", "request": "POST /workflows", "response": 201},
+            {"plane": "worker", "request": "POST /worker/workflow-tasks/poll", "response": 200},
+        ],
+        "languageNeutralityAudit": {
+            "status": "pass",
+            "serverAudit": {"status": "pass"},
+            "sdkAudit": {"status": "pass"},
+            "checks": {
+                "no_php_runtime_required": True,
+                "no_php_paths_required": True,
+                "no_php_serializer_required": True,
+                "no_php_only_error_shapes": True,
+            },
+        },
+        "scenarioEvidence": {
+            scenario: scenario_result
+            for scenario, scenario_result in result["scenario_results"].items()
+            if scenario
+            not in {
+                "published_artifact_install_only",
+                "official_cli_install_start_result_path",
+                "cold_first_user_setup",
+                "protocol_trace_capture",
+                "php_assumption_audit",
+                "capability_table_complete",
+            }
+        },
+        "capabilityResults": {
+            capability: {"status": "pass", "evidence": {"observed": True}}
+            for capability in REQUIRED_CAPABILITIES
+        },
+        "findings": [],
+        "findingLinks": [],
+    }
+
+    composed = compose_result(evidence)
+    evaluation = evaluate_result(composed)
+
+    assert composed["outcome"] == "pass"
+    assert composed["scenario_results"]["official_cli_install_start_result_path"]["cli_install"] == {
+        "command": "curl -fsSL https://durable-workflow.com/install.sh | sh"
+    }
+    assert composed["scenario_results"]["cold_first_user_setup"]["fresh_state"] is True
+    assert composed["scenario_results"]["php_assumption_audit"]["server_cli_audit"] == {"status": "pass"}
+    assert evaluation["status"] == "pass"
+    assert evaluation["gate_failures"] == []
+
+
 def test_compose_result_rejects_protocol_trace_evidence_without_both_planes() -> None:
     evidence = complete_host_evidence()
     evidence["protocol_traces"] = [

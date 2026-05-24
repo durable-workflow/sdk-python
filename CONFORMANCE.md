@@ -68,6 +68,10 @@ The composer materializes one row for every required scenario and capability.
 Rows with no recorded evidence are emitted as `not_covered`, preserving a
 non-passing result with focused gate failures instead of letting smoke-only
 evidence look complete.
+Runner-native aliases such as `scenarioEvidence`, `capabilityResults`,
+`officialCli`, `firstUserFlow`, `traces`, and `languageNeutralityAudit` are
+accepted as input to the composer; they are normalized into the canonical
+result fields before evaluation.
 
 The result gate requires one result for every scenario below, all marked
 `pass`, before the Python SDK conformance property can pass:

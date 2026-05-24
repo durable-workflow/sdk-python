@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `durable-workflow-python-conformance --compose` now accepts runner-native
+  host evidence aliases such as `scenarioEvidence`, `capabilityResults`,
+  `officialCli`, `firstUserFlow`, `traces`, and `languageNeutralityAudit`,
+  so full published-artifact runs are not marked uncovered just because the
+  runner records observations under natural collection names.
 - `durable-workflow-python-conformance` now exposes a host-evidence
   composition contract and `--compose` mode so published-artifact runners can
   turn raw observations into a complete Python parity result document before
