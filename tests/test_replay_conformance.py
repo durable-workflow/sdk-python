@@ -50,7 +50,7 @@ def test_compose_report_emits_python_replay_conformance_shard() -> None:
     assert report["schema"] == RESULT_SCHEMA
     assert report["schema_version"] == RESULT_VERSION
     assert report["coverage_scope"] == COVERAGE_SCOPE
-    assert report["outcome"] == "non_passing"
+    assert report["outcome"] == "pass"
     assert report["runtime_matrix"]["runtimes"] == ["sdk-python"]
     assert report["artifact_versions"]["workflow-php"] == "2.0.0-alpha.175"
     assert report["artifact_sources"]["workflow-php"] == "composer_package"
@@ -197,7 +197,7 @@ def test_cli_writes_json_report(tmp_path: Path) -> None:
     payload = json.loads(output_path.read_text())
     assert payload["schema"] == RESULT_SCHEMA
     assert payload["coverage_scope"] == COVERAGE_SCOPE
-    assert payload["outcome"] == "non_passing"
+    assert payload["outcome"] == "pass"
 
 
 def test_cli_exits_nonzero_when_required_artifact_evidence_is_missing(tmp_path: Path) -> None:

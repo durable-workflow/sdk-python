@@ -247,7 +247,7 @@ def compose_report(
         "schema": RESULT_SCHEMA,
         "schema_version": RESULT_VERSION,
         "coverage_scope": COVERAGE_SCOPE,
-        "outcome": "fail" if has_failures else "non_passing",
+        "outcome": "fail" if has_failures else "pass",
         "started_at": started_at,
         "finished_at": _timestamp(),
         "artifact_versions": versions,

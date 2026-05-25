@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- `durable-workflow-replay-conformance` now declares `outcome: pass` when
+  every required Python replay shard scenario passes, so full replay evidence
+  is no longer reported as non-passing.
 - Worker query tasks now treat null or empty compact history payload fields as
   missing when a history export carries the durable activity result or signal
   arguments, so cold replay after worker restart does not answer queries from
