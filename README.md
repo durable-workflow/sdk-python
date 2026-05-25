@@ -282,8 +282,10 @@ observations to `--compose`; omitted parity cells become explicit
 `not_covered` entries so the gate reports the remaining scenario or capability
 instead of accepting a smoke-only result. The composer accepts canonical
 snake_case IDs and runbook-style hyphenated IDs such as `server-up` and
-`result-returned`. CLI result-path evidence should come from the actual
-published commands that return terminal workflow output: `workflow:start --wait`,
+`result-returned`, nested runner tables, resolved artifact/source aliases,
+boolean `passed` cells, nested protocol trace planes, and no-PHP audit check
+aliases. CLI result-path evidence should come from the actual published
+commands that return terminal workflow output: `workflow:start --wait`,
 `workflow:describe`, or `workflow:show-run --follow`.
 
 ## External payload storage

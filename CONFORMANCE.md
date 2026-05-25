@@ -77,6 +77,10 @@ accepted as input to the composer; they are normalized into the canonical
 result fields before evaluation. Scenario and capability IDs may use the
 canonical snake_case names or the runbook-style hyphenated names such as
 `server-up`, `python-worker-connects`, and `result-returned`.
+Nested runner tables such as `capabilityTable.rows`, resolved artifact/source
+fields, boolean `passed` cells, nested `protocolTraces.controlPlane` /
+`protocolTraces.workerProtocol` captures, and no-PHP audit check aliases are
+also normalized before evaluation.
 For CLI result-path evidence, host runners should use the actual published
 CLI surfaces that return terminal workflow output: `workflow:start --wait`,
 `workflow:describe`, or `workflow:show-run --follow`.

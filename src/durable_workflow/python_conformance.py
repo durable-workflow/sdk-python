@@ -36,6 +36,16 @@ ARTIFACT_VERSION_FIELDS = (
     "artifactVersions",
     "published_artifact_versions",
     "publishedArtifactVersions",
+    "resolved_artifact_versions",
+    "resolvedArtifactVersions",
+    "versions",
+)
+ARTIFACT_SOURCE_FIELDS = (
+    "artifact_sources",
+    "artifactSources",
+    "published_artifact_sources",
+    "publishedArtifactSources",
+    "sources",
 )
 SCENARIO_RESULTS_FIELDS = (
     "scenario_results",
@@ -304,6 +314,7 @@ def host_evidence_spec() -> dict[str, Any]:
         "evaluate_command": "durable-workflow-python-conformance --evaluate python-conformance-result.json",
         "input_fields": {
             "artifact_versions": list(ARTIFACT_VERSION_FIELDS),
+            "artifact_sources": list(ARTIFACT_SOURCE_FIELDS),
             "scenario_results": list(SCENARIO_RESULTS_FIELDS),
             "capability_table": list(CAPABILITY_TABLE_FIELDS),
             "declared_outcome": list(DECLARED_OUTCOME_FIELDS),
@@ -321,6 +332,9 @@ def host_evidence_spec() -> dict[str, Any]:
         "top_level_evidence_fields": [
             "install_channels",
             "source_policy",
+            "artifact_sources",
+            "local_product_sources_used",
+            "no_local_product_sources_used",
             "cli_evidence",
             "official_cli",
             "cold_setup",
@@ -378,13 +392,11 @@ def compose_result(evidence: Mapping[str, Any], contract: Mapping[str, Any] | No
 
     contract = contract or manifest()
     artifacts = dict(_artifact_versions(evidence))
-    source_policy = _copy_mapping(_first_present(evidence, ("source_policy", "sourcePolicy")))
+    source_policy = _source_policy(evidence)
     scenario_results = _compose_scenario_results(evidence, contract, artifacts, source_policy)
     capability_table = _compose_capability_table(evidence, contract)
-    protocol_traces = _deepcopy_json_like(
-        _first_present(evidence, _protocol_trace_fields())
-    )
-    php_assumption_audit = _deepcopy_json_like(
+    protocol_traces = _trace_entries(_first_present(evidence, _protocol_trace_fields()))
+    php_assumption_audit = _normalized_php_assumption_audit(
         _first_present(evidence, _php_assumption_audit_fields())
     )
 
@@ -430,7 +442,7 @@ def _compose_scenario_results(
         scenario = _copy_mapping(raw_scenarios.get(scenario_id))
         scenario["scenario_id"] = scenario_id
         _apply_top_level_scenario_evidence(scenario_id, scenario, evidence, artifacts, source_policy, contract)
-        status = _status_value_or_raw(scenario.get("status"), scenario.get("result"), scenario.get("outcome"))
+        status = _entry_status(scenario)
         if status == "":
             status = (
                 "pass"
@@ -519,9 +531,14 @@ def _apply_top_level_scenario_evidence(
         return
 
     if scenario_id == "protocol_trace_capture":
-        traces = _deepcopy_json_like(_first_present(evidence, _protocol_trace_fields()))
-        control_traces = _first_present(evidence, _control_trace_fields())
-        worker_traces = _first_present(evidence, _worker_trace_fields())
+        raw_traces = _first_present(evidence, _protocol_trace_fields())
+        traces = _trace_entries(raw_traces)
+        control_traces = _trace_plane_entries(raw_traces, "control") or _trace_entries(
+            _first_present(evidence, _control_trace_fields())
+        )
+        worker_traces = _trace_plane_entries(raw_traces, "worker") or _trace_entries(
+            _first_present(evidence, _worker_trace_fields())
+        )
         _setdefault_non_empty(scenario, "protocol_traces", traces)
         _setdefault_non_empty(scenario, "control_plane_traces", control_traces or _filtered_traces(traces, "control"))
         _setdefault_non_empty(
@@ -532,7 +549,7 @@ def _apply_top_level_scenario_evidence(
         return
 
     if scenario_id == "php_assumption_audit":
-        audit = _copy_mapping(_first_present(evidence, _php_assumption_audit_fields()))
+        audit = _normalized_php_assumption_audit(_first_present(evidence, _php_assumption_audit_fields()))
         _setdefault_non_empty(scenario, "php_assumption_audit", audit)
         _setdefault_non_empty(
             scenario,
@@ -558,15 +575,18 @@ def _compose_capability_table(evidence: Mapping[str, Any], contract: Mapping[str
     for capability_id in required_capabilities:
         capability = _copy_mapping(raw_capabilities.get(capability_id))
         capability["id"] = capability_id
-        status = _status_value_or_raw(
-            capability.get("status"),
-            capability.get("result"),
-            capability.get("outcome"),
-            capability.get("verdict"),
-        )
+        status = _entry_status(capability)
         if status == "":
             status = "not_covered"
         capability["status"] = status
+        if (
+            status == "pass"
+            and not _has_observed_outputs(capability)
+            and not _has_non_empty_field(capability, "evidence")
+        ):
+            marker_evidence = _entry_marker_evidence(capability)
+            if marker_evidence:
+                capability["evidence"] = marker_evidence
         capability_table.append(capability)
 
     for capability_id, capability in raw_capabilities.items():
@@ -580,7 +600,7 @@ def _compose_capability_table(evidence: Mapping[str, Any], contract: Mapping[str
 
 
 def _raw_capability_entries(evidence: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    raw = _first_present(evidence, CAPABILITY_TABLE_FIELDS)
+    raw = _entry_collection(_first_present(evidence, CAPABILITY_TABLE_FIELDS))
     required_capabilities = _required_capabilities(contract)
     aliases = _entry_aliases(required_capabilities, CAPABILITY_ID_ALIASES)
     if isinstance(raw, Mapping):
@@ -614,6 +634,35 @@ def _scenario_has_required_evidence(scenario: Mapping[str, Any], required_fields
     return all(_has_non_empty_field(scenario, field) for field in required_fields)
 
 
+def _source_policy(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    source_policy = _copy_mapping(_first_present(evidence, ("source_policy", "sourcePolicy")))
+    artifact_sources = _first_present(evidence, ARTIFACT_SOURCE_FIELDS)
+    local_sources_used = _local_product_sources_used_value(evidence)
+    if source_policy:
+        if artifact_sources not in (None, "", [], {}) and _first_present(
+            source_policy, ("artifact_sources", "artifactSources")
+        ) in (None, "", [], {}):
+            source_policy["artifact_sources"] = _deepcopy_json_like(artifact_sources)
+        if artifact_sources not in (None, "", [], {}) and _string_value(
+            _first_present(source_policy, ("artifact_source", "artifactSource"))
+        ) == "":
+            source_policy["artifact_source"] = "published_artifacts"
+        if _local_product_sources_used_value(source_policy) is None and local_sources_used is not None:
+            source_policy["local_product_sources_used"] = local_sources_used
+        return source_policy
+
+    if artifact_sources in (None, "", [], {}) and local_sources_used is None:
+        return {}
+
+    inferred: dict[str, Any] = {}
+    if artifact_sources not in (None, "", [], {}):
+        inferred["artifact_sources"] = _deepcopy_json_like(artifact_sources)
+        inferred["artifact_source"] = "published_artifacts"
+    if local_sources_used is not None:
+        inferred["local_product_sources_used"] = local_sources_used
+    return inferred
+
+
 def _attach_scenario_findings(scenario: dict[str, Any], evidence: Mapping[str, Any]) -> None:
     if any(
         _has_non_empty_field(scenario, field)
@@ -642,6 +691,74 @@ def _attach_scenario_findings(scenario: dict[str, Any], evidence: Mapping[str, A
         scenario["linked_findings"] = _deepcopy_json_like(linked)
 
 
+def _trace_entries(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return _deepcopy_json_like(value)
+    if not isinstance(value, Mapping):
+        return []
+
+    entries: list[Any] = []
+    for field in (
+        "entries",
+        "items",
+        "traces",
+        "requests",
+        "captures",
+        "http_traces",
+        "httpTraces",
+        "control_plane",
+        "controlPlane",
+        "control_plane_traces",
+        "controlPlaneTraces",
+        "worker_protocol",
+        "workerProtocol",
+        "worker_protocol_traces",
+        "workerProtocolTraces",
+    ):
+        nested = value.get(field)
+        if isinstance(nested, list):
+            entries.extend(_deepcopy_json_like(nested))
+    return entries
+
+
+def _trace_plane_entries(value: Any, plane: str) -> list[Any]:
+    if isinstance(value, list):
+        return _filtered_traces(value, plane)
+    if not isinstance(value, Mapping):
+        return []
+
+    fields = (
+        (
+            "control_plane",
+            "controlPlane",
+            "control",
+            "control_plane_traces",
+            "controlPlaneTraces",
+            "api",
+            "client",
+            "cli",
+        )
+        if plane == "control"
+        else (
+            "worker_protocol",
+            "workerProtocol",
+            "worker",
+            "worker_plane",
+            "workerPlane",
+            "worker_protocol_traces",
+            "workerProtocolTraces",
+        )
+    )
+    entries: list[Any] = []
+    for field in fields:
+        nested = value.get(field)
+        if isinstance(nested, list):
+            entries.extend(_deepcopy_json_like(nested))
+    if entries:
+        return entries
+    return _filtered_traces(_trace_entries(value), plane)
+
+
 def _filtered_traces(traces: Any, plane: str) -> Any:
     if not isinstance(traces, list):
         return []
@@ -649,7 +766,7 @@ def _filtered_traces(traces: Any, plane: str) -> Any:
         trace
         for trace in traces
         if isinstance(trace, Mapping)
-        and _trace_plane_matches(trace.get("plane"), plane)
+        and _trace_plane_matches(_first_present(trace, ("plane", "kind", "type", "surface", "channel")), plane)
     ]
 
 
@@ -661,9 +778,12 @@ def _trace_plane_matches(value: Any, plane: str) -> bool:
             "control_plane",
             "control_protocol",
             "control_plane_protocol",
+            "control_plane_api",
             "api",
             "cli",
             "client",
+            "http",
+            "rest",
         }
     if plane == "worker":
         return normalized in {
@@ -671,6 +791,8 @@ def _trace_plane_matches(value: Any, plane: str) -> bool:
             "worker_plane",
             "worker_protocol",
             "worker_plane_protocol",
+            "worker_api",
+            "worker_http",
         }
     return normalized == _normalize_identifier(plane)
 
@@ -698,6 +820,112 @@ def _copy_mapping(value: Any) -> dict[str, Any]:
 
 def _deepcopy_json_like(value: Any) -> Any:
     return copy.deepcopy(value)
+
+
+def _entry_collection(value: Any) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    if any(_normalize_identifier(str(key)) in _entry_collection_container_keys() for key in value):
+        for field in (
+            "rows",
+            "items",
+            "entries",
+            "results",
+            "checks",
+            "table",
+            "scenarios",
+            "scenario_results",
+            "scenarioResults",
+            "capabilities",
+            "capability_table",
+            "capabilityTable",
+            "capability_results",
+            "capabilityResults",
+        ):
+            nested = value.get(field)
+            if isinstance(nested, (Mapping, list)):
+                return nested
+    return value
+
+
+def _entry_collection_container_keys() -> set[str]:
+    return {
+        "rows",
+        "items",
+        "entries",
+        "results",
+        "checks",
+        "table",
+        "scenarios",
+        "scenario_results",
+        "capabilities",
+        "capability_table",
+        "capability_results",
+    }
+
+
+def _entry_status(entry: Mapping[str, Any]) -> str:
+    return _status_value_or_raw(
+        entry.get("status"),
+        entry.get("result"),
+        entry.get("outcome"),
+        entry.get("verdict"),
+        entry.get("passed"),
+        entry.get("pass"),
+        entry.get("ok"),
+        entry.get("success"),
+        entry.get("successful"),
+        entry.get("succeeded"),
+        entry.get("covered"),
+    )
+
+
+def _entry_marker_evidence(entry: Mapping[str, Any]) -> dict[str, Any]:
+    evidence: dict[str, Any] = {}
+    for field in (
+        "passed",
+        "pass",
+        "ok",
+        "success",
+        "successful",
+        "succeeded",
+        "covered",
+        "observed",
+        "verified",
+    ):
+        value = entry.get(field)
+        if value not in (None, "", [], {}):
+            evidence[field] = _deepcopy_json_like(value)
+    return evidence
+
+
+def _normalized_php_assumption_audit(value: Any) -> dict[str, Any]:
+    audit = _copy_mapping(value)
+    if not audit:
+        return {}
+
+    checks = _mapping_value(audit.get("checks"))
+    if not checks:
+        check_values = {
+            check: _first_present(audit, _php_assumption_check_fields(check))
+            for check in _required_php_assumption_checks()
+        }
+        checks = {
+            check: value
+            for check, value in check_values.items()
+            if value not in (None, "", [], {})
+        }
+        if checks:
+            audit["checks"] = checks
+
+    if _entry_status(audit) == "" and _php_assumption_checks_pass(checks):
+        audit["status"] = "pass"
+
+    if _first_present(audit, _server_cli_audit_fields()) in (None, "", [], {}) and _php_assumption_checks_pass(checks):
+        audit["server_cli_audit"] = {"status": "pass", "checks": _deepcopy_json_like(checks)}
+    if _first_present(audit, _sdk_runtime_audit_fields()) in (None, "", [], {}) and _php_assumption_checks_pass(checks):
+        audit["sdk_runtime_audit"] = {"status": "pass", "checks": _deepcopy_json_like(checks)}
+    return audit
 
 
 def evaluate_result(result: Mapping[str, Any], contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -731,12 +959,7 @@ def evaluate_result(result: Mapping[str, Any], contract: Mapping[str, Any] | Non
             failures.append({"code": "missing_required_scenario", "scenario_id": scenario_id})
             continue
 
-        status = _status_value_or_raw(
-            scenario_result.get("status"),
-            scenario_result.get("result"),
-            scenario_result.get("outcome"),
-            scenario_result.get("verdict"),
-        )
+        status = _entry_status(scenario_result)
         scenario_statuses[scenario_id] = status
         if status not in allowed_statuses:
             failures.append(
@@ -765,12 +988,7 @@ def evaluate_result(result: Mapping[str, Any], contract: Mapping[str, Any] | Non
             non_pass_scenarios.append(scenario_id)
 
     for scenario_id, scenario_result in scenario_results.items():
-        status = _status_value_or_raw(
-            scenario_result.get("status"),
-            scenario_result.get("result"),
-            scenario_result.get("outcome"),
-            scenario_result.get("verdict"),
-        )
+        status = _entry_status(scenario_result)
         if status in NON_PASS_SCENARIO_STATUSES and not _has_linked_findings(scenario_result, result):
             failures.append(
                 {
@@ -810,12 +1028,7 @@ def evaluate_result(result: Mapping[str, Any], contract: Mapping[str, Any] | Non
             failures.append({"code": "missing_required_capability", "capability_id": capability_id})
             continue
 
-        status = _status_value_or_raw(
-            capability.get("status"),
-            capability.get("result"),
-            capability.get("outcome"),
-            capability.get("verdict"),
-        )
+        status = _entry_status(capability)
         capability_statuses[capability_id] = status
         if status != "pass":
             non_pass_capabilities.append(capability_id)
@@ -910,7 +1123,7 @@ def _entries_by_id(
     entries: dict[str, dict[str, Any]] = {}
     seen: set[str] = set()
     aliases = canonical_aliases or {}
-    raw = _first_present(result, field_names)
+    raw = _entry_collection(_first_present(result, field_names))
     if isinstance(raw, Mapping):
         iterable: Iterable[tuple[Any, Any]] = raw.items()
     elif isinstance(raw, list):
@@ -955,6 +1168,7 @@ def _entry_id(entry: Mapping[str, Any]) -> str:
         or entry.get("capabilityName")
         or entry.get("id")
         or entry.get("name")
+        or entry.get("label")
         or entry.get("key")
     )
 
@@ -1072,8 +1286,7 @@ def _source_policy_failures(
                 scenario_id=scenario_id,
                 require_published_artifact_policy=(
                     scenario_id == PUBLISHED_ARTIFACT_INSTALL_ONLY_SCENARIO
-                    and _status_value_or_raw(scenario.get("status"), scenario.get("result"), scenario.get("outcome"))
-                    == "pass"
+                    and _entry_status(scenario) == "pass"
                 ),
             )
         )
@@ -1096,7 +1309,7 @@ def _source_policy_scope_failures(
         if not source_policy:
             failures.append(_source_policy_failure("missing_source_policy", scope, scenario_id, raw_source_policy))
 
-        used = _first_present(source_policy, ("local_product_sources_used", "localProductSourcesUsed"))
+        used = _local_product_sources_used_value(source_policy)
         if used is not False:
             code = (
                 "missing_local_product_sources_used"
@@ -1110,7 +1323,7 @@ def _source_policy_scope_failures(
             code = "missing_published_artifact_source" if artifact_source == "" else "non_published_artifact_source"
             failures.append(_source_policy_failure(code, scope, scenario_id, artifact_source))
     elif source_policy:
-        used = _first_present(source_policy, ("local_product_sources_used", "localProductSourcesUsed"))
+        used = _local_product_sources_used_value(source_policy)
         if used not in (False, None, [], {}):
             failures.append(_source_policy_failure("local_product_source_artifacts_used", scope, scenario_id, used))
 
@@ -1137,6 +1350,37 @@ def _source_policy_scope_failures(
             _source_policy_failure("local_product_source_artifacts_reported", scope, scenario_id, local_sources)
         )
     return failures
+
+
+def _local_product_sources_used_value(entry: Mapping[str, Any]) -> Any:
+    used = _first_present(
+        entry,
+        (
+            "local_product_sources_used",
+            "localProductSourcesUsed",
+            "local_source_checkouts_used",
+            "localSourceCheckoutsUsed",
+        ),
+    )
+    if used is not None:
+        return used
+
+    no_local_sources = _first_present(
+        entry,
+        (
+            "no_local_product_sources_used",
+            "noLocalProductSourcesUsed",
+            "no_local_source_checkouts_used",
+            "noLocalSourceCheckoutsUsed",
+        ),
+    )
+    if no_local_sources is None:
+        return None
+    if _pass_bool_value(no_local_sources):
+        return False
+    if no_local_sources is False or _status_value(no_local_sources) == "fail":
+        return True
+    return no_local_sources
 
 
 def _source_policy_failure(code: str, scope: str, scenario_id: str | None, value: Any) -> dict[str, Any]:
@@ -1177,9 +1421,17 @@ def _cli_evidence_failures(
         and not _first_present(scenario, ("cli_result", "cliResult"))
     ):
         failures.append({"code": "missing_cli_evidence", "field": "result_command"})
-    if not _has_non_empty_field(evidence, "json_outputs") and not _has_non_empty_field(evidence, "outputs"):
+    if not _has_cli_output_evidence(evidence, scenario):
         failures.append({"code": "missing_cli_evidence", "field": "json_outputs"})
     return failures
+
+
+def _has_cli_output_evidence(*entries: Mapping[str, Any]) -> bool:
+    return any(
+        any(_has_non_empty_field(entry, field) for field in _cli_output_fields())
+        for entry in entries
+        if isinstance(entry, Mapping)
+    )
 
 
 def _cold_setup_failures(
@@ -1191,6 +1443,8 @@ def _cold_setup_failures(
         _first_present(scenario, _cold_setup_fields())
         or _first_present(result, _cold_setup_fields())
     )
+    if not evidence:
+        evidence = scenario
     required = ("fresh_state", "namespace_created", "first_workflow_started", "result_observed")
     return [
         {"code": "missing_cold_setup_evidence", "field": field}
@@ -1210,17 +1464,22 @@ def _protocol_trace_failures(
     )
     if traces in (None, "", [], {}):
         traces = _first_present(result, _protocol_trace_fields())
-    control_traces = _first_present(scenario, _control_trace_fields())
-    worker_traces = _first_present(scenario, _worker_trace_fields())
+    traces = _trace_entries(traces)
+    control_traces = _trace_entries(_first_present(scenario, _control_trace_fields()))
+    worker_traces = _trace_entries(_first_present(scenario, _worker_trace_fields()))
 
     if control_traces in (None, "", [], {}):
-        control_traces = _first_present(result, _control_trace_fields())
+        control_traces = _trace_entries(_first_present(result, _control_trace_fields()))
     if worker_traces in (None, "", [], {}):
-        worker_traces = _first_present(result, _worker_trace_fields())
+        worker_traces = _trace_entries(_first_present(result, _worker_trace_fields()))
     if control_traces in (None, "", [], {}):
-        control_traces = _filtered_traces(traces, "control")
+        control_traces = _trace_plane_entries(traces, "control")
     if worker_traces in (None, "", [], {}):
-        worker_traces = _filtered_traces(traces, "worker")
+        worker_traces = _trace_plane_entries(traces, "worker")
+    if traces in (None, "", [], {}) and (
+        control_traces not in (None, "", [], {}) or worker_traces not in (None, "", [], {})
+    ):
+        traces = [*(control_traces or []), *(worker_traces or [])]
 
     failures: list[dict[str, Any]] = []
     if traces in (None, "", [], {}):
@@ -1237,27 +1496,21 @@ def _php_assumption_audit_failures(
     scenario_results: Mapping[str, Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     scenario = scenario_results.get("php_assumption_audit", {})
-    audit = _mapping_value(
+    audit = _normalized_php_assumption_audit(
         _first_present(scenario, _php_assumption_audit_fields() + ("observed_outputs",))
         or _first_present(result, _php_assumption_audit_fields())
     )
     if not audit:
         return [{"code": "missing_php_assumption_audit"}]
 
-    status = _status_value_or_raw(audit.get("status"), audit.get("outcome"), audit.get("verdict"))
+    status = _entry_status(audit)
     failures: list[dict[str, Any]] = []
     if status != "pass":
         failures.append({"code": "non_pass_php_assumption_audit", "status": status})
 
     checks = _mapping_value(audit.get("checks"))
-    required_checks = (
-        "no_php_runtime_required",
-        "no_php_paths_required",
-        "no_php_serializer_required",
-        "no_php_only_error_shapes",
-    )
-    for check in required_checks:
-        if not _pass_bool_value(_first_present(checks, (check, _camelize(check), _kebabize(check)))):
+    for check in _required_php_assumption_checks():
+        if not _pass_bool_value(_first_present(checks, _php_assumption_check_fields(check))):
             failures.append({"code": "missing_php_assumption_check", "check": check})
     return failures
 
@@ -1330,6 +1583,27 @@ def _cli_result_fields() -> tuple[str, ...]:
         "startWaitOutput",
         "terminal_describe",
         "terminalDescribe",
+        "terminal_output",
+        "terminalOutput",
+    )
+
+
+def _cli_output_fields() -> tuple[str, ...]:
+    return (
+        "json_outputs",
+        "jsonOutputs",
+        "outputs",
+        "output",
+        "workflow_output",
+        "workflowOutput",
+        "result_output",
+        "resultOutput",
+        "describe_output",
+        "describeOutput",
+        "show_run_output",
+        "showRunOutput",
+        "start_wait_output",
+        "startWaitOutput",
         "terminal_output",
         "terminalOutput",
     )
@@ -1417,6 +1691,64 @@ def _sdk_runtime_audit_fields() -> tuple[str, ...]:
     )
 
 
+def _required_php_assumption_checks() -> tuple[str, ...]:
+    return (
+        "no_php_runtime_required",
+        "no_php_paths_required",
+        "no_php_serializer_required",
+        "no_php_only_error_shapes",
+    )
+
+
+def _php_assumption_check_fields(check: str) -> tuple[str, ...]:
+    aliases: dict[str, tuple[str, ...]] = {
+        "no_php_runtime_required": (
+            "no_php_runtime_required",
+            "noPhpRuntimeRequired",
+            "no-php-runtime-required",
+            "no_php_runtime",
+            "noPhpRuntime",
+            "php_runtime_absent",
+            "phpRuntimeAbsent",
+        ),
+        "no_php_paths_required": (
+            "no_php_paths_required",
+            "noPhpPathsRequired",
+            "no-php-paths-required",
+            "no_php_paths",
+            "noPhpPaths",
+            "php_paths_absent",
+            "phpPathsAbsent",
+        ),
+        "no_php_serializer_required": (
+            "no_php_serializer_required",
+            "noPhpSerializerRequired",
+            "no-php-serializer-required",
+            "no_php_serializer",
+            "noPhpSerializer",
+            "php_serializer_absent",
+            "phpSerializerAbsent",
+        ),
+        "no_php_only_error_shapes": (
+            "no_php_only_error_shapes",
+            "noPhpOnlyErrorShapes",
+            "no-php-only-error-shapes",
+            "no_php_error_shapes",
+            "noPhpErrorShapes",
+            "php_only_error_shapes_absent",
+            "phpOnlyErrorShapesAbsent",
+        ),
+    }
+    return aliases[check]
+
+
+def _php_assumption_checks_pass(checks: Mapping[str, Any]) -> bool:
+    return bool(checks) and all(
+        _pass_bool_value(_first_present(checks, _php_assumption_check_fields(check)))
+        for check in _required_php_assumption_checks()
+    )
+
+
 def _declared_outcome_failures(result: Mapping[str, Any], evaluated_status: str) -> list[dict[str, Any]]:
     declared = _status_value_or_raw(_first_present(result, DECLARED_OUTCOME_FIELDS))
     if declared == "":
@@ -1442,7 +1774,11 @@ def _has_observed_outputs(entry: Mapping[str, Any]) -> bool:
         for field in (
             "observed_outputs",
             "observedOutputs",
+            "observed",
             "evidence",
+            "details",
+            "output",
+            "outputs",
             "api_captures",
             "apiCaptures",
             "protocol_traces",

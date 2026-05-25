@@ -400,6 +400,133 @@ def test_compose_result_accepts_runbook_style_ids_and_statuses() -> None:
     assert evaluation["gate_failures"] == []
 
 
+def test_compose_result_accepts_nested_runner_tables_and_audit_checks() -> None:
+    result = complete_result()
+    derived_scenarios = {
+        "published_artifact_install_only",
+        "official_cli_install_start_result_path",
+        "cold_first_user_setup",
+        "protocol_trace_capture",
+        "php_assumption_audit",
+        "capability_table_complete",
+    }
+    evidence = {
+        "startedAt": result["started_at"],
+        "finishedAt": result["finished_at"],
+        "generatedAt": result["generated_at"],
+        "resolvedArtifactVersions": result["artifact_versions"],
+        "artifactSources": {
+            "server": "docker image",
+            "cli": "official install script",
+            "sdk-python": "pypi",
+            "workflow": "composer",
+            "waterline": "published package",
+        },
+        "localProductSourcesUsed": False,
+        "installChannels": result["scenario_results"]["published_artifact_install_only"]["install_channels"],
+        "officialCli": {
+            "installCommand": "curl -fsSL https://durable-workflow.com/install.sh | sh",
+            "startCommand": "dw workflow:start py-parity --json",
+            "startWaitCommand": "dw workflow:start py-parity --wait --json",
+            "terminalOutput": [{"workflow_id": "py-parity", "status": "completed"}],
+        },
+        "firstUserSetup": {
+            "freshState": True,
+            "namespaceCreated": "default",
+            "firstWorkflowStarted": "py-parity",
+            "resultObserved": {"status": "completed"},
+        },
+        "protocolTraces": {
+            "controlPlane": [{"method": "POST", "path": "/workflows"}],
+            "workerProtocol": [{"method": "POST", "path": "/worker/workflow-tasks/poll"}],
+        },
+        "languageNeutralityAudit": {
+            "checks": {
+                "noPhpRuntime": True,
+                "noPhpPaths": True,
+                "noPhpSerializer": True,
+                "noPhpErrorShapes": True,
+            },
+        },
+        "scenarioEvidence": [
+            {
+                **scenario_result,
+                "scenario": scenario_id.replace("_", "-"),
+                "passed": True,
+            }
+            for scenario_id, scenario_result in result["scenario_results"].items()
+            if scenario_id not in derived_scenarios
+        ],
+        "capabilityTable": {
+            "rows": [
+                {
+                    "name": capability.replace("_", "-"),
+                    "passed": True,
+                    "observed": {"capability": capability},
+                }
+                for capability in REQUIRED_CAPABILITIES
+            ],
+        },
+        "findings": [],
+        "findingLinks": [],
+    }
+
+    composed = compose_result(evidence)
+    evaluation = evaluate_result(composed)
+
+    assert composed["outcome"] == "pass"
+    assert composed["source_policy"]["artifact_source"] == "published_artifacts"
+    assert composed["scenario_results"]["protocol_trace_capture"]["control_plane_traces"] == [
+        {"method": "POST", "path": "/workflows"}
+    ]
+    assert composed["scenario_results"]["php_assumption_audit"]["server_cli_audit"]["status"] == "pass"
+    assert {entry["id"] for entry in composed["capability_table"]} == set(REQUIRED_CAPABILITIES)
+    assert evaluation["status"] == "pass"
+    assert evaluation["gate_failures"] == []
+
+
+def test_compose_result_rejects_cli_command_only_evidence_without_real_output() -> None:
+    evidence = complete_host_evidence()
+    evidence["cli_evidence"].pop("json_outputs")
+
+    composed = compose_result(evidence)
+    evaluation = evaluate_result(composed)
+
+    assert composed["outcome"] == "fail"
+    cli_scenario = composed["scenario_results"]["official_cli_install_start_result_path"]
+    assert cli_scenario["status"] == "pass"
+    assert cli_scenario["observed_outputs"]["summary"] == "required Python SDK conformance evidence recorded"
+    assert {
+        "code": "missing_cli_evidence",
+        "field": "json_outputs",
+    } in evaluation["gate_failures"]
+
+
+def test_compose_result_requires_explicit_no_local_source_evidence() -> None:
+    evidence = complete_host_evidence()
+    evidence.pop("source_policy")
+    evidence["artifactSources"] = {
+        "server": "docker image",
+        "cli": "official install script",
+        "sdk-python": "pypi",
+        "workflow": "composer",
+        "waterline": "published package",
+    }
+
+    composed = compose_result(evidence)
+    evaluation = evaluate_result(composed)
+
+    assert composed["outcome"] == "fail"
+    assert composed["source_policy"]["artifact_source"] == "published_artifacts"
+    assert "local_product_sources_used" not in composed["source_policy"]
+    assert {
+        "code": "missing_local_product_sources_used",
+        "scope": "scenario",
+        "scenario_id": "published_artifact_install_only",
+        "value": None,
+    } in evaluation["gate_failures"]
+
+
 def test_compose_result_rejects_protocol_trace_evidence_without_both_planes() -> None:
     evidence = complete_host_evidence()
     evidence["protocol_traces"] = [
@@ -671,6 +798,37 @@ def test_evaluate_result_rejects_install_scenario_source_policy_without_local_so
         "scope": "scenario",
         "scenario_id": "published_artifact_install_only",
         "value": None,
+    } in evaluation["gate_failures"]
+
+
+def test_evaluate_result_rejects_cli_observed_outputs_without_real_output_alias() -> None:
+    result = complete_result()
+    result["outcome"] = "fail"
+    cli_scenario = result["scenario_results"]["official_cli_install_start_result_path"]
+    cli_scenario["cli_evidence"].pop("json_outputs")
+
+    evaluation = evaluate_result(result)
+
+    assert evaluation["status"] == "non_passing"
+    assert cli_scenario["observed_outputs"]["summary"] == "official_cli_install_start_result_path passed"
+    assert {
+        "code": "missing_cli_evidence",
+        "field": "json_outputs",
+    } in evaluation["gate_failures"]
+
+
+def test_evaluate_result_rejects_top_level_outputs_as_cli_output_proof() -> None:
+    result = complete_result()
+    result["outcome"] = "fail"
+    result["outputs"] = [{"workflow_id": "py-parity", "status": "completed"}]
+    result["scenario_results"]["official_cli_install_start_result_path"]["cli_evidence"].pop("json_outputs")
+
+    evaluation = evaluate_result(result)
+
+    assert evaluation["status"] == "non_passing"
+    assert {
+        "code": "missing_cli_evidence",
+        "field": "json_outputs",
     } in evaluation["gate_failures"]
 
 

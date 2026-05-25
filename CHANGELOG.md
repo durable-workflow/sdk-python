@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `durable-workflow-python-conformance --compose` now accepts nested host
+  runner evidence tables, resolved artifact/source aliases, boolean `passed`
+  result cells, nested protocol trace planes, and no-PHP audit check aliases
+  when composing full published-artifact Python conformance results.
 - `durable-workflow-python-conformance --compose` now normalizes runbook-style
   scenario and capability identifiers such as `server-up` and
   `result-returned`, plus common status, trace-plane, and no-PHP audit aliases,
