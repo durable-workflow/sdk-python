@@ -212,6 +212,7 @@ def test_manifest_names_full_python_parity_surface() -> None:
     assert payload["host_evidence"]["schema"] == "durable-workflow.v2.python-sdk-parity.host-evidence"
     assert payload["host_evidence"]["missing_scenario_status"] == "not_covered"
     assert "server-up" in payload["host_evidence"]["entry_id_aliases"]["capability_ids"]["server_up"]
+    assert "local_product_source_checkouts_used" in payload["host_evidence"]["top_level_evidence_fields"]
 
 
 def test_evaluate_result_accepts_complete_published_artifact_evidence() -> None:
@@ -502,6 +503,35 @@ def test_compose_result_rejects_cli_command_only_evidence_without_real_output() 
     } in evaluation["gate_failures"]
 
 
+def test_compose_result_accepts_nested_cli_command_output_as_real_output() -> None:
+    evidence = complete_host_evidence()
+    evidence["cli_evidence"] = {
+        "install": {
+            "command": "curl -fsSL https://durable-workflow.com/install.sh | sh",
+            "stdout": "dw 0.1.69 installed to ~/.local/bin",
+        },
+        "workflowStart": {
+            "command": "dw workflow:start py-parity --wait --json",
+            "json": {"workflow_id": "py-parity", "run_id": "01JTEST", "status": "completed"},
+        },
+        "workflowShowRun": {
+            "command": "dw workflow:show-run py-parity 01JTEST --follow --json",
+            "stdoutJson": {"workflow_id": "py-parity", "run_id": "01JTEST", "status": "completed"},
+        },
+    }
+
+    composed = compose_result(evidence)
+    evaluation = evaluate_result(composed)
+
+    assert composed["outcome"] == "pass"
+    assert (
+        composed["scenario_results"]["official_cli_install_start_result_path"]["cli_result"]["command"]
+        == "dw workflow:show-run py-parity 01JTEST --follow --json"
+    )
+    assert evaluation["status"] == "pass"
+    assert evaluation["gate_failures"] == []
+
+
 def test_compose_result_requires_explicit_no_local_source_evidence() -> None:
     evidence = complete_host_evidence()
     evidence.pop("source_policy")
@@ -525,6 +555,27 @@ def test_compose_result_requires_explicit_no_local_source_evidence() -> None:
         "scenario_id": "published_artifact_install_only",
         "value": None,
     } in evaluation["gate_failures"]
+
+
+def test_compose_result_accepts_no_local_product_source_checkout_alias() -> None:
+    evidence = complete_host_evidence()
+    evidence.pop("source_policy")
+    evidence["artifactSources"] = {
+        "server": "docker image",
+        "cli": "official install script",
+        "sdk-python": "pypi",
+        "workflow": "composer",
+        "waterline": "published package",
+    }
+    evidence["local_product_source_checkouts_used"] = False
+
+    composed = compose_result(evidence)
+    evaluation = evaluate_result(composed)
+
+    assert composed["source_policy"]["artifact_source"] == "published_artifacts"
+    assert composed["source_policy"]["local_product_sources_used"] is False
+    assert evaluation["status"] == "pass"
+    assert evaluation["gate_failures"] == []
 
 
 def test_compose_result_rejects_protocol_trace_evidence_without_both_planes() -> None:
@@ -811,6 +862,22 @@ def test_evaluate_result_rejects_cli_observed_outputs_without_real_output_alias(
 
     assert evaluation["status"] == "non_passing"
     assert cli_scenario["observed_outputs"]["summary"] == "official_cli_install_start_result_path passed"
+    assert {
+        "code": "missing_cli_evidence",
+        "field": "json_outputs",
+    } in evaluation["gate_failures"]
+
+
+def test_evaluate_result_rejects_cli_scenario_generic_output_as_cli_output_proof() -> None:
+    result = complete_result()
+    result["outcome"] = "fail"
+    cli_scenario = result["scenario_results"]["official_cli_install_start_result_path"]
+    cli_scenario["cli_evidence"].pop("json_outputs")
+    cli_scenario["output"] = {"workflow_id": "py-parity", "status": "completed"}
+
+    evaluation = evaluate_result(result)
+
+    assert evaluation["status"] == "non_passing"
     assert {
         "code": "missing_cli_evidence",
         "field": "json_outputs",

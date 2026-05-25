@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Python conformance CLI evidence now accepts terminal stdout/JSON captured on
+  nested CLI command records while still rejecting generic scenario outputs as
+  proof of the public CLI result path.
+- Python conformance source-policy evidence now accepts the explicit
+  `local_product_source_checkouts_used=false` published-artifact runner alias.
 - `durable-workflow-python-conformance --compose` now accepts actual CLI
   terminal-result evidence from `workflow:start --wait`, `workflow:describe`,
   and `workflow:show-run --follow` instead of only generic result aliases.

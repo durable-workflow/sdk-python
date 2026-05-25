@@ -334,7 +334,9 @@ def host_evidence_spec() -> dict[str, Any]:
             "source_policy",
             "artifact_sources",
             "local_product_sources_used",
+            "local_product_source_checkouts_used",
             "no_local_product_sources_used",
+            "no_local_product_source_checkouts_used",
             "cli_evidence",
             "official_cli",
             "cold_setup",
@@ -1358,6 +1360,8 @@ def _local_product_sources_used_value(entry: Mapping[str, Any]) -> Any:
         (
             "local_product_sources_used",
             "localProductSourcesUsed",
+            "local_product_source_checkouts_used",
+            "localProductSourceCheckoutsUsed",
             "local_source_checkouts_used",
             "localSourceCheckoutsUsed",
         ),
@@ -1370,6 +1374,8 @@ def _local_product_sources_used_value(entry: Mapping[str, Any]) -> Any:
         (
             "no_local_product_sources_used",
             "noLocalProductSourcesUsed",
+            "no_local_product_source_checkouts_used",
+            "noLocalProductSourceCheckoutsUsed",
             "no_local_source_checkouts_used",
             "noLocalSourceCheckoutsUsed",
         ),
@@ -1408,20 +1414,26 @@ def _cli_evidence_failures(
         _first_present(scenario, _cli_evidence_fields())
         or _first_present(result, _cli_evidence_fields())
     )
+    install_evidence = _first_present(evidence, _cli_install_fields()) or _first_present(
+        scenario, ("cli_install", "cliInstall")
+    )
+    start_evidence = _first_present(evidence, _cli_start_fields()) or _first_present(
+        scenario, ("cli_start", "cliStart")
+    )
+    result_evidence = _first_present(evidence, _cli_result_fields()) or _first_present(
+        scenario, ("cli_result", "cliResult")
+    )
     failures: list[dict[str, Any]] = []
-    if (
-        not _first_present(evidence, _cli_install_fields())
-        and not _first_present(scenario, ("cli_install", "cliInstall"))
-    ):
+    if not install_evidence:
         failures.append({"code": "missing_cli_evidence", "field": "install_command"})
-    if not _first_present(evidence, _cli_start_fields()) and not _first_present(scenario, ("cli_start", "cliStart")):
+    if not start_evidence:
         failures.append({"code": "missing_cli_evidence", "field": "start_command"})
-    if (
-        not _first_present(evidence, _cli_result_fields())
-        and not _first_present(scenario, ("cli_result", "cliResult"))
-    ):
+    if not result_evidence:
         failures.append({"code": "missing_cli_evidence", "field": "result_command"})
-    if not _has_cli_output_evidence(evidence, scenario):
+    if not _has_cli_output_evidence(evidence) and not _has_cli_command_output_evidence(
+        start_evidence,
+        result_evidence,
+    ):
         failures.append({"code": "missing_cli_evidence", "field": "json_outputs"})
     return failures
 
@@ -1432,6 +1444,40 @@ def _has_cli_output_evidence(*entries: Mapping[str, Any]) -> bool:
         for entry in entries
         if isinstance(entry, Mapping)
     )
+
+
+def _has_cli_command_output_evidence(*entries: Any) -> bool:
+    return any(_cli_command_output_value(entry) not in (None, "", [], {}) for entry in entries)
+
+
+def _cli_command_output_value(entry: Any) -> Any:
+    if not isinstance(entry, Mapping):
+        return None
+
+    direct = _first_present(entry, _cli_output_fields() + _cli_terminal_output_fields())
+    if direct not in (None, "", [], {}):
+        return direct
+
+    for field in (
+        "execution",
+        "result",
+        "command_result",
+        "commandResult",
+        "process",
+        "terminal",
+        "json",
+        "response",
+    ):
+        nested = entry.get(field)
+        if isinstance(nested, Mapping):
+            value = _cli_command_output_value(nested)
+            if value not in (None, "", [], {}):
+                return value
+            if nested not in (None, "", [], {}) and field in {"json", "response", "result"}:
+                return nested
+        elif nested not in (None, "", [], {}) and field in {"json", "response", "result"}:
+            return nested
+    return None
 
 
 def _cold_setup_failures(
@@ -1606,6 +1652,25 @@ def _cli_output_fields() -> tuple[str, ...]:
         "startWaitOutput",
         "terminal_output",
         "terminalOutput",
+    )
+
+
+def _cli_terminal_output_fields() -> tuple[str, ...]:
+    return (
+        "stdout",
+        "stdOut",
+        "stdout_text",
+        "stdoutText",
+        "stdout_json",
+        "stdoutJson",
+        "json_output",
+        "jsonOutput",
+        "parsed_json",
+        "parsedJson",
+        "terminal_json",
+        "terminalJson",
+        "terminal_stdout",
+        "terminalStdout",
     )
 
 
