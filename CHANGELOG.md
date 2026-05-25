@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- `durable-workflow-python-conformance --compose` now accepts actual CLI
+  terminal-result evidence from `workflow:start --wait`, `workflow:describe`,
+  and `workflow:show-run --follow` instead of only generic result aliases.
 - `durable-workflow-replay-conformance` now declares `outcome: pass` when
   every required Python replay shard scenario passes, so full replay evidence
   is no longer reported as non-passing.

@@ -48,11 +48,11 @@ def complete_result() -> dict[str, Any]:
         {
             "cli_install": {"command": "curl -fsSL https://durable-workflow.com/install.sh | sh"},
             "cli_start": {"command": "dw workflow:start --json"},
-            "cli_result": {"command": "dw workflow:result --json"},
+            "cli_result": {"command": "dw workflow:describe py-parity --json"},
             "cli_evidence": {
                 "install_command": "curl -fsSL https://durable-workflow.com/install.sh | sh",
                 "start_command": "dw workflow:start --json",
-                "result_command": "dw workflow:result --json",
+                "describe_command": "dw workflow:describe py-parity --json",
                 "json_outputs": [{"workflow_id": "py-parity"}],
             },
         }
@@ -250,7 +250,7 @@ def test_compose_result_accepts_runner_native_host_evidence_aliases() -> None:
         "officialCli": {
             "install": {"command": "curl -fsSL https://durable-workflow.com/install.sh | sh"},
             "workflowStart": {"command": "dw workflow:start --json"},
-            "workflowResult": {"command": "dw workflow:result --json"},
+            "workflowDescribe": {"command": "dw workflow:describe py-parity --json"},
             "outputs": [{"workflow_id": "py-parity", "status": "completed"}],
         },
         "firstUserFlow": {
@@ -302,6 +302,9 @@ def test_compose_result_accepts_runner_native_host_evidence_aliases() -> None:
     assert composed["scenario_results"]["official_cli_install_start_result_path"]["cli_install"] == {
         "command": "curl -fsSL https://durable-workflow.com/install.sh | sh"
     }
+    assert composed["scenario_results"]["official_cli_install_start_result_path"]["cli_result"] == {
+        "command": "dw workflow:describe py-parity --json"
+    }
     assert composed["scenario_results"]["cold_first_user_setup"]["fresh_state"] is True
     assert composed["scenario_results"]["php_assumption_audit"]["server_cli_audit"] == {"status": "pass"}
     assert evaluation["status"] == "pass"
@@ -345,7 +348,7 @@ def test_compose_result_accepts_runbook_style_ids_and_statuses() -> None:
         "officialCli": {
             "installCommand": "curl -fsSL https://durable-workflow.com/install.sh | sh",
             "startCommand": "dw workflow:start --json",
-            "resultCommand": "dw workflow:result --json",
+            "showRunCommand": "dw workflow:show-run py-parity 01JTEST --follow --json",
             "jsonOutputs": [{"workflow_id": "py-parity", "status": "completed"}],
         },
         "firstUserFlow": {
@@ -387,6 +390,10 @@ def test_compose_result_accepts_runbook_style_ids_and_statuses() -> None:
 
     assert composed["outcome"] == "pass"
     assert composed["scenario_results"]["worker_restart_activity_and_signal_state"]["status"] == "pass"
+    assert (
+        composed["scenario_results"]["official_cli_install_start_result_path"]["cli_result"]
+        == "dw workflow:show-run py-parity 01JTEST --follow --json"
+    )
     assert composed["scenario_results"]["protocol_trace_capture"]["worker_protocol_traces"] == [evidence["traces"][1]]
     assert {entry["id"] for entry in composed["capability_table"]} == set(REQUIRED_CAPABILITIES)
     assert evaluation["status"] == "pass"
