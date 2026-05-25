@@ -99,6 +99,11 @@ capability table. Any omitted scenario, placeholder artifact version,
 runner-blocked cell, unsupported public surface, or non-pass scenario
 without linked findings is nonconforming.
 
+This SDK claim follows the currently published platform conformance
+contract and public scenario manifests. Draft categories are not
+release-blocking here until the published contract advertises them and
+their manifests resolve publicly.
+
 ## Release gate
 
 A release of `durable_workflow` (PyPI) must produce a passing harness
