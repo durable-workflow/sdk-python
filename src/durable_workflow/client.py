@@ -19,6 +19,7 @@ methods without repeating the id on every call.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 import warnings
@@ -57,6 +58,14 @@ def _default_sdk_version() -> str:
 
 
 DEFAULT_SDK_VERSION = _default_sdk_version()
+
+
+def _protocol_version_from_env(name: str, default: str) -> str:
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        return default
+
+    return value.strip()
 
 
 def _route_for_metrics(path: str) -> str:
@@ -1262,9 +1271,15 @@ class Client:
             h["Authorization"] = f"Bearer {token}"
         h["X-Namespace"] = self.namespace
         if worker:
-            h["X-Durable-Workflow-Protocol-Version"] = PROTOCOL_VERSION
+            h["X-Durable-Workflow-Protocol-Version"] = _protocol_version_from_env(
+                "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION",
+                PROTOCOL_VERSION,
+            )
         else:
-            h["X-Durable-Workflow-Control-Plane-Version"] = CONTROL_PLANE_VERSION
+            h["X-Durable-Workflow-Control-Plane-Version"] = _protocol_version_from_env(
+                "DURABLE_WORKFLOW_CONTROL_PLANE_VERSION",
+                CONTROL_PLANE_VERSION,
+            )
         return h
 
     def _auth_token(self, *, worker: bool = False) -> str | None:

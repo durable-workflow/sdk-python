@@ -58,6 +58,16 @@ class TestHeaders:
         assert h["X-Durable-Workflow-Protocol-Version"] == PROTOCOL_VERSION
         assert "X-Durable-Workflow-Control-Plane-Version" not in h
 
+    def test_conformance_protocol_header_overrides(self, client: Client, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DURABLE_WORKFLOW_CONTROL_PLANE_VERSION", "3")
+        monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "2.0")
+
+        h = client._headers(worker=False)
+        assert h["X-Durable-Workflow-Control-Plane-Version"] == "3"
+
+        worker_headers = client._headers(worker=True)
+        assert worker_headers["X-Durable-Workflow-Protocol-Version"] == "2.0"
+
     def test_no_token(self) -> None:
         c = Client("http://localhost:8080")
         h = c._headers()
