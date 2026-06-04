@@ -264,6 +264,26 @@ class TestStartWorkflow:
         assert body["fairness_weight"] == 3
 
     @pytest.mark.asyncio
+    async def test_build_id_and_compatibility_are_forwarded_on_start(self, client: Client) -> None:
+        resp = _mock_response(201, {
+            "workflow_id": "wf-build",
+            "run_id": "run-build",
+            "workflow_type": "greeter",
+        })
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.start_workflow(
+                workflow_type="greeter",
+                task_queue="shared",
+                workflow_id="wf-build",
+                build_id="php-v1",
+                compatibility="ignored-when-build-id-present",
+            )
+
+        body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
+        assert body["build_id"] == "php-v1"
+        assert body["compatibility"] == "ignored-when-build-id-present"
+
+    @pytest.mark.asyncio
     async def test_priority_and_fairness_are_omitted_when_unset(self, client: Client) -> None:
         resp = _mock_response(201, {
             "workflow_id": "wf-nopri",

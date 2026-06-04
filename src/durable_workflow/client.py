@@ -2138,6 +2138,8 @@ class Client:
         priority: int | None = None,
         fairness_key: str | None = None,
         fairness_weight: int | None = None,
+        build_id: str | None = None,
+        compatibility: str | None = None,
     ) -> WorkflowHandle:
         """Start a new workflow instance and return a handle bound to it.
 
@@ -2166,6 +2168,11 @@ class Client:
         (``1..1000``, default ``1``) lets a class take a proportionally
         larger share of dispatch slots versus other classes on the same
         queue.
+
+        ``build_id`` pins the new run to a specific worker build when
+        multiple worker versions share a task queue. ``compatibility`` is an
+        alias accepted by the server for SDK-neutral callers; when both are
+        provided, the server gives ``build_id`` precedence.
         """
         body: dict[str, Any] = {
             "workflow_id": workflow_id,
@@ -2198,6 +2205,10 @@ class Client:
             body["fairness_key"] = fairness_key
         if fairness_weight is not None:
             body["fairness_weight"] = fairness_weight
+        if build_id is not None:
+            body["build_id"] = build_id
+        if compatibility is not None:
+            body["compatibility"] = compatibility
         data = await self._request("POST", "/workflows", json=body, context=workflow_id)
         return WorkflowHandle(
             self,

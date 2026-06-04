@@ -273,6 +273,8 @@ class Client:
         priority: int | None = None,
         fairness_key: str | None = None,
         fairness_weight: int | None = None,
+        build_id: str | None = None,
+        compatibility: str | None = None,
     ) -> SyncWorkflowHandle:
         handle = _run(
             self._async.start_workflow(
@@ -288,6 +290,8 @@ class Client:
                 priority=priority,
                 fairness_key=fairness_key,
                 fairness_weight=fairness_weight,
+                build_id=build_id,
+                compatibility=compatibility,
             )
         )
         return SyncWorkflowHandle(handle)

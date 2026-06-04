@@ -98,6 +98,29 @@ class TestSyncClientStartWorkflow:
         assert body["fairness_key"] == "tenant-a"
         assert body["fairness_weight"] == 3
 
+    def test_build_id_is_forwarded_on_start(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            201,
+            {
+                "workflow_id": "wf-build",
+                "run_id": "run-build",
+                "workflow_type": "greeter",
+            },
+        )
+        with patch.object(
+            client._async._http, "request", new_callable=AsyncMock, return_value=resp
+        ) as mock:
+            client.start_workflow(
+                workflow_type="greeter",
+                task_queue="shared",
+                workflow_id="wf-build",
+                build_id="python-v1",
+            )
+
+        body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
+        assert body["build_id"] == "python-v1"
+
     def test_priority_and_fairness_are_omitted_when_unset(self) -> None:
         client = Client("http://localhost:8080")
         resp = _mock_response(
