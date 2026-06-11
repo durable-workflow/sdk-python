@@ -3202,6 +3202,45 @@ class Client:
             body["heartbeat_interval_seconds"] = heartbeat_interval_seconds
         return await self._request("POST", "/worker/heartbeat", worker=True, json=body)
 
+    async def poll_workflow_task_response(
+        self,
+        *,
+        worker_id: str,
+        task_queue: str,
+        timeout: float = 35.0,
+        build_id: str | None = None,
+        history_page_size: int | None = None,
+        poll_request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Long-poll for the next workflow task on ``task_queue``.
+
+        Returns the full worker-protocol response envelope, including
+        ``poll_status`` when the server has no task to lease. Worker-plane
+        endpoint — most applications use :class:`~durable_workflow.Worker`
+        rather than calling this directly.
+        """
+        body: dict[str, Any] = {
+            "worker_id": worker_id,
+            "task_queue": task_queue,
+            "poll_request_id": poll_request_id or f"wf-poll-{uuid.uuid4().hex}",
+        }
+        if build_id:
+            body["build_id"] = build_id
+        if history_page_size is not None:
+            body["history_page_size"] = history_page_size
+
+        for _ in range(2):
+            try:
+                data = await self._request(
+                    "POST", "/worker/workflow-tasks/poll", worker=True, json=body, timeout=timeout
+                )
+            except httpx.TimeoutException:
+                continue
+
+            return data if isinstance(data, dict) else {}
+
+        return {"task": None, "poll_status": "timeout"}
+
     async def poll_workflow_task(
         self, *, worker_id: str, task_queue: str, timeout: float = 35.0
     ) -> Any:
@@ -3211,22 +3250,13 @@ class Client:
         endpoint — most applications use :class:`~durable_workflow.Worker`
         rather than calling this directly.
         """
-        body: dict[str, Any] = {
-            "worker_id": worker_id,
-            "task_queue": task_queue,
-            "poll_request_id": f"wf-poll-{uuid.uuid4().hex}",
-        }
-        for _ in range(2):
-            try:
-                data = await self._request(
-                    "POST", "/worker/workflow-tasks/poll", worker=True, json=body, timeout=timeout
-                )
-            except httpx.TimeoutException:
-                continue
+        data = await self.poll_workflow_task_response(
+            worker_id=worker_id,
+            task_queue=task_queue,
+            timeout=timeout,
+        )
 
-            return (data or {}).get("task")
-
-        return None
+        return data.get("task")
 
     async def complete_workflow_task(
         self,

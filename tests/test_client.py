@@ -2271,6 +2271,43 @@ class TestFailWorkflowTask:
         assert request_body["poll_request_id"] != ""
 
     @pytest.mark.asyncio
+    async def test_poll_workflow_task_response_preserves_no_compatible_status(self, client: Client) -> None:
+        response = {
+            "task": None,
+            "poll_status": "no_compatible_worker",
+        }
+
+        with patch.object(client, "_request", new_callable=AsyncMock, return_value=response) as mock:
+            envelope = await client.poll_workflow_task_response(
+                worker_id="worker-v2",
+                task_queue="queue-1",
+                build_id="build-v2",
+                history_page_size=100,
+                timeout=3.0,
+            )
+
+        assert envelope == response
+        request_body = mock.await_args.kwargs["json"]
+        assert request_body["worker_id"] == "worker-v2"
+        assert request_body["task_queue"] == "queue-1"
+        assert request_body["build_id"] == "build-v2"
+        assert request_body["history_page_size"] == 100
+        assert isinstance(request_body["poll_request_id"], str)
+        assert mock.await_args.kwargs["timeout"] == 3.0
+
+    @pytest.mark.asyncio
+    async def test_poll_workflow_task_keeps_returning_none_for_no_compatible_status(self, client: Client) -> None:
+        response = {
+            "task": None,
+            "poll_status": "no_compatible_worker",
+        }
+
+        with patch.object(client, "poll_workflow_task_response", new_callable=AsyncMock, return_value=response):
+            task = await client.poll_workflow_task(worker_id="worker-v2", task_queue="queue-1")
+
+        assert task is None
+
+    @pytest.mark.asyncio
     async def test_poll_workflow_task_retries_once_with_same_poll_request_id_after_timeout(
         self, client: Client
     ) -> None:
