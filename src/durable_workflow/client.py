@@ -3242,7 +3242,14 @@ class Client:
         return {"task": None, "poll_status": "timeout"}
 
     async def poll_workflow_task(
-        self, *, worker_id: str, task_queue: str, timeout: float = 35.0
+        self,
+        *,
+        worker_id: str,
+        task_queue: str,
+        timeout: float = 35.0,
+        build_id: str | None = None,
+        history_page_size: int | None = None,
+        poll_request_id: str | None = None,
     ) -> Any:
         """Long-poll for the next workflow task on ``task_queue``.
 
@@ -3254,6 +3261,9 @@ class Client:
             worker_id=worker_id,
             task_queue=task_queue,
             timeout=timeout,
+            build_id=build_id,
+            history_page_size=history_page_size,
+            poll_request_id=poll_request_id,
         )
 
         return data.get("task")
@@ -3341,7 +3351,13 @@ class Client:
         )
 
     async def poll_query_task(
-        self, *, worker_id: str, task_queue: str, timeout: float = 35.0
+        self,
+        *,
+        worker_id: str,
+        task_queue: str,
+        timeout: float = 35.0,
+        build_id: str | None = None,
+        poll_request_id: str | None = None,
     ) -> Any:
         """Long-poll for the next workflow query task on ``task_queue``.
 
@@ -3351,8 +3367,11 @@ class Client:
         body: dict[str, Any] = {
             "worker_id": worker_id,
             "task_queue": task_queue,
-            "poll_request_id": f"query-poll-{uuid.uuid4().hex}",
+            "poll_request_id": poll_request_id or f"query-poll-{uuid.uuid4().hex}",
         }
+        if build_id:
+            body["build_id"] = build_id
+
         for _ in range(2):
             try:
                 data = await self._request(
@@ -3426,7 +3445,13 @@ class Client:
         )
 
     async def poll_activity_task(
-        self, *, worker_id: str, task_queue: str, timeout: float = 35.0
+        self,
+        *,
+        worker_id: str,
+        task_queue: str,
+        timeout: float = 35.0,
+        build_id: str | None = None,
+        poll_request_id: str | None = None,
     ) -> Any:
         """Long-poll for the next activity task on ``task_queue``.
 
@@ -3436,8 +3461,11 @@ class Client:
         body: dict[str, Any] = {
             "worker_id": worker_id,
             "task_queue": task_queue,
-            "poll_request_id": f"activity-poll-{uuid.uuid4().hex}",
+            "poll_request_id": poll_request_id or f"activity-poll-{uuid.uuid4().hex}",
         }
+        if build_id:
+            body["build_id"] = build_id
+
         for _ in range(2):
             try:
                 data = await self._request(

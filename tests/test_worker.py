@@ -404,6 +404,59 @@ class TestWorkerRegistration:
         assert call_kwargs["build_id"] == "release-2026.04.22-a1"
 
     @pytest.mark.asyncio
+    async def test_poll_loops_forward_build_id_when_configured(
+        self, mock_client: AsyncMock
+    ) -> None:
+        workflow_called = asyncio.Event()
+        activity_called = asyncio.Event()
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            worker_id="w-build-poll",
+            build_id="release-2026.04.22-a1",
+            poll_timeout=0.01,
+        )
+
+        async def workflow_poll_once(**_: object) -> None:
+            workflow_called.set()
+            await worker.stop()
+            return None
+
+        async def activity_poll_once(**_: object) -> None:
+            activity_called.set()
+            await worker.stop()
+            return None
+
+        mock_client.poll_workflow_task.side_effect = workflow_poll_once
+        await worker._poll_workflow_tasks()
+        workflow_kwargs = mock_client.poll_workflow_task.call_args.kwargs
+        assert workflow_called.is_set()
+        assert workflow_kwargs["build_id"] == "release-2026.04.22-a1"
+
+        worker._stop.clear()
+        mock_client.poll_activity_task.side_effect = activity_poll_once
+        await worker._poll_activity_tasks()
+        activity_kwargs = mock_client.poll_activity_task.call_args.kwargs
+        assert activity_called.is_set()
+        assert activity_kwargs["build_id"] == "release-2026.04.22-a1"
+
+        worker._stop.clear()
+        query_called = asyncio.Event()
+
+        async def query_poll_once(**_: object) -> None:
+            query_called.set()
+            await worker.stop()
+            return None
+
+        mock_client.poll_query_task.side_effect = query_poll_once
+        await worker._poll_query_tasks()
+        query_kwargs = mock_client.poll_query_task.call_args.kwargs
+        assert query_called.is_set()
+        assert query_kwargs["build_id"] == "release-2026.04.22-a1"
+
+    @pytest.mark.asyncio
     async def test_register_omits_build_id_when_not_configured(
         self, mock_client: AsyncMock
     ) -> None:

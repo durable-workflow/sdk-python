@@ -1588,6 +1588,7 @@ class Worker:
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
                     timeout=self._poll_http_timeout,
+                    build_id=self.build_id,
                 )
             except Exception as e:
                 self._wf_semaphore.release()
@@ -1665,6 +1666,7 @@ class Worker:
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
                     timeout=self._poll_http_timeout,
+                    build_id=self.build_id,
                 )
             except Exception as e:
                 self._act_semaphore.release()
@@ -1702,6 +1704,7 @@ class Worker:
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
                     timeout=self._poll_http_timeout,
+                    build_id=self.build_id,
                 )
             except Exception as e:
                 self._record_poll_metrics("query", "error", time.perf_counter() - poll_start)
@@ -1960,6 +1963,7 @@ class Worker:
                         worker_id=self.worker_id,
                         task_queue=self.task_queue,
                         timeout=self._poll_http_timeout,
+                        build_id=self.build_id,
                     )
                     self._record_poll_metrics(
                         "workflow",
@@ -1990,6 +1994,7 @@ class Worker:
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
                     timeout=self._poll_http_timeout,
+                    build_id=self.build_id,
                 )
                 self._record_poll_metrics(
                     "activity",

@@ -2302,10 +2302,15 @@ class TestFailWorkflowTask:
             "poll_status": "no_compatible_worker",
         }
 
-        with patch.object(client, "poll_workflow_task_response", new_callable=AsyncMock, return_value=response):
-            task = await client.poll_workflow_task(worker_id="worker-v2", task_queue="queue-1")
+        with patch.object(client, "poll_workflow_task_response", new_callable=AsyncMock, return_value=response) as mock:
+            task = await client.poll_workflow_task(
+                worker_id="worker-v2",
+                task_queue="queue-1",
+                build_id="build-v2",
+            )
 
         assert task is None
+        assert mock.await_args.kwargs["build_id"] == "build-v2"
 
     @pytest.mark.asyncio
     async def test_poll_workflow_task_retries_once_with_same_poll_request_id_after_timeout(
@@ -2335,12 +2340,36 @@ class TestFailWorkflowTask:
         response_task = {"task": {"task_id": "activity-task-123"}}
 
         with patch.object(client, "_request", new_callable=AsyncMock, return_value=response_task) as mock:
-            task = await client.poll_activity_task(worker_id="worker-1", task_queue="queue-1")
+            task = await client.poll_activity_task(
+                worker_id="worker-1",
+                task_queue="queue-1",
+                build_id="build-1",
+            )
 
         assert task == response_task["task"]
         request_body = mock.await_args.kwargs["json"]
         assert request_body["worker_id"] == "worker-1"
         assert request_body["task_queue"] == "queue-1"
+        assert request_body["build_id"] == "build-1"
+        assert isinstance(request_body["poll_request_id"], str)
+        assert request_body["poll_request_id"] != ""
+
+    @pytest.mark.asyncio
+    async def test_poll_query_task_sends_build_id(self, client: Client) -> None:
+        response_task = {"task": {"query_task_id": "query-task-123"}}
+
+        with patch.object(client, "_request", new_callable=AsyncMock, return_value=response_task) as mock:
+            task = await client.poll_query_task(
+                worker_id="worker-1",
+                task_queue="queue-1",
+                build_id="build-1",
+            )
+
+        assert task == response_task["task"]
+        request_body = mock.await_args.kwargs["json"]
+        assert request_body["worker_id"] == "worker-1"
+        assert request_body["task_queue"] == "queue-1"
+        assert request_body["build_id"] == "build-1"
         assert isinstance(request_body["poll_request_id"], str)
         assert request_body["poll_request_id"] != ""
 
