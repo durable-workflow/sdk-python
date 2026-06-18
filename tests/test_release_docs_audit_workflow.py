@@ -26,9 +26,11 @@ def test_publish_workflow_runs_docs_audit_in_recoverable_job() -> None:
         "DOCS_RELEASE_AUDIT_ARTIFACT: sdk-python",
         "DOCS_RELEASE_AUDIT_VERSION: ${{ github.ref_name }}",
         "DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json",
+        "DOCS_RELEASE_AUDIT_HANDOFF: docs-release-audit-handoff.json",
         "scripts/ci/check-docs-release-audit.sh",
         "Upload docs release audit evidence",
         "docs-release-audit-evidence.json",
+        "docs-release-audit-handoff.json",
     ]:
         assert expected in workflow
 
@@ -39,10 +41,14 @@ def test_publish_workflow_runs_docs_audit_in_recoverable_job() -> None:
     assert "Upload docs release audit evidence" not in publish_job
     assert "needs: publish" in docs_audit_job
     assert "durable-workflow.release.docs-release-audit-evidence" in auditor
+    assert "durable-workflow.release.docs-artifact-tuple-handoff" in auditor
+    assert "DOCS_RELEASE_AUDIT_HANDOFF" in auditor
     assert "schema: 'durable-workflow.docs.refresh-request'" in auditor
     assert "repository: 'durable-workflow.github.io'" in auditor
     assert "refresh_command: 'npm run refresh:public-artifact-versions'" in auditor
+    assert "refresh_files: refreshFiles" in auditor
     assert "observed_artifact_versions: versions" in auditor
+    assert "docs_artifact_tuple_handoff: handoff" in auditor
 
     publish_offset = workflow.index("Publish to PyPI")
     docs_audit_job_offset = workflow.index("verify-docs-release-audit:")
