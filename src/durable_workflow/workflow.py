@@ -2762,7 +2762,17 @@ def _replay_state(
                             exception_type=type(exc).__name__,
                         )])
                     if resolution == "satisfied":
-                        terminal_condition_reopen_cmd = None
+                        if has_reopened_same_wait:
+                            if not satisfied:
+                                consumed_reopen_for_current_wait = True
+                                wait_yield_count = next_wait_index
+                                continue
+
+                        terminal_condition_reopen_cmd = (
+                            cmd
+                            if has_reopened_same_wait and consumed_reopen_for_current_wait
+                            else None
+                        )
                         next_value = True
                         wait_yield_count += 1
                         break

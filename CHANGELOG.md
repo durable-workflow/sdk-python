@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Worker-routed queries now replay signal-woken condition waits that reopen the
+  same logical wait until all recorded signals have been applied, so long-lived
+  queryable workflows report the latest signal-mutated state.
 - Python conformance CLI evidence now accepts terminal stdout/JSON captured on
   nested CLI command records while still rejecting generic scenario outputs as
   proof of the public CLI result path.

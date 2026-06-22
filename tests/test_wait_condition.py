@@ -172,6 +172,41 @@ class SignalCounterUntilFinished:
         return self.current()
 
 
+@workflow.defn(name="signal-counter-single-predicate-per-reopen")
+class SignalCounterSinglePredicatePerReopen:
+    def __init__(self) -> None:
+        self.count = 0
+        self.done = False
+        self.receiver_generation = 0
+        self.last_predicate_generation: int | None = None
+        self.predicate_calls = 0
+
+    @workflow.signal("increment")
+    def increment(self, amount: int) -> None:
+        self.count += amount
+        self.receiver_generation += 1
+
+    @workflow.signal("finish")
+    def finish(self) -> None:
+        self.done = True
+        self.receiver_generation += 1
+
+    def done_once_per_receiver(self) -> bool:
+        self.predicate_calls += 1
+        if self.last_predicate_generation == self.receiver_generation:
+            raise RuntimeError("predicate re-evaluated before replay advanced")
+        self.last_predicate_generation = self.receiver_generation
+        return self.done
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        satisfied = yield ctx.wait_condition(self.done_once_per_receiver, key="done")
+        return {
+            "count": self.count,
+            "satisfied": satisfied,
+            "predicate_calls": self.predicate_calls,
+        }
+
+
 @workflow.defn(name="two-same-key-signal-waits")
 class TwoSameKeySignalWaits:
     def __init__(self) -> None:
@@ -453,6 +488,38 @@ class TestReplayWaitCondition:
                 {"signal": "increment", "amount": 3, "count": 3},
                 {"signal": "increment", "amount": 5, "count": 8},
             ],
+        }
+
+    def test_satisfied_reopened_wait_reuses_current_predicate_result(self) -> None:
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-count", "condition_key": "done"},
+            },
+            _signal_received_event("increment", [3]),
+            {
+                "event_type": "ConditionWaitSatisfied",
+                "payload": {"condition_wait_id": "wait-count", "condition_key": "done"},
+            },
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {"condition_wait_id": "wait-finish", "condition_key": "done"},
+            },
+            _signal_received_event("finish", []),
+            {
+                "event_type": "ConditionWaitSatisfied",
+                "payload": {"condition_wait_id": "wait-finish", "condition_key": "done"},
+            },
+        ]
+
+        outcome = replay(SignalCounterSinglePredicatePerReopen, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == {
+            "count": 3,
+            "satisfied": True,
+            "predicate_calls": 2,
         }
 
     def test_signal_received_before_next_wait_uses_declared_workflow_sequence(self) -> None:
