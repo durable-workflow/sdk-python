@@ -19,6 +19,7 @@ methods without repeating the id on every call.
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import time
 import uuid
@@ -58,6 +59,31 @@ def _default_sdk_version() -> str:
 
 
 DEFAULT_SDK_VERSION = _default_sdk_version()
+_WORKER_POLL_MAX_SERVER_TIMEOUT_SECONDS = 60
+_WORKER_POLL_HTTP_TIMEOUT_GRACE_SECONDS = 5.0
+
+
+def _worker_poll_timeout_seconds(timeout: float | None) -> int | None:
+    if timeout is None:
+        return None
+
+    value = float(timeout)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("timeout must be a non-negative finite number")
+
+    seconds = int(math.ceil(value)) if value >= 1 else 0
+    return min(seconds, _WORKER_POLL_MAX_SERVER_TIMEOUT_SECONDS)
+
+
+def _worker_poll_http_timeout(timeout: float | None) -> float | None:
+    timeout_seconds = _worker_poll_timeout_seconds(timeout)
+    if timeout_seconds is None:
+        return None
+
+    if timeout_seconds == 0:
+        return max(float(timeout), 1.0)
+
+    return max(float(timeout), float(timeout_seconds) + _WORKER_POLL_HTTP_TIMEOUT_GRACE_SECONDS)
 
 
 def _protocol_version_from_env(name: str, default: str) -> str:
@@ -3217,22 +3243,31 @@ class Client:
         Returns the full worker-protocol response envelope, including
         ``poll_status`` when the server has no task to lease. Worker-plane
         endpoint — most applications use :class:`~durable_workflow.Worker`
-        rather than calling this directly.
+        rather than calling this directly. ``timeout`` controls the server
+        long-poll window; the HTTP request uses a small grace margin.
         """
         body: dict[str, Any] = {
             "worker_id": worker_id,
             "task_queue": task_queue,
             "poll_request_id": poll_request_id or f"wf-poll-{uuid.uuid4().hex}",
         }
+        timeout_seconds = _worker_poll_timeout_seconds(timeout)
+        if timeout_seconds is not None:
+            body["timeout_seconds"] = timeout_seconds
         if build_id:
             body["build_id"] = build_id
         if history_page_size is not None:
             body["history_page_size"] = history_page_size
+        http_timeout = _worker_poll_http_timeout(timeout)
 
         for _ in range(2):
             try:
                 data = await self._request(
-                    "POST", "/worker/workflow-tasks/poll", worker=True, json=body, timeout=timeout
+                    "POST",
+                    "/worker/workflow-tasks/poll",
+                    worker=True,
+                    json=body,
+                    timeout=http_timeout,
                 )
             except httpx.TimeoutException:
                 continue
@@ -3255,7 +3290,8 @@ class Client:
 
         Returns the task payload, or ``None`` on poll timeout. Worker-plane
         endpoint — most applications use :class:`~durable_workflow.Worker`
-        rather than calling this directly.
+        rather than calling this directly. ``timeout`` controls the server
+        long-poll window; the HTTP request uses a small grace margin.
         """
         data = await self.poll_workflow_task_response(
             worker_id=worker_id,
@@ -3363,19 +3399,29 @@ class Client:
 
         Query tasks are ephemeral worker-plane requests created when the server
         must route a control-plane query to a non-PHP workflow runtime.
+        ``timeout`` controls the server long-poll window; the HTTP request
+        uses a small grace margin.
         """
         body: dict[str, Any] = {
             "worker_id": worker_id,
             "task_queue": task_queue,
             "poll_request_id": poll_request_id or f"query-poll-{uuid.uuid4().hex}",
         }
+        timeout_seconds = _worker_poll_timeout_seconds(timeout)
+        if timeout_seconds is not None:
+            body["timeout_seconds"] = timeout_seconds
         if build_id:
             body["build_id"] = build_id
+        http_timeout = _worker_poll_http_timeout(timeout)
 
         for _ in range(2):
             try:
                 data = await self._request(
-                    "POST", "/worker/query-tasks/poll", worker=True, json=body, timeout=timeout
+                    "POST",
+                    "/worker/query-tasks/poll",
+                    worker=True,
+                    json=body,
+                    timeout=http_timeout,
                 )
             except httpx.TimeoutException:
                 continue
@@ -3457,19 +3503,29 @@ class Client:
 
         Returns the task payload, or ``None`` on poll timeout. Worker-plane
         endpoint — typically used by :class:`~durable_workflow.Worker`.
+        ``timeout`` controls the server long-poll window; the HTTP request
+        uses a small grace margin.
         """
         body: dict[str, Any] = {
             "worker_id": worker_id,
             "task_queue": task_queue,
             "poll_request_id": poll_request_id or f"activity-poll-{uuid.uuid4().hex}",
         }
+        timeout_seconds = _worker_poll_timeout_seconds(timeout)
+        if timeout_seconds is not None:
+            body["timeout_seconds"] = timeout_seconds
         if build_id:
             body["build_id"] = build_id
+        http_timeout = _worker_poll_http_timeout(timeout)
 
         for _ in range(2):
             try:
                 data = await self._request(
-                    "POST", "/worker/activity-tasks/poll", worker=True, json=body, timeout=timeout
+                    "POST",
+                    "/worker/activity-tasks/poll",
+                    worker=True,
+                    json=body,
+                    timeout=http_timeout,
                 )
             except httpx.TimeoutException:
                 continue

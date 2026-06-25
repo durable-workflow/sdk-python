@@ -2292,8 +2292,9 @@ class TestFailWorkflowTask:
         assert request_body["task_queue"] == "queue-1"
         assert request_body["build_id"] == "build-v2"
         assert request_body["history_page_size"] == 100
+        assert request_body["timeout_seconds"] == 3
         assert isinstance(request_body["poll_request_id"], str)
-        assert mock.await_args.kwargs["timeout"] == 3.0
+        assert mock.await_args.kwargs["timeout"] == 8.0
 
     @pytest.mark.asyncio
     async def test_poll_workflow_task_keeps_returning_none_for_no_compatible_status(self, client: Client) -> None:
@@ -2351,6 +2352,7 @@ class TestFailWorkflowTask:
         assert request_body["worker_id"] == "worker-1"
         assert request_body["task_queue"] == "queue-1"
         assert request_body["build_id"] == "build-1"
+        assert request_body["timeout_seconds"] == 35
         assert isinstance(request_body["poll_request_id"], str)
         assert request_body["poll_request_id"] != ""
 
@@ -2370,6 +2372,7 @@ class TestFailWorkflowTask:
         assert request_body["worker_id"] == "worker-1"
         assert request_body["task_queue"] == "queue-1"
         assert request_body["build_id"] == "build-1"
+        assert request_body["timeout_seconds"] == 35
         assert isinstance(request_body["poll_request_id"], str)
         assert request_body["poll_request_id"] != ""
 
@@ -3016,6 +3019,8 @@ class TestQueryTasks:
             body = mock.call_args.kwargs["json"]
             assert body["worker_id"] == "w1"
             assert body["task_queue"] == "q1"
+            assert body["timeout_seconds"] == 5
+            assert mock.call_args.kwargs["timeout"] == 10.0
             assert isinstance(body["poll_request_id"], str)
             assert body["poll_request_id"] != ""
 
