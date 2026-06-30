@@ -1884,10 +1884,34 @@ def _workflow_sequence(payload: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _activity_type_from_payload(payload: Mapping[str, Any]) -> str | None:
+    activity_type = _optional_str(payload.get("activity_type"))
+    if activity_type is not None:
+        return activity_type
+
+    activity_name = _optional_str(payload.get("activity_name"))
+    if activity_name is not None:
+        return activity_name
+
+    activity_payload = payload.get("activity")
+    if isinstance(activity_payload, Mapping):
+        return (
+            _optional_str(activity_payload.get("activity_type"))
+            or _optional_str(activity_payload.get("activity_name"))
+            or _optional_str(activity_payload.get("type"))
+            or _optional_str(activity_payload.get("name"))
+        )
+
+    return None
+
+
 def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
     details: dict[str, Any] = {}
+    activity_type = _activity_type_from_payload(payload)
+    if activity_type is not None:
+        details["activity_type"] = activity_type
+
     for key in (
-        "activity_type",
         "workflow_type",
         "child_workflow_type",
         "timer_kind",
@@ -2024,7 +2048,7 @@ def _activity_failed_from_payload(payload: Mapping[str, Any]) -> ActivityFailed:
 
     return ActivityFailed(
         message or "activity failed",
-        activity_type=_optional_str(payload.get("activity_type")),
+        activity_type=_activity_type_from_payload(payload),
         activity_execution_id=_optional_str(payload.get("activity_execution_id")),
         activity_attempt_id=_optional_str(payload.get("activity_attempt_id")),
         failure_id=_optional_str(payload.get("failure_id")),

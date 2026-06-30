@@ -75,6 +75,43 @@ class ActivityFailedSaga:
         return {"charged": True}
 
 
+@workflow.defn(name="reverse-compensation-saga")
+class ReverseCompensationSaga:
+    def run(self, ctx: WorkflowContext, payload: dict):  # type: ignore[type-arg]
+        completed: list[str] = []
+        compensations: list[str] = []
+        steps = [
+            ("reserve_flight", "cancel_flight"),
+            ("reserve_hotel", "cancel_hotel"),
+            ("charge_card", "refund_card"),
+            ("send_confirmation", ""),
+        ]
+
+        try:
+            for action, compensation in steps:
+                yield ctx.schedule_activity(action, [payload])
+                completed.append(action)
+                if compensation:
+                    compensations.append(compensation)
+        except ActivityFailed:
+            if not compensations:
+                raise
+            for compensation in reversed(compensations):
+                yield ctx.schedule_activity(compensation, [payload])
+                completed.append(compensation)
+            return {
+                "status": "compensated",
+                "activity_log": completed,
+                "compensations": compensations,
+            }
+
+        return {
+            "status": "completed",
+            "activity_log": completed,
+            "compensations": compensations,
+        }
+
+
 @workflow.defn(name="activity-failure-payload-inspector")
 class ActivityFailurePayloadInspector:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -113,6 +150,34 @@ class FailingWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
         yield ctx.schedule_activity("step1", [])
         raise ValueError("something went wrong")
+
+
+def _activity_completed_event(sequence: int, activity_type: str) -> dict:
+    return {
+        "event_type": "ActivityCompleted",
+        "payload": {
+            "sequence": sequence,
+            "activity_type": activity_type,
+            "payload_codec": "json",
+            "result": serializer.encode({"activity": activity_type}, codec="json"),
+        },
+    }
+
+
+def _activity_failed_event(sequence: int, activity_type: str) -> dict:
+    return {
+        "event_type": "ActivityFailed",
+        "payload": {
+            "sequence": sequence,
+            "activity_type": activity_type,
+            "failure_id": f"failure-{sequence}",
+            "failure_category": "activity",
+            "exception_type": "RuntimeError",
+            "exception_class": "builtins.RuntimeError",
+            "message": f"{activity_type} planned saga failure before forward effect",
+            "non_retryable": True,
+        },
+    }
 
 
 class TestSimpleReturn:
@@ -215,7 +280,7 @@ class TestOneActivity:
             {
                 "event_type": "ActivityFailed",
                 "payload": {
-                    "activity_type": "charge-card",
+                    "activity_name": "charge-card",
                     "activity_execution_id": "act-1",
                     "activity_attempt_id": "attempt-1",
                     "failure_id": "failure-1",
@@ -484,6 +549,56 @@ class TestOneActivity:
 
         with pytest.raises(ValueError, match=message):
             cmd.to_server_command("default-queue")
+
+
+class TestReverseCompensationSaga:
+    def test_resumes_reverse_compensation_after_first_refund(self) -> None:
+        payload = {"scenario_id": "reverse-compensation"}
+        history = [
+            _activity_completed_event(1, "reserve_flight"),
+            _activity_completed_event(2, "reserve_hotel"),
+            _activity_completed_event(3, "charge_card"),
+            _activity_failed_event(4, "send_confirmation"),
+            _activity_completed_event(5, "refund_card"),
+        ]
+
+        outcome = replay(ReverseCompensationSaga, history, [payload], payload_codec="json")
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, ScheduleActivity)
+        assert cmd.activity_type == "cancel_hotel"
+        assert cmd.arguments == [payload]
+
+    def test_completes_reverse_compensation_without_duplicates(self) -> None:
+        payload = {"scenario_id": "reverse-compensation"}
+        history = [
+            _activity_completed_event(1, "reserve_flight"),
+            _activity_completed_event(2, "reserve_hotel"),
+            _activity_completed_event(3, "charge_card"),
+            _activity_failed_event(4, "send_confirmation"),
+            _activity_completed_event(5, "refund_card"),
+            _activity_completed_event(6, "cancel_hotel"),
+            _activity_completed_event(7, "cancel_flight"),
+        ]
+
+        outcome = replay(ReverseCompensationSaga, history, [payload], payload_codec="json")
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {
+            "status": "compensated",
+            "activity_log": [
+                "reserve_flight",
+                "reserve_hotel",
+                "charge_card",
+                "refund_card",
+                "cancel_hotel",
+                "cancel_flight",
+            ],
+            "compensations": ["cancel_flight", "cancel_hotel", "refund_card"],
+        }
 
 
 class TestTwoActivities:
