@@ -39,8 +39,11 @@ def smoke_distribution(artifact: Path, *, repo_root: Path, readme: Path) -> None
     smoke_code = r'''
 import importlib
 import importlib.metadata
+import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from types import FunctionType
 
@@ -96,6 +99,7 @@ reference_modules = [
     "durable_workflow.testing",
     "durable_workflow.worker",
     "durable_workflow.workflow",
+    "durable_workflow.workflow_updates_conformance",
 ]
 for module_name in reference_modules:
     module = importlib.import_module(module_name)
@@ -124,6 +128,50 @@ assert first.arguments == ["world"]
 final = replay(workflow_class, [completed(greet("world"))], ["world"]).commands[0]
 assert isinstance(final, CompleteWorkflow)
 assert final.result == "hello, world"
+
+evidence_path = Path.cwd() / "python-sdk-workflow-updates-evidence.json"
+workflow_updates_script = Path(sys.executable).with_name("durable-workflow-workflow-updates-conformance")
+if not workflow_updates_script.is_file():
+    workflow_updates_script = workflow_updates_script.with_suffix(".exe")
+if not workflow_updates_script.is_file():
+    raise AssertionError("installed package is missing durable-workflow-workflow-updates-conformance script")
+subprocess.run(
+    [
+        str(workflow_updates_script),
+        "--expected-version",
+        metadata_version,
+        "--output",
+        str(evidence_path),
+    ],
+    check=True,
+)
+evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+scenario = evidence["scenario_results"]["python_client_worker_update_surface"]
+outputs = scenario["observed_outputs"]
+if scenario["status"] != "pass":
+    raise AssertionError(f"workflow update conformance shard did not pass: {scenario!r}")
+if scenario["local_product_source_checkouts_used"]:
+    raise AssertionError("workflow update conformance shard reported local source checkout usage")
+if not scenario["published_artifact_cell_executed"]:
+    raise AssertionError("workflow update conformance shard did not report published artifact execution")
+if outputs["sdk_python_artifact_version"] != metadata_version:
+    raise AssertionError("workflow update shard did not record the installed package version")
+required_cells = {
+    "accepted_update_control_plane_and_history",
+    "completed_update_result_round_trip",
+    "failed_update_outcome",
+    "unknown_update_refusal",
+    "invalid_input_refusal",
+    "duplicate_request_idempotency",
+    "terminal_workflow_update_behavior",
+    "payload_envelope_round_trip",
+}
+if not required_cells.issubset(set(outputs["covered_cells"])):
+    raise AssertionError(f"workflow update shard missing covered cells: {outputs['covered_cells']!r}")
+if not outputs["python_worker_update_handler"]["observations"]:
+    raise AssertionError("workflow update shard did not record worker handler observations")
+if not outputs["python_client_update_request"]["requests"]:
+    raise AssertionError("workflow update shard did not record client update requests")
 print(f"README quickstart smoke passed using {package_file}")
     '''
 

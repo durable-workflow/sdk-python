@@ -61,6 +61,7 @@ durable-workflow-replay-verify = "durable_workflow.replay_verify:main"
 durable-workflow-history-bundle-verify = "durable_workflow.history_bundle_verify:main"
 durable-workflow-python-conformance = "durable_workflow.python_conformance:main"
 durable-workflow-replay-conformance = "durable_workflow.replay_conformance:main"
+durable-workflow-workflow-updates-conformance = "durable_workflow.workflow_updates_conformance:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
