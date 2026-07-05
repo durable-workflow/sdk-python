@@ -123,6 +123,16 @@ def _string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _exception_class_name(error: BaseException | type[BaseException]) -> str:
+    cls = error if isinstance(error, type) else type(error)
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
+def _exception_code(error: BaseException) -> int | None:
+    code = getattr(error, "code", None)
+    return code if isinstance(code, int) else None
+
+
 def _is_missing_payload_placeholder(value: Any) -> bool:
     return value is None or (isinstance(value, str) and value == "")
 
@@ -1161,6 +1171,8 @@ class Worker:
                         f"Reinstall durable-workflow with its runtime dependencies."
                     ),
                     failure_type=type(e).__name__,
+                    failure_class=_exception_class_name(e),
+                    failure_code=_exception_code(e),
                     stack_trace=traceback.format_exc(),
                     non_retryable=True,
                 )
@@ -1179,6 +1191,8 @@ class Worker:
                         f"Verify the argument bytes match the declared codec and writer schema."
                     ),
                     failure_type=type(e).__name__,
+                    failure_class=_exception_class_name(e),
+                    failure_code=_exception_code(e),
                     stack_trace=traceback.format_exc(),
                     non_retryable=True,
                 )
@@ -1225,6 +1239,7 @@ class Worker:
                     lease_owner=self.worker_id,
                     message="activity cancelled",
                     failure_type="ActivityCancelled",
+                    failure_class=_exception_class_name(ActivityCancelled),
                     non_retryable=True,
                 )
             except Exception as fe:
@@ -1239,6 +1254,8 @@ class Worker:
                     lease_owner=self.worker_id,
                     message=str(e),
                     failure_type=type(e).__name__,
+                    failure_class=_exception_class_name(e),
+                    failure_code=_exception_code(e),
                     stack_trace=traceback.format_exc(),
                     non_retryable=True,
                 )
@@ -1254,6 +1271,8 @@ class Worker:
                     lease_owner=self.worker_id,
                     message=str(e),
                     failure_type=type(e).__name__,
+                    failure_class=_exception_class_name(e),
+                    failure_code=_exception_code(e),
                     stack_trace=traceback.format_exc(),
                 )
             except Exception as fe:

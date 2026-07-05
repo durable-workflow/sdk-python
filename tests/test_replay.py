@@ -152,6 +152,20 @@ class FailingWorkflow:
         raise ValueError("something went wrong")
 
 
+@workflow.defn(name="typed-compensation-failure-workflow")
+class TypedCompensationFailureWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.schedule_activity("charge_card", [])
+        except ActivityFailed:
+            try:
+                yield ctx.schedule_activity("cancel_flight", [])
+            except ActivityFailed as exc:
+                failure_type = exc.exception_type or type(exc).__name__
+                raise RuntimeError(f"compensation failed for cancel_flight: {failure_type}: {exc}") from exc
+        return "completed"
+
+
 def _activity_completed_event(sequence: int, activity_type: str) -> dict:
     return {
         "event_type": "ActivityCompleted",
@@ -668,6 +682,7 @@ class TestFailingWorkflow:
         assert isinstance(cmd, FailWorkflow)
         assert "something went wrong" in cmd.message
         assert cmd.exception_type == "ValueError"
+        assert cmd.exception_class == "builtins.ValueError"
 
     def test_fail_server_command_shape(self) -> None:
         history = [{"event_type": "ActivityCompleted", "payload": {"result": '"ok"'}}]
@@ -675,6 +690,51 @@ class TestFailingWorkflow:
         server_cmd = outcome.commands[0].to_server_command("q")
         assert server_cmd["type"] == "fail_workflow"
         assert "something went wrong" in server_cmd["message"]
+        assert server_cmd["exception_class"] == "builtins.ValueError"
+
+    def test_typed_compensation_activity_failure_reaches_terminal_command(self) -> None:
+        history = [
+            {
+                "event_type": "ActivityFailed",
+                "payload": {
+                    "sequence": 1,
+                    "activity_type": "charge_card",
+                    "exception_type": "PlannedSagaFailure",
+                    "exception_class": "sagas.PlannedSagaFailure",
+                    "message": "planned saga failure",
+                },
+            },
+            {
+                "event_type": "ActivityFailed",
+                "payload": {
+                    "sequence": 2,
+                    "activity_type": "cancel_flight",
+                    "activity_attempt_id": "attempt-cancel-flight",
+                    "exception_type": "TypedCancelFlightError",
+                    "exception_class": "__main__.TypedCancelFlightError",
+                    "message": "cancel_flight typed compensation failure",
+                },
+            },
+        ]
+
+        outcome = replay(TypedCompensationFailureWorkflow, history, [])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, FailWorkflow)
+        assert cmd.exception_type == "TypedCancelFlightError"
+        assert cmd.exception_class == "__main__.TypedCancelFlightError"
+        assert cmd.exception is not None
+        assert cmd.exception["type"] == "TypedCancelFlightError"
+        assert cmd.exception["message"] == cmd.message
+        assert cmd.exception["activity_type"] == "cancel_flight"
+        assert cmd.exception["activity_attempt_id"] == "attempt-cancel-flight"
+        assert "cancel_flight typed compensation failure" in cmd.message
+
+        server_cmd = cmd.to_server_command("q")
+        assert server_cmd["exception_type"] == "TypedCancelFlightError"
+        assert server_cmd["exception_class"] == "__main__.TypedCancelFlightError"
+        assert server_cmd["exception"]["message"] == cmd.message
 
 
 class TestCompleteWorkflowCommand:

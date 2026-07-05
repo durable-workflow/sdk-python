@@ -577,6 +577,8 @@ class FailWorkflow:
 
     message: str
     exception_type: str | None = None
+    exception_class: str | None = None
+    exception: dict[str, Any] | None = None
     non_retryable: bool = False
 
     def to_server_command(
@@ -593,6 +595,10 @@ class FailWorkflow:
         }
         if self.exception_type is not None:
             cmd["exception_type"] = self.exception_type
+        if self.exception_class is not None:
+            cmd["exception_class"] = self.exception_class
+        if self.exception is not None:
+            cmd["exception"] = self.exception
         if self.non_retryable:
             cmd["non_retryable"] = True
         return cmd
@@ -1870,6 +1876,41 @@ def _fail_update_from_exception(update_id: str, prefix: str, exc: Exception) -> 
     )
 
 
+def _exception_class_name(exc: BaseException) -> str:
+    return f"{type(exc).__module__}.{type(exc).__qualname__}"
+
+
+def _fail_workflow_from_exception(exc: BaseException, *, prefix: str | None = None) -> FailWorkflow:
+    message = str(exc) or type(exc).__name__
+    if prefix:
+        message = f"{prefix}: {message}"
+
+    exception_type = type(exc).__name__
+    exception_class = _exception_class_name(exc)
+    exception: dict[str, Any] | None = None
+    cause = exc.__cause__
+    activity_failure = exc if isinstance(exc, ActivityFailed) else cause if isinstance(cause, ActivityFailed) else None
+    if isinstance(activity_failure, ActivityFailed):
+        exception_type = activity_failure.exception_type or type(activity_failure).__name__
+        exception_class = activity_failure.exception_class or _exception_class_name(activity_failure)
+        exception = {
+            "type": exception_type,
+            "class": exception_class,
+            "message": message,
+        }
+        if activity_failure.activity_type is not None:
+            exception["activity_type"] = activity_failure.activity_type
+        if activity_failure.activity_attempt_id is not None:
+            exception["activity_attempt_id"] = activity_failure.activity_attempt_id
+
+    return FailWorkflow(
+        message=message,
+        exception_type=exception_type,
+        exception_class=exception_class,
+        exception=exception,
+    )
+
+
 def _history_event_type(event: Mapping[str, Any]) -> str | None:
     value = event.get("event_type") or event.get("type")
     return value if isinstance(value, str) and value else None
@@ -2781,9 +2822,9 @@ def _replay_state(
                     try:
                         satisfied = bool(cmd.predicate())
                     except Exception as exc:
-                        return _state([FailWorkflow(
-                            message=f"wait_condition predicate raised: {exc}",
-                            exception_type=type(exc).__name__,
+                        return _state([_fail_workflow_from_exception(
+                            exc,
+                            prefix="wait_condition predicate raised",
                         )])
                     if resolution == "satisfied":
                         if has_reopened_same_wait:
@@ -2848,14 +2889,8 @@ def _replay_state(
         except Exception as exc:
             if isinstance(exc, NonDeterministicReplayError):
                 raise
-            return _state([FailWorkflow(
-                message=str(exc),
-                exception_type=type(exc).__name__,
-            )])
+            return _state([_fail_workflow_from_exception(exc)])
     except NonDeterministicReplayError:
         raise
     except Exception as exc:
-        return _state([FailWorkflow(
-            message=str(exc),
-            exception_type=type(exc).__name__,
-        )])
+        return _state([_fail_workflow_from_exception(exc)])

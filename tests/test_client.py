@@ -2155,7 +2155,7 @@ class TestSchedules:
 
         wire_events = fixture["response_body"]["events"]
         assert len(page.events) == len(wire_events)
-        for parsed, wire in zip(page.events, wire_events):
+        for parsed, wire in zip(page.events, wire_events, strict=True):
             assert parsed.id == wire["id"]
             assert parsed.sequence == wire["sequence"]
             assert parsed.event_type == wire["event_type"]
@@ -2511,11 +2511,17 @@ class TestFailActivityTask:
                 activity_attempt_id="a1",
                 lease_owner="w1",
                 message="activity error",
+                failure_type="TypedActivityError",
+                failure_class="app.activities.TypedActivityError",
+                failure_code=409,
                 non_retryable=True,
             )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert "failure" in body
             assert body["failure"]["message"] == "activity error"
+            assert body["failure"]["type"] == "TypedActivityError"
+            assert body["failure"]["class"] == "app.activities.TypedActivityError"
+            assert body["failure"]["code"] == 409
             assert body["failure"]["non_retryable"] is True
 
     @pytest.mark.asyncio

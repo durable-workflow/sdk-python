@@ -39,6 +39,10 @@ from durable_workflow.worker import (
 )
 
 
+class TypedCancelFlightError(Exception):
+    code = 712
+
+
 @workflow.defn(name="test-wf")
 class TestWorkflow:
     def run(self, ctx, *args):  # type: ignore[no-untyped-def]
@@ -2000,6 +2004,31 @@ class TestActivityTaskExecution:
         call_kwargs = mock_client.fail_activity_task.call_args.kwargs
         assert "boom" in call_kwargs["message"]
         assert call_kwargs["failure_type"] == "RuntimeError"
+        assert call_kwargs["failure_class"] == "builtins.RuntimeError"
+
+    @pytest.mark.asyncio
+    async def test_activity_exception_reports_typed_failure_metadata(self, mock_client: AsyncMock) -> None:
+        @activity.defn(name="cancel-flight")
+        def cancel_flight() -> None:
+            raise TypedCancelFlightError("cancel_flight typed compensation failure")
+
+        worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[cancel_flight])
+        task = {
+            "task_id": "at-typed",
+            "activity_attempt_id": "aa-typed",
+            "activity_type": "cancel-flight",
+            "arguments": "[]",
+            "payload_codec": "json",
+        }
+
+        await worker._run_activity_task(task)
+
+        mock_client.fail_activity_task.assert_called_once()
+        call_kwargs = mock_client.fail_activity_task.call_args.kwargs
+        assert call_kwargs["failure_type"] == "TypedCancelFlightError"
+        assert call_kwargs["failure_class"] == f"{__name__}.TypedCancelFlightError"
+        assert call_kwargs["failure_code"] == 712
+        assert "cancel_flight typed compensation failure" in call_kwargs["message"]
 
 
 class TestWorkerInterceptors:

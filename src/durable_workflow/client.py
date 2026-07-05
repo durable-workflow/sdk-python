@@ -3571,6 +3571,8 @@ class Client:
         lease_owner: str,
         message: str,
         failure_type: str | None = None,
+        failure_class: str | None = None,
+        failure_code: int | None = None,
         stack_trace: str | None = None,
         non_retryable: bool = False,
         details: Any | None = None,
@@ -3586,6 +3588,10 @@ class Client:
         failure: dict[str, Any] = {"message": message}
         if failure_type is not None:
             failure["type"] = failure_type
+        if failure_class is not None:
+            failure["class"] = failure_class
+        if failure_code is not None:
+            failure["code"] = failure_code
         if stack_trace is not None:
             failure["stack_trace"] = stack_trace
         if non_retryable:
