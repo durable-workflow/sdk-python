@@ -44,6 +44,39 @@ class ServerError(DurableWorkflowError):
         return None
 
 
+class NexusOperationFailed(DurableWorkflowError):
+    """A Nexus service operation completed with a typed service failure."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        service_call_id: str | None = None,
+        endpoint_name: str | None = None,
+        service_name: str | None = None,
+        operation_name: str | None = None,
+        status: str | None = None,
+        outcome: str | None = None,
+        reason: str | None = None,
+        service_error_type: str | None = None,
+        caller_observed_error_type: str | None = None,
+        typed_error_message: str | None = None,
+        body: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.service_call_id = service_call_id
+        self.endpoint_name = endpoint_name
+        self.service_name = service_name
+        self.operation_name = operation_name
+        self.status = status
+        self.outcome = outcome
+        self.reason = reason
+        self.service_error_type = service_error_type
+        self.caller_observed_error_type = caller_observed_error_type
+        self.typed_error_message = typed_error_message
+        self.body = body
+
+
 class WorkflowFailed(DurableWorkflowError):
     """A workflow finished in the ``failed`` state.
 

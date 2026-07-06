@@ -24,7 +24,7 @@ import os
 import time
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -43,6 +43,7 @@ from .errors import (
 )
 from .external_storage import ExternalPayloadCache, ExternalPayloadStoragePolicy, ExternalStorageDriver
 from .metrics import CLIENT_REQUEST_DURATION_SECONDS, CLIENT_REQUESTS, NOOP_METRICS, MetricsRecorder
+from .nexus import NexusOperationResult, nexus_request_payload
 from .retry_policy import TransportRetryPolicy
 
 PROTOCOL_VERSION = "1.1"
@@ -1562,6 +1563,112 @@ class Client:
         optional and used only in error messages.
         """
         return WorkflowHandle(self, workflow_id=workflow_id, run_id=run_id, workflow_type=workflow_type)
+
+    async def execute_nexus_operation(
+        self,
+        endpoint_name: str,
+        service_name: str,
+        operation_name: str,
+        arguments: Sequence[Any] | None = None,
+        *,
+        mode: str | None = None,
+        wait_for: str | None = None,
+        wait_timeout_seconds: int | None = None,
+        idempotency_key: str | None = None,
+        payload_codec: str | None = None,
+        caller_namespace: str | None = None,
+        caller_workflow_instance_id: str | None = None,
+        caller_workflow_run_id: str | None = None,
+        service_sdk_language: str | None = None,
+        artifact_tuple: Mapping[str, Any] | None = None,
+        published_artifact_worker_execution: bool | None = None,
+        target_workflow_instance_id: str | None = None,
+        target_workflow_run_id: str | None = None,
+        connection: str | None = None,
+        queue: str | None = None,
+        business_key: str | None = None,
+        labels: Mapping[str, Any] | None = None,
+        memo: Mapping[str, Any] | None = None,
+        search_attributes: Mapping[str, Any] | None = None,
+        duplicate_start_policy: str | None = None,
+        raise_on_failure: bool = True,
+    ) -> NexusOperationResult:
+        """Execute a Nexus service operation through the service-catalog API.
+
+        Workflow code should normally yield
+        :meth:`durable_workflow.workflow.WorkflowContext.call_nexus_service`;
+        the worker uses this client method to make the single durable
+        execute request and records the returned service-call surface into
+        workflow history.
+        """
+        request_body = nexus_request_payload(
+            arguments=list(arguments) if arguments is not None else [],
+            payload_codec=payload_codec,
+            mode=mode,
+            wait_for=wait_for,
+            wait_timeout_seconds=wait_timeout_seconds,
+            idempotency_key=idempotency_key,
+            caller_namespace=caller_namespace or self.namespace,
+            caller_workflow_instance_id=caller_workflow_instance_id,
+            caller_workflow_run_id=caller_workflow_run_id,
+            target_workflow_instance_id=target_workflow_instance_id,
+            target_workflow_run_id=target_workflow_run_id,
+            connection=connection,
+            queue=queue,
+            business_key=business_key,
+            labels=labels,
+            memo=memo,
+            search_attributes=search_attributes,
+            duplicate_start_policy=duplicate_start_policy,
+        )
+        path = (
+            f"/service-endpoints/{quote(endpoint_name, safe='')}"
+            f"/services/{quote(service_name, safe='')}"
+            f"/operations/{quote(operation_name, safe='')}/execute"
+        )
+        context = f"{endpoint_name}/{service_name}/{operation_name}"
+
+        try:
+            data = await self._request("POST", path, json=request_body, context=context)
+        except ServerError as exc:
+            if exc.status != 409 or not isinstance(exc.body, dict):
+                raise
+            result = NexusOperationResult.from_response(
+                exc.body,
+                endpoint_name=endpoint_name,
+                service_name=service_name,
+                operation_name=operation_name,
+                request_payload=request_body,
+                service_sdk_language=service_sdk_language,
+                artifact_tuple=artifact_tuple,
+                published_artifact_worker_execution=published_artifact_worker_execution,
+            )
+            if raise_on_failure:
+                raise result.to_failure() from exc
+            return result
+
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_nexus_operation_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+
+        result = NexusOperationResult.from_response(
+            data,
+            endpoint_name=endpoint_name,
+            service_name=service_name,
+            operation_name=operation_name,
+            request_payload=request_body,
+            service_sdk_language=service_sdk_language,
+            artifact_tuple=artifact_tuple,
+            published_artifact_worker_execution=published_artifact_worker_execution,
+        )
+        if raise_on_failure and result.is_failure:
+            raise result.to_failure()
+        return result
 
     # ── Health ─────────────────────────────────────────────────────────
     async def health(self) -> dict[str, Any]:

@@ -30,16 +30,18 @@ from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 from . import serializer
-from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .errors import (
     ActivityFailed,
     ChildWorkflowCancelled,
     ChildWorkflowFailed,
     ChildWorkflowTerminated,
+    NexusOperationFailed,
     NonDeterministicReplayError,
     QueryFailed,
     WorkflowPayloadDecodeError,
 )
+from .external_storage import ExternalPayloadCache, ExternalStorageDriver
+from .nexus import NexusOperationResult, stable_nexus_idempotency_key
 
 _WorkflowT = TypeVar("_WorkflowT")
 
@@ -819,6 +821,59 @@ class StartChildWorkflow:
 
 
 @dataclass
+class NexusServiceCall:
+    """Command requesting a durable Nexus service operation from workflow code.
+
+    The Python worker executes the operation through the service-catalog API,
+    records the response or typed failure as a side-effect marker, and then
+    resumes replay from that recorded marker.
+    """
+
+    endpoint_name: str
+    service_name: str
+    operation_name: str
+    arguments: list[Any] = field(default_factory=list)
+    idempotency_key: str | None = None
+    payload_codec: str | None = None
+    mode: str | None = "sync"
+    wait_for: str | None = "completed"
+    wait_timeout_seconds: int | None = None
+    caller_namespace: str | None = None
+    service_sdk_language: str | None = None
+    artifact_tuple: dict[str, Any] | None = None
+    published_artifact_worker_execution: bool | None = None
+    target_workflow_instance_id: str | None = None
+    target_workflow_run_id: str | None = None
+    connection: str | None = None
+    queue: str | None = None
+    business_key: str | None = None
+    labels: dict[str, Any] | None = None
+    memo: dict[str, Any] | None = None
+    search_attributes: dict[str, Any] | None = None
+    duplicate_start_policy: str | None = None
+
+    def to_server_command(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError(
+            "NexusServiceCall is resolved by the Python worker before workflow commands "
+            "are serialized to the server"
+        )
+
+    def expected_recorded_metadata(self) -> dict[str, Any]:
+        return {
+            "endpoint_name": self.endpoint_name,
+            "service_name": self.service_name,
+            "operation_name": self.operation_name,
+            "idempotency_key": self.idempotency_key,
+        }
+
+    def recorded_result(self, value: Any) -> NexusOperationResult:
+        return NexusOperationResult.from_recorded_payload(
+            value,
+            expected=self.expected_recorded_metadata(),
+        )
+
+
+@dataclass
 class RecordVersionMarker:
     """Command recording a workflow code-version marker."""
 
@@ -935,7 +990,7 @@ def _condition_predicate_fingerprint(predicate: Callable[[], bool]) -> str:
 Command = (
     ScheduleActivity | StartTimer | CompleteWorkflow | FailWorkflow
     | CompleteUpdate | FailUpdate | ContinueAsNew | RecordSideEffect | StartChildWorkflow
-    | RecordVersionMarker | UpsertSearchAttributes | WaitCondition
+    | NexusServiceCall | RecordVersionMarker | UpsertSearchAttributes | WaitCondition
 )
 
 
@@ -1151,12 +1206,20 @@ class _ReplayLogger:
 class WorkflowContext:
     """Replay-safe helper surface passed to workflow ``run`` methods."""
 
-    def __init__(self, *, run_id: str = "", current_time: datetime | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        workflow_id: str = "",
+        run_id: str = "",
+        current_time: datetime | None = None,
+    ) -> None:
+        self._workflow_id = workflow_id
         self._run_id = run_id
         self._current_time = current_time or datetime.now(timezone.utc)
         seed = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16)
         self._rng = random.Random(seed)
         self._uuid7_counter = 0
+        self._nexus_call_counter = 0
         self.logger = _ReplayLogger(_REPLAY_LOGGER)
 
     def schedule_activity(
@@ -1247,6 +1310,94 @@ class WorkflowContext:
             retry_policy=retry_policy,
             execution_timeout_seconds=execution_timeout_seconds,
             run_timeout_seconds=run_timeout_seconds,
+        )
+
+    def call_nexus_service(
+        self,
+        endpoint_name: str,
+        service_name: str,
+        operation_name: str,
+        arguments: Sequence[Any] | None = None,
+        *,
+        idempotency_key: str | None = None,
+        payload_codec: str | None = None,
+        mode: str | None = "sync",
+        wait_for: str | None = "completed",
+        wait_timeout_seconds: int | None = None,
+        caller_namespace: str | None = None,
+        service_sdk_language: str | None = None,
+        artifact_tuple: Mapping[str, Any] | None = None,
+        published_artifact_worker_execution: bool | None = None,
+        target_workflow_instance_id: str | None = None,
+        target_workflow_run_id: str | None = None,
+        connection: str | None = None,
+        queue: str | None = None,
+        business_key: str | None = None,
+        labels: Mapping[str, Any] | None = None,
+        memo: Mapping[str, Any] | None = None,
+        search_attributes: Mapping[str, Any] | None = None,
+        duplicate_start_policy: str | None = None,
+    ) -> NexusServiceCall:
+        """Yield a durable Nexus service operation and resume with its result.
+
+        If the service reports a typed failure, replay raises
+        :class:`~durable_workflow.errors.NexusOperationFailed` at the yield
+        point so workflow code can compensate or let the workflow fail.
+        """
+        args = list(arguments) if arguments is not None else []
+        if idempotency_key is None:
+            idempotency_key = stable_nexus_idempotency_key(
+                workflow_id=self._workflow_id,
+                run_id=self._run_id,
+                ordinal=self._nexus_call_counter,
+                endpoint_name=endpoint_name,
+                service_name=service_name,
+                operation_name=operation_name,
+                arguments=args,
+            )
+        self._nexus_call_counter += 1
+        return NexusServiceCall(
+            endpoint_name=endpoint_name,
+            service_name=service_name,
+            operation_name=operation_name,
+            arguments=args,
+            idempotency_key=idempotency_key,
+            payload_codec=payload_codec,
+            mode=mode,
+            wait_for=wait_for,
+            wait_timeout_seconds=wait_timeout_seconds,
+            caller_namespace=caller_namespace,
+            service_sdk_language=service_sdk_language,
+            artifact_tuple=dict(artifact_tuple) if artifact_tuple is not None else None,
+            published_artifact_worker_execution=published_artifact_worker_execution,
+            target_workflow_instance_id=target_workflow_instance_id,
+            target_workflow_run_id=target_workflow_run_id,
+            connection=connection,
+            queue=queue,
+            business_key=business_key,
+            labels=dict(labels) if labels is not None else None,
+            memo=dict(memo) if memo is not None else None,
+            search_attributes=dict(search_attributes) if search_attributes is not None else None,
+            duplicate_start_policy=duplicate_start_policy,
+        )
+
+    def start_nexus_operation(
+        self,
+        endpoint_name: str,
+        service_name: str,
+        operation_name: str,
+        arguments: Sequence[Any] | None = None,
+        **kwargs: Any,
+    ) -> NexusServiceCall:
+        """Yield an async Nexus service operation and resume when it is accepted."""
+        kwargs.setdefault("mode", "async")
+        kwargs.setdefault("wait_for", "accepted")
+        return self.call_nexus_service(
+            endpoint_name,
+            service_name,
+            operation_name,
+            arguments,
+            **kwargs,
         )
 
     def get_version(
@@ -1992,6 +2143,8 @@ def _command_history_shape(command: Any) -> str | None:
         return "timer"
     if isinstance(command, StartChildWorkflow):
         return "child workflow"
+    if isinstance(command, NexusServiceCall):
+        return "side effect"
     if isinstance(command, RecordSideEffect):
         return "side effect"
     if isinstance(command, RecordVersionMarker):
@@ -2009,6 +2162,8 @@ def _command_diagnostic_shape(command: Any) -> str:
         return f"{shape}:{command.activity_type}"
     if isinstance(command, StartChildWorkflow):
         return f"{shape}:{command.workflow_type}"
+    if isinstance(command, NexusServiceCall):
+        return f"{shape}:nexus:{command.endpoint_name}/{command.service_name}/{command.operation_name}"
     if isinstance(command, RecordVersionMarker):
         return f"{shape}:{command.change_id}"
     return shape
@@ -2204,7 +2359,11 @@ def _replay_state(
             break
 
     instance = workflow_cls()
-    ctx = WorkflowContext(run_id=run_id, current_time=workflow_start_time)
+    ctx = WorkflowContext(
+        workflow_id=workflow_id or "",
+        run_id=run_id,
+        current_time=workflow_start_time,
+    )
 
     def _state(commands: list[Command]) -> _ReplayState:
         return _ReplayState(outcome=ReplayOutcome(commands=commands), instance=instance)
@@ -2729,6 +2888,8 @@ def _replay_state(
                 first = False
             _apply_due_receivers()
             if isinstance(cmd, list):
+                if any(isinstance(child_command, NexusServiceCall) for child_command in cmd):
+                    raise TypeError("Nexus service calls must be yielded one at a time")
                 needed = len(cmd)
                 if result_cursor + needed <= len(resolved_results):
                     for offset, child_command in enumerate(cmd):
@@ -2751,6 +2912,24 @@ def _replay_state(
                 return _state(pending)
             if isinstance(cmd, ContinueAsNew):
                 return _state([cmd])
+            if isinstance(cmd, NexusServiceCall):
+                if result_cursor < len(resolved_results):
+                    _assert_next_step_matches(cmd)
+                    recorded_value = resolved_results[result_cursor]
+                    result_cursor += 1
+                    try:
+                        next_value = cmd.recorded_result(recorded_value)
+                    except NexusOperationFailed as exc:
+                        try:
+                            advanced_cmd = gen.throw(exc)
+                            continue
+                        except StopIteration as stop:
+                            return _terminal_state(stop.value, include_pending=False)
+                    continue
+                ctx.logger._set_replaying(False)
+                _assert_pending_step_matches(cmd)
+                pending.append(cmd)
+                return _state(pending)
             if isinstance(cmd, RecordSideEffect):
                 if result_cursor < len(resolved_results):
                     _assert_next_step_matches(cmd)

@@ -70,7 +70,15 @@ from .metrics import (
     WORKER_TASKS,
     MetricsRecorder,
 )
-from .workflow import apply_update, commands_to_server_commands, query_state, replay
+from .workflow import (
+    Command,
+    NexusServiceCall,
+    RecordSideEffect,
+    apply_update,
+    commands_to_server_commands,
+    query_state,
+    replay,
+)
 
 log = logging.getLogger("durable_workflow.worker")
 
@@ -94,6 +102,7 @@ _WORKFLOW_TASK_COMPLETION_AMBIGUOUS_REJECTION_REASONS = {
 }
 _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS = 3
 _WORKFLOW_TASK_COMPLETION_RETRY_DELAYS = (0.05, 0.2)
+_WORKFLOW_TASK_NEXUS_RESOLUTION_LIMIT = 100
 _WORKER_WORKFLOW_FINGERPRINTS: dict[tuple[str, str], str] = {}
 
 
@@ -877,6 +886,80 @@ class Worker:
 
         return await handler(context)
 
+    async def _resolve_workflow_nexus_commands(
+        self,
+        workflow_cls: type,
+        history: list[dict[str, Any]],
+        start_input: list[Any],
+        task: dict[str, Any],
+        *,
+        payload_codec: str | None,
+        command_codec: str,
+        initial_commands: list[Command],
+    ) -> list[Command]:
+        events = list(history)
+        commands: list[Command] = list(initial_commands)
+        recorded_commands: list[RecordSideEffect] = []
+
+        for _ in range(_WORKFLOW_TASK_NEXUS_RESOLUTION_LIMIT):
+            nexus_commands = [command for command in commands if isinstance(command, NexusServiceCall)]
+            if not nexus_commands:
+                return recorded_commands + commands
+            if len(nexus_commands) != len(commands):
+                raise RuntimeError("Nexus service calls must be yielded one at a time")
+
+            for command in nexus_commands:
+                result = await self.client.execute_nexus_operation(
+                    command.endpoint_name,
+                    command.service_name,
+                    command.operation_name,
+                    command.arguments,
+                    mode=command.mode,
+                    wait_for=command.wait_for,
+                    wait_timeout_seconds=command.wait_timeout_seconds,
+                    idempotency_key=command.idempotency_key,
+                    payload_codec=command.payload_codec,
+                    caller_namespace=command.caller_namespace,
+                    caller_workflow_instance_id=_string_or_none(task.get("workflow_id")),
+                    caller_workflow_run_id=_string_or_none(task.get("run_id")),
+                    service_sdk_language=command.service_sdk_language,
+                    artifact_tuple=command.artifact_tuple,
+                    published_artifact_worker_execution=command.published_artifact_worker_execution,
+                    target_workflow_instance_id=command.target_workflow_instance_id,
+                    target_workflow_run_id=command.target_workflow_run_id,
+                    connection=command.connection,
+                    queue=command.queue,
+                    business_key=command.business_key,
+                    labels=command.labels,
+                    memo=command.memo,
+                    search_attributes=command.search_attributes,
+                    duplicate_start_policy=command.duplicate_start_policy,
+                    raise_on_failure=False,
+                )
+                recorded_payload = result.to_recorded_payload()
+                recorded_commands.append(RecordSideEffect(recorded_payload))
+                events.append({
+                    "event_type": "SideEffectRecorded",
+                    "payload": {
+                        "payload_codec": command_codec,
+                        "result": serializer.encode(recorded_payload, codec=command_codec),
+                    },
+                })
+
+            outcome = replay(
+                workflow_cls,
+                events,
+                start_input,
+                workflow_id=task.get("workflow_id"),
+                run_id=_string_or_none(task.get("run_id")) or "",
+                payload_codec=payload_codec,
+                external_storage=self.external_storage,
+                external_storage_cache=self.external_storage_cache,
+            )
+            commands = list(outcome.commands)
+
+        raise RuntimeError("workflow yielded too many consecutive Nexus service calls")
+
     async def _run_workflow_task_core(self, task: dict[str, Any]) -> list[dict[str, Any]] | None:
         import json as _json
 
@@ -1055,8 +1138,33 @@ class Worker:
                 log.warning("failed to report replay failure: %s", fe)
             return None
 
+        try:
+            workflow_commands = await self._resolve_workflow_nexus_commands(
+                cls,
+                list(history),
+                start_input,
+                task,
+                payload_codec=codec,
+                command_codec=command_codec,
+                initial_commands=list(outcome.commands),
+            )
+        except Exception as e:
+            log.exception("workflow Nexus service call resolution failed")
+            try:
+                await self.client.fail_workflow_task(
+                    task_id=task_id,
+                    lease_owner=self.worker_id,
+                    workflow_task_attempt=attempt,
+                    message=f"workflow Nexus service call resolution failed: {e}",
+                    failure_type=type(e).__name__,
+                    stack_trace=traceback.format_exc(),
+                )
+            except Exception as fe:
+                log.warning("failed to report workflow Nexus resolution failure: %s", fe)
+            return None
+
         commands = commands_to_server_commands(
-            outcome.commands,
+            workflow_commands,
             self.task_queue,
             payload_codec=command_codec,
             size_warning=self._payload_size_warning_config(),

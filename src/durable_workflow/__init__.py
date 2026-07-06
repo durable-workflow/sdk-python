@@ -60,6 +60,7 @@ from .errors import (
     DurableWorkflowError,
     InvalidArgument,
     NamespaceNotFound,
+    NexusOperationFailed,
     NonDeterministicReplayError,
     NonRetryableError,
     QueryFailed,
@@ -75,6 +76,12 @@ from .errors import (
     WorkflowNotFound,
     WorkflowPayloadDecodeError,
     WorkflowTerminated,
+)
+from .nexus import (
+    NEXUS_CALLER_SDK_LANGUAGE,
+    NEXUS_OPERATION_RESULT_SCHEMA,
+    NEXUS_OPERATION_RESULT_VERSION,
+    NexusOperationResult,
 )
 from .external_storage import (
     EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
@@ -173,6 +180,7 @@ from .workflow import (
     ActivityRetryPolicy,
     ChildWorkflowRetryPolicy,
     ContinueAsNew,
+    NexusServiceCall,
     Replayer,
     ReplayOutcome,
     StartChildWorkflow,
@@ -197,6 +205,9 @@ __all__ = [
     "ContinueAsNew",
     "NamespaceDescription",
     "NamespaceList",
+    "NEXUS_CALLER_SDK_LANGUAGE",
+    "NEXUS_OPERATION_RESULT_SCHEMA",
+    "NEXUS_OPERATION_RESULT_VERSION",
     "AUTH_COMPOSITION_CONTRACT_SCHEMA",
     "AUTH_COMPOSITION_CONTRACT_VERSION",
     "AUTH_COMPOSITION_REQUIRED_EFFECTIVE_CONFIG_FIELDS",
@@ -275,6 +286,9 @@ __all__ = [
     "LocalFilesystemExternalStorage",
     "MetricsRecorder",
     "NamespaceNotFound",
+    "NexusOperationFailed",
+    "NexusOperationResult",
+    "NexusServiceCall",
     "NonDeterministicReplayError",
     "NoopMetrics",
     "QueryFailed",

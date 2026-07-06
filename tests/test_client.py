@@ -14,6 +14,7 @@ from durable_workflow.client import (
     CONTROL_PLANE_VERSION,
     PROTOCOL_VERSION,
     Client,
+    NexusOperationResult,
     ScheduleAction,
     ScheduleSpec,
     WorkflowExecution,
@@ -21,6 +22,7 @@ from durable_workflow.client import (
 )
 from durable_workflow.errors import (
     InvalidArgument,
+    NexusOperationFailed,
     QueryFailed,
     ServerError,
     SignalFailed,
@@ -95,6 +97,122 @@ class TestHeaders:
 
         assert control_headers["Authorization"] == "Bearer worker-token"
         assert worker_headers["Authorization"] == "Bearer worker-token"
+
+
+class TestNexusOperations:
+    @pytest.mark.asyncio
+    async def test_execute_nexus_operation_records_request_and_evidence(self, client: Client) -> None:
+        resp = _mock_response(200, {
+            "accepted": True,
+            "service_call_id": "svc-call-1",
+            "status": "completed",
+            "operation_name": "greet",
+            "caller_workflow_instance_id": "wf-caller",
+            "caller_workflow_run_id": "run-caller",
+            "result": {"greeting": "hello Ada"},
+        })
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.execute_nexus_operation(
+                "greeter",
+                "shared",
+                "greet",
+                ["Ada"],
+                mode="sync",
+                wait_for="completed",
+                wait_timeout_seconds=30,
+                idempotency_key="idem-1",
+                caller_workflow_instance_id="wf-caller",
+                caller_workflow_run_id="run-caller",
+                service_sdk_language="workflow-php",
+                artifact_tuple={"sdk-python": "0.4.95", "workflow": "2.0.0-alpha.249"},
+                published_artifact_worker_execution=True,
+            )
+
+        assert isinstance(result, NexusOperationResult)
+        assert result.service_call_id == "svc-call-1"
+        assert result.caller_sdk_language == "sdk-python"
+        assert result.service_sdk_language == "workflow-php"
+        assert result.result == {"greeting": "hello Ada"}
+        assert mock.call_args.args[:2] == (
+            "POST",
+            "/api/service-endpoints/greeter/services/shared/operations/greet/execute",
+        )
+        body = mock.call_args.kwargs["json"]
+        assert body["arguments"] == ["Ada"]
+        assert body["mode_override"] == "sync"
+        assert body["wait_for"] == "completed"
+        assert body["idempotency_key"] == "idem-1"
+        assert body["caller_namespace"] == "ns1"
+        assert body["caller_workflow_instance_id"] == "wf-caller"
+        assert body["caller_workflow_run_id"] == "run-caller"
+
+        recorded = result.to_recorded_payload()
+        assert recorded["caller_workflow_instance_id"] == "wf-caller"
+        assert recorded["caller_workflow_run_id"] == "run-caller"
+        assert recorded["caller_sdk_language"] == "sdk-python"
+        assert recorded["service_sdk_language"] == "workflow-php"
+        assert recorded["operation_name"] == "greet"
+        assert recorded["request_payload"]["arguments"] == ["Ada"]
+        assert recorded["response_or_failure_surface"]["result"] == {"greeting": "hello Ada"}
+        assert recorded["service_call_id"] == "svc-call-1"
+        assert recorded["artifact_tuple"]["sdk-python"] == "0.4.95"
+        assert recorded["published_artifact_worker_execution"] is True
+
+    @pytest.mark.asyncio
+    async def test_execute_nexus_operation_preserves_typed_failure(self, client: Client) -> None:
+        resp = _mock_response(409, {
+            "accepted": False,
+            "service_call_id": "svc-call-failed",
+            "status": "failed",
+            "outcome": "handler_failed",
+            "operation_name": "fail",
+            "service_error_type": "SharedGreeterUnavailable",
+            "caller_observed_error_type": "SharedGreeterUnavailable",
+            "typed_error_message": "shared greeter is unavailable",
+        })
+
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(NexusOperationFailed) as exc,
+        ):
+            await client.execute_nexus_operation(
+                "greeter",
+                "shared",
+                "fail",
+                ["Ada"],
+                wait_for="completed",
+                idempotency_key="idem-failed",
+                service_sdk_language="workflow-php",
+            )
+
+        assert exc.value.service_call_id == "svc-call-failed"
+        assert exc.value.service_error_type == "SharedGreeterUnavailable"
+        assert exc.value.caller_observed_error_type == "SharedGreeterUnavailable"
+        assert exc.value.typed_error_message == "shared greeter is unavailable"
+
+    @pytest.mark.asyncio
+    async def test_execute_nexus_operation_can_return_typed_failure_result(self, client: Client) -> None:
+        resp = _mock_response(409, {
+            "accepted": False,
+            "service_call_id": "svc-call-failed",
+            "status": "failed",
+            "service_error_type": "DomainFailure",
+            "typed_error_message": "domain failure",
+        })
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
+            result = await client.execute_nexus_operation(
+                "greeter",
+                "shared",
+                "fail",
+                ["Ada"],
+                raise_on_failure=False,
+            )
+
+        assert result.is_failure is True
+        assert result.service_error_type == "DomainFailure"
+        assert result.to_recorded_payload()["typed_error_message"] == "domain failure"
 
 
 class TestStartWorkflow:

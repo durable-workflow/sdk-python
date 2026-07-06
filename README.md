@@ -124,6 +124,36 @@ receipt = yield ctx.start_child_workflow(
 )
 ```
 
+## Nexus service calls
+
+Workflow code can call a registered Nexus service operation through
+`WorkflowContext.call_nexus_service(...)`. The worker executes the service
+operation through the service-catalog API, records the response or typed
+failure as a durable side-effect marker, and resumes replay from that marker
+on subsequent workflow tasks.
+
+```python
+from durable_workflow import NexusOperationFailed
+
+try:
+    result = yield ctx.call_nexus_service(
+        "greeter",
+        "shared",
+        "greet",
+        ["Ada"],
+        service_sdk_language="workflow-php",
+    )
+    print(result.service_call_id, result.result)
+except NexusOperationFailed as exc:
+    print(exc.service_call_id, exc.service_error_type, exc.typed_error_message)
+```
+
+The SDK assigns a deterministic idempotency key when one is not provided and
+attaches the caller workflow instance id, caller run id, `sdk-python` caller
+language, target service language, operation name, request payload,
+service-call id, response or failure surface, and optional artifact metadata
+to the recorded result.
+
 ## Workflow signals, queries, and updates
 
 Signals mutate workflow state during replay:

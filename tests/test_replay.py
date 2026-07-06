@@ -11,14 +11,17 @@ from durable_workflow.errors import (
     ChildWorkflowCancelled,
     ChildWorkflowFailed,
     ChildWorkflowTerminated,
+    NexusOperationFailed,
     NonDeterministicReplayError,
 )
+from durable_workflow.nexus import NexusOperationResult
 from durable_workflow.workflow import (
     ActivityRetryPolicy,
     ChildWorkflowRetryPolicy,
     CompleteWorkflow,
     ContinueAsNew,
     FailWorkflow,
+    NexusServiceCall,
     RecordSideEffect,
     RecordVersionMarker,
     ScheduleActivity,
@@ -166,6 +169,58 @@ class TypedCompensationFailureWorkflow:
         return "completed"
 
 
+@workflow.defn(name="nexus-caller-wf")
+class NexusCallerWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        result = yield ctx.call_nexus_service(
+            "greeter",
+            "shared",
+            "greet",
+            ["Ada"],
+            service_sdk_language="workflow-php",
+            artifact_tuple={"sdk-python": "0.4.95"},
+            published_artifact_worker_execution=True,
+        )
+        return {
+            "service_call_id": result.service_call_id,
+            "greeting": result.result["greeting"],
+            "caller_sdk_language": result.caller_sdk_language,
+            "service_sdk_language": result.service_sdk_language,
+        }
+
+
+@workflow.defn(name="nexus-failure-catcher-wf")
+class NexusFailureCatcherWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.call_nexus_service(
+                "greeter",
+                "shared",
+                "fail",
+                ["Ada"],
+                service_sdk_language="workflow-php",
+            )
+        except NexusOperationFailed as exc:
+            return {
+                "service_call_id": exc.service_call_id,
+                "service_error_type": exc.service_error_type,
+                "caller_observed_error_type": exc.caller_observed_error_type,
+                "typed_error_message": exc.typed_error_message,
+            }
+        return {"ok": True}
+
+
+def _nexus_side_effect_event(payload: dict, *, sequence: int = 1) -> dict:
+    return {
+        "event_type": "SideEffectRecorded",
+        "payload": {
+            "sequence": sequence,
+            "payload_codec": "json",
+            "result": serializer.encode(payload, codec="json"),
+        },
+    }
+
+
 def _activity_completed_event(sequence: int, activity_type: str) -> dict:
     return {
         "event_type": "ActivityCompleted",
@@ -201,6 +256,115 @@ class TestSimpleReturn:
         cmd = outcome.commands[0]
         assert isinstance(cmd, CompleteWorkflow)
         assert cmd.result == "done"
+
+
+class TestNexusServiceCalls:
+    def test_fresh_replay_yields_public_nexus_command_with_stable_id(self) -> None:
+        first = replay(NexusCallerWorkflow, [], [], workflow_id="wf-caller", run_id="run-caller")
+        second = replay(NexusCallerWorkflow, [], [], workflow_id="wf-caller", run_id="run-caller")
+
+        assert len(first.commands) == 1
+        assert len(second.commands) == 1
+        cmd = first.commands[0]
+        assert isinstance(cmd, NexusServiceCall)
+        assert isinstance(second.commands[0], NexusServiceCall)
+        assert cmd.endpoint_name == "greeter"
+        assert cmd.service_name == "shared"
+        assert cmd.operation_name == "greet"
+        assert cmd.arguments == ["Ada"]
+        assert cmd.idempotency_key == second.commands[0].idempotency_key
+        assert cmd.idempotency_key.startswith("dw-py-nexus-")
+        assert cmd.service_sdk_language == "workflow-php"
+        assert cmd.published_artifact_worker_execution is True
+
+    def test_recorded_nexus_success_resumes_workflow_with_result(self) -> None:
+        initial = replay(NexusCallerWorkflow, [], [], workflow_id="wf-caller", run_id="run-caller")
+        cmd = initial.commands[0]
+        assert isinstance(cmd, NexusServiceCall)
+        result = NexusOperationResult(
+            accepted=True,
+            service_call_id="svc-call-1",
+            endpoint_name="greeter",
+            service_name="shared",
+            operation_name="greet",
+            caller_workflow_instance_id="wf-caller",
+            caller_workflow_run_id="run-caller",
+            service_sdk_language="workflow-php",
+            request_payload={
+                "arguments": ["Ada"],
+                "idempotency_key": cmd.idempotency_key,
+                "caller_workflow_instance_id": "wf-caller",
+                "caller_workflow_run_id": "run-caller",
+            },
+            response_or_failure_surface={"status": "completed", "result": {"greeting": "hello Ada"}},
+            artifact_tuple={"sdk-python": "0.4.95"},
+            published_artifact_worker_execution=True,
+            status="completed",
+            result={"greeting": "hello Ada"},
+        )
+        outcome = replay(
+            NexusCallerWorkflow,
+            [_nexus_side_effect_event(result.to_recorded_payload())],
+            [],
+            workflow_id="wf-caller",
+            run_id="run-caller",
+            payload_codec="json",
+        )
+
+        assert len(outcome.commands) == 1
+        complete = outcome.commands[0]
+        assert isinstance(complete, CompleteWorkflow)
+        assert complete.result == {
+            "service_call_id": "svc-call-1",
+            "greeting": "hello Ada",
+            "caller_sdk_language": "sdk-python",
+            "service_sdk_language": "workflow-php",
+        }
+
+    def test_recorded_nexus_failure_raises_typed_exception_into_workflow(self) -> None:
+        initial = replay(NexusFailureCatcherWorkflow, [], [], workflow_id="wf-caller", run_id="run-caller")
+        cmd = initial.commands[0]
+        assert isinstance(cmd, NexusServiceCall)
+        result = NexusOperationResult(
+            accepted=False,
+            service_call_id="svc-call-failed",
+            endpoint_name="greeter",
+            service_name="shared",
+            operation_name="fail",
+            caller_workflow_instance_id="wf-caller",
+            caller_workflow_run_id="run-caller",
+            service_sdk_language="workflow-php",
+            request_payload={
+                "arguments": ["Ada"],
+                "idempotency_key": cmd.idempotency_key,
+                "caller_workflow_instance_id": "wf-caller",
+                "caller_workflow_run_id": "run-caller",
+            },
+            response_or_failure_surface={"status": "failed"},
+            status="failed",
+            outcome="handler_failed",
+            service_error_type="SharedGreeterUnavailable",
+            caller_observed_error_type="SharedGreeterUnavailable",
+            typed_error_message="shared greeter is unavailable",
+        )
+        outcome = replay(
+            NexusFailureCatcherWorkflow,
+            [_nexus_side_effect_event(result.to_recorded_payload())],
+            [],
+            workflow_id="wf-caller",
+            run_id="run-caller",
+            payload_codec="json",
+        )
+
+        assert len(outcome.commands) == 1
+        complete = outcome.commands[0]
+        assert isinstance(complete, CompleteWorkflow)
+        assert complete.result == {
+            "service_call_id": "svc-call-failed",
+            "service_error_type": "SharedGreeterUnavailable",
+            "caller_observed_error_type": "SharedGreeterUnavailable",
+            "typed_error_message": "shared greeter is unavailable",
+        }
 
 
 class TestPublicReplayer:
