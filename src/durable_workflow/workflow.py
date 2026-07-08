@@ -2270,10 +2270,12 @@ def _child_workflow_failed_from_payload(
         message = _optional_str(exception.get("message"))
 
     exception_class = _optional_str(payload.get("exception_class"))
+    if exception_class is None and exception is not None:
+        exception_class = _optional_str(exception.get("class"))
     if exception_class is None:
         exception_class = _optional_str(payload.get("exception_type"))
     if exception_class is None and exception is not None:
-        exception_class = _optional_str(exception.get("class")) or _optional_str(exception.get("type"))
+        exception_class = _optional_str(exception.get("type"))
 
     child_workflow_run_id = _optional_str(payload.get("child_workflow_run_id"))
     child_workflow_type = _optional_str(payload.get("child_workflow_type"))
