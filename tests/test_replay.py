@@ -1393,6 +1393,34 @@ class TestChildWorkflow:
             "child_workflow_type": "sub-workflow",
         }
 
+    def test_child_failed_reports_parent_failure_kind_for_application_child(self) -> None:
+        history = [
+            {
+                "event_type": "ChildRunFailed",
+                "payload": {
+                    "message": "planned typed child failure: typed-marker",
+                    "exception_type": "PlannedChildFailure",
+                    "exception_class": "smoke.PlannedChildFailure",
+                    "failure_category": "application",
+                    "child_workflow_run_id": "child-run-1",
+                    "child_workflow_type": "sub-workflow",
+                },
+            },
+        ]
+
+        outcome = replay(ChildWorkflowFailureDetailsWf, history, [])
+
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, CompleteWorkflow)
+        assert cmd.result == {
+            "message": "planned typed child failure: typed-marker",
+            "exception_class": "smoke.PlannedChildFailure",
+            "failure_kind": "child_workflow",
+            "child_workflow_run_id": "child-run-1",
+            "child_workflow_type": "sub-workflow",
+        }
+
     def test_child_failed_prefers_nested_exception_class_over_type(self) -> None:
         history = [
             {

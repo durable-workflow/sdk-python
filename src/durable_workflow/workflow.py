@@ -2299,7 +2299,7 @@ def _child_workflow_failed_from_payload(
     return ChildWorkflowFailed(
         message or "child workflow failed",
         exception_class,
-        failure_kind=_optional_str(payload.get("failure_category")) or "child_workflow",
+        failure_kind="child_workflow",
         child_workflow_run_id=child_workflow_run_id,
         child_workflow_type=child_workflow_type,
     )
