@@ -2825,7 +2825,12 @@ def _replay_state(
     result_cursor = 0
     pending_step_cursor = 0
     wait_yield_count = 0
-    gen = instance.run(ctx, *start_input)
+    try:
+        gen = instance.run(ctx, *start_input)
+    except NonDeterministicReplayError:
+        raise
+    except Exception as exc:
+        return _state([_fail_workflow_from_exception(exc)])
     if not hasattr(gen, "__next__"):
         if isinstance(gen, ContinueAsNew):
             _assert_no_unconsumed_history("continue as new")

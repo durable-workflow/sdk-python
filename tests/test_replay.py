@@ -155,6 +155,18 @@ class FailingWorkflow:
         raise ValueError("something went wrong")
 
 
+@workflow.defn(name="construction-failing-workflow")
+class ConstructionFailingWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        raise RuntimeError("failed before first yield")
+
+
+@workflow.defn(name="construction-stop-iteration-workflow")
+class ConstructionStopIterationWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        raise StopIteration("stopped before first yield")
+
+
 @workflow.defn(name="typed-compensation-failure-workflow")
 class TypedCompensationFailureWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -847,6 +859,24 @@ class TestFailingWorkflow:
         assert "something went wrong" in cmd.message
         assert cmd.exception_type == "ValueError"
         assert cmd.exception_class == "builtins.ValueError"
+
+    def test_non_generator_exception_produces_fail_command(self) -> None:
+        outcome = replay(ConstructionFailingWorkflow, [], [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, FailWorkflow)
+        assert "failed before first yield" in cmd.message
+        assert cmd.exception_type == "RuntimeError"
+        assert cmd.exception_class == "builtins.RuntimeError"
+
+    def test_non_generator_stop_iteration_is_not_completion(self) -> None:
+        outcome = replay(ConstructionStopIterationWorkflow, [], [])
+        assert len(outcome.commands) == 1
+        cmd = outcome.commands[0]
+        assert isinstance(cmd, FailWorkflow)
+        assert "stopped before first yield" in cmd.message
+        assert cmd.exception_type == "StopIteration"
+        assert cmd.exception_class == "builtins.StopIteration"
 
     def test_fail_server_command_shape(self) -> None:
         history = [{"event_type": "ActivityCompleted", "payload": {"result": '"ok"'}}]
