@@ -156,11 +156,23 @@ class TestSyncClientDescribe:
                 "run_id": "run-1",
                 "workflow_type": "greeter",
                 "status": "running",
+                "search_attributes": {
+                    "customer_id": "cust-php-sync",
+                    "order_total_cents": 6100,
+                    "is_vip": False,
+                    "tags": ["standard", "renewal"],
+                },
             },
         )
         with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
             desc = client.describe_workflow("wf-1")
             assert desc.status == "running"
+            assert desc.search_attributes == {
+                "customer_id": "cust-php-sync",
+                "order_total_cents": 6100,
+                "is_vip": False,
+                "tags": ["standard", "renewal"],
+            }
 
 
 class TestSyncClientSignal:
@@ -202,12 +214,21 @@ class TestSyncClientList:
         resp = _mock_response(
             200,
             {
-                "workflows": [{"workflow_id": "wf-1", "run_id": "r1", "workflow_type": "g", "status": "running"}],
+                "workflows": [
+                    {
+                        "workflow_id": "wf-1",
+                        "run_id": "r1",
+                        "workflow_type": "g",
+                        "status": "running",
+                        "search_attributes": {"customer_id": "cust-php-sync"},
+                    }
+                ],
             },
         )
         with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
             result = client.list_workflows(workflow_type="g")
             assert len(result.executions) == 1
+            assert result.executions[0].search_attributes == {"customer_id": "cust-php-sync"}
 
     def test_list_task_queues(self) -> None:
         client = Client("http://localhost:8080")

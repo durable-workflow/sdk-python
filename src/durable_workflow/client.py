@@ -164,6 +164,8 @@ class WorkflowExecution:
     input: Any = None
     output: Any = None
     payload_codec: str | None = None
+    memo: dict[str, Any] | None = None
+    search_attributes: dict[str, Any] | None = None
 
 
 @dataclass
@@ -2386,6 +2388,10 @@ class Client:
             input=input_val,
             output=output_val,
             payload_codec=data.get("payload_codec"),
+            memo=data.get("memo") if isinstance(data.get("memo"), dict) else None,
+            search_attributes=(
+                data.get("search_attributes") if isinstance(data.get("search_attributes"), dict) else None
+            ),
         )
 
     async def list_workflows(
@@ -2425,6 +2431,13 @@ class Client:
                 run_id=item.get("run_id"),
                 workflow_type=item.get("workflow_type", ""),
                 status=item.get("status"),
+                namespace=item.get("namespace"),
+                task_queue=item.get("task_queue"),
+                payload_codec=item.get("payload_codec"),
+                memo=item.get("memo") if isinstance(item.get("memo"), dict) else None,
+                search_attributes=(
+                    item.get("search_attributes") if isinstance(item.get("search_attributes"), dict) else None
+                ),
             )
             for item in items
         ]

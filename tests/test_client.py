@@ -464,6 +464,8 @@ class TestDescribeWorkflow:
         assert desc.status == response["status"]
         assert desc.payload_codec == response["payload_codec"]
         assert desc.input == response["input"]
+        assert desc.memo == response["memo"]
+        assert desc.search_attributes == response["search_attributes"]
 
     @pytest.mark.asyncio
     async def test_envelope_fields(self, client: Client) -> None:
@@ -1131,7 +1133,23 @@ class TestListWorkflows:
     async def test_list(self, client: Client) -> None:
         resp = _mock_response(200, {
             "workflows": [
-                {"workflow_id": "wf-1", "run_id": "r1", "workflow_type": "greeter", "status": "running"},
+                {
+                    "workflow_id": "wf-1",
+                    "run_id": "r1",
+                    "workflow_type": "greeter",
+                    "status": "running",
+                    "namespace": "ns1",
+                    "task_queue": "q1",
+                    "payload_codec": "avro",
+                    "memo": {"source": "php-writer"},
+                    "search_attributes": {
+                        "customer_id": "cust-php-1",
+                        "order_total_cents": 9200,
+                        "discount_ratio": 0.125,
+                        "is_vip": True,
+                        "tags": ["urgent", "renewal"],
+                    },
+                },
                 {"workflow_id": "wf-2", "run_id": "r2", "workflow_type": "greeter", "status": "completed"},
             ],
             "next_page_token": "abc",
@@ -1141,6 +1159,17 @@ class TestListWorkflows:
             assert len(result.executions) == 2
             assert result.next_page_token == "abc"
             assert result.executions[0].workflow_id == "wf-1"
+            assert result.executions[0].namespace == "ns1"
+            assert result.executions[0].task_queue == "q1"
+            assert result.executions[0].payload_codec == "avro"
+            assert result.executions[0].memo == {"source": "php-writer"}
+            assert result.executions[0].search_attributes == {
+                "customer_id": "cust-php-1",
+                "order_total_cents": 9200,
+                "discount_ratio": 0.125,
+                "is_vip": True,
+                "tags": ["urgent", "renewal"],
+            }
 
     @pytest.mark.asyncio
     async def test_list_request_matches_polyglot_fixture(self, client: Client) -> None:
