@@ -954,7 +954,12 @@ def _cli(argv: Sequence[str] | None = None) -> int:
         parser.error("--workflows is required unless --simulate-bundles is set")
 
     workflows = _resolve_workflow_loader(args.workflows)
-    report = verify_golden_history(args.fixture_dir, workflows)
+    required_families = REQUIRED_FAMILIES if args.strict_missing_families else ()
+    report = verify_golden_history(
+        args.fixture_dir,
+        workflows,
+        required_families=required_families,
+    )
 
     payload = report.to_dict()
     text = json.dumps(payload, indent=2, sort_keys=True)

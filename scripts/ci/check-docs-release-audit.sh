@@ -126,7 +126,7 @@ function docsRefreshHandoff(message, actualVersion, observedVersions) {
     repository: 'durable-workflow.github.io',
     target_branch: 'main',
     integration: 'pipeline',
-    refresh_command: refreshCommand,
+    refresh_command: 'npm run refresh:public-artifact-versions',
     refresh_files: refreshFiles,
     stale_artifact: staleArtifact,
     observed_artifact_versions: observedVersions,

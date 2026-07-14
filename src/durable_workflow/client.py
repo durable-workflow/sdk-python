@@ -2973,9 +2973,37 @@ class Client:
         sid = data.get("schedule_id", schedule_id or "")
         return ScheduleHandle(self, schedule_id=sid)
 
-    async def list_schedules(self) -> ScheduleList:
-        """Return all schedules in the current namespace."""
-        data = await self._request("GET", "/schedules")
+    async def list_schedules(
+        self,
+        *,
+        status: str | None = None,
+        workflow_type: str | None = None,
+        query: str | None = None,
+        page_size: int | None = None,
+        next_page_token: str | None = None,
+    ) -> ScheduleList:
+        """Return one server-filtered schedule visibility page.
+
+        Status, workflow type, and visibility-query filters combine with AND
+        semantics. Continuation tokens are opaque: pass a non-null token back
+        unchanged with the same namespace and filters. ``None`` terminates the
+        traversal. The server validates page sizes, predicates, and cursors.
+        """
+        params: dict[str, str] = {}
+        if status is not None:
+            params["status"] = status
+        if workflow_type is not None:
+            params["workflow_type"] = workflow_type
+        if query is not None:
+            params["query"] = query
+        if page_size is not None:
+            params["page_size"] = str(page_size)
+        if next_page_token is not None:
+            params["next_page_token"] = next_page_token
+
+        qs = urlencode(params)
+        path = f"/schedules?{qs}" if qs else "/schedules"
+        data = await self._request("GET", path, context="schedule.list")
         items = data.get("schedules", [])
         schedules = [
             ScheduleDescription(
@@ -2985,9 +3013,24 @@ class Client:
                 action=item.get("action"),
                 overlap_policy=item.get("overlap_policy"),
                 note=item.get("note"),
+                memo=item.get("memo") if isinstance(item.get("memo"), dict) else None,
+                search_attributes=(
+                    item.get("search_attributes")
+                    if isinstance(item.get("search_attributes"), dict)
+                    else None
+                ),
+                jitter_seconds=item.get("jitter_seconds"),
+                max_runs=item.get("max_runs"),
+                remaining_actions=item.get("remaining_actions"),
                 fires_count=item.get("fires_count", 0),
+                failures_count=item.get("failures_count", 0),
                 next_fire_at=item.get("next_fire_at"),
                 last_fired_at=item.get("last_fired_at"),
+                latest_workflow_instance_id=item.get("latest_workflow_instance_id"),
+                paused_at=item.get("paused_at"),
+                created_at=item.get("created_at"),
+                updated_at=item.get("updated_at"),
+                info=item.get("info") if isinstance(item.get("info"), dict) else None,
             )
             for item in items
         ]

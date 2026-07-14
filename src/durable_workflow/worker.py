@@ -1823,8 +1823,11 @@ class Worker:
             self._act_semaphore.release()
 
     async def _poll_query_tasks(self, *, client: Client | None = None, track_tasks: bool = True) -> None:
+        query_thread_stop = self._query_thread_stop if client is not None else None
         client = client or self.client
-        while not self._stop.is_set() and not self._query_thread_stop.is_set():
+        while not self._stop.is_set() and (
+            query_thread_stop is None or not query_thread_stop.is_set()
+        ):
             try:
                 poll_start = time.perf_counter()
                 task = await client.poll_query_task(

@@ -59,6 +59,36 @@ For a fuller deployable example, see
 [`examples/order_processing`](examples/order_processing), which runs a
 multi-activity order workflow against a local server with Docker Compose.
 
+## Schedule visibility and paging
+
+`list_schedules()` returns one typed `ScheduleList` page. Status and workflow
+type are exact server-side filters; the visibility query uses the server's
+documented equality-predicate grammar. All filters combine with AND semantics.
+
+```python
+page = await client.list_schedules(
+    status="active",
+    workflow_type="orders.rollup",
+    query='Region = "eu" AND Priority = 2',
+    page_size=25,
+)
+
+while page.next_page_token is not None:
+    page = await client.list_schedules(
+        status="active",
+        workflow_type="orders.rollup",
+        query='Region = "eu" AND Priority = 2',
+        page_size=25,
+        next_page_token=page.next_page_token,
+    )
+```
+
+Continuation tokens are opaque. Reuse them unchanged with the same namespace,
+status, workflow type, and query; `None` terminates traversal. Invalid filters
+and malformed, mismatched, cross-namespace, or stale tokens raise
+`ScheduleListError`, which retains `status`, `reason()`, `field`, `errors`,
+`last_safe_cursor`, and the complete server response in `body`.
+
 ## Retry policy scopes
 
 Retry and timeout settings are scoped to the layer where you configure them:

@@ -727,6 +727,28 @@ class TestSyncClientContextManager:
             assert client is not None
 
 
+class TestSyncScheduleList:
+    def test_schedule_filters_and_cursor_are_forwarded(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(200, {"schedules": [], "next_page_token": "next"})
+
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            page = client.list_schedules(
+                status="active",
+                workflow_type="orders.process",
+                query='Region = "eu"',
+                page_size=25,
+                next_page_token="cursor",
+            )
+
+        assert page.next_page_token == "next"
+        assert mock.call_args.args[:2] == (
+            "GET",
+            "/api/schedules?status=active&workflow_type=orders.process"
+            "&query=Region+%3D+%22eu%22&page_size=25&next_page_token=cursor",
+        )
+
+
 class TestSyncRunInsideLoop:
     @pytest.mark.asyncio
     async def test_raises_inside_loop(self) -> None:

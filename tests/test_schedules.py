@@ -23,6 +23,7 @@ from durable_workflow.client import (
 from durable_workflow.errors import (
     InvalidArgument,
     ScheduleAlreadyExists,
+    ScheduleListError,
     ScheduleNotFound,
 )
 
@@ -239,6 +240,93 @@ class TestListSchedules:
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
             result = await client.list_schedules()
             assert result.schedules == []
+
+    @pytest.mark.asyncio
+    async def test_filters_and_continuation_token_are_forwarded_and_mapped(self, client: Client) -> None:
+        resp = _mock_response(200, {
+            "schedules": [{
+                "schedule_id": "reports-eu",
+                "status": "paused",
+                "search_attributes": {"Region": "eu west"},
+                "created_at": "2026-07-14T12:00:00Z",
+                "updated_at": "2026-07-14T12:01:00Z",
+            }],
+            "next_page_token": "opaque+/= token",
+        })
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.list_schedules(
+                status="paused",
+                workflow_type="reports.rollup",
+                query='Region = "eu west"',
+                page_size=1,
+                next_page_token="page+/= one",
+            )
+
+        assert mock.call_args.args[:2] == (
+            "GET",
+            "/api/schedules?status=paused&workflow_type=reports.rollup"
+            "&query=Region+%3D+%22eu+west%22&page_size=1"
+            "&next_page_token=page%2B%2F%3D+one",
+        )
+        assert result.next_page_token == "opaque+/= token"
+        assert result.schedules[0].search_attributes == {"Region": "eu west"}
+        assert result.schedules[0].created_at == "2026-07-14T12:00:00Z"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "body", "expected_cursor"),
+        [
+            (422, {
+                "message": "Unsupported predicate.",
+                "reason": "unsupported_schedule_visibility_predicate",
+                "field": "query",
+                "errors": {"query": ["Only equality predicates are supported."]},
+                "last_safe_cursor": None,
+            }, None),
+            (400, {
+                "message": "Malformed token.",
+                "reason": "malformed_schedule_page_token",
+                "field": "next_page_token",
+                "errors": {"next_page_token": ["Malformed token."]},
+                "last_safe_cursor": None,
+            }, None),
+            (403, {
+                "message": "Wrong namespace.",
+                "reason": "schedule_page_token_namespace_mismatch",
+                "field": "next_page_token",
+                "errors": {"next_page_token": ["Wrong namespace."]},
+                "last_safe_cursor": {"created_at": "2026-07-14T12:00:00Z", "schedule_id": "s1"},
+            }, {"created_at": "2026-07-14T12:00:00Z", "schedule_id": "s1"}),
+            (409, {
+                "message": "Stale token.",
+                "reason": "stale_schedule_page_token",
+                "field": "next_page_token",
+                "errors": {"next_page_token": ["Stale token."]},
+                "last_safe_cursor": {"created_at": "2026-07-14T12:00:00Z", "schedule_id": "s1"},
+            }, {"created_at": "2026-07-14T12:00:00Z", "schedule_id": "s1"}),
+        ],
+    )
+    async def test_typed_filter_and_cursor_errors_preserve_server_evidence(
+        self,
+        client: Client,
+        status: int,
+        body: dict,
+        expected_cursor: dict | None,
+    ) -> None:
+        resp = _mock_response(status, body)
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(ScheduleListError) as exc_info,
+        ):
+            await client.list_schedules(query='Region STARTS_WITH "e"')
+
+        error = exc_info.value
+        assert error.status == status
+        assert error.reason() == body["reason"]
+        assert error.field == body["field"]
+        assert error.errors == body["errors"]
+        assert error.last_safe_cursor == expected_cursor
+        assert error.body == body
 
 
 class TestDescribeSchedule:

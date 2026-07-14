@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Schedule listing now exposes server-side status, workflow-type, visibility-
+  query, page-size, and continuation-token filters on async and sync clients.
+  `ScheduleListError` preserves typed filter and cursor refusal evidence.
 - `durable-workflow-python-conformance --compose` now accepts nested host
   runner evidence tables, resolved artifact/source aliases, boolean `passed`
   result cells, nested protocol trace planes, and no-PHP audit check aliases

@@ -152,6 +152,26 @@ class ScheduleAlreadyExists(DurableWorkflowError):
         self.schedule_id = schedule_id
 
 
+class ScheduleListError(ServerError):
+    """A schedule visibility filter or continuation cursor was refused.
+
+    The complete parsed response remains available on :attr:`body`. Convenience
+    attributes expose the rejected field, structured field errors, and the
+    server's last safe keyset cursor without discarding status or reason.
+    """
+
+    def __init__(self, status: int, body: object) -> None:
+        super().__init__(status, body)
+        self.field = body.get("field") if isinstance(body, dict) else None
+        errors = None
+        last_safe_cursor = None
+        if isinstance(body, dict):
+            errors = body.get("validation_errors") or body.get("errors")
+            last_safe_cursor = body.get("last_safe_cursor")
+        self.errors = errors if isinstance(errors, dict) else None
+        self.last_safe_cursor = last_safe_cursor if isinstance(last_safe_cursor, dict) else None
+
+
 class QueryFailed(DurableWorkflowError):
     """A workflow query was rejected or the workflow raised while handling it."""
 
@@ -446,6 +466,9 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
 
     if status == 401:
         raise Unauthorized(message or "unauthorized")
+
+    if context == "schedule.list" and status in (400, 403, 409, 422):
+        raise ScheduleListError(status, body)
 
     def query_failed(default: str) -> QueryFailed:
         return QueryFailed(

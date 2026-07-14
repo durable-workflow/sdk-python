@@ -629,8 +629,24 @@ class Client:
         )
         return SyncScheduleHandle(handle)
 
-    def list_schedules(self) -> ScheduleList:
-        result: ScheduleList = _run(self._async.list_schedules())
+    def list_schedules(
+        self,
+        *,
+        status: str | None = None,
+        workflow_type: str | None = None,
+        query: str | None = None,
+        page_size: int | None = None,
+        next_page_token: str | None = None,
+    ) -> ScheduleList:
+        result: ScheduleList = _run(
+            self._async.list_schedules(
+                status=status,
+                workflow_type=workflow_type,
+                query=query,
+                page_size=page_size,
+                next_page_token=next_page_token,
+            )
+        )
         return result
 
     def describe_schedule(self, schedule_id: str) -> ScheduleDescription:
