@@ -19,11 +19,11 @@
       "run_id": "run-polyglot-231",
       "workflow_type": "orders.process"
     },
-    "events": [
+    "history_events": [
       {
         "sequence": 1,
-        "event_type": "WorkflowStarted",
-        "timestamp": "2026-04-22T06:24:00Z",
+        "type": "WorkflowStarted",
+        "recorded_at": "2026-04-22T06:24:00Z",
         "payload": {
           "workflow_type": "orders.process",
           "task_queue": "orders"
@@ -31,8 +31,8 @@
       },
       {
         "sequence": 2,
-        "event_type": "ActivityCompleted",
-        "timestamp": "2026-04-22T06:24:05Z",
+        "type": "ActivityCompleted",
+        "recorded_at": "2026-04-22T06:24:05Z",
         "payload": {
           "activity_type": "reserve_inventory"
         }

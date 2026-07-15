@@ -572,7 +572,12 @@ class TestGetHistory:
         assert bundle["schema"] == semantic["schema"]
         assert bundle["workflow"]["instance_id"] == semantic["workflow_id"]
         assert bundle["workflow"]["run_id"] == semantic["run_id"]
-        assert len(bundle["events"]) == semantic["event_count"]
+        assert len(bundle["history_events"]) == semantic["event_count"]
+        assert bundle["history_events"][0]["type"] == "WorkflowStarted"
+        assert bundle["history_events"][0]["recorded_at"] == "2026-04-22T06:24:00Z"
+        assert "events" not in bundle
+        assert "event_type" not in bundle["history_events"][0]
+        assert "timestamp" not in bundle["history_events"][0]
         assert bundle == fixture["response_body"]
 
 
