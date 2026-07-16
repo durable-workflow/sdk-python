@@ -83,7 +83,7 @@ def test_publish_workflow_separates_publication_authority_from_docs_freshness() 
     assert "contents: write" not in docs_audit_job
     assert "if: always()" in docs_audit_job
     assert docs_audit_job.index("scripts/ci/check-docs-release-audit.sh") < docs_audit_job.index(
-        "actions/upload-artifact@v4"
+        "actions/upload-artifact@v7"
     )
 
 
