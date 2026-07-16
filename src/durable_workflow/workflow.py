@@ -392,12 +392,16 @@ def _payload_blobs_or_external_envelopes(
             payloads.append(blob if isinstance(blob, str) else str(blob))
         return payloads
 
-    return serializer.encode_many(
-        values,
-        codec=payload_codec,
-        size_warning=size_warning,
-        warning_context=warning_contexts,
+    encoded_payloads: list[str | dict[str, Any]] = []
+    encoded_payloads.extend(
+        serializer.encode_many(
+            values,
+            codec=payload_codec,
+            size_warning=size_warning,
+            warning_context=warning_contexts,
+        )
     )
+    return encoded_payloads
 
 
 @dataclass
@@ -2537,7 +2541,7 @@ def _replay_state(
         prefix_receivers: list[int] = []
         prefix_can_bind_to_first_wait = True
         current_wait_id: str | None = None
-        receivers_since_wait: list[int | None] = []
+        receivers_since_wait: list[int] = []
 
         for index, event in enumerate(events):
             event_type = _history_event_type(event)
@@ -3013,11 +3017,10 @@ def _replay_state(
                             prefix="wait_condition predicate raised",
                         )])
                     if resolution == "satisfied":
-                        if has_reopened_same_wait:
-                            if not satisfied:
-                                consumed_reopen_for_current_wait = True
-                                wait_yield_count = next_wait_index
-                                continue
+                        if has_reopened_same_wait and not satisfied:
+                            consumed_reopen_for_current_wait = True
+                            wait_yield_count = next_wait_index
+                            continue
 
                         terminal_condition_reopen_cmd = (
                             cmd

@@ -301,10 +301,7 @@ def _query_history_with_export_signal_arguments(
         if isinstance(name, str) and name:
             signals_by_name.setdefault(name, []).append(raw_signal)
 
-    if not signals_by_id and not signals_by_command_id and not signals_by_name:
-        signals_available = False
-    else:
-        signals_available = True
+    signals_available = bool(signals_by_id or signals_by_command_id or signals_by_name)
 
     activity_results_by_sequence = _activity_result_by_sequence_from_export(history_export)
 
@@ -431,10 +428,7 @@ def _query_history_events(
     *,
     default_codec: str | None,
 ) -> Any:
-    if isinstance(history, list):
-        events = history
-    else:
-        events = []
+    events = history if isinstance(history, list) else []
 
     if isinstance(history_export, Mapping):
         export_events = history_export.get("history_events")
@@ -1956,10 +1950,8 @@ class Worker:
         considered for task dispatch when they miss enough heartbeats.
         """
         while not self._stop.is_set():
-            try:
+            with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), timeout=self._heartbeat_interval)
-            except asyncio.TimeoutError:
-                pass
             if self._stop.is_set():
                 return
             try:

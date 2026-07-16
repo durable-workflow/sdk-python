@@ -77,9 +77,11 @@ def _worker_poll_timeout_seconds(timeout: float | None) -> int | None:
 
 
 def _worker_poll_http_timeout(timeout: float | None) -> float | None:
-    timeout_seconds = _worker_poll_timeout_seconds(timeout)
-    if timeout_seconds is None:
+    if timeout is None:
         return None
+
+    timeout_seconds = _worker_poll_timeout_seconds(timeout)
+    assert timeout_seconds is not None
 
     if timeout_seconds == 0:
         return max(float(timeout), 1.0)

@@ -29,12 +29,14 @@ from durable_workflow.replay_verify import (
     VERDICT_FAILED,
     VERDICT_OK,
     aggregate_verdicts,
-    main as replay_verify_main,
     promotion_decision_for,
     promotion_decision_for_report,
     simulate_bundles,
     verify_golden_history,
     verify_replay,
+)
+from durable_workflow.replay_verify import (
+    main as replay_verify_main,
 )
 from durable_workflow.workflow import WorkflowContext
 

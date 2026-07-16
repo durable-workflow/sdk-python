@@ -141,7 +141,8 @@ def _check_envelope(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -
             _finding(
                 "bundle.schema_version_unsupported",
                 SEVERITY_ERROR,
-                f"Bundle schema_version [{bundle['schema_version']!s}] is unsupported; expected {BUNDLE_SCHEMA_VERSION}.",
+                f"Bundle schema_version [{bundle['schema_version']!s}] is unsupported; "
+                f"expected {BUNDLE_SCHEMA_VERSION}.",
                 {"observed": bundle["schema_version"]},
             )
         )
@@ -325,7 +326,8 @@ def _check_commands(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -
     if not isinstance(commands, list):
         return
 
-    events = bundle.get("history_events") if isinstance(bundle.get("history_events"), list) else []
+    raw_events = bundle.get("history_events")
+    events: list[Any] = raw_events if isinstance(raw_events, list) else []
     event_command_ids: set[str] = set()
     for event in events:
         if isinstance(event, Mapping):

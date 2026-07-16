@@ -2740,7 +2740,7 @@ class TestPollLoops:
                 self.polled = False
                 self.completed_kwargs: dict[str, object] | None = None
 
-            async def __aenter__(self) -> "QueryThreadClient":
+            async def __aenter__(self) -> QueryThreadClient:
                 return self
 
             async def __aexit__(self, *_: object) -> None:

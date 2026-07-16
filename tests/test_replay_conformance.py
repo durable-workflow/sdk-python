@@ -9,6 +9,8 @@ from durable_workflow.replay_conformance import (
     RESULT_SCHEMA,
     RESULT_VERSION,
     compose_report,
+)
+from durable_workflow.replay_conformance import (
     main as replay_conformance_main,
 )
 

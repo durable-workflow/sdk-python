@@ -29,16 +29,16 @@ import argparse
 import json
 import sys
 import traceback
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .errors import ChildWorkflowFailed, NonDeterministicReplayError, WorkflowFailed
 from .workflow import (
     CompleteWorkflow,
-    ReplayOutcome,
     Replayer,
+    ReplayOutcome,
     ScheduleActivity,
     StartChildWorkflow,
 )

@@ -16,7 +16,9 @@ import re
 import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
+
+_T = TypeVar("_T")
 
 SCHEMA = "durable-workflow.v2.python-sdk-parity.contract"
 VERSION = 1
@@ -761,7 +763,7 @@ def _trace_plane_entries(value: Any, plane: str) -> list[Any]:
     return _filtered_traces(_trace_entries(value), plane)
 
 
-def _filtered_traces(traces: Any, plane: str) -> Any:
+def _filtered_traces(traces: Any, plane: str) -> list[Any]:
     if not isinstance(traces, list):
         return []
     return [
@@ -820,7 +822,7 @@ def _copy_mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def _deepcopy_json_like(value: Any) -> Any:
+def _deepcopy_json_like(value: _T) -> _T:
     return copy.deepcopy(value)
 
 
