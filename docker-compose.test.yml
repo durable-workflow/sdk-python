@@ -8,10 +8,8 @@
 services:
   bootstrap:
     build:
+      # The server Dockerfile owns the verified Workflow source/ref/commit tuple.
       context: ../server
-      args:
-        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-v2}
     command: ["server-bootstrap"]
     environment: &server-env
       APP_NAME: "Durable Workflow Server"
@@ -38,9 +36,6 @@ services:
   server:
     build:
       context: ../server
-      args:
-        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-v2}
     ports:
       - "${SERVER_PORT:-8080}:8080"
     environment: *server-env
@@ -60,9 +55,6 @@ services:
   worker:
     build:
       context: ../server
-      args:
-        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-v2}
     command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
     environment: *server-env
     depends_on:
