@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -11,6 +13,7 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -22,7 +25,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
@@ -35,6 +40,7 @@ jobs:
 
   package:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -50,48 +56,69 @@ jobs:
 
   cli-parity:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
         with:
           path: sdk-python
-      - uses: actions/checkout@v6
-        with:
-          repository: durable-workflow/cli
-          path: cli
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Checkout public CLI integration source
+        run: python sdk-python/scripts/ci/checkout-public-repository.py cli cli
       - name: Compare shared control-plane parity fixtures
         working-directory: sdk-python
         run: python scripts/check-cli-parity.py --cli ../cli
 
   integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: [lint, test]
     steps:
       - uses: actions/checkout@v6
         with:
           path: sdk-python
-      - uses: actions/checkout@v6
-        with:
-          repository: durable-workflow/server
-          path: server
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Checkout public Server integration source
+        run: python sdk-python/scripts/ci/checkout-public-repository.py server server
       - run: pip install -e '.[dev]'
         working-directory: sdk-python
       - name: Start server stack
         working-directory: sdk-python
         run: |
-          docker compose -f docker-compose.test.yml up -d --wait --timeout 120
+          docker compose -f docker-compose.test.yml up -d --wait --timeout 300
+      - name: Select and probe integration endpoint
+        working-directory: sdk-python
+        run: python scripts/ci/configure-integration-endpoint.py
       - name: Run integration tests
         working-directory: sdk-python
         env:
-          DURABLE_WORKFLOW_SERVER_URL: http://localhost:8080
           DURABLE_WORKFLOW_AUTH_TOKEN: test-token
         run: pytest tests/integration/ -v
       - name: Teardown
         if: always()
         working-directory: sdk-python
         run: docker compose -f docker-compose.test.yml down -v
+
+  target-branch-qualification:
+    name: Target branch qualification
+    if: ${{ always() }}
+    needs: [lint, test, package, cli-parity, integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every supported Python and integration cell
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          PARITY_RESULT: ${{ needs.cli-parity.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+        run: |
+          test "$LINT_RESULT" = success
+          test "$TEST_RESULT" = success
+          test "$PACKAGE_RESULT" = success
+          test "$PARITY_RESULT" = success
+          test "$INTEGRATION_RESULT" = success
