@@ -42,6 +42,8 @@ jobs:
           python-version: "3.12"
       - run: pip install build twine
       - run: sh -n scripts/ci/check-docs-release-audit.sh
+      - name: Verify release recovery source contracts
+        run: python scripts/ci/test-component-release-recovery.py
       - run: python -m build
       - run: twine check dist/*
       - run: python scripts/smoke-built-package.py
