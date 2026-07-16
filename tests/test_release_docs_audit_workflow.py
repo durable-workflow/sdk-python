@@ -23,7 +23,7 @@ def test_publish_workflow_runs_docs_audit_in_recoverable_job() -> None:
     for expected in [
         "Verify live docs release audit after PyPI publish",
         "DOCS_RELEASE_AUDIT_ARTIFACT: sdk-python",
-        "DOCS_RELEASE_AUDIT_VERSION: ${{ github.ref_name }}",
+        "DOCS_RELEASE_AUDIT_VERSION: ${{ needs.build.outputs.release_tag }}",
         "DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json",
         "DOCS_RELEASE_AUDIT_HANDOFF: docs-release-audit-handoff.json",
         "scripts/ci/check-docs-release-audit.sh",
@@ -34,11 +34,11 @@ def test_publish_workflow_runs_docs_audit_in_recoverable_job() -> None:
         assert expected in workflow
 
     assert "permissions:\n  contents: read" in workflow
-    assert "contents: write" not in workflow
+    assert "contents: write" not in docs_audit_job
     assert "pypa/gh-action-pypi-publish@release/v1" in publish_job
     assert "Verify live docs release audit after PyPI publish" not in publish_job
     assert "Upload docs release audit evidence" not in publish_job
-    assert "needs: publish" in docs_audit_job
+    assert "needs: [build, publish]" in docs_audit_job
     assert "durable-workflow.release.docs-release-audit-evidence" in auditor
     assert "durable-workflow.release.docs-artifact-tuple-handoff" in auditor
     assert "DOCS_RELEASE_AUDIT_HANDOFF" in auditor
