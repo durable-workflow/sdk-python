@@ -25,6 +25,26 @@ attempts="${DOCS_RELEASE_AUDIT_ATTEMPTS:-6}"
 sleep_seconds="${DOCS_RELEASE_AUDIT_RETRY_SLEEP:-20}"
 evidence_path="${DOCS_RELEASE_AUDIT_EVIDENCE:-}"
 handoff_path="${DOCS_RELEASE_AUDIT_HANDOFF:-}"
+enforcement="${DOCS_RELEASE_AUDIT_ENFORCEMENT:-required}"
+
+report_docs_freshness() {
+    title="$1"
+    message="$2"
+
+    if [ "$enforcement" = "required" ]; then
+        fail "$title" "$message"
+    fi
+
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        {
+            printf '## %s\n\n' "$title"
+            printf '%s\n' "$message"
+        } >> "$GITHUB_STEP_SUMMARY"
+    fi
+
+    printf '::warning title=%s::%s\n' "$title" "$message" >&2
+    printf '%s\n' "$message" >&2
+}
 
 write_unavailable_evidence() {
     message="$1"
@@ -35,6 +55,8 @@ write_unavailable_evidence() {
 const fs = require('fs');
 
 const [evidencePath, artifact, expected, auditUrl, message] = process.argv.slice(2);
+const repository = process.env.GITHUB_REPOSITORY || null;
+const runId = process.env.GITHUB_RUN_ID || null;
 
 fs.writeFileSync(evidencePath, `${JSON.stringify({
   schema: 'durable-workflow.release.docs-release-audit-evidence',
@@ -44,6 +66,18 @@ fs.writeFileSync(evidencePath, `${JSON.stringify({
   artifact,
   expected_version: expected,
   outcome: 'unavailable',
+  lifecycle: 'docs_freshness',
+  publication_outcome_impact: 'none',
+  source_release_check: {
+    repository,
+    ref: process.env.GITHUB_REF_NAME || null,
+    sha: process.env.GITHUB_SHA || null,
+    run_id: runId,
+    run_attempt: process.env.GITHUB_RUN_ATTEMPT || null,
+    run_url: repository && runId
+      ? `${process.env.GITHUB_SERVER_URL || 'https://github.com'}/${repository}/actions/runs/${runId}`
+      : null,
+  },
   message,
 }, null, 2)}\n`);
 NODE
@@ -58,6 +92,11 @@ expected="${expected#v}"
 if [ -z "$expected" ]; then
     fail "Docs release-audit version required" "DOCS_RELEASE_AUDIT_VERSION or GITHUB_REF_NAME must name the published artifact version."
 fi
+
+case "$enforcement" in
+    required|advisory) ;;
+    *) fail "Invalid docs release-audit enforcement" "DOCS_RELEASE_AUDIT_ENFORCEMENT must be required or advisory." ;;
+esac
 
 case "$attempts" in
     ''|*[!0-9]*) fail "Invalid docs release-audit retry count" "DOCS_RELEASE_AUDIT_ATTEMPTS must be a positive integer." ;;
@@ -76,10 +115,10 @@ attempt=1
 
 while [ "$attempt" -le "$attempts" ]; do
     if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 -o "$audit_path" "$audit_url"; then
-        if node - "$audit_path" "$artifact" "$expected" "$audit_url" "$evidence_path" "$handoff_path" <<'NODE'
+        if node - "$audit_path" "$artifact" "$expected" "$audit_url" "$evidence_path" "$handoff_path" "$enforcement" <<'NODE'
 const fs = require('fs');
 
-const [auditPath, artifact, expected, auditUrl, evidencePath, handoffPath] = process.argv.slice(2);
+const [auditPath, artifact, expected, auditUrl, evidencePath, handoffPath, enforcement] = process.argv.slice(2);
 const title = 'Docs release-audit tuple stale';
 const refreshCommand = 'npm run refresh:public-artifact-versions';
 const refreshFiles = [
@@ -122,6 +161,8 @@ function docsRefreshHandoff(message, actualVersion, observedVersions) {
     schema: 'durable-workflow.release.docs-artifact-tuple-handoff',
     schema_version: 1,
     action: 'pipeline_ready_item',
+    lifecycle: 'docs_freshness',
+    priority: 'low',
     reason: 'public_docs_release_audit_stale',
     repository: 'durable-workflow.github.io',
     target_branch: 'main',
@@ -158,6 +199,7 @@ function docsRefreshHandoff(message, actualVersion, observedVersions) {
         'pipeline:ready-item',
         'branch:main',
         'state:pending',
+        'priority:P3',
       ],
       acceptance: [
         'The public docs release-audit JSON reports the current published artifact tuple.',
@@ -207,6 +249,8 @@ function writeEvidence(outcome, extra = {}) {
     artifact,
     expected_version: expected,
     source_release_check: releaseCheckSource(),
+    lifecycle: 'docs_freshness',
+    publication_outcome_impact: 'none',
     outcome,
     ...extra,
   }, null, 2)}\n`);
@@ -230,9 +274,10 @@ function fail(message, extra = {}) {
       `## ${title}\n\n${message}\n\n`
     );
   }
-  console.error(`::error title=${title}::${message}`);
+  const annotation = enforcement === 'advisory' ? 'warning' : 'error';
+  console.error(`::${annotation} title=${title}::${message}`);
   console.error(message);
-  process.exit(2);
+  process.exit(enforcement === 'advisory' ? 0 : 2);
 }
 
 let audit;
@@ -294,4 +339,4 @@ done
 
 message="Could not fetch ${audit_url} after ${attempts} attempt(s)."
 write_unavailable_evidence "$message"
-fail "Docs release-audit unavailable" "$message"
+report_docs_freshness "Docs release-audit unavailable" "$message"

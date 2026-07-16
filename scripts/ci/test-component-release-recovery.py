@@ -364,6 +364,98 @@ class PublicationRunSelectionTest(unittest.TestCase):
         self.assertIn('if ! gh release view "$RELEASE_TAG"', workflow)
 
 
+class PublishedReleaseRecoveryTest(unittest.TestCase):
+    RELEASE_TAG = "0.4.101"
+    RELEASE_COMMIT = "8aa0e86fe51edc1e7aba3d97ddf3dfda8009ee23"
+    PLAN_TAG = "release-plan/alpha-continuity"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.recovery = load_recovery_module()
+
+    def test_publication_authority_uses_exact_tag_distribution_and_release(self) -> None:
+        client = mock.Mock(spec=self.recovery.PublicClient)
+        identity = {"version": self.RELEASE_TAG, "commit": self.RELEASE_COMMIT}
+        distribution_evidence = {"kind": "pypi", "source_files_compared": 12}
+        release_evidence = {"tag_name": self.RELEASE_TAG}
+        distribution_verifier = mock.Mock(return_value=distribution_evidence)
+
+        with (
+            mock.patch.object(self.recovery, "require_source_tag") as source_tag_verifier,
+            mock.patch.object(
+                self.recovery,
+                "verify_github_release",
+                return_value=release_evidence,
+            ) as release_verifier,
+            mock.patch.dict(self.recovery.VERIFIERS, {"pypi": distribution_verifier}),
+        ):
+            evidence = self.recovery.verify_component(client, "sdk-python", identity)
+
+        source_tag_verifier.assert_called_once_with(client, "sdk-python", identity)
+        distribution_verifier.assert_called_once_with(
+            client,
+            self.recovery.COMPONENTS["sdk-python"],
+            self.RELEASE_TAG,
+            self.RELEASE_COMMIT,
+        )
+        release_verifier.assert_called_once_with(client, "sdk-python", self.RELEASE_TAG)
+        self.assertEqual(evidence["version"], self.RELEASE_TAG)
+        self.assertEqual(evidence["commit"], self.RELEASE_COMMIT)
+        self.assertEqual(evidence["distribution"], distribution_evidence)
+        self.assertEqual(evidence["github_release"], release_evidence)
+
+    def test_exact_public_release_completes_without_publication_dispatch(self) -> None:
+        client = mock.Mock(spec=self.recovery.PublicClient)
+        plan = {
+            "plan": "alpha-continuity",
+            "channel": "alpha",
+            "components": {
+                "server": {"version": "0.2.700", "commit": "2" * 40},
+                "sdk-python": {"version": self.RELEASE_TAG, "commit": self.RELEASE_COMMIT},
+            },
+        }
+        package_evidence = {
+            "version": self.RELEASE_TAG,
+            "commit": self.RELEASE_COMMIT,
+            "distribution": {"kind": "pypi", "source_files_compared": 12},
+            "github_release": {"tag_name": self.RELEASE_TAG},
+        }
+
+        def verify_public_component(
+            _client: object, component: str, _identity: dict[str, str]
+        ) -> dict[str, object]:
+            if component == "sdk-python":
+                return package_evidence
+            return {"version": plan["components"][component]["version"]}
+
+        with (
+            mock.patch.object(self.recovery, "verify_plan_authority", return_value=({}, {})),
+            mock.patch.object(self.recovery, "verify_component", side_effect=verify_public_component),
+            mock.patch.object(self.recovery, "resolve_tag", return_value=self.RELEASE_COMMIT),
+            mock.patch.object(
+                self.recovery,
+                "require_python_source_manifest_version",
+                return_value={"declared_version": self.RELEASE_TAG, "source_commit": self.RELEASE_COMMIT},
+            ),
+        ):
+            state, outputs = self.recovery.resolve_component(
+                client,
+                "sdk-python",
+                self.PLAN_TAG,
+                "3" * 40,
+                plan,
+            )
+
+        self.assertEqual(outputs["action"], "skip")
+        self.assertEqual(state["phase"], "complete")
+        self.assertEqual(state["outcome"], "verified")
+        self.assertEqual(state["public_evidence"], package_evidence)
+
+        workflow = RECOVERY_WORKFLOW.read_text()
+        publication_step = workflow[workflow.index("Start or resume repository-owned publication") :]
+        self.assertIn("if: steps.recovery.outputs.action == 'publish'", publication_step)
+
+
 class PythonSourceManifestPreflightTest(unittest.TestCase):
     RELEASE_TAG = "0.4.100"
     RELEASE_COMMIT = "2018400368cf4251c58b24b3d53a99f0ca3512e3"
