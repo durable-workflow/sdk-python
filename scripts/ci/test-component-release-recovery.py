@@ -8,9 +8,13 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 RECOVERY_SCRIPT = Path(__file__).with_name("component-release-recovery.py")
 RUST_WORKFLOW_FIXTURE = Path(__file__).with_name("sdk-rust-release-plan-recovery.fixture.yml")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+RECOVERY_WORKFLOW = REPOSITORY_ROOT / ".github/workflows/release-plan-recovery.yml"
+PUBLISH_WORKFLOW = REPOSITORY_ROOT / ".github/workflows/publish.yml"
 
 # This is the complete public sdk-rust workflow identified by the verifier's
 # pinned digest, not a reduced semantic approximation of its shell commands.
@@ -294,6 +298,136 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
         )
         with self.assertRaises(self.recovery.RecoveryError):
             self.recovery.verify_recovery_workflow_source("server", protected_only)
+
+
+class PublicationRunSelectionTest(unittest.TestCase):
+    RELEASE_TAG = "1.2.3"
+    RELEASE_COMMIT = "1" * 40
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.recovery = load_recovery_module()
+
+    def run_metadata(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        conclusion: str | None,
+        commit: str | None = None,
+        plan: str = "release-plan/continuity-plan-a",
+    ) -> dict[str, object]:
+        return {
+            "databaseId": run_id,
+            "displayTitle": f"Release {self.RELEASE_TAG} for {plan}",
+            "headBranch": self.RELEASE_TAG,
+            "headSha": commit or self.RELEASE_COMMIT,
+            "status": status,
+            "conclusion": conclusion,
+        }
+
+    def select(self, runs: list[dict[str, object]]) -> dict[str, object]:
+        return self.recovery.select_publication_run(self.RELEASE_TAG, self.RELEASE_COMMIT, runs)
+
+    def test_failed_plan_a_dispatches_current_plan_b_once(self) -> None:
+        selection = self.select([self.run_metadata(1, status="completed", conclusion="failure")])
+
+        self.assertEqual(
+            selection,
+            {"action": "dispatch", "run_id": None, "status": None, "conclusion": None},
+        )
+        workflow = RECOVERY_WORKFLOW.read_text()
+        self.assertEqual(workflow.count("gh workflow run publish.yml"), 1)
+        self.assertIn('-f release_tag="$RELEASE_TAG" -f release_plan="$PLAN_TAG" -f publish=true', workflow)
+        self.assertNotIn("gh run rerun", workflow)
+
+    def test_active_exact_run_waits_and_successful_exact_run_completes(self) -> None:
+        active = self.run_metadata(2, status="in_progress", conclusion=None)
+        failed = self.run_metadata(1, status="completed", conclusion="failure")
+        self.assertEqual(self.select([failed, active])["action"], "wait")
+
+        successful = self.run_metadata(3, status="completed", conclusion="success")
+        self.assertEqual(self.select([failed, successful])["action"], "complete")
+
+    def test_moved_source_tag_is_rejected(self) -> None:
+        moved = self.run_metadata(1, status="completed", conclusion="failure", commit="a" * 40)
+
+        with self.assertRaises(self.recovery.RecoveryError) as caught:
+            self.select([moved])
+
+        self.assertEqual(caught.exception.phase, "publication")
+
+    def test_fresh_dispatch_keeps_partial_publication_idempotent(self) -> None:
+        workflow = PUBLISH_WORKFLOW.read_text()
+
+        self.assertIn("skip-existing: true", workflow)
+        self.assertIn('if ! gh release view "$RELEASE_TAG"', workflow)
+
+
+class PythonSourceManifestPreflightTest(unittest.TestCase):
+    RELEASE_TAG = "0.4.100"
+    RELEASE_COMMIT = "2018400368cf4251c58b24b3d53a99f0ca3512e3"
+    PLAN_TAG = "release-plan/continuity-plan-b"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.recovery = load_recovery_module()
+
+    def test_manifest_version_mismatch_hands_off_occupied_tag_before_publication(self) -> None:
+        client = mock.Mock(spec=self.recovery.PublicClient)
+        client.bytes.return_value = b'[project]\nname = "durable-workflow"\nversion = "0.4.99"\n'
+        plan = {
+            "plan": "continuity-plan-b",
+            "channel": "alpha",
+            "components": {
+                "server": {"version": "0.2.666", "commit": "2" * 40},
+                "sdk-python": {"version": self.RELEASE_TAG, "commit": self.RELEASE_COMMIT},
+            },
+        }
+        publication_verifier = mock.Mock()
+
+        with (
+            mock.patch.object(self.recovery, "verify_plan_authority", return_value=({}, {})),
+            mock.patch.object(self.recovery, "verify_component", return_value={}),
+            mock.patch.object(self.recovery, "resolve_tag", return_value=self.RELEASE_COMMIT),
+            mock.patch.dict(self.recovery.VERIFIERS, {"pypi": publication_verifier}),
+            self.assertRaises(self.recovery.RecoveryError) as caught,
+        ):
+            self.recovery.resolve_component(
+                client,
+                "sdk-python",
+                self.PLAN_TAG,
+                "3" * 40,
+                plan,
+            )
+
+        error = caught.exception
+        self.assertEqual(error.phase, "source-manifest-preflight")
+        self.assertEqual(error.evidence["classification"], "source-manifest-version-conflict")
+        self.assertEqual(error.evidence["source_manifest"]["declared_version"], "0.4.99")
+        self.assertEqual(
+            error.evidence["source_tag"],
+            {"tag": self.RELEASE_TAG, "status": "present", "commit": self.RELEASE_COMMIT},
+        )
+        client.bytes.assert_called_once_with(
+            f"https://api.github.com/repos/durable-workflow/sdk-python/contents/pyproject.toml"
+            f"?ref={self.RELEASE_COMMIT}",
+            accept="application/vnd.github.raw+json",
+        )
+        publication_verifier.assert_not_called()
+
+        failure = self.recovery.resolution_failure_state(
+            "sdk-python",
+            self.PLAN_TAG,
+            "3" * 40,
+            plan,
+            error,
+        )
+        self.assertEqual(failure["durable_evidence"]["failure"], error.evidence)
+        self.assertIn("control-plane", failure["resume_action"])
+        self.assertIn("successor allocation", failure["resume_action"])
+        self.assertIn("immutable durable-workflow/sdk-python@0.4.100", failure["resume_action"])
+        self.assertNotIn("Run durable-workflow/sdk-python Actions workflow", failure["resume_action"])
 
 
 if __name__ == "__main__":

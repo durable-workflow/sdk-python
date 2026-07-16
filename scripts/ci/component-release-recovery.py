@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import tomllib
+
 SCHEMA = "durable-workflow.release-plan/v1"
 STATE_SCHEMA = "durable-workflow.component-release-recovery/v1"
 CONTROL_REPOSITORY = "durable-workflow/.github"
@@ -36,6 +38,8 @@ PLAN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,55}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
 ALPHA_VERSION_PATTERN = re.compile(r"^2\.0\.0-alpha\.[1-9][0-9]*$")
 BETA_VERSION_PATTERN = re.compile(r"^2\.0\.0-beta\.[1-9][0-9]*$")
+SOURCE_MANIFEST_VERSION_CONFLICT = "source-manifest-version-conflict"
+PYTHON_SOURCE_MANIFEST = {"path": "pyproject.toml", "package": "durable-workflow"}
 
 # SHA-256 of durable-workflow/sdk-rust's release recovery workflow at main
 # commit 31e87f4aa13a7fd255fd277a62c43c96ee1532ab. The verifier normalizes only
@@ -117,9 +121,18 @@ CLI_ASSETS = {
 class RecoveryError(RuntimeError):
     """A release plan cannot safely advance."""
 
-    def __init__(self, message: str, phase: str = "preflight") -> None:
+    def __init__(
+        self,
+        message: str,
+        phase: str = "preflight",
+        *,
+        evidence: dict[str, Any] | None = None,
+        resume_action: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.phase = phase
+        self.evidence = evidence
+        self.resume_action = resume_action
 
 
 class NotFound(RecoveryError):
@@ -254,6 +267,77 @@ def read_record(client: PublicClient, tag: str, commit: str, filename: str) -> A
         raise RecoveryError(f"immutable record {tag}:{filename} is not valid JSON", "plan-discovery") from error
 
 
+def require_python_source_manifest_version(
+    client: PublicClient,
+    identity: dict[str, str],
+    existing_tag: str | None,
+) -> dict[str, Any]:
+    component = COMPONENTS["sdk-python"]
+    path = PYTHON_SOURCE_MANIFEST["path"]
+    encoded_path = urllib.parse.quote(path, safe="/")
+    raw = client.bytes(
+        f"https://api.github.com/repos/{component.repository}/contents/{encoded_path}?ref={identity['commit']}",
+        accept="application/vnd.github.raw+json",
+    )
+    if len(raw) > 1024 * 1024:
+        raise RecoveryError("sdk-python source manifest exceeds 1 MiB", "source-manifest-preflight")
+    try:
+        manifest = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise RecoveryError(
+            "sdk-python pyproject.toml is not valid UTF-8 TOML at the planned commit",
+            "source-manifest-preflight",
+        ) from error
+    project = manifest.get("project")
+    declared_package = project.get("name") if isinstance(project, dict) else None
+    declared_version = project.get("version") if isinstance(project, dict) else None
+    if (
+        declared_package != PYTHON_SOURCE_MANIFEST["package"]
+        or not isinstance(declared_version, str)
+        or not VERSION_PATTERN.fullmatch(declared_version)
+    ):
+        raise RecoveryError(
+            "sdk-python pyproject.toml has no exact durable-workflow project identity at the planned commit",
+            "source-manifest-preflight",
+        )
+
+    evidence = {
+        "declared_version": declared_version,
+        "package": declared_package,
+        "path": path,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "source_commit": identity["commit"],
+        "url": f"https://github.com/{component.repository}/blob/{identity['commit']}/{path}",
+    }
+    if declared_version != identity["version"]:
+        source_tag = {
+            "tag": identity["version"],
+            "status": "present" if existing_tag is not None else "absent",
+            "commit": existing_tag,
+        }
+        if existing_tag is None:
+            tag_instruction = f"keep {component.repository}@{identity['version']} absent"
+        else:
+            tag_instruction = f"keep immutable {component.repository}@{identity['version']} at {existing_tag} unchanged"
+        raise RecoveryError(
+            f"planned sdk-python version {identity['version']} does not match pyproject.toml "
+            f"project.version {declared_version} at {identity['commit']}",
+            "source-manifest-preflight",
+            evidence={
+                "classification": SOURCE_MANIFEST_VERSION_CONFLICT,
+                "planned_identity": dict(identity),
+                "source_manifest": evidence,
+                "source_tag": source_tag,
+            },
+            resume_action=(
+                f"Hand off this terminal source-manifest conflict to the protected {CONTROL_REPOSITORY} "
+                f"control-plane release-plan supersession workflow for corrected successor allocation; "
+                f"{tag_instruction} and do not rerun repository recovery for this plan"
+            ),
+        )
+    return evidence
+
+
 def discover_plan(client: PublicClient, requested_tag: str | None) -> tuple[str, str, dict[str, Any]]:
     if requested_tag:
         tag = requested_tag
@@ -372,25 +456,28 @@ def select_publication_run(
             raise RecoveryError("publication run metadata is incomplete", "publication")
         exact_runs.append(run)
 
-    selected = next((run for run in exact_runs if run["status"] != "completed"), None)
-    action = "wait"
-    if selected is None:
-        selected = next(
-            (run for run in exact_runs if run["status"] == "completed" and run.get("conclusion") == "success"),
-            None,
-        )
-        action = "complete"
-    if selected is None:
-        selected = next((run for run in exact_runs if run["status"] == "completed"), None)
-        action = "rerun"
-    if selected is None:
-        return {"action": "dispatch", "run_id": None, "status": None, "conclusion": None}
-    return {
-        "action": action,
-        "run_id": selected["databaseId"],
-        "status": selected["status"],
-        "conclusion": selected.get("conclusion"),
-    }
+    active = next((run for run in exact_runs if run["status"] != "completed"), None)
+    if active is not None:
+        return {
+            "action": "wait",
+            "run_id": active["databaseId"],
+            "status": active["status"],
+            "conclusion": active.get("conclusion"),
+        }
+
+    successful = next(
+        (run for run in exact_runs if run["status"] == "completed" and run.get("conclusion") == "success"),
+        None,
+    )
+    if successful is not None:
+        return {
+            "action": "complete",
+            "run_id": successful["databaseId"],
+            "status": successful["status"],
+            "conclusion": successful.get("conclusion"),
+        }
+
+    return {"action": "dispatch", "run_id": None, "status": None, "conclusion": None}
 
 
 def verify_plan_authority(
@@ -799,6 +886,39 @@ def base_state(component: str, tag: str | None = None, plan: dict[str, Any] | No
     }
 
 
+def resolution_failure_state(
+    component_name: str,
+    tag: str | None,
+    record_commit: str | None,
+    plan: dict[str, Any] | None,
+    error: RecoveryError,
+) -> dict[str, Any]:
+    failure = base_state(component_name, tag, plan)
+    if record_commit is not None:
+        failure["plan_record_commit"] = record_commit
+    durable_evidence: dict[str, Any] = {
+        "release_plan": tag,
+        "source_tag": f"https://github.com/{COMPONENTS[component_name].repository}/releases",
+        "actions": f"https://github.com/{COMPONENTS[component_name].repository}/actions",
+    }
+    if error.evidence is not None:
+        durable_evidence["failure"] = error.evidence
+    failure.update(
+        {
+            "phase": error.phase,
+            "outcome": "failed",
+            "reason": str(error),
+            "durable_evidence": durable_evidence,
+            "resume_action": error.resume_action
+            or (
+                f"Run {COMPONENTS[component_name].repository} Actions workflow "
+                f"Release plan recovery{f' for {tag}' if tag else ''}"
+            ),
+        }
+    )
+    return failure
+
+
 def resolve_component(
     client: PublicClient,
     component_name: str,
@@ -827,6 +947,11 @@ def resolve_component(
             f"points to {existing_tag}, not {identity['commit']}",
             "tag-preflight",
         )
+    source_manifest = (
+        require_python_source_manifest_version(client, identity, existing_tag)
+        if component_name == "sdk-python"
+        else None
+    )
     if existing_tag is None:
         with contextlib.suppress(NotFound):
             VERIFIERS[component.distribution](
@@ -853,6 +978,7 @@ def resolve_component(
             "recovery_workflows": recovery_workflows,
             "upstream": upstream,
             "source_tag": {"status": "present" if existing_tag else "absent", "commit": existing_tag},
+            "source_manifest": source_manifest,
             "declared_identity": identity,
             "public_evidence": completed,
             "resume_action": (
@@ -967,25 +1093,7 @@ def main() -> int:
                     args.evidence.write_bytes(canonical_json(idle))
                     write_output(args.github_output, {"action": "none"})
                     return 0
-                failure = base_state(args.component, tag, plan)
-                if record_commit is not None:
-                    failure["plan_record_commit"] = record_commit
-                failure.update(
-                    {
-                        "phase": error.phase,
-                        "outcome": "failed",
-                        "reason": str(error),
-                        "durable_evidence": {
-                            "release_plan": tag,
-                            "source_tag": f"https://github.com/{COMPONENTS[args.component].repository}/releases",
-                            "actions": f"https://github.com/{COMPONENTS[args.component].repository}/actions",
-                        },
-                        "resume_action": (
-                            f"Run {COMPONENTS[args.component].repository} Actions workflow "
-                            f"Release plan recovery{f' for {tag}' if tag else ''}"
-                        ),
-                    }
-                )
+                failure = resolution_failure_state(args.component, tag, record_commit, plan, error)
                 args.evidence.write_bytes(canonical_json(failure))
                 raise
         else:

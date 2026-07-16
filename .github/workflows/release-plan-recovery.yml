@@ -91,8 +91,6 @@ jobs:
           if [ "$publication_action" = dispatch ]; then
             gh workflow run publish.yml --ref "$RELEASE_TAG" \
               -f release_tag="$RELEASE_TAG" -f release_plan="$PLAN_TAG" -f publish=true
-          elif [ "$publication_action" = rerun ]; then
-            gh run rerun "$run_id"
           else
             printf 'Durable publication run %s is %s/%s; no duplicate dispatch is needed.\n' \
               "$run_id" "$status" "${conclusion:-pending}"
