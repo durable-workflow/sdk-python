@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,48 @@ def _mock_response(status: int = 200, json_data: dict[str, Any] | None = None) -
         headers={"content-type": "application/json"} if json_data is not None else {},
         request=httpx.Request("GET", "http://test"),
     )
+
+
+class _LoopAffineTransport(httpx.AsyncBaseTransport):
+    def __init__(self) -> None:
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.request_count = 0
+        self.close_count = 0
+
+    def _check_loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        if self.loop is None:
+            self.loop = loop
+        elif loop is not self.loop:
+            raise RuntimeError("HTTP transport used from a different event loop")
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self._check_loop()
+        self.request_count += 1
+        if request.method == "POST":
+            return httpx.Response(
+                201,
+                json={
+                    "workflow_id": "wf-loop",
+                    "run_id": "run-loop",
+                    "workflow_type": "greeter",
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "workflow_id": "wf-loop",
+                "run_id": "run-loop",
+                "workflow_type": "greeter",
+                "status": "running",
+            },
+            request=request,
+        )
+
+    async def aclose(self) -> None:
+        self._check_loop()
+        self.close_count += 1
 
 
 class TestSyncClientHealth:
@@ -710,21 +753,52 @@ class TestSyncWorkflowHandleControlPlane:
         async_handle.describe_run = AsyncMock(return_value={"run_id": "r1"})  # type: ignore[method-assign]
         async_handle.repair = AsyncMock(return_value={"outcome": "accepted"})  # type: ignore[method-assign]
         async_handle.archive = AsyncMock(return_value={"outcome": "completed"})  # type: ignore[method-assign]
-        handle = SyncWorkflowHandle(async_handle)
+        with Client("http://localhost:8080") as client:
+            handle = SyncWorkflowHandle(async_handle, client._runner)
 
-        assert handle.get_history() == {"events": []}
-        assert handle.export_history() == {"schema": "durable.workflow.history.v2"}
-        assert handle.list_runs() == []
-        assert handle.describe_run() == {"run_id": "r1"}
-        assert handle.repair() == {"outcome": "accepted"}
-        assert handle.archive(reason="retention") == {"outcome": "completed"}
-        async_handle.archive.assert_awaited_once_with(reason="retention")
+            assert handle.get_history() == {"events": []}
+            assert handle.export_history() == {"schema": "durable.workflow.history.v2"}
+            assert handle.list_runs() == []
+            assert handle.describe_run() == {"run_id": "r1"}
+            assert handle.repair() == {"outcome": "accepted"}
+            assert handle.archive(reason="retention") == {"outcome": "completed"}
+            async_handle.archive.assert_awaited_once_with(reason="retention")
 
 
 class TestSyncClientContextManager:
     def test_context_manager(self) -> None:
         with Client("http://localhost:8080") as client:
             assert client is not None
+
+    def test_client_handle_and_close_share_one_event_loop(self) -> None:
+        transport = _LoopAffineTransport()
+        http_client = httpx.AsyncClient(
+            base_url="http://localhost:8080",
+            transport=transport,
+        )
+
+        with patch("durable_workflow.client.httpx.AsyncClient", return_value=http_client):
+            with Client("http://localhost:8080") as client:
+                handle = client.start_workflow(
+                    workflow_type="greeter",
+                    task_queue="q1",
+                    workflow_id="wf-loop",
+                )
+                schedule_handle = client.get_schedule_handle("schedule-loop")
+                activity_handle = client.get_activity_handle("activity-loop")
+
+                assert handle._runner is client._runner
+                assert schedule_handle._runner is client._runner
+                assert activity_handle._runner is client._runner
+                assert handle.describe().status == "running"
+                client.close()
+
+            client.close()
+
+        assert transport.request_count == 2
+        assert transport.close_count == 1
+        assert transport.loop is not None
+        assert transport.loop.is_closed()
 
 
 class TestSyncScheduleList:

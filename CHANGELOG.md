@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Synchronous clients now keep their async HTTP connection pool, returned
+  handles, and cleanup on one client-owned event loop for the client's lifetime.
 - Worker-routed queries now replay signal-woken condition waits that reopen the
   same logical wait until all recorded signals have been applied, so long-lived
   queryable workflows report the latest signal-mutated state.

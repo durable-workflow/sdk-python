@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 from .client import Client as AsyncClient
 from .client import (
@@ -35,69 +36,106 @@ from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .metrics import MetricsRecorder
 from .retry_policy import TransportRetryPolicy
 
+_T = TypeVar("_T")
 
-def _run(coro: Any) -> Any:
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
 
-    if loop is not None:
-        raise RuntimeError(
-            "durable_workflow.sync.Client cannot be used inside an already-running "
-            "event loop. Use the async durable_workflow.Client instead."
-        )
-    return asyncio.run(coro)
+class _LoopRunner:
+    """Run one sync client's async operations on a single owned event loop."""
+
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._closed = False
+
+    def check_ready(self) -> None:
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is not None:
+            raise RuntimeError(
+                "durable_workflow.sync.Client cannot be used inside an already-running "
+                "event loop. Use the async durable_workflow.Client instead."
+            )
+        if self._closed:
+            raise RuntimeError("durable_workflow.sync.Client is closed")
+
+    def run(self, coro: Coroutine[Any, Any, _T]) -> _T:
+        try:
+            self.check_ready()
+        except RuntimeError:
+            coro.close()
+            raise
+        return self._loop.run_until_complete(coro)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+
+        self._closed = True
+        try:
+            pending = asyncio.all_tasks(self._loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                self._loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+            self._loop.run_until_complete(self._loop.shutdown_default_executor())
+        finally:
+            self._loop.close()
 
 
 class SyncWorkflowHandle:
     """Blocking wrapper around an async workflow handle."""
 
-    def __init__(self, async_handle: WorkflowHandle) -> None:
+    def __init__(self, async_handle: WorkflowHandle, runner: _LoopRunner) -> None:
         self._handle = async_handle
+        self._runner = runner
         self.workflow_id = async_handle.workflow_id
         self.run_id = async_handle.run_id
         self.workflow_type = async_handle.workflow_type
 
     def result(self, *, poll_interval: float = 0.5, timeout: float = 30.0) -> Any:
-        return _run(self._handle.result(poll_interval=poll_interval, timeout=timeout))
+        return self._runner.run(self._handle.result(poll_interval=poll_interval, timeout=timeout))
 
     def describe(self) -> WorkflowExecution:
-        result: WorkflowExecution = _run(self._handle.describe())
+        result: WorkflowExecution = self._runner.run(self._handle.describe())
         return result
 
     def get_history(self) -> Any:
-        return _run(self._handle.get_history())
+        return self._runner.run(self._handle.get_history())
 
     def export_history(self) -> Any:
-        return _run(self._handle.export_history())
+        return self._runner.run(self._handle.export_history())
 
     def list_runs(self) -> WorkflowRunList:
-        result: WorkflowRunList = _run(self._handle.list_runs())
+        result: WorkflowRunList = self._runner.run(self._handle.list_runs())
         return result
 
     def describe_run(self, run_id: str | None = None) -> WorkflowRun:
-        result: WorkflowRun = _run(self._handle.describe_run(run_id))
+        result: WorkflowRun = self._runner.run(self._handle.describe_run(run_id))
         return result
 
     def signal(self, signal_name: str, args: list[Any] | None = None) -> None:
-        _run(self._handle.signal(signal_name, args=args))
+        self._runner.run(self._handle.signal(signal_name, args=args))
 
     def query(self, query_name: str, args: list[Any] | None = None) -> Any:
-        return _run(self._handle.query(query_name, args=args))
+        return self._runner.run(self._handle.query(query_name, args=args))
 
     def cancel(self, *, reason: str | None = None) -> None:
-        _run(self._handle.cancel(reason=reason))
+        self._runner.run(self._handle.cancel(reason=reason))
 
     def terminate(self, *, reason: str | None = None) -> None:
-        _run(self._handle.terminate(reason=reason))
+        self._runner.run(self._handle.terminate(reason=reason))
 
     def repair(self) -> WorkflowCommandResult:
-        result: WorkflowCommandResult = _run(self._handle.repair())
+        result: WorkflowCommandResult = self._runner.run(self._handle.repair())
         return result
 
     def archive(self, *, reason: str | None = None) -> WorkflowCommandResult:
-        result: WorkflowCommandResult = _run(self._handle.archive(reason=reason))
+        result: WorkflowCommandResult = self._runner.run(self._handle.archive(reason=reason))
         return result
 
     def update(
@@ -109,7 +147,7 @@ class SyncWorkflowHandle:
         wait_timeout_seconds: int | None = None,
         request_id: str | None = None,
     ) -> Any:
-        return _run(
+        return self._runner.run(
             self._handle.update(
                 update_name,
                 args=args,
@@ -123,12 +161,13 @@ class SyncWorkflowHandle:
 class SyncScheduleHandle:
     """Blocking wrapper around an async schedule handle."""
 
-    def __init__(self, async_handle: ScheduleHandle) -> None:
+    def __init__(self, async_handle: ScheduleHandle, runner: _LoopRunner) -> None:
         self._handle = async_handle
+        self._runner = runner
         self.schedule_id = async_handle.schedule_id
 
     def describe(self) -> ScheduleDescription:
-        result: ScheduleDescription = _run(self._handle.describe())
+        result: ScheduleDescription = self._runner.run(self._handle.describe())
         return result
 
     def update(
@@ -143,7 +182,7 @@ class SyncScheduleHandle:
         search_attributes: dict[str, Any] | None = None,
         note: str | None = None,
     ) -> None:
-        _run(
+        self._runner.run(
             self._handle.update(
                 spec=spec,
                 action=action,
@@ -157,17 +196,17 @@ class SyncScheduleHandle:
         )
 
     def pause(self, *, note: str | None = None) -> None:
-        _run(self._handle.pause(note=note))
+        self._runner.run(self._handle.pause(note=note))
 
     def resume(self, *, note: str | None = None) -> None:
-        _run(self._handle.resume(note=note))
+        self._runner.run(self._handle.resume(note=note))
 
     def trigger(self, *, overlap_policy: str | None = None) -> ScheduleTriggerResult:
-        result: ScheduleTriggerResult = _run(self._handle.trigger(overlap_policy=overlap_policy))
+        result: ScheduleTriggerResult = self._runner.run(self._handle.trigger(overlap_policy=overlap_policy))
         return result
 
     def delete(self) -> None:
-        _run(self._handle.delete())
+        self._runner.run(self._handle.delete())
 
     def backfill(
         self,
@@ -176,7 +215,7 @@ class SyncScheduleHandle:
         end_time: str,
         overlap_policy: str | None = None,
     ) -> ScheduleBackfillResult:
-        result: ScheduleBackfillResult = _run(
+        result: ScheduleBackfillResult = self._runner.run(
             self._handle.backfill(
                 start_time=start_time,
                 end_time=end_time,
@@ -189,8 +228,9 @@ class SyncScheduleHandle:
 class SyncStandaloneActivityHandle:
     """Blocking wrapper around an async standalone activity handle."""
 
-    def __init__(self, async_handle: StandaloneActivityHandle) -> None:
+    def __init__(self, async_handle: StandaloneActivityHandle, runner: _LoopRunner) -> None:
         self._handle = async_handle
+        self._runner = runner
         self.activity_id = async_handle.activity_id
         self.workflow_run_id = async_handle.workflow_run_id
         self.activity_execution_id = async_handle.activity_execution_id
@@ -198,22 +238,21 @@ class SyncStandaloneActivityHandle:
         self.activity_type = async_handle.activity_type
 
     def describe(self) -> StandaloneActivityExecution:
-        result: StandaloneActivityExecution = _run(self._handle.describe())
+        result: StandaloneActivityExecution = self._runner.run(self._handle.describe())
         return result
 
     def result(self, *, poll_interval: float = 0.5, timeout: float = 30.0) -> Any:
-        return _run(self._handle.result(poll_interval=poll_interval, timeout=timeout))
+        return self._runner.run(self._handle.result(poll_interval=poll_interval, timeout=timeout))
 
     def cancel(self, *, reason: str | None = None) -> None:
-        _run(self._handle.cancel(reason=reason))
+        self._runner.run(self._handle.cancel(reason=reason))
 
 
 class Client:
     """Blocking wrapper around the async client.
 
-    Each call opens and closes its own event loop, so this facade is best for
-    scripts, notebooks, and command-line tools rather than high-throughput
-    services.
+    The client keeps one event loop for its lifetime so its async HTTP connection
+    pool and returned handles always run on the loop that owns them.
     """
 
     def __init__(
@@ -244,9 +283,19 @@ class Client:
             external_storage_threshold_bytes=external_storage_threshold_bytes,
             external_storage_cache=external_storage_cache,
         )
+        self._runner = _LoopRunner()
+        self._closed = False
 
     def close(self) -> None:
-        _run(self._async.aclose())
+        if self._closed:
+            return
+
+        self._runner.check_ready()
+        self._closed = True
+        try:
+            self._runner.run(self._async.aclose())
+        finally:
+            self._runner.close()
 
     def __enter__(self) -> Client:
         return self
@@ -255,7 +304,7 @@ class Client:
         self.close()
 
     def health(self) -> dict[str, Any]:
-        result: dict[str, Any] = _run(self._async.health())
+        result: dict[str, Any] = self._runner.run(self._async.health())
         return result
 
     def start_workflow(
@@ -276,7 +325,7 @@ class Client:
         build_id: str | None = None,
         compatibility: str | None = None,
     ) -> SyncWorkflowHandle:
-        handle = _run(
+        handle = self._runner.run(
             self._async.start_workflow(
                 workflow_type=workflow_type,
                 task_queue=task_queue,
@@ -294,10 +343,10 @@ class Client:
                 compatibility=compatibility,
             )
         )
-        return SyncWorkflowHandle(handle)
+        return SyncWorkflowHandle(handle, self._runner)
 
     def describe_workflow(self, workflow_id: str) -> WorkflowExecution:
-        result: WorkflowExecution = _run(self._async.describe_workflow(workflow_id))
+        result: WorkflowExecution = self._runner.run(self._async.describe_workflow(workflow_id))
         return result
 
     def list_workflows(
@@ -309,7 +358,7 @@ class Client:
         page_size: int | None = None,
         next_page_token: str | None = None,
     ) -> WorkflowList:
-        result: WorkflowList = _run(
+        result: WorkflowList = self._runner.run(
             self._async.list_workflows(
                 workflow_type=workflow_type,
                 status=status,
@@ -321,15 +370,15 @@ class Client:
         return result
 
     def list_task_queues(self) -> TaskQueueList:
-        result: TaskQueueList = _run(self._async.list_task_queues())
+        result: TaskQueueList = self._runner.run(self._async.list_task_queues())
         return result
 
     def describe_task_queue(self, name: str) -> TaskQueueDescription:
-        result: TaskQueueDescription = _run(self._async.describe_task_queue(name))
+        result: TaskQueueDescription = self._runner.run(self._async.describe_task_queue(name))
         return result
 
     def list_task_queue_build_ids(self, task_queue: str) -> TaskQueueBuildIdRollout:
-        result: TaskQueueBuildIdRollout = _run(
+        result: TaskQueueBuildIdRollout = self._runner.run(
             self._async.list_task_queue_build_ids(task_queue)
         )
         return result
@@ -339,7 +388,7 @@ class Client:
         task_queue: str,
         build_id: str | None,
     ) -> TaskQueueBuildIdRolloutState:
-        result: TaskQueueBuildIdRolloutState = _run(
+        result: TaskQueueBuildIdRolloutState = self._runner.run(
             self._async.drain_task_queue_build_id(task_queue, build_id)
         )
         return result
@@ -349,7 +398,7 @@ class Client:
         task_queue: str,
         build_id: str | None,
     ) -> TaskQueueBuildIdRolloutState:
-        result: TaskQueueBuildIdRolloutState = _run(
+        result: TaskQueueBuildIdRolloutState = self._runner.run(
             self._async.promote_task_queue_build_id(task_queue, build_id)
         )
         return result
@@ -359,17 +408,17 @@ class Client:
         task_queue: str,
         build_id: str | None,
     ) -> TaskQueueBuildIdRolloutState:
-        result: TaskQueueBuildIdRolloutState = _run(
+        result: TaskQueueBuildIdRolloutState = self._runner.run(
             self._async.resume_task_queue_build_id(task_queue, build_id)
         )
         return result
 
     def list_namespaces(self) -> NamespaceList:
-        result: NamespaceList = _run(self._async.list_namespaces())
+        result: NamespaceList = self._runner.run(self._async.list_namespaces())
         return result
 
     def describe_namespace(self, name: str) -> NamespaceDescription:
-        result: NamespaceDescription = _run(self._async.describe_namespace(name))
+        result: NamespaceDescription = self._runner.run(self._async.describe_namespace(name))
         return result
 
     def create_namespace(
@@ -379,7 +428,7 @@ class Client:
         description: str | None = None,
         retention_days: int = 30,
     ) -> NamespaceDescription:
-        result: NamespaceDescription = _run(
+        result: NamespaceDescription = self._runner.run(
             self._async.create_namespace(
                 name,
                 description=description,
@@ -395,7 +444,7 @@ class Client:
         description: str | None = None,
         retention_days: int | None = None,
     ) -> NamespaceDescription:
-        result: NamespaceDescription = _run(
+        result: NamespaceDescription = self._runner.run(
             self._async.update_namespace(
                 name,
                 description=description,
@@ -405,7 +454,7 @@ class Client:
         return result
 
     def delete_namespace(self, name: str) -> NamespaceDescription:
-        result: NamespaceDescription = _run(self._async.delete_namespace(name))
+        result: NamespaceDescription = self._runner.run(self._async.delete_namespace(name))
         return result
 
     def set_namespace_external_storage(
@@ -418,7 +467,7 @@ class Client:
         config: dict[str, Any] | None = None,
         namespace: str | None = None,
     ) -> NamespaceDescription:
-        result: NamespaceDescription = _run(
+        result: NamespaceDescription = self._runner.run(
             self._async.set_namespace_external_storage(
                 name,
                 driver=driver,
@@ -437,7 +486,7 @@ class Client:
         small_payload_bytes: int | None = None,
         large_payload_bytes: int | None = None,
     ) -> StorageTestResult:
-        result: StorageTestResult = _run(
+        result: StorageTestResult = self._runner.run(
             self._async.test_external_storage(
                 driver=driver,
                 small_payload_bytes=small_payload_bytes,
@@ -447,37 +496,37 @@ class Client:
         return result
 
     def get_history(self, workflow_id: str, run_id: str) -> Any:
-        return _run(self._async.get_history(workflow_id, run_id))
+        return self._runner.run(self._async.get_history(workflow_id, run_id))
 
     def export_history(self, workflow_id: str, run_id: str) -> Any:
-        return _run(self._async.export_history(workflow_id, run_id))
+        return self._runner.run(self._async.export_history(workflow_id, run_id))
 
     def list_workflow_runs(self, workflow_id: str) -> WorkflowRunList:
-        result: WorkflowRunList = _run(self._async.list_workflow_runs(workflow_id))
+        result: WorkflowRunList = self._runner.run(self._async.list_workflow_runs(workflow_id))
         return result
 
     def describe_workflow_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
-        result: WorkflowRun = _run(self._async.describe_workflow_run(workflow_id, run_id))
+        result: WorkflowRun = self._runner.run(self._async.describe_workflow_run(workflow_id, run_id))
         return result
 
     def signal_workflow(self, workflow_id: str, signal_name: str, *, args: list[Any] | None = None) -> None:
-        _run(self._async.signal_workflow(workflow_id, signal_name, args=args))
+        self._runner.run(self._async.signal_workflow(workflow_id, signal_name, args=args))
 
     def query_workflow(self, workflow_id: str, query_name: str, *, args: list[Any] | None = None) -> Any:
-        return _run(self._async.query_workflow(workflow_id, query_name, args=args))
+        return self._runner.run(self._async.query_workflow(workflow_id, query_name, args=args))
 
     def cancel_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
-        _run(self._async.cancel_workflow(workflow_id, reason=reason))
+        self._runner.run(self._async.cancel_workflow(workflow_id, reason=reason))
 
     def terminate_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
-        _run(self._async.terminate_workflow(workflow_id, reason=reason))
+        self._runner.run(self._async.terminate_workflow(workflow_id, reason=reason))
 
     def repair_workflow(self, workflow_id: str) -> WorkflowCommandResult:
-        result: WorkflowCommandResult = _run(self._async.repair_workflow(workflow_id))
+        result: WorkflowCommandResult = self._runner.run(self._async.repair_workflow(workflow_id))
         return result
 
     def archive_workflow(self, workflow_id: str, *, reason: str | None = None) -> WorkflowCommandResult:
-        result: WorkflowCommandResult = _run(self._async.archive_workflow(workflow_id, reason=reason))
+        result: WorkflowCommandResult = self._runner.run(self._async.archive_workflow(workflow_id, reason=reason))
         return result
 
     def update_workflow(
@@ -490,7 +539,7 @@ class Client:
         wait_timeout_seconds: int | None = None,
         request_id: str | None = None,
     ) -> Any:
-        return _run(
+        return self._runner.run(
             self._async.update_workflow(
                 workflow_id,
                 update_name,
@@ -508,7 +557,7 @@ class Client:
         poll_interval: float = 0.5,
         timeout: float = 30.0,
     ) -> Any:
-        return _run(self._async.get_result(handle._handle, poll_interval=poll_interval, timeout=timeout))
+        return self._runner.run(self._async.get_result(handle._handle, poll_interval=poll_interval, timeout=timeout))
 
     # ── Standalone Activities ─────────────────────────────────────────
     def start_activity(
@@ -526,7 +575,7 @@ class Client:
         schedule_to_close_timeout_seconds: int | None = None,
         heartbeat_timeout_seconds: int | None = None,
     ) -> SyncStandaloneActivityHandle:
-        handle = _run(
+        handle = self._runner.run(
             self._async.start_activity(
                 activity_type=activity_type,
                 task_queue=task_queue,
@@ -541,7 +590,7 @@ class Client:
                 heartbeat_timeout_seconds=heartbeat_timeout_seconds,
             )
         )
-        return SyncStandaloneActivityHandle(handle)
+        return SyncStandaloneActivityHandle(handle, self._runner)
 
     def get_activity_handle(
         self,
@@ -557,11 +606,12 @@ class Client:
                 workflow_run_id=workflow_run_id,
                 activity_execution_id=activity_execution_id,
                 activity_type=activity_type,
-            )
+            ),
+            self._runner,
         )
 
     def describe_activity(self, activity_id: str) -> StandaloneActivityExecution:
-        result: StandaloneActivityExecution = _run(self._async.describe_activity(activity_id))
+        result: StandaloneActivityExecution = self._runner.run(self._async.describe_activity(activity_id))
         return result
 
     def list_activities(
@@ -571,7 +621,7 @@ class Client:
         page_size: int | None = None,
         next_page_token: str | None = None,
     ) -> StandaloneActivityList:
-        result: StandaloneActivityList = _run(
+        result: StandaloneActivityList = self._runner.run(
             self._async.list_activities(
                 status=status,
                 page_size=page_size,
@@ -587,7 +637,7 @@ class Client:
         poll_interval: float = 0.5,
         timeout: float = 30.0,
     ) -> Any:
-        return _run(
+        return self._runner.run(
             self._async.get_activity_result(
                 handle._handle,
                 poll_interval=poll_interval,
@@ -597,7 +647,9 @@ class Client:
 
     # ── Schedules ─────────────────────────────────────────────────────
     def get_schedule_handle(self, schedule_id: str) -> SyncScheduleHandle:
-        return SyncScheduleHandle(self._async.get_schedule_handle(schedule_id))
+        return SyncScheduleHandle(
+            self._async.get_schedule_handle(schedule_id), self._runner
+        )
 
     def create_schedule(
         self,
@@ -613,7 +665,7 @@ class Client:
         paused: bool = False,
         note: str | None = None,
     ) -> SyncScheduleHandle:
-        handle = _run(
+        handle = self._runner.run(
             self._async.create_schedule(
                 schedule_id=schedule_id,
                 spec=spec,
@@ -627,7 +679,7 @@ class Client:
                 note=note,
             )
         )
-        return SyncScheduleHandle(handle)
+        return SyncScheduleHandle(handle, self._runner)
 
     def list_schedules(
         self,
@@ -638,7 +690,7 @@ class Client:
         page_size: int | None = None,
         next_page_token: str | None = None,
     ) -> ScheduleList:
-        result: ScheduleList = _run(
+        result: ScheduleList = self._runner.run(
             self._async.list_schedules(
                 status=status,
                 workflow_type=workflow_type,
@@ -650,7 +702,7 @@ class Client:
         return result
 
     def describe_schedule(self, schedule_id: str) -> ScheduleDescription:
-        result: ScheduleDescription = _run(self._async.describe_schedule(schedule_id))
+        result: ScheduleDescription = self._runner.run(self._async.describe_schedule(schedule_id))
         return result
 
     def update_schedule(
@@ -666,7 +718,7 @@ class Client:
         search_attributes: dict[str, Any] | None = None,
         note: str | None = None,
     ) -> None:
-        _run(
+        self._runner.run(
             self._async.update_schedule(
                 schedule_id,
                 spec=spec,
@@ -681,17 +733,21 @@ class Client:
         )
 
     def pause_schedule(self, schedule_id: str, *, note: str | None = None) -> None:
-        _run(self._async.pause_schedule(schedule_id, note=note))
+        self._runner.run(self._async.pause_schedule(schedule_id, note=note))
 
     def resume_schedule(self, schedule_id: str, *, note: str | None = None) -> None:
-        _run(self._async.resume_schedule(schedule_id, note=note))
+        self._runner.run(self._async.resume_schedule(schedule_id, note=note))
 
     def trigger_schedule(self, schedule_id: str, *, overlap_policy: str | None = None) -> ScheduleTriggerResult:
-        result: ScheduleTriggerResult = _run(self._async.trigger_schedule(schedule_id, overlap_policy=overlap_policy))
+        result: ScheduleTriggerResult = self._runner.run(
+            self._async.trigger_schedule(
+                schedule_id, overlap_policy=overlap_policy
+            )
+        )
         return result
 
     def delete_schedule(self, schedule_id: str) -> None:
-        _run(self._async.delete_schedule(schedule_id))
+        self._runner.run(self._async.delete_schedule(schedule_id))
 
     def backfill_schedule(
         self,
@@ -701,7 +757,7 @@ class Client:
         end_time: str,
         overlap_policy: str | None = None,
     ) -> ScheduleBackfillResult:
-        result: ScheduleBackfillResult = _run(
+        result: ScheduleBackfillResult = self._runner.run(
             self._async.backfill_schedule(
                 schedule_id,
                 start_time=start_time,
