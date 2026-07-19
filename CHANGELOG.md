@@ -124,6 +124,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workers upgrade.
 
 ### Changed
+- Release-plan recovery now consumes immutable, exact-version release-note
+  preparation authority before publishing a newly recorded plan.
 - `tests/test_client.py` now closes the `schedule.history` polyglot
   parity slice. `test_get_schedule_history_matches_polyglot_fixture`
   asserts the full decoded payload envelope per event (`id`,
