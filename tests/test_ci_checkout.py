@@ -14,8 +14,8 @@ CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 @pytest.mark.parametrize(
     "runner_server_url",
-    ["https://github.com", "https://forgejo.example.test"],
-    ids=["github", "forgejo"],
+    ["https://github.com", "https://ci.example.test"],
+    ids=["github", "alternate-runner"],
 )
 @pytest.mark.parametrize(
     ("repository", "public_url"),

@@ -58,9 +58,9 @@ def health_server() -> Iterator[int]:
     ("runner_server_url", "docker_host", "expected_host"),
     [
         ("https://github.com", None, "localhost"),
-        ("https://forgejo.example.test", "127.0.0.1", "127.0.0.1"),
+        ("https://ci.example.test", "127.0.0.1", "127.0.0.1"),
     ],
-    ids=["github-localhost", "containerized-forgejo-docker-host"],
+    ids=["github-localhost", "containerized-alternate-runner-docker-host"],
 )
 def test_endpoint_selection_probes_the_runner_reachable_server(
     tmp_path: Path,
@@ -103,7 +103,7 @@ def test_endpoint_selection_probes_the_runner_reachable_server(
     assert expected_endpoint in result.stdout
 
 
-def test_containerized_forgejo_discovers_the_linux_docker_host_gateway(
+def test_containerized_alternate_runner_discovers_the_linux_docker_host_gateway(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -119,7 +119,7 @@ def test_containerized_forgejo_discovers_the_linux_docker_host_gateway(
 
     monkeypatch.setattr(endpoint_module, "_host_docker_internal", lambda: None)
     monkeypatch.setattr(endpoint_module, "_default_route_gateway", lambda: gateway)
-    candidates = endpoint_module.endpoint_candidates({"GITHUB_SERVER_URL": "https://forgejo.example.test"})
+    candidates = endpoint_module.endpoint_candidates({"GITHUB_SERVER_URL": "https://ci.example.test"})
 
     assert candidates == ["http://172.18.0.1:8080", "http://localhost:8080"]
 
