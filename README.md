@@ -2,12 +2,16 @@
 
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
-Status: **Beta** — production-readiness validation in progress for the first `1.0.0` release candidate. Core features implemented: workflows, activities, schedules, signals, timers, child workflows, continue-as-new, side effects, version markers, worker-applied accepted updates, replay-verify and history-bundle-verify CLIs, the in-process `WorkflowEnvironment` test harness, and invocable activity carriers for HTTP and serverless runtimes. Client calls for queries and updates exist; Python workflow-side query receiver metadata is available, while server-routed Python query execution and pre-accept update validator routing are still in progress on the server side. Full language-neutral protocol support for cross-PHP/Python orchestration is the release goal.
+Status: **Beta** — this SDK is part of the synchronized Durable Workflow
+`2.0.0-beta.3` product train. Core features include workflows, activities,
+schedules, signals, timers, child workflows, continue-as-new, side effects,
+version markers, worker-applied accepted updates, replay verification, the
+in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
 
 ## Install
 
 ```bash
-pip install durable-workflow
+pip install durable-workflow==2.0.0-beta.3
 ```
 
 Or for development:
@@ -577,8 +581,8 @@ Full documentation is available at
 
 ## Compatibility
 
-SDK version 0.4.x is compatible with servers that advertise these protocol
-manifests from `GET /api/cluster/info`:
+SDK version `2.0.0-beta.3` is supported with server `2.0.0-beta.3`. The server
+must advertise these protocol manifests from `GET /api/cluster/info`:
 
 - `control_plane.version: "2"`
 - `control_plane.request_contract.schema: durable-workflow.v2.control-plane-request.contract` version `1`

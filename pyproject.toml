@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "durable-workflow"
-version = "0.4.106"
+version = "2.0.0-beta.3"
 description = "Python SDK for the Durable Workflow server (language-neutral HTTP protocol)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -62,6 +62,13 @@ durable-workflow-history-bundle-verify = "durable_workflow.history_bundle_verify
 durable-workflow-python-conformance = "durable_workflow.python_conformance:main"
 durable-workflow-replay-conformance = "durable_workflow.replay_conformance:main"
 durable-workflow-workflow-updates-conformance = "durable_workflow.workflow_updates_conformance:main"
+
+[tool.durable-workflow]
+product-train = "2.0.0-beta.3"
+registry-version = "2.0.0b3"
+supported-server-versions = "2.0.0-beta.3"
+worker-protocol-version = "1.1"
+control-plane-version = "2"
 
 [tool.setuptools.packages.find]
 where = ["src"]
