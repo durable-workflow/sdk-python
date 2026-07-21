@@ -74,7 +74,7 @@ def test_publish_workflow_separates_publication_authority_from_docs_freshness() 
     assert '[[ ! "$REQUESTED_TAG" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+' in build_job
     assert 'if [ "$REQUESTED_TAG" != "$package_version" ]' in build_job
     assert 'if [ "$tag_commit" != "$head_commit" ]' in build_job
-    assert "pypa/gh-action-pypi-publish@release/v1" in publish_job
+    assert "pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247" in publish_job
     assert 'gh release create "$RELEASE_TAG"' in publish_job
     assert "DOCS_RELEASE_AUDIT_ENFORCEMENT: advisory" in docs_audit_job
     assert "DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json" in docs_audit_job
@@ -83,7 +83,7 @@ def test_publish_workflow_separates_publication_authority_from_docs_freshness() 
     assert "contents: write" not in docs_audit_job
     assert "if: always()" in docs_audit_job
     assert docs_audit_job.index("scripts/ci/check-docs-release-audit.sh") < docs_audit_job.index(
-        "actions/upload-artifact@v7"
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
     )
 
 

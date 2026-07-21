@@ -14,9 +14,8 @@ on:
         default: ''
 
 permissions:
-  actions: write
   attestations: read
-  contents: write
+  contents: read
 
 concurrency:
   group: release-plan-recovery-sdk-python-${{ inputs.plan_tag || 'latest' }}
@@ -27,8 +26,12 @@ jobs:
     name: Recover exact Python SDK release
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      actions: write
+      attestations: read
+      contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
       - name: Discover plan and verify upstream public artifacts
         id: recovery
@@ -99,7 +102,7 @@ jobs:
 
       - name: Retain recovery evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: sdk-python-release-recovery-${{ steps.recovery.outputs.plan || github.run_id }}
           path: |
