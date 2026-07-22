@@ -48,8 +48,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     outputs:
+      artifact-digest: ${{ steps.privileged-handoff.outputs.artifact-digest }}
+      artifact-id: ${{ steps.privileged-handoff.outputs.artifact-id }}
       release_tag: ${{ steps.release_source.outputs.tag }}
       release_commit: ${{ steps.release_source.outputs.commit }}
+      source-run-attempt: ${{ github.run_attempt }}
+      source-run-id: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
@@ -124,6 +128,17 @@ jobs:
           name: dist
           path: dist/
 
+      - name: Package the privileged PyPI handoff as one immutable file
+        run: tar -cf dist-handoff.tar -C dist .
+
+      - name: Bind the privileged PyPI handoff identity and digest
+        id: privileged-handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          archive: false
+          if-no-files-found: error
+          path: dist-handoff.tar
+
   publish:
     needs: build
     runs-on: ubuntu-latest
@@ -133,14 +148,68 @@ jobs:
        github.ref == 'refs/heads/main' && inputs.publish)
     environment: pypi
     permissions:
+      actions: read
       contents: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
-          name: dist
-          path: dist/
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          digest-mismatch: error
+          github-token: ${{ github.token }}
+          path: isolated-python-dist
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.build.outputs.source-run-id }}
+
+      - name: Validate the exact producer artifact before use
+        env:
+          ARTIFACT_DIRECTORY: isolated-python-dist
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.build.outputs.artifact-digest }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
+          EXPECTED_SOURCE_RUN_ATTEMPT: ${{ needs.build.outputs.source-run-attempt }}
+          EXPECTED_SOURCE_RUN_ID: ${{ needs.build.outputs.source-run-id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            printf 'producer artifact digest is not an exact SHA-256 digest\n' >&2
+            exit 1
+          fi
+          for identity in "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"; do
+            if [[ ! "$identity" =~ ^[1-9][0-9]*$ ]]; then
+              printf 'producer artifact identity is invalid\n' >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$ARTIFACT_DIRECTORY" =~ ^isolated-[a-z0-9][a-z0-9._-]*$ ]]; then
+            printf 'artifact validation directory is unsafe\n' >&2
+            exit 1
+          fi
+          mapfile -d '' entries < <(
+            /usr/bin/find "$ARTIFACT_DIRECTORY" -mindepth 1 -maxdepth 1 -print0
+          )
+          if [ "${#entries[@]}" -ne 1 ] || [ ! -f "${entries[0]}" ] || [ -L "${entries[0]}" ]; then
+            printf 'artifact handoff must contain exactly one regular file\n' >&2
+            exit 1
+          fi
+          observed_digest="$(/usr/bin/sha256sum "${entries[0]}")"
+          observed_digest="${observed_digest%% *}"
+          if [ "$observed_digest" != "$EXPECTED_ARTIFACT_DIGEST" ]; then
+            printf 'artifact digest mismatch: expected %s, got %s\n' \
+              "$EXPECTED_ARTIFACT_DIGEST" "$observed_digest" >&2
+            exit 1
+          fi
+          printf 'validated artifact %s from run %s attempt %s\n' \
+            "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"
+
+      - name: Extract the validated PyPI handoff
+        run: |
+          mkdir dist
+          tar -xf isolated-python-dist/dist-handoff.tar -C dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247  # release/v1
@@ -200,11 +269,69 @@ jobs:
       github.ref == 'refs/heads/main' &&
       !inputs.dry_run && !inputs.publish
     environment: test-pypi
+    permissions:
+      actions: read
+      contents: read
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
-          name: dist
-          path: dist/
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          digest-mismatch: error
+          github-token: ${{ github.token }}
+          path: isolated-python-dist
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.build.outputs.source-run-id }}
+
+      - name: Validate the exact producer artifact before use
+        env:
+          ARTIFACT_DIRECTORY: isolated-python-dist
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.build.outputs.artifact-digest }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
+          EXPECTED_SOURCE_RUN_ATTEMPT: ${{ needs.build.outputs.source-run-attempt }}
+          EXPECTED_SOURCE_RUN_ID: ${{ needs.build.outputs.source-run-id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            printf 'producer artifact digest is not an exact SHA-256 digest\n' >&2
+            exit 1
+          fi
+          for identity in "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"; do
+            if [[ ! "$identity" =~ ^[1-9][0-9]*$ ]]; then
+              printf 'producer artifact identity is invalid\n' >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$ARTIFACT_DIRECTORY" =~ ^isolated-[a-z0-9][a-z0-9._-]*$ ]]; then
+            printf 'artifact validation directory is unsafe\n' >&2
+            exit 1
+          fi
+          mapfile -d '' entries < <(
+            /usr/bin/find "$ARTIFACT_DIRECTORY" -mindepth 1 -maxdepth 1 -print0
+          )
+          if [ "${#entries[@]}" -ne 1 ] || [ ! -f "${entries[0]}" ] || [ -L "${entries[0]}" ]; then
+            printf 'artifact handoff must contain exactly one regular file\n' >&2
+            exit 1
+          fi
+          observed_digest="$(/usr/bin/sha256sum "${entries[0]}")"
+          observed_digest="${observed_digest%% *}"
+          if [ "$observed_digest" != "$EXPECTED_ARTIFACT_DIGEST" ]; then
+            printf 'artifact digest mismatch: expected %s, got %s\n' \
+              "$EXPECTED_ARTIFACT_DIGEST" "$observed_digest" >&2
+            exit 1
+          fi
+          printf 'validated artifact %s from run %s attempt %s\n' \
+            "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"
+
+      - name: Extract the validated TestPyPI handoff
+        run: |
+          mkdir dist
+          tar -xf isolated-python-dist/dist-handoff.tar -C dist
 
       - name: Publish to TestPyPI
         uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247  # release/v1
