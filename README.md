@@ -3,7 +3,7 @@
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
 Status: **Beta** — this SDK is part of the synchronized Durable Workflow
-`2.0.0-beta.4` product train. Core features include workflows, activities,
+`2.0.0-beta.5` product train. Core features include workflows, activities,
 schedules, signals, timers, child workflows, continue-as-new, side effects,
 version markers, worker-applied accepted updates, replay verification, the
 in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
@@ -11,7 +11,7 @@ in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
 ## Install
 
 ```bash
-pip install durable-workflow==2.0.0-beta.4
+pip install durable-workflow==2.0.0-beta.5
 ```
 
 Or for development:
@@ -581,7 +581,7 @@ Full documentation is available at
 
 ## Compatibility
 
-SDK version `2.0.0-beta.4` is supported with server `2.0.0-beta.4`. The server
+SDK version `2.0.0-beta.5` is supported with server `2.0.0-beta.5`. The server
 must advertise these protocol manifests from `GET /api/cluster/info`:
 
 - `control_plane.version: "2"`
