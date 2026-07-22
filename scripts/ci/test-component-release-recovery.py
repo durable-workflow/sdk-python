@@ -309,16 +309,20 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
 
     def assert_rejected(self, source: str) -> None:
         with self.assertRaises(self.recovery.RecoveryError) as caught:
-            self.recovery.verify_recovery_workflow_source("sdk-rust", source)
+            self.recovery.verify_recovery_workflow_source(
+                "sdk-rust",
+                source,
+                hashlib.sha256(CURRENT_RUST_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest(),
+            )
         self.assertEqual(caught.exception.phase, "default-branch-preflight")
 
     def test_accepts_only_the_current_protected_rust_workflow_identity(self) -> None:
         digest = hashlib.sha256(CURRENT_RUST_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
-        self.assertEqual(digest, self.recovery.SDK_RUST_RELEASE_RECOVERY_SHA256)
-        self.recovery.verify_recovery_workflow_source("sdk-rust", CURRENT_RUST_RECOVERY_WORKFLOW)
+        self.recovery.verify_recovery_workflow_source("sdk-rust", CURRENT_RUST_RECOVERY_WORKFLOW, digest)
         self.recovery.verify_recovery_workflow_source(
             "sdk-rust",
             CURRENT_RUST_RECOVERY_WORKFLOW.replace("\n", "\r\n"),
+            digest,
         )
 
     def test_rejects_shell_semantic_bypasses_and_any_source_mutation(self) -> None:
@@ -547,20 +551,24 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
                 self.assert_rejected(variant)
 
     def test_other_components_keep_the_contents_api_contract(self) -> None:
-        self.recovery.verify_recovery_workflow_source("server", GENERIC_RECOVERY_WORKFLOW)
+        expected_sha256 = hashlib.sha256(GENERIC_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
+        self.recovery.verify_recovery_workflow_source(
+            "server", GENERIC_RECOVERY_WORKFLOW, expected_sha256
+        )
 
         protected_only = GENERIC_RECOVERY_WORKFLOW.replace(
             '-f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"',
             'python scripts/ci/publish-planned-tag.py --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"',
         )
         with self.assertRaises(self.recovery.RecoveryError):
-            self.recovery.verify_recovery_workflow_source("server", protected_only)
+            self.recovery.verify_recovery_workflow_source("server", protected_only, expected_sha256)
 
     def test_python_recovery_dispatches_publication_from_protected_main(self) -> None:
         recovery_source = RECOVERY_WORKFLOW.read_text()
         publish_source = PUBLISH_WORKFLOW.read_text()
+        expected_sha256 = hashlib.sha256(recovery_source.encode("utf-8")).hexdigest()
 
-        self.recovery.verify_recovery_workflow_source("sdk-python", recovery_source)
+        self.recovery.verify_recovery_workflow_source("sdk-python", recovery_source, expected_sha256)
         self.assertIn("gh workflow run publish.yml --ref main", recovery_source)
         self.assertNotIn('gh workflow run publish.yml --ref "$RELEASE_TAG"', recovery_source)
         self.assertIn('-f release_tag="$RELEASE_TAG"', recovery_source)
@@ -583,7 +591,9 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
         )
         for invalid_source in invalid_recovery_sources:
             with self.assertRaises(self.recovery.RecoveryError):
-                self.recovery.verify_recovery_workflow_source("sdk-python", invalid_source)
+                self.recovery.verify_recovery_workflow_source(
+                    "sdk-python", invalid_source, expected_sha256
+                )
 
 
 class PublicationRunSelectionTest(unittest.TestCase):
