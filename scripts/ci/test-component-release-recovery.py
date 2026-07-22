@@ -564,14 +564,22 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
         self.assertIn("gh workflow run publish.yml --ref main", recovery_source)
         self.assertNotIn('gh workflow run publish.yml --ref "$RELEASE_TAG"', recovery_source)
         self.assertIn('-f release_tag="$RELEASE_TAG"', recovery_source)
+        self.assertIn('-f release_commit="$RELEASE_COMMIT"', recovery_source)
+        self.assertIn('--release-plan "$PLAN_TAG"', recovery_source)
+        self.assertIn("&& 'Publish' || 'Build'", publish_source)
+        self.assertIn("inputs.release_commit || github.sha", publish_source)
         self.assertIn("github.ref == 'refs/heads/main' && inputs.publish", publish_source)
         self.assertIn("format('refs/tags/{0}', inputs.release_tag)", publish_source)
         self.assertIn('if [ "$REQUESTED_TAG" != "$package_version" ]', publish_source)
         self.assertIn('tag_commit="$(git rev-list -n 1 "$REQUESTED_TAG")"', publish_source)
+        self.assertIn('if [ "$tag_commit" != "$REQUESTED_COMMIT" ]', publish_source)
 
         invalid_recovery_sources = (
             recovery_source.replace("--ref main", '--ref "$RELEASE_TAG"', 1),
             recovery_source.replace('-f release_tag="$RELEASE_TAG"', '-f release_tag="$GITHUB_REF_NAME"', 1),
+            recovery_source.replace('--release-plan "$PLAN_TAG"', '--release-plan "$RELEASE_TAG"', 1),
+            recovery_source.replace('-f release_commit="$RELEASE_COMMIT"', '-f release_commit="$GITHUB_SHA"', 1),
+            recovery_source.replace('-f publish=true', '-f publish=false', 1),
         )
         for invalid_source in invalid_recovery_sources:
             with self.assertRaises(self.recovery.RecoveryError):
@@ -581,6 +589,7 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
 class PublicationRunSelectionTest(unittest.TestCase):
     RELEASE_TAG = "1.2.3"
     RELEASE_COMMIT = "1" * 40
+    PLAN_TAG = "release-plan/continuity-plan-b"
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -593,11 +602,23 @@ class PublicationRunSelectionTest(unittest.TestCase):
         status: str,
         conclusion: str | None,
         head_sha: str | None = None,
-        plan: str = "release-plan/continuity-plan-a",
+        plan: str | None = None,
+        release_tag: str | None = None,
+        release_commit: str | None = None,
+        publish: bool = True,
+        legacy_title: bool = False,
     ) -> dict[str, object]:
+        exact_tag = release_tag or self.RELEASE_TAG
+        exact_commit = release_commit or self.RELEASE_COMMIT
+        exact_plan = plan or self.PLAN_TAG
+        if legacy_title:
+            display_title = f"Release {exact_tag} for {exact_plan}"
+        else:
+            action = "Publish" if publish else "Build"
+            display_title = f"{action} {exact_tag}@{exact_commit} from {exact_plan}"
         return {
             "databaseId": run_id,
-            "displayTitle": f"Release {self.RELEASE_TAG} for {plan}",
+            "displayTitle": display_title,
             "headBranch": "main",
             "headSha": head_sha or "2" * 40,
             "status": status,
@@ -605,10 +626,24 @@ class PublicationRunSelectionTest(unittest.TestCase):
         }
 
     def select(self, runs: list[dict[str, object]]) -> dict[str, object]:
-        return self.recovery.select_publication_run(self.RELEASE_TAG, self.RELEASE_COMMIT, runs)
+        return self.recovery.select_publication_run(
+            self.RELEASE_TAG,
+            self.RELEASE_COMMIT,
+            self.PLAN_TAG,
+            runs,
+        )
 
     def test_failed_plan_a_dispatches_current_plan_b_once(self) -> None:
-        selection = self.select([self.run_metadata(1, status="completed", conclusion="failure")])
+        selection = self.select(
+            [
+                self.run_metadata(
+                    1,
+                    status="completed",
+                    conclusion="failure",
+                    plan="release-plan/continuity-plan-a",
+                )
+            ]
+        )
 
         self.assertEqual(
             selection,
@@ -621,7 +656,8 @@ class PublicationRunSelectionTest(unittest.TestCase):
             "gh run list --workflow publish.yml --event workflow_dispatch --branch main",
             workflow,
         )
-        self.assertIn('-f release_tag="$RELEASE_TAG" -f release_plan="$PLAN_TAG" -f publish=true', workflow)
+        self.assertIn('-f release_tag="$RELEASE_TAG" -f release_commit="$RELEASE_COMMIT"', workflow)
+        self.assertIn('-f release_plan="$PLAN_TAG" -f publish=true', workflow)
         self.assertNotIn("gh run rerun", workflow)
 
     def test_active_exact_run_waits_and_successful_exact_run_completes(self) -> None:
@@ -632,13 +668,44 @@ class PublicationRunSelectionTest(unittest.TestCase):
         successful = self.run_metadata(3, status="completed", conclusion="success")
         self.assertEqual(self.select([failed, successful])["action"], "complete")
 
-    def test_non_main_or_different_release_runs_are_ignored(self) -> None:
+    def test_successful_publish_false_run_does_not_complete_publication(self) -> None:
+        build_only = self.run_metadata(4, status="completed", conclusion="success", publish=False)
+        legacy_build_only = self.run_metadata(
+            3,
+            status="completed",
+            conclusion="success",
+            publish=False,
+            legacy_title=True,
+        )
+
+        self.assertEqual(self.select([legacy_build_only, build_only])["action"], "dispatch")
+
+    def test_non_main_or_different_release_identity_runs_are_ignored(self) -> None:
         tag_context = self.run_metadata(1, status="completed", conclusion="success")
         tag_context["headBranch"] = self.RELEASE_TAG
-        different_release = self.run_metadata(2, status="completed", conclusion="success")
-        different_release["displayTitle"] = "Release 9.9.9 for release-plan/continuity-plan-a"
+        different_tag = self.run_metadata(
+            2,
+            status="completed",
+            conclusion="success",
+            release_tag="9.9.9",
+        )
+        different_commit = self.run_metadata(
+            3,
+            status="completed",
+            conclusion="success",
+            release_commit="9" * 40,
+        )
+        different_plan = self.run_metadata(
+            4,
+            status="completed",
+            conclusion="success",
+            plan="release-plan/continuity-plan-a",
+        )
 
-        self.assertEqual(self.select([tag_context, different_release])["action"], "dispatch")
+        self.assertEqual(
+            self.select([tag_context, different_tag, different_commit, different_plan])["action"],
+            "dispatch",
+        )
 
     def test_fresh_dispatch_keeps_partial_publication_idempotent(self) -> None:
         workflow = PUBLISH_WORKFLOW.read_text()

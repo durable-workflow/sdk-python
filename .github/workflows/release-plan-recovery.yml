@@ -84,6 +84,7 @@ jobs:
               > publication-runs.json
             decision="$(python scripts/ci/component-release-recovery.py select-publication-run \
               --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+              --release-plan "$PLAN_TAG" \
               --runs publication-runs.json)"
             IFS=$'\t' read -r publication_action run_id status conclusion <<< "$decision"
             if [ "$publication_action" != dispatch ]; then
@@ -95,7 +96,8 @@ jobs:
           done
           if [ "$publication_action" = dispatch ]; then
             gh workflow run publish.yml --ref main \
-              -f release_tag="$RELEASE_TAG" -f release_plan="$PLAN_TAG" -f publish=true
+              -f release_tag="$RELEASE_TAG" -f release_commit="$RELEASE_COMMIT" \
+              -f release_plan="$PLAN_TAG" -f publish=true
           else
             printf 'Durable publication run %s is %s/%s; no duplicate dispatch is needed.\n' \
               "$run_id" "$status" "${conclusion:-pending}"

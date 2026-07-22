@@ -1,6 +1,9 @@
 name: Publish to PyPI
 
-run-name: Release ${{ inputs.release_tag || github.ref_name }} for ${{ inputs.release_plan || 'direct' }}
+run-name: >-
+  ${{ (github.event_name == 'push' || inputs.publish) && 'Publish' || 'Build' }}
+  ${{ inputs.release_tag || github.ref_name }}@${{ inputs.release_commit || github.sha }}
+  from ${{ inputs.release_plan || 'direct' }}
 
 on:
   push:
@@ -10,6 +13,11 @@ on:
     inputs:
       release_tag:
         description: 'Existing immutable SDK release tag; empty permits a build-only run'
+        required: false
+        type: string
+        default: ''
+      release_commit:
+        description: 'Expected commit for a release-plan publication'
         required: false
         type: string
         default: ''
@@ -54,6 +62,7 @@ jobs:
         id: release_source
         env:
           REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          REQUESTED_COMMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.release_commit || '' }}
           PUBLISH_REQUESTED: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
           set -euo pipefail
@@ -73,6 +82,17 @@ jobs:
               printf 'release tag %s points to %s, not checkout commit %s\n' \
                 "$REQUESTED_TAG" "$tag_commit" "$head_commit" >&2
               exit 1
+            fi
+            if [ -n "$REQUESTED_COMMIT" ]; then
+              if [[ ! "$REQUESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+                printf 'release commit must be an exact Git object ID: %s\n' "$REQUESTED_COMMIT" >&2
+                exit 1
+              fi
+              if [ "$tag_commit" != "$REQUESTED_COMMIT" ]; then
+                printf 'release tag %s points to %s, not requested commit %s\n' \
+                  "$REQUESTED_TAG" "$tag_commit" "$REQUESTED_COMMIT" >&2
+                exit 1
+              fi
             fi
           else
             REQUESTED_TAG="$package_version"

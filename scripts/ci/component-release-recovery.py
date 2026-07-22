@@ -802,28 +802,45 @@ def verify_recovery_workflow_source(name: str, source: str) -> None:
             f"{component.repository} publication must retain the declared release tag input",
             "default-branch-preflight",
         )
+    if name == "sdk-python":
+        required_bindings = (
+            '--release-plan "$PLAN_TAG"',
+            '-f release_commit="$RELEASE_COMMIT"',
+            '-f release_plan="$PLAN_TAG"',
+            "-f publish=true",
+        )
+        if any(source.find(binding, selector_at) < 0 for binding in required_bindings):
+            raise RecoveryError(
+                f"{component.repository} publication must bind run selection and dispatch "
+                "to the exact publishing request",
+                "default-branch-preflight",
+            )
 
 
 def select_publication_run(
     release_tag: str,
     release_commit: str,
+    release_plan: str,
     runs: Any,
 ) -> dict[str, Any]:
     if not VERSION_PATTERN.fullmatch(release_tag) or not COMMIT_PATTERN.fullmatch(release_commit):
         raise RecoveryError("publication run selection requires an exact release identity", "publication")
+    if not release_plan.startswith(PLAN_TAG_PREFIX) or not PLAN_PATTERN.fullmatch(
+        release_plan.removeprefix(PLAN_TAG_PREFIX)
+    ):
+        raise RecoveryError("publication run selection requires an exact release plan", "publication")
     if not isinstance(runs, list):
         raise RecoveryError("publication run metadata must be a JSON array", "publication")
 
-    # A protected-main dispatch reports main's head SHA; the exact release
-    # commit is instead enforced by the immutable tag checkout in publish.yml.
-    expected_title_prefix = f"Release {release_tag} for "
+    # A protected-main dispatch reports main's head SHA, so publish.yml carries
+    # the immutable release identity and publication intent in the run title.
+    expected_title = f"Publish {release_tag}@{release_commit} from {release_plan}"
     exact_runs: list[dict[str, Any]] = []
     for run in runs:
         if (
             not isinstance(run, dict)
             or run.get("headBranch") != COMPONENTS["sdk-python"].default_branch
-            or not isinstance(run.get("displayTitle"), str)
-            or not run["displayTitle"].startswith(expected_title_prefix)
+            or run.get("displayTitle") != expected_title
         ):
             continue
         if (
@@ -1488,6 +1505,7 @@ def main() -> int:
     select_run = subparsers.add_parser("select-publication-run")
     select_run.add_argument("--release-tag", required=True)
     select_run.add_argument("--release-commit", required=True)
+    select_run.add_argument("--release-plan", required=True)
     select_run.add_argument("--runs", required=True, type=Path)
 
     args = parser.parse_args()
@@ -1499,7 +1517,7 @@ def main() -> int:
                 runs = json.loads(args.runs.read_bytes())
             except (OSError, json.JSONDecodeError) as error:
                 raise RecoveryError(f"cannot read publication run metadata: {error}", "publication") from error
-            selection = select_publication_run(args.release_tag, args.release_commit, runs)
+            selection = select_publication_run(args.release_tag, args.release_commit, args.release_plan, runs)
             print(
                 "\t".join(
                     str(selection.get(field) or "")
