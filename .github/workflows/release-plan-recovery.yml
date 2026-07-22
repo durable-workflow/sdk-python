@@ -24,6 +24,7 @@ concurrency:
 jobs:
   recover:
     name: Recover exact Python SDK release
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -78,7 +79,7 @@ jobs:
           set -euo pipefail
           decision=
           for attempt in 1 2 3 4 5 6; do
-            gh run list --workflow publish.yml --limit 100 \
+            gh run list --workflow publish.yml --event workflow_dispatch --branch main --limit 100 \
               --json databaseId,displayTitle,headBranch,headSha,status,conclusion \
               > publication-runs.json
             decision="$(python scripts/ci/component-release-recovery.py select-publication-run \
@@ -93,7 +94,7 @@ jobs:
             fi
           done
           if [ "$publication_action" = dispatch ]; then
-            gh workflow run publish.yml --ref "$RELEASE_TAG" \
+            gh workflow run publish.yml --ref main \
               -f release_tag="$RELEASE_TAG" -f release_plan="$PLAN_TAG" -f publish=true
           else
             printf 'Durable publication run %s is %s/%s; no duplicate dispatch is needed.\n' \

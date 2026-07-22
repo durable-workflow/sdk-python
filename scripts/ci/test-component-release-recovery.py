@@ -12,7 +12,10 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
-from cli_release_verifier_contract import CliRecoveryWorkflowSourceTest, CliReleaseAuthorityTest
+from cli_release_verifier_contract import (  # noqa: F401 - imported for unittest discovery
+    CliRecoveryWorkflowSourceTest,
+    CliReleaseAuthorityTest,
+)
 
 RECOVERY_SCRIPT = Path(__file__).with_name("component-release-recovery.py")
 RUST_WORKFLOW_FIXTURE = Path(__file__).with_name("sdk-rust-release-plan-recovery.fixture.yml")
@@ -433,8 +436,8 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
                 1,
             ),
             "run identity includes an unapproved field": source.replace(
-                "databaseId,displayTitle,headBranch,headSha,status,conclusion",
-                "databaseId,displayTitle,headBranch,headSha,status,conclusion,event",
+                "databaseId,event,displayTitle,headBranch,headSha,status,conclusion",
+                "databaseId,event,displayTitle,headBranch,headSha,status,conclusion,actor",
                 1,
             ),
         }
@@ -553,6 +556,27 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
         with self.assertRaises(self.recovery.RecoveryError):
             self.recovery.verify_recovery_workflow_source("server", protected_only)
 
+    def test_python_recovery_dispatches_publication_from_protected_main(self) -> None:
+        recovery_source = RECOVERY_WORKFLOW.read_text()
+        publish_source = PUBLISH_WORKFLOW.read_text()
+
+        self.recovery.verify_recovery_workflow_source("sdk-python", recovery_source)
+        self.assertIn("gh workflow run publish.yml --ref main", recovery_source)
+        self.assertNotIn('gh workflow run publish.yml --ref "$RELEASE_TAG"', recovery_source)
+        self.assertIn('-f release_tag="$RELEASE_TAG"', recovery_source)
+        self.assertIn("github.ref == 'refs/heads/main' && inputs.publish", publish_source)
+        self.assertIn("format('refs/tags/{0}', inputs.release_tag)", publish_source)
+        self.assertIn('if [ "$REQUESTED_TAG" != "$package_version" ]', publish_source)
+        self.assertIn('tag_commit="$(git rev-list -n 1 "$REQUESTED_TAG")"', publish_source)
+
+        invalid_recovery_sources = (
+            recovery_source.replace("--ref main", '--ref "$RELEASE_TAG"', 1),
+            recovery_source.replace('-f release_tag="$RELEASE_TAG"', '-f release_tag="$GITHUB_REF_NAME"', 1),
+        )
+        for invalid_source in invalid_recovery_sources:
+            with self.assertRaises(self.recovery.RecoveryError):
+                self.recovery.verify_recovery_workflow_source("sdk-python", invalid_source)
+
 
 class PublicationRunSelectionTest(unittest.TestCase):
     RELEASE_TAG = "1.2.3"
@@ -568,14 +592,14 @@ class PublicationRunSelectionTest(unittest.TestCase):
         *,
         status: str,
         conclusion: str | None,
-        commit: str | None = None,
+        head_sha: str | None = None,
         plan: str = "release-plan/continuity-plan-a",
     ) -> dict[str, object]:
         return {
             "databaseId": run_id,
             "displayTitle": f"Release {self.RELEASE_TAG} for {plan}",
-            "headBranch": self.RELEASE_TAG,
-            "headSha": commit or self.RELEASE_COMMIT,
+            "headBranch": "main",
+            "headSha": head_sha or "2" * 40,
             "status": status,
             "conclusion": conclusion,
         }
@@ -592,6 +616,11 @@ class PublicationRunSelectionTest(unittest.TestCase):
         )
         workflow = RECOVERY_WORKFLOW.read_text()
         self.assertEqual(workflow.count("gh workflow run publish.yml"), 1)
+        self.assertIn("gh workflow run publish.yml --ref main", workflow)
+        self.assertIn(
+            "gh run list --workflow publish.yml --event workflow_dispatch --branch main",
+            workflow,
+        )
         self.assertIn('-f release_tag="$RELEASE_TAG" -f release_plan="$PLAN_TAG" -f publish=true', workflow)
         self.assertNotIn("gh run rerun", workflow)
 
@@ -603,13 +632,13 @@ class PublicationRunSelectionTest(unittest.TestCase):
         successful = self.run_metadata(3, status="completed", conclusion="success")
         self.assertEqual(self.select([failed, successful])["action"], "complete")
 
-    def test_moved_source_tag_is_rejected(self) -> None:
-        moved = self.run_metadata(1, status="completed", conclusion="failure", commit="a" * 40)
+    def test_non_main_or_different_release_runs_are_ignored(self) -> None:
+        tag_context = self.run_metadata(1, status="completed", conclusion="success")
+        tag_context["headBranch"] = self.RELEASE_TAG
+        different_release = self.run_metadata(2, status="completed", conclusion="success")
+        different_release["displayTitle"] = "Release 9.9.9 for release-plan/continuity-plan-a"
 
-        with self.assertRaises(self.recovery.RecoveryError) as caught:
-            self.select([moved])
-
-        self.assertEqual(caught.exception.phase, "publication")
+        self.assertEqual(self.select([tag_context, different_release])["action"], "dispatch")
 
     def test_fresh_dispatch_keeps_partial_publication_idempotent(self) -> None:
         workflow = PUBLISH_WORKFLOW.read_text()

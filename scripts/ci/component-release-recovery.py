@@ -59,14 +59,14 @@ PYTHON_SOURCE_MANIFEST = {"path": "pyproject.toml", "package": "durable-workflow
 # SHA-256 of durable-workflow/cli's protected release recovery workflow.
 # Exact source identity is required because source-pattern matching cannot
 # prove that tag creation remains inside the protected repository authority.
-CLI_RELEASE_RECOVERY_SHA256 = "29fde398856e0db8c43c14dc3c3544fcb21ad9c79db71661db1637e8f89c588a"
+CLI_RELEASE_RECOVERY_SHA256 = "de1e7f37bcbadf3644b53d127abcae11ec823fd6602a682a58617c6b257dae11"
 
 # SHA-256 of durable-workflow/sdk-rust's prepared-plan recovery workflow. The
 # verifier normalizes only
 # CRLF line endings to LF before hashing. Exact source identity is the bounded
 # security contract because arbitrary shell execution cannot be proven safe by
 # source-pattern matching.
-SDK_RUST_RELEASE_RECOVERY_SHA256 = "0055b197f7ef3f826275bd5514a33891a9cbf10f5d74b9fefa1647f5eefe868a"
+SDK_RUST_RELEASE_RECOVERY_SHA256 = "d6bca15d3f09aa3e7ecf6fc796b81a008e3e4cba2fdea10391f8ede0cab3548c"
 
 
 @dataclass(frozen=True)
@@ -772,8 +772,10 @@ def verify_recovery_workflow_source(name: str, source: str) -> None:
     if component.release_workflow is None:
         return
 
+    dispatch_ref = component.default_branch if name == "sdk-python" else '"$RELEASE_TAG"'
     dispatch = re.search(
-        rf'gh\s+workflow\s+run\s+{re.escape(component.release_workflow)}\s+--ref\s+"\$RELEASE_TAG"',
+        rf"gh\s+workflow\s+run\s+{re.escape(component.release_workflow)}\s+--ref\s+"
+        rf"{re.escape(dispatch_ref)}(?=\s|$)",
         source,
     )
     tag_ref_at = source.find('-f ref="refs/tags/$RELEASE_TAG"')
@@ -791,7 +793,7 @@ def verify_recovery_workflow_source(name: str, source: str) -> None:
     ):
         raise RecoveryError(
             f"{component.repository} publication must create or verify the declared source tag "
-            "before dispatching in its exact tag context",
+            "before dispatching from its protected publication source",
             "default-branch-preflight",
         )
     release_input = f'-f {component.release_tag_input}="$RELEASE_TAG"'
@@ -812,16 +814,24 @@ def select_publication_run(
     if not isinstance(runs, list):
         raise RecoveryError("publication run metadata must be a JSON array", "publication")
 
+    # A protected-main dispatch reports main's head SHA; the exact release
+    # commit is instead enforced by the immutable tag checkout in publish.yml.
+    expected_title_prefix = f"Release {release_tag} for "
     exact_runs: list[dict[str, Any]] = []
     for run in runs:
-        if not isinstance(run, dict) or run.get("headBranch") != release_tag:
+        if (
+            not isinstance(run, dict)
+            or run.get("headBranch") != COMPONENTS["sdk-python"].default_branch
+            or not isinstance(run.get("displayTitle"), str)
+            or not run["displayTitle"].startswith(expected_title_prefix)
+        ):
             continue
-        if run.get("headSha") != release_commit:
-            raise RecoveryError(
-                f"publication run {run.get('databaseId')} for {release_tag} is bound to a different source commit",
-                "publication",
-            )
-        if not isinstance(run.get("databaseId"), int) or not isinstance(run.get("status"), str):
+        if (
+            not isinstance(run.get("databaseId"), int)
+            or not isinstance(run.get("headSha"), str)
+            or not COMMIT_PATTERN.fullmatch(run["headSha"])
+            or not isinstance(run.get("status"), str)
+        ):
             raise RecoveryError("publication run metadata is incomplete", "publication")
         exact_runs.append(run)
 
