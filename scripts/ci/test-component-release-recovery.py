@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import sys
+import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
@@ -1588,38 +1589,301 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
                 ):
                     self.recovery.accepted_continuity_supersession(mock.Mock(), authority)
 
-    def test_explicit_terminal_plan_is_rejected_before_preflight(self) -> None:
+    def assert_explicit_terminal_recovery_rejected(
+        self,
+        *,
+        requested_tag: str,
+        plans: dict[str, dict[str, object]],
+        commits: dict[str, str],
+        recorded_at: dict[str, dt.datetime],
+        references: dict[str, str],
+        records: dict[tuple[str, str, str], dict[str, object]],
+        github_responses: list[object],
+    ) -> None:
+        candidate = plans[requested_tag]
+        preparation = {
+            "components": {
+                "sdk-python": {
+                    "release_notes": {
+                        "release_date": "2026-07-23",
+                        "sha256": "c" * 64,
+                        "source": {},
+                    }
+                }
+            }
+        }
+        component = self.recovery.COMPONENTS["sdk-python"]
+        publication_preflight = mock.Mock(side_effect=self.recovery.NotFound("Python package is absent"))
+        client = mock.Mock()
+        client.json.side_effect = [{"tag_name": requested_tag}, *github_responses]
+
+        def resolve_reference(
+            _client: mock.Mock,
+            repository: str,
+            tag: str,
+        ) -> str | None:
+            if repository == self.recovery.CONTROL_REPOSITORY:
+                return references.get(tag)
+            if repository == component.repository:
+                self.assertEqual(candidate["components"]["sdk-python"]["version"], tag)
+                return None
+            raise AssertionError(f"unexpected tag lookup for {repository}@{tag}")
+
+        def read_plan(
+            _client: mock.Mock,
+            tag: str,
+            commit: str,
+        ) -> tuple[dict[str, object], dict[str, object]]:
+            self.assertEqual(commits[tag], commit)
+            return plans[tag], preparation
+
+        def read_lifecycle_record(
+            _client: mock.Mock,
+            tag: str,
+            commit: str,
+            filename: str,
+        ) -> dict[str, object]:
+            return records[(tag, commit, filename)]
+
+        with tempfile.TemporaryDirectory(prefix="explicit-terminal-recovery-") as temporary:
+            root = Path(temporary)
+            plan_output = root / "release-plan.json"
+            preparation_output = root / "release-preparation.json"
+            evidence_output = root / "release-recovery-evidence.json"
+            github_output = root / "github-output"
+            argv = [
+                "component-release-recovery.py",
+                "resolve",
+                "--component",
+                "sdk-python",
+                "--plan-tag",
+                requested_tag,
+                "--plan-output",
+                str(plan_output),
+                "--preparation-output",
+                str(preparation_output),
+                "--evidence",
+                str(evidence_output),
+                "--github-output",
+                str(github_output),
+            ]
+
+            with (
+                mock.patch.object(self.recovery, "PublicClient", return_value=client),
+                mock.patch.object(self.recovery.sys, "argv", argv),
+                mock.patch.object(
+                    self.recovery,
+                    "list_release_plan_tags",
+                    return_value=list(plans),
+                ),
+                mock.patch.object(
+                    self.recovery,
+                    "resolve_tag",
+                    side_effect=resolve_reference,
+                ),
+                mock.patch.object(
+                    self.recovery,
+                    "read_plan_authority",
+                    side_effect=read_plan,
+                ),
+                mock.patch.object(
+                    self.recovery,
+                    "read_record",
+                    side_effect=read_lifecycle_record,
+                ),
+                mock.patch.object(
+                    self.recovery,
+                    "immutable_plan_recorded_at",
+                    side_effect=lambda _client, commit: recorded_at[commit],
+                ),
+                mock.patch.object(self.recovery, "validate_release_mirrors"),
+                mock.patch.object(
+                    self.recovery,
+                    "verify_plan_authority",
+                    return_value=({}, {}),
+                ),
+                mock.patch.object(self.recovery, "validate_release_preparation"),
+                mock.patch.object(
+                    self.recovery,
+                    "verify_component",
+                    return_value={"status": "present"},
+                ),
+                mock.patch.object(
+                    self.recovery,
+                    "require_python_source_manifest_version",
+                    return_value=None,
+                ),
+                mock.patch.dict(
+                    self.recovery.VERIFIERS,
+                    {component.distribution: publication_preflight},
+                ),
+                mock.patch.object(self.recovery.sys, "stderr", io.StringIO()),
+            ):
+                exit_code = self.recovery.main()
+
+            self.assertEqual(1, exit_code)
+            self.assertFalse(plan_output.exists())
+            self.assertFalse(preparation_output.exists())
+            self.assertFalse(github_output.exists())
+            failure = json.loads(evidence_output.read_bytes())
+            self.assertEqual("plan-discovery", failure["phase"])
+            self.assertEqual("failed", failure["outcome"])
+            self.assertIn(
+                "terminally superseded and cannot be recovered",
+                failure["reason"],
+            )
+
+        publication_preflight.assert_not_called()
+
+    def test_explicit_terminal_failure_with_absent_artifact_has_no_publish_handoff(
+        self,
+    ) -> None:
         failed = lifecycle_plan(self.recovery)
         failed["plan"] = "failed-plan"
         successor = json.loads(json.dumps(failed))
         successor["plan"] = "successor-plan"
-        tag = f"release-plan/{failed['plan']}"
-        commit = "a" * 40
-        authority = {
-            "tag": tag,
-            "commit": commit,
-            "recorded_at": dt.datetime(2026, 7, 23, tzinfo=dt.UTC),
-            "plan": failed,
-            "preparation": None,
-            "lifecycle": "superseded",
-            "successor": {
-                "tag": f"release-plan/{successor['plan']}",
-                "sha256": self.recovery.manifest_digest(successor),
-                "plan": successor,
+        successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        failed_tag = f"release-plan/{failed['plan']}"
+        successor_tag = f"release-plan/{successor['plan']}"
+        failed_commit = "a" * 40
+        successor_commit = "b" * 40
+        failure_commit = "c" * 40
+        failure_tag = f"{self.recovery.FAILURE_TAG_PREFIX}{failed['plan']}"
+        failure = supersession_record(
+            self.recovery,
+            failed,
+            successor,
+            failed_commit,
+        )
+
+        self.assert_explicit_terminal_recovery_rejected(
+            requested_tag=failed_tag,
+            plans={failed_tag: failed, successor_tag: successor},
+            commits={
+                failed_tag: failed_commit,
+                successor_tag: successor_commit,
+            },
+            recorded_at={
+                failed_commit: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+                successor_commit: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+            },
+            references={
+                failed_tag: failed_commit,
+                successor_tag: successor_commit,
+                failure_tag: failure_commit,
+            },
+            records={
+                (
+                    failure_tag,
+                    failure_commit,
+                    "release-plan-failure.json",
+                ): failure,
+                (
+                    failure_tag,
+                    failure_commit,
+                    "successor-release-plan.json",
+                ): successor,
+            },
+            github_responses=captured_github_authority(self.recovery, failure),
+        )
+
+    def test_explicit_continuity_supersession_with_absent_artifact_has_no_publish_handoff(
+        self,
+    ) -> None:
+        interrupted = lifecycle_plan(self.recovery)
+        interrupted["plan"] = "interrupted-plan"
+        successor = json.loads(json.dumps(interrupted))
+        successor["plan"] = "continuity-successor"
+        successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        interrupted_tag = f"release-plan/{interrupted['plan']}"
+        successor_tag = f"release-plan/{successor['plan']}"
+        interrupted_commit = "a" * 40
+        successor_commit = "b" * 40
+        interruption_tag = f"{self.recovery.CONTINUITY_TAG_PREFIX}{interrupted['plan']}/interrupted"
+        interruption_commit = "c" * 40
+        accepted_tag = f"{self.recovery.CONTINUITY_TAG_PREFIX}{successor['plan']}/accepted"
+        accepted_commit = "d" * 40
+        interrupted_digest = self.recovery.manifest_digest(interrupted)
+        successor_digest = self.recovery.manifest_digest(successor)
+        interruption_evidence = {
+            "schema": self.recovery.CONTINUITY_EVIDENCE_SCHEMA,
+            "phase": "interrupted",
+            "outcome": "intentionally-interrupted",
+            "release_plan": {
+                "tag": interrupted_tag,
+                "sha256": interrupted_digest,
+            },
+            "plan_record": {
+                "tag": interrupted_tag,
+                "commit": interrupted_commit,
+                "sha256": interrupted_digest,
             },
         }
-        with (
-            mock.patch.object(
-                self.recovery, "classify_plan_authorities", return_value=[authority]
-            ),
-            self.assertRaisesRegex(
-                self.recovery.RecoveryError,
-                "terminally superseded and cannot be recovered",
-            ),
-        ):
-            self.recovery.select_explicit_plan_authority(
-                mock.Mock(), tag, commit, failed, None
-            )
+        accepted_evidence = {
+            "schema": self.recovery.CONTINUITY_EVIDENCE_SCHEMA,
+            "phase": "accepted",
+            "outcome": "accepted",
+            "release_plan": {
+                "tag": successor_tag,
+                "sha256": successor_digest,
+            },
+            "candidate_identity": {
+                "components": successor["components"],
+                "plan_sha256": successor_digest,
+            },
+            "superseded_interruption": {
+                "tag": interruption_tag,
+                "commit": interruption_commit,
+                "evidence_sha256": self.recovery.manifest_digest(interruption_evidence),
+                "plan_sha256": interrupted_digest,
+                "reason": self.recovery.CONTINUITY_SUPERSESSION_REASON,
+            },
+        }
+
+        self.assert_explicit_terminal_recovery_rejected(
+            requested_tag=interrupted_tag,
+            plans={
+                interrupted_tag: interrupted,
+                successor_tag: successor,
+            },
+            commits={
+                interrupted_tag: interrupted_commit,
+                successor_tag: successor_commit,
+            },
+            recorded_at={
+                interrupted_commit: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+                successor_commit: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+            },
+            references={
+                interrupted_tag: interrupted_commit,
+                successor_tag: successor_commit,
+                interruption_tag: interruption_commit,
+                accepted_tag: accepted_commit,
+            },
+            records={
+                (
+                    interruption_tag,
+                    interruption_commit,
+                    "continuity-evidence.json",
+                ): interruption_evidence,
+                (
+                    interruption_tag,
+                    interruption_commit,
+                    "release-plan.json",
+                ): interrupted,
+                (
+                    accepted_tag,
+                    accepted_commit,
+                    "continuity-evidence.json",
+                ): accepted_evidence,
+                (
+                    accepted_tag,
+                    accepted_commit,
+                    "release-plan.json",
+                ): successor,
+            },
+            github_responses=[],
+        )
 
     def test_explicit_terminal_transition_during_preflight_cannot_publish(self) -> None:
         candidate = lifecycle_plan(self.recovery)
@@ -2050,13 +2314,26 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
         recovery_source = RECOVERY_WORKFLOW.read_text()
         publish_source = PUBLISH_WORKFLOW.read_text()
         expected_sha256 = hashlib.sha256(recovery_source.encode("utf-8")).hexdigest()
+        discover_job = recovery_source[recovery_source.index("  discover:") : recovery_source.index("  publish:")]
+        publication_job = recovery_source[recovery_source.index("  publish:") :]
 
         self.recovery.verify_recovery_workflow_source("sdk-python", recovery_source, expected_sha256)
-        self.assertIn("gh workflow run publish.yml --ref main", recovery_source)
-        self.assertNotIn('gh workflow run publish.yml --ref "$RELEASE_TAG"', recovery_source)
-        self.assertIn('-f release_tag="$RELEASE_TAG"', recovery_source)
-        self.assertIn('-f release_commit="$RELEASE_COMMIT"', recovery_source)
-        self.assertIn('--release-plan "$PLAN_TAG"', recovery_source)
+        self.assertIn("contents: read", discover_job)
+        self.assertNotIn("actions: write", discover_job)
+        self.assertNotIn("contents: write", discover_job)
+        self.assertNotIn("GH_TOKEN:", discover_job)
+        self.assertNotIn("gh workflow run", discover_job)
+        self.assertIn("needs: discover", publication_job)
+        self.assertIn("needs.discover.outputs.action == 'publish'", publication_job)
+        self.assertIn("actions: write", publication_job)
+        self.assertIn("contents: write", publication_job)
+        self.assertEqual(1, recovery_source.count("actions: write"))
+        self.assertEqual(1, recovery_source.count("contents: write"))
+        self.assertIn("gh workflow run publish.yml --ref main", publication_job)
+        self.assertNotIn('gh workflow run publish.yml --ref "$RELEASE_TAG"', publication_job)
+        self.assertIn('-f release_tag="$RELEASE_TAG"', publication_job)
+        self.assertIn('-f release_commit="$RELEASE_COMMIT"', publication_job)
+        self.assertIn('--release-plan "$PLAN_TAG"', publication_job)
         self.assertIn("&& 'Publish' || 'Build'", publish_source)
         self.assertIn("inputs.release_commit || github.sha", publish_source)
         self.assertIn("github.ref == 'refs/heads/main' && inputs.publish", publish_source)
@@ -2325,8 +2602,8 @@ class PublishedReleaseRecoveryTest(unittest.TestCase):
         self.assertEqual(state["public_evidence"], package_evidence)
 
         workflow = RECOVERY_WORKFLOW.read_text()
-        publication_step = workflow[workflow.index("Start or resume repository-owned publication") :]
-        self.assertIn("if: steps.recovery.outputs.action == 'publish'", publication_step)
+        publication_job = workflow[workflow.index("  publish:") :]
+        self.assertIn("needs.discover.outputs.action == 'publish'", publication_job)
 
 
 class PythonSourceManifestPreflightTest(unittest.TestCase):
