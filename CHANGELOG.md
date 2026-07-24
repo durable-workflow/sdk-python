@@ -42,6 +42,9 @@ baselines; no prerelease compatibility shim is provided.
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Explicit release recovery rejects terminally superseded plans before and
+  after publication preflight while keeping completed-plan verification
+  idempotent.
 - Synchronous clients now keep their async HTTP connection pool, returned
   handles, and cleanup on one client-owned event loop for the client's lifetime.
 - Worker-routed queries now replay signal-woken condition waits that reopen the
