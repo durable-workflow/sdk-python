@@ -313,15 +313,13 @@ class ConsumerContractIdentityRegressionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             adapter, contract, digest, suite_path, contract_path = self.adapter_fixture(root)
-            stale_path = contract_path.with_name("stale-contract.json")
             stale_contract = copy.deepcopy(contract)
             stale_contract["version"] = "1.4.0"
-            stale_path.write_bytes(consumer_conformance.canonical_json(stale_contract))
-            adapter["contract"]["path"] = stale_path.relative_to(root).as_posix()
+            contract_path.write_bytes(consumer_conformance.canonical_json(stale_contract))
 
             with self.assertRaisesRegex(
                 consumer_conformance.ConformanceError,
-                "invoked contract is not the adapter's declared contract",
+                "declared contract does not match its version and digest pins",
             ):
                 consumer_conformance.validate_adapter(
                     adapter,
