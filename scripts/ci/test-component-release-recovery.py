@@ -186,10 +186,19 @@ class SharedContractVersionGuardTest(unittest.TestCase):
             "strictly advancing SemVer version",
         )
 
-    def test_suite_byte_correction_with_unchanged_semantics_is_accepted(self):
+    def test_suite_digest_change_requires_strictly_advancing_version(self):
         current = json.loads(CONSUMER_CONTRACT_PATH.read_text())
+        current["version"] = "1.4.2"
         previous = copy.deepcopy(current)
         previous["suite"]["sha256"] = "0" * 64
+
+        self.assert_transition_fails(
+            previous,
+            current,
+            "strictly advancing SemVer version",
+        )
+
+        current["version"] = "1.4.3"
         self.assert_transition_passes(previous, current)
 
     def test_patch_minor_and_major_advances_are_accepted(self):
