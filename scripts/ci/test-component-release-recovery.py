@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,6 +18,7 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
+import release_recovery_consumer_conformance as consumer_conformance
 from cli_release_verifier_contract import (  # noqa: F401 - imported for unittest discovery
     CliRecoveryWorkflowSourceTest,
     CliReleaseAuthorityTest,
@@ -33,6 +36,7 @@ from recovery_workflow_authority import (
 RECOVERY_SCRIPT = Path(__file__).with_name("component-release-recovery.py")
 CONSUMER_CONFORMANCE_SCRIPT = Path(__file__).with_name("release_recovery_consumer_conformance.py")
 CONSUMER_CONTRACT_PATH = Path(__file__).with_name("release-recovery-consumer-contract.json")
+CONSUMER_ADAPTER_PATH = Path(__file__).with_name("release-recovery-consumer-adapter.json")
 RUST_WORKFLOW_FIXTURE = Path(__file__).with_name("sdk-rust-release-plan-recovery.fixture.yml")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 RECOVERY_WORKFLOW = REPOSITORY_ROOT / ".github/workflows/release-plan-recovery.yml"
@@ -234,6 +238,114 @@ class SharedContractVersionGuardTest(unittest.TestCase):
             "previous contract commit is unavailable",
             previous_ref="f" * 40,
         )
+
+
+class ConsumerContractIdentityRegressionTest(unittest.TestCase):
+    def adapter_fixture(
+        self,
+        root: Path,
+    ) -> tuple[dict[str, object], dict[str, object], str, Path, Path]:
+        ci_root = root / "scripts/ci"
+        ci_root.mkdir(parents=True)
+        suite_path = ci_root / CONSUMER_CONFORMANCE_SCRIPT.name
+        contract_path = ci_root / CONSUMER_CONTRACT_PATH.name
+        consumer_path = ci_root / RECOVERY_SCRIPT.name
+        verifier_path = ci_root / Path(__file__).name
+        shutil.copyfile(CONSUMER_CONFORMANCE_SCRIPT, suite_path)
+        contract = json.loads(CONSUMER_CONTRACT_PATH.read_text())
+        contract_raw = consumer_conformance.canonical_json(contract)
+        contract_path.write_bytes(contract_raw)
+        consumer_path.write_text("# consumer fixture\n")
+        verifier_path.write_text("# verifier fixture\n")
+        adapter = json.loads(CONSUMER_ADAPTER_PATH.read_text())
+        return (
+            adapter,
+            contract,
+            consumer_conformance.sha256_bytes(contract_raw),
+            suite_path,
+            contract_path,
+        )
+
+    def test_matching_declared_and_invoked_contract_passes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            adapter, contract, digest, suite_path, contract_path = self.adapter_fixture(root)
+
+            consumer, command = consumer_conformance.validate_adapter(
+                adapter,
+                contract,
+                digest,
+                root,
+                suite_path,
+                contract_path,
+            )
+
+        self.assertEqual("component-release-recovery.py", consumer.name)
+        self.assertEqual(["{python}", "scripts/ci/test-component-release-recovery.py"], command)
+
+    def test_alternate_invoked_contract_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            adapter, contract, digest, suite_path, contract_path = self.adapter_fixture(root)
+            alternate_path = contract_path.with_name("alternate-contract.json")
+            alternate_path.write_bytes(contract_path.read_bytes())
+
+            with self.assertRaisesRegex(
+                consumer_conformance.ConformanceError,
+                "invoked contract is not the adapter's declared contract",
+            ):
+                consumer_conformance.validate_adapter(
+                    adapter,
+                    contract,
+                    digest,
+                    root,
+                    suite_path,
+                    alternate_path,
+                )
+
+    def test_stale_declared_contract_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            adapter, contract, digest, suite_path, contract_path = self.adapter_fixture(root)
+            stale_path = contract_path.with_name("stale-contract.json")
+            stale_contract = copy.deepcopy(contract)
+            stale_contract["version"] = "1.4.0"
+            stale_path.write_bytes(consumer_conformance.canonical_json(stale_contract))
+            adapter["contract"]["path"] = stale_path.relative_to(root).as_posix()
+
+            with self.assertRaisesRegex(
+                consumer_conformance.ConformanceError,
+                "invoked contract is not the adapter's declared contract",
+            ):
+                consumer_conformance.validate_adapter(
+                    adapter,
+                    contract,
+                    digest,
+                    root,
+                    suite_path,
+                    contract_path,
+                )
+
+    def test_mismatched_declared_contract_bytes_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            adapter, contract, digest, suite_path, contract_path = self.adapter_fixture(root)
+            mismatched_contract = copy.deepcopy(contract)
+            mismatched_contract["cases"][0]["requirement"] += " (mismatched declared bytes)"
+            contract_path.write_bytes(consumer_conformance.canonical_json(mismatched_contract))
+
+            with self.assertRaisesRegex(
+                consumer_conformance.ConformanceError,
+                "declared contract does not match its version and digest pins",
+            ):
+                consumer_conformance.validate_adapter(
+                    adapter,
+                    contract,
+                    digest,
+                    root,
+                    suite_path,
+                    contract_path,
+                )
 
 
 def load_recovery_for_retry_tests():

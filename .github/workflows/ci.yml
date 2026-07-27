@@ -62,6 +62,7 @@ jobs:
             --contract scripts/ci/release-recovery-consumer-contract.json \
             --adapter scripts/ci/release-recovery-consumer-adapter.json \
             "${arguments[@]}"
+          python scripts/ci/test-component-release-recovery.py ConsumerContractIdentityRegressionTest
       - run: python -m build
       - run: twine check dist/*
       - run: python scripts/smoke-built-package.py
