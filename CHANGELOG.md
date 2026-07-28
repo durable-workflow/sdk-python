@@ -6,8 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to the synchronized Durable Workflow `2.0.0-rc.3`
-product train. PyPI displays the normalized PEP 440 identity `2.0.0rc3`. Earlier SDK
+The Python SDK advances to the synchronized Durable Workflow `2.0.0-rc.4`
+product train. PyPI displays the normalized PEP 440 identity `2.0.0rc4`. Earlier SDK
 versions remain historical releases and are not alternate supported 2.0
 baselines; no prerelease compatibility shim is provided.
 
