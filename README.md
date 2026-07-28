@@ -3,7 +3,7 @@
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
 Status: **Beta** — this SDK is part of the synchronized Durable Workflow
-`2.0.0-rc.1` product train. Core features include workflows, activities,
+`2.0.0-rc.3` product train. Core features include workflows, activities,
 schedules, signals, timers, child workflows, continue-as-new, side effects,
 version markers, worker-applied accepted updates, replay verification, the
 in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
@@ -11,7 +11,7 @@ in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
 ## Install
 
 ```bash
-pip install durable-workflow==2.0.0-rc.1
+pip install durable-workflow==2.0.0-rc.3
 ```
 
 Or for development:
@@ -429,15 +429,19 @@ quiet_client = Client(
 
 ## Avro payload type boundaries
 
-The default Avro codec uses a generic JSON wrapper so PHP, Python, and other
-workers can exchange the same wire format. It preserves JSON-native values:
-`None`, booleans, numbers, strings, lists, and dictionaries with string keys.
+The default Avro codec uses the fixed recursive
+`durable_workflow.protocol.Value` schema and standard single-object framing.
+It preserves `None`, booleans, signed 64-bit integers, finite doubles, bytes,
+UTF-8 strings, lists, and dictionaries with string keys as distinct branches.
+Unknown schema fingerprints fail with `unsupported_payload_schema`; the codec
+never guesses or silently falls back to JSON.
 
 Class-carrying values are not encoded with type metadata. Convert pydantic
 models, attrs classes, dataclasses, pendulum values, `datetime` / `date` /
 `time`, `UUID`, `Decimal`, and plain `Enum` values to explicit dictionaries or
 scalars before passing them to the SDK. `IntEnum` and `StrEnum` encode because
-they are JSON scalar subclasses, but they decode as `int` and `str`.
+they are Python scalar subclasses selected as Avro `LongValue` and
+`StringValue`, but they decode as `int` and `str`.
 `OrderedDict` decodes as a plain `dict`.
 
 Use `to_avro_payload_value(...)` when a rich value should enter durable
@@ -581,7 +585,7 @@ Full documentation is available at
 
 ## Compatibility
 
-SDK version `2.0.0-rc.1` is supported with server `2.0.0-rc.1`. The server
+SDK version `2.0.0-rc.3` is supported with server `2.0.0-rc.3`. The server
 must advertise these protocol manifests from `GET /api/cluster/info`:
 
 - `control_plane.version: "2"`

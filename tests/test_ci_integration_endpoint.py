@@ -136,6 +136,8 @@ def test_ci_probes_the_endpoint_before_mandatory_integration_tests() -> None:
     pytest_offset = integration_job.index("pytest tests/integration/ -v")
 
     assert compose_offset < probe_offset < pytest_offset
+    assert "docker compose -f docker-compose.test.yml up -d --build --wait" in integration_job
+    assert "docker compose -f docker-compose.test.yml down -v --rmi local" in integration_job
     assert "DURABLE_WORKFLOW_SERVER_URL: http://localhost:8080" not in integration_job
     assert "needs: [lint, test, package, cli-parity, integration]" in qualification_job
     assert 'test "$INTEGRATION_RESULT" = success' in qualification_job

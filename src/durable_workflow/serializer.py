@@ -1,21 +1,23 @@
 """Payload serialization for the Durable Workflow worker protocol.
 
-The server exposes a language-neutral payload envelope (see issue #164 and
-``docs/configuration/worker-protocol.md`` in the docs repo).  Every payload on
-the wire carries a ``payload_codec`` tag alongside its opaque blob.
+Every payload on the wire carries a ``payload_codec`` tag alongside its opaque
+blob.
 
 Supported codecs:
 
 - ``"json"`` — the blob is a UTF-8 JSON document. Supported for decoding
   existing data only, not used for new workflows.
-- ``"avro"`` — the blob is a base64-encoded Avro generic-wrapper payload
-  (see :mod:`durable_workflow._avro`). Default for all new v2 workflows.
-  The wrapper carries JSON-native values only. Class-carrying values such as
+- ``"avro"`` — the blob is standard Avro single-object encoding for the fixed
+  recursive ``durable_workflow.protocol.Value`` schema (see
+  :mod:`durable_workflow._avro`). It is the default for new v2 workflows and
+  preserves distinct null, boolean, signed integer, finite double, bytes, text,
+  list, and string-keyed map branches. Class-carrying values such as
   dataclasses, attrs classes, pydantic models, pendulum values, datetimes,
   UUIDs, ``Decimal``, and plain ``Enum`` values need an explicit adapter to a
-  dictionary or scalar before encode; JSON-subclass values such as ``IntEnum``
-  and ``StrEnum`` round-trip as their JSON scalar, not as the original class.
+  supported branch before encode; ``IntEnum`` and ``StrEnum`` round-trip as
+  their scalar value, not as the original class.
 """
+
 from __future__ import annotations
 
 import json
@@ -103,17 +105,16 @@ PayloadWarningContexts = PayloadWarningContext | Sequence[PayloadWarningContext]
 
 
 def to_avro_payload_value(value: Any) -> Any:
-    """Convert common rich Python values to JSON-native Avro wrapper values.
+    """Convert common rich Python values to fixed Avro Value kinds.
 
-    The SDK's default Avro codec is a language-neutral envelope around a JSON
-    document. This helper is the explicit boundary for class-carrying values:
-    callers opt in before encode and the returned value becomes part of durable
+    This helper is the explicit boundary for class-carrying values: callers opt
+    in before encode and the returned canonical value becomes part of durable
     history.
     """
     if isinstance(value, Enum):
         return to_avro_payload_value(value.value)
 
-    if value is None or isinstance(value, str | int | float | bool):
+    if value is None or isinstance(value, str | bytes | int | float | bool):
         return value
 
     if isinstance(value, datetime):
@@ -129,7 +130,7 @@ def to_avro_payload_value(value: Any) -> Any:
         converted: dict[str, Any] = {}
         for key, item in value.items():
             if not isinstance(key, str):
-                raise TypeError("Avro JSON payload dictionaries must use string keys after adaptation")
+                raise TypeError("invalid_map_key: Avro Value maps require string keys")
             converted[key] = to_avro_payload_value(item)
         return converted
 
@@ -151,8 +152,9 @@ def to_avro_payload_value(value: Any) -> Any:
         return [to_avro_payload_value(item) for item in value]
 
     raise TypeError(
-        f"Object of type {type(value).__name__} is not Avro JSON payload safe; "
-        "adapt it to None, bool, int, float, str, list, or dict[str, value] first."
+        f"Object of type {type(value).__name__} is not Avro Value safe; "
+        "adapt it to None, bool, int, finite float, bytes, str, list, "
+        "or dict[str, value] first."
     )
 
 
@@ -452,7 +454,7 @@ def _is_context_sequence(
 ) -> TypeGuard[Sequence[PayloadWarningContext]]:
     return isinstance(context, Sequence) and not isinstance(
         context,
-        (str, bytes, bytearray, PayloadSizeWarningContext, Mapping),
+        str | bytes | bytearray | PayloadSizeWarningContext | Mapping,
     )
 
 
@@ -510,7 +512,7 @@ def decode_envelopes(
     for index, value in enumerate(values):
         if isinstance(value, dict) and "codec" in value and "blob" in value:
             jobs.append((value["blob"], value["codec"]))
-        elif value is None or value == "":
+        elif value is None:
             passthroughs[index] = None
             jobs.append((None, None))
         else:
@@ -540,7 +542,7 @@ def decode_many(blobs: Sequence[str | None], codec: str | None = None) -> list[A
         decoded: list[Any] = [None] * len(blobs)
         avro_jobs: list[tuple[int, str]] = []
         for index, blob in enumerate(blobs):
-            if blob is None or blob == "":
+            if blob is None:
                 continue
             avro_jobs.append((index, blob))
         if not avro_jobs:
@@ -564,10 +566,12 @@ def decode(blob: str | None, codec: str | None = None) -> Any:
     :class:`~durable_workflow.errors.AvroNotInstalledError` when the Avro
     runtime dependency is missing from a broken or partial installation.
     """
-    if blob is None or blob == "":
+    if blob is None:
         return None
 
     if codec is None or codec == JSON_CODEC:
+        if blob == "":
+            return None
         try:
             return json.loads(blob)
         except (json.JSONDecodeError, TypeError) as exc:

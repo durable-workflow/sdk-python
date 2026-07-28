@@ -22,6 +22,8 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: ruff check src/ tests/
       - run: mypy src/durable_workflow/
+      - name: Enforce optimized Avro Value regression budget
+        run: python benchmarks/avro_value.py --enforce
 
   test:
     runs-on: ubuntu-latest
@@ -101,7 +103,7 @@ jobs:
       - name: Start server stack
         working-directory: sdk-python
         run: |
-          docker compose -f docker-compose.test.yml up -d --wait --timeout 300
+          docker compose -f docker-compose.test.yml up -d --build --wait --timeout 300
       - name: Select and probe integration endpoint
         working-directory: sdk-python
         run: python scripts/ci/configure-integration-endpoint.py
@@ -113,7 +115,7 @@ jobs:
       - name: Teardown
         if: always()
         working-directory: sdk-python
-        run: docker compose -f docker-compose.test.yml down -v
+        run: docker compose -f docker-compose.test.yml down -v --rmi local
 
   target-branch-qualification:
     name: Target branch qualification

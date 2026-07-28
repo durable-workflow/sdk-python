@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "durable-workflow"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.3"
 description = "Python SDK for the Durable Workflow server (language-neutral HTTP protocol)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,7 +32,7 @@ classifiers = [
 ]
 dependencies = [
     "httpx>=0.27",
-    "avro>=1.12,<2",
+    "fastavro>=1.12.2,<2",
 ]
 
 [project.optional-dependencies]
@@ -64,9 +64,9 @@ durable-workflow-replay-conformance = "durable_workflow.replay_conformance:main"
 durable-workflow-workflow-updates-conformance = "durable_workflow.workflow_updates_conformance:main"
 
 [tool.durable-workflow]
-product-train = "2.0.0-rc.1"
-registry-version = "2.0.0rc1"
-supported-server-versions = "2.0.0-rc.1"
+product-train = "2.0.0-rc.3"
+registry-version = "2.0.0rc3"
+supported-server-versions = "2.0.0-rc.3"
 worker-protocol-version = "1.1"
 control-plane-version = "2"
 
@@ -86,9 +86,9 @@ strict = true
 packages = ["durable_workflow"]
 mypy_path = "src"
 
-# apache/avro does not ship type stubs; treat it as Any.
+# fastavro does not ship complete type stubs; treat it as Any.
 [[tool.mypy.overrides]]
-module = ["avro", "avro.*"]
+module = ["fastavro", "fastavro.*"]
 ignore_missing_imports = true
 
 [tool.ruff]

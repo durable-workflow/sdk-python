@@ -31,6 +31,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from . import _avro
+
 REPORT_SCHEMA = "durable-workflow.v2.history-bundle-verification"
 REPORT_SCHEMA_VERSION = 1
 
@@ -436,7 +438,11 @@ def _check_payload_manifest(bundle: Mapping[str, Any], findings: list[dict[str, 
             declared = _string_or_none(entry.get("writer_schema_fingerprint"))
             writer = _string_or_none(entry.get("writer_schema"))
             if declared is not None and writer is not None:
-                expected = "sha256:" + hashlib.sha256(writer.encode("utf-8")).hexdigest()
+                expected = (
+                    "crc64-avro:" + _avro.VALUE_SCHEMA_FINGERPRINT_HEX
+                    if writer == _avro.VALUE_SCHEMA_JSON
+                    else None
+                )
                 if declared != expected:
                     findings.append(
                         _finding(

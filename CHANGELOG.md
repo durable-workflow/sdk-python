@@ -6,12 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to the synchronized Durable Workflow `2.0.0-rc.1`
-product train. PyPI displays the normalized PEP 440 identity `2.0.0rc1`. Earlier SDK
+The Python SDK advances to the synchronized Durable Workflow `2.0.0-rc.3`
+product train. PyPI displays the normalized PEP 440 identity `2.0.0rc3`. Earlier SDK
 versions remain historical releases and are not alternate supported 2.0
 baselines; no prerelease compatibility shim is provided.
 
 ### Added
+- The optimized `fastavro` payload path now uses the fixed recursive
+  `durable_workflow.protocol.Value` schema with explicit named branches and
+  Avro single-object framing. Cross-language fixtures cover every branch,
+  schema evolution, nested values, and stable policy failures.
+- A repeatable benchmark reports JSON, legacy-wrapper, and fixed-schema raw and
+  HTTP-envelope sizes plus adapter/encode/decode latency over the shared
+  checked-in corpus, with an enforced production-path regression budget
+  calibrated with explicit headroom.
 - Schedule listing now exposes server-side status, workflow-type, visibility-
   query, page-size, and continuation-token filters on async and sync clients.
   `ScheduleListError` preserves typed filter and cursor refusal evidence.

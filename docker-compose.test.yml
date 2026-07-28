@@ -1,9 +1,9 @@
 # Spins up a Durable Workflow server stack for integration tests.
 #
 # Usage:
-#   docker compose -f docker-compose.test.yml up -d --wait
+#   docker compose -f docker-compose.test.yml up -d --build --wait
 #   DURABLE_WORKFLOW_SERVER_URL=http://localhost:8080 pytest tests/integration/ -v
-#   docker compose -f docker-compose.test.yml down -v
+#   docker compose -f docker-compose.test.yml down -v --rmi local
 
 services:
   bootstrap:

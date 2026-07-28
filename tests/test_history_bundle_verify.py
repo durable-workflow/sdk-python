@@ -250,11 +250,11 @@ def test_writer_schema_fingerprint_mismatch_in_payload_manifest() -> None:
             "codec": "avro",
             "available": True,
             "redacted": False,
-            "encoding": "base64-avro-binary",
-            "avro_framing": "wrapper",
-            "avro_prefix_hex": "00",
+            "encoding": "base64-avro-single-object",
+            "avro_framing": "single_object",
+            "avro_prefix_hex": "c301",
             "writer_schema": '{"type":"record","name":"X"}',
-            "writer_schema_fingerprint": "sha256:deadbeef",
+            "writer_schema_fingerprint": "crc64-avro:deadbeef",
             "diagnostic": None,
         }
     )
