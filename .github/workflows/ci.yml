@@ -100,10 +100,14 @@ jobs:
         run: python sdk-python/scripts/ci/checkout-public-repository.py server server
       - run: pip install -e '.[dev]'
         working-directory: sdk-python
+      - name: Configure isolated Docker project
+        working-directory: sdk-python
+        run: python scripts/ci/configure-compose-project.py
       - name: Start server stack
         working-directory: sdk-python
         run: |
-          docker compose -f docker-compose.test.yml up -d --build --wait --timeout 300
+          docker compose --project-name "$COMPOSE_PROJECT_NAME" -f docker-compose.test.yml \
+            up -d --build --wait --timeout 300
       - name: Select and probe integration endpoint
         working-directory: sdk-python
         run: python scripts/ci/configure-integration-endpoint.py
@@ -112,10 +116,22 @@ jobs:
         env:
           DURABLE_WORKFLOW_AUTH_TOKEN: test-token
         run: pytest tests/integration/ -v
+      - name: Emit integration diagnostics
+        if: failure()
+        working-directory: sdk-python
+        run: |
+          for service in bootstrap server worker; do
+            echo "::group::$service logs"
+            docker compose --project-name "$COMPOSE_PROJECT_NAME" -f docker-compose.test.yml \
+              logs --no-color --tail 200 "$service" || true
+            echo "::endgroup::"
+          done
       - name: Teardown
         if: always()
         working-directory: sdk-python
-        run: docker compose -f docker-compose.test.yml down -v --rmi local
+        run: |
+          docker compose --project-name "$COMPOSE_PROJECT_NAME" -f docker-compose.test.yml \
+            down -v --rmi local
 
   target-branch-qualification:
     name: Target branch qualification

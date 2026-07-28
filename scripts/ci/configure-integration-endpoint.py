@@ -7,6 +7,7 @@ import argparse
 import os
 import socket
 import struct
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -16,6 +17,7 @@ from urllib.parse import urlsplit
 
 HEALTH_PATH = "/api/health"
 PUBLIC_GITHUB_HOST = "github.com"
+COMPOSE_FILE = Path("docker-compose.test.yml")
 
 
 def _docker_host_name(value: str) -> str | None:
@@ -62,10 +64,52 @@ def _endpoint(host: str, port: int) -> str:
     return f"http://{formatted_host}:{port}"
 
 
+def _published_port(mapping: str) -> int:
+    try:
+        port = int(mapping.rsplit(":", maxsplit=1)[1])
+    except (IndexError, ValueError) as error:
+        raise RuntimeError(f"unexpected Docker Compose port mapping: {mapping!r}") from error
+
+    if not 1 <= port <= 65535:
+        raise RuntimeError(f"Docker Compose published an invalid server port: {port}")
+    return port
+
+
+def discover_server_port(project: str, compose_file: Path = COMPOSE_FILE) -> int:
+    """Return the host port Docker allocated to the project's Server."""
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--project-name",
+            project,
+            "-f",
+            str(compose_file),
+            "port",
+            "server",
+            "8080",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    mappings = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not mappings:
+        raise RuntimeError("Docker Compose did not report a published Server port")
+
+    ports = {_published_port(mapping) for mapping in mappings}
+    if len(ports) != 1:
+        raise RuntimeError(f"Docker Compose reported conflicting Server ports: {sorted(ports)}")
+    return ports.pop()
+
+
 def endpoint_candidates(environment: Mapping[str, str]) -> list[str]:
     """Return runner-appropriate endpoints in reachability preference order."""
     runner_host = urlsplit(environment.get("GITHUB_SERVER_URL", "https://github.com")).hostname
-    port = int(environment.get("SERVER_PORT", "8080"))
+    try:
+        port = int(environment["SERVER_PORT"])
+    except (KeyError, ValueError) as error:
+        raise ValueError("SERVER_PORT must be the port reported by Docker Compose") from error
     if not 1 <= port <= 65535:
         raise ValueError("SERVER_PORT must be between 1 and 65535")
 
@@ -116,9 +160,9 @@ def probe_endpoint(
     raise RuntimeError(f"integration server health probe failed after {attempts} attempts ({details})")
 
 
-def export_endpoint(endpoint: str, github_environment: Path) -> None:
+def export_variable(name: str, value: str, github_environment: Path) -> None:
     with github_environment.open("a", encoding="utf-8") as environment_file:
-        environment_file.write(f"DURABLE_WORKFLOW_SERVER_URL={endpoint}\n")
+        environment_file.write(f"{name}={value}\n")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -134,15 +178,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     github_environment = os.environ.get("GITHUB_ENV")
     if not github_environment:
         raise RuntimeError("GITHUB_ENV must name the CI environment export file")
+    project = os.environ.get("COMPOSE_PROJECT_NAME")
+    if not project:
+        raise RuntimeError("COMPOSE_PROJECT_NAME must identify the current integration stack")
 
-    candidates = endpoint_candidates(os.environ)
+    server_port = discover_server_port(project)
+    environment = dict(os.environ)
+    environment["SERVER_PORT"] = str(server_port)
+    export_variable("SERVER_PORT", str(server_port), Path(github_environment))
+    print(f"Docker published the Server on host port {server_port}")
+
+    candidates = endpoint_candidates(environment)
     endpoint = probe_endpoint(
         candidates,
         attempts=args.attempts,
         retry_delay=args.retry_delay,
         timeout=args.timeout,
     )
-    export_endpoint(endpoint, Path(github_environment))
+    export_variable("DURABLE_WORKFLOW_SERVER_URL", endpoint, Path(github_environment))
     print(f"Integration server is reachable at {endpoint}")
     return 0
 

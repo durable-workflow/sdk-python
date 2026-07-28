@@ -1,8 +1,10 @@
 # Spins up a Durable Workflow server stack for integration tests.
 #
 # Usage:
+#   export COMPOSE_PROJECT_NAME=sdk-python-local
 #   docker compose -f docker-compose.test.yml up -d --build --wait
-#   DURABLE_WORKFLOW_SERVER_URL=http://localhost:8080 pytest tests/integration/ -v
+#   SERVER_PORT=$(docker compose -f docker-compose.test.yml port server 8080 | sed 's/.*://')
+#   DURABLE_WORKFLOW_SERVER_URL=http://localhost:"$SERVER_PORT" pytest tests/integration/ -v
 #   docker compose -f docker-compose.test.yml down -v --rmi local
 
 services:
@@ -37,7 +39,7 @@ services:
     build:
       context: ../server
     ports:
-      - "${SERVER_PORT:-8080}:8080"
+      - "8080"
     environment: *server-env
     depends_on:
       bootstrap:
