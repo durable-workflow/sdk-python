@@ -198,7 +198,7 @@ class SharedContractVersionGuardTest(unittest.TestCase):
             "strictly advancing SemVer version",
         )
 
-        current["version"] = "1.4.3"
+        current["version"] = "1.5.0"
         self.assert_transition_passes(previous, current)
 
     def test_patch_minor_and_major_advances_are_accepted(self):
@@ -405,7 +405,7 @@ def continuity_resolution_qualification_run() -> dict[str, object]:
 
 
 def lifecycle_plan(module, channel: str = "alpha") -> dict[str, object]:
-    prerelease = "alpha" if channel == "alpha" else "beta"
+    prerelease = channel
     return {
         "schema": module.SCHEMA,
         "plan": "component-recovery",
@@ -419,7 +419,9 @@ def lifecycle_plan(module, channel: str = "alpha") -> dict[str, object]:
             for index, name in enumerate(module.COMPONENTS)
         },
         "beta_authorization": (
-            {"tag": "beta-authorization/component-recovery", "commit": "f" * 40} if channel == "beta" else None
+            {"tag": "beta-authorization/component-recovery", "commit": "f" * 40}
+            if channel in {"beta", "rc"}
+            else None
         ),
     }
 
@@ -1984,7 +1986,7 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
         beta_plan["beta_authorization"]["commit"] = int("1" * 40)
         with self.assertRaisesRegex(
             self.recovery.RecoveryError,
-            "beta plans require an immutable beta authorization",
+            "beta and release-candidate plans require immutable beta qualification",
         ):
             self.recovery.validate_plan(beta_plan)
 
@@ -3187,6 +3189,31 @@ class PythonSourceManifestPreflightTest(unittest.TestCase):
         self.assertIn("successor allocation", failure["resume_action"])
         self.assertIn("immutable durable-workflow/sdk-python@0.4.100", failure["resume_action"])
         self.assertNotIn("Run durable-workflow/sdk-python Actions workflow", failure["resume_action"])
+
+
+class ReleaseCandidateChannelTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.recovery = load_recovery_module()
+
+    def test_rc_plan_retains_coherent_beta_qualification(self) -> None:
+        candidate = lifecycle_plan(self.recovery, "rc")
+        self.recovery.validate_plan(candidate)
+        beta = lifecycle_plan(self.recovery, "beta")
+        record = {
+            "schema": "durable-workflow.beta-authorization/v1",
+            "channel": "beta",
+            "candidate": beta["plan"],
+            "components": beta["components"],
+        }
+        for identity in record["components"].values():
+            identity["version"] = "2.0.0-beta.21"
+        self.assertTrue(
+            self.recovery.beta_authorization_matches_plan(
+                candidate,
+                candidate["beta_authorization"],
+                record,
+            )
+        )
 
 
 if __name__ == "__main__":
