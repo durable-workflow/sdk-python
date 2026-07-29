@@ -101,16 +101,204 @@ def _json(content: bytes, path: str) -> Mapping[str, Any]:
 def _canonical_base64(
     value: str,
     context: str,
-    *,
-    allow_invalid: bool = False,
-) -> str | Mapping[str, str]:
+) -> str:
     try:
         decoded = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError) as error:
-        if allow_invalid:
-            return {"invalid_base64": value}
         raise CorpusError(f"{context} is not canonical base64") from error
-    return base64.b64encode(decoded).decode("ascii")
+    canonical = base64.b64encode(decoded).decode("ascii")
+    if value != canonical:
+        raise CorpusError(f"{context} is not canonical base64")
+    return canonical
+
+
+def _canonical_wire_migration(base_content: bytes, current_content: bytes) -> bool:
+    """Allow the one-way repair of legacy malformed-frame wire spellings."""
+
+    try:
+        base_document = json.loads(base_content)
+        current_document = json.loads(current_content)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(base_document, dict) or not isinstance(current_document, dict):
+        return False
+    base_frames = base_document.get("malformed_frames")
+    current_frames = current_document.get("malformed_frames")
+    if not isinstance(base_frames, list) or not isinstance(current_frames, list):
+        return False
+    if len(base_frames) != len(current_frames):
+        return False
+
+    migrated = False
+    for index, (base_frame, current_frame) in enumerate(
+        zip(base_frames, current_frames, strict=True)
+    ):
+        if not isinstance(base_frame, dict) or not isinstance(current_frame, dict):
+            return False
+        base_wire = base_frame.get("wire_base64")
+        current_wire = current_frame.get("wire_base64")
+        if base_wire == current_wire:
+            continue
+        if not isinstance(base_wire, str) or not isinstance(current_wire, str):
+            return False
+        try:
+            _canonical_base64(base_wire, f"base.malformed_frames[{index}].wire_base64")
+        except CorpusError:
+            pass
+        else:
+            return False
+        try:
+            _canonical_base64(
+                current_wire,
+                f"current.malformed_frames[{index}].wire_base64",
+            )
+        except CorpusError:
+            return False
+        base_frame["wire_base64"] = current_wire
+        migrated = True
+
+    return migrated and base_document == current_document
+
+
+def _canonical_command_type(value: str) -> str:
+    """Normalize runtime command class names to their wire discriminator."""
+
+    words = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", value)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", words).lower()
+
+
+def _canonical_replay_command(value: Any) -> Any:
+    """Normalize the command forms accepted by the replay consumer."""
+
+    if not isinstance(value, Mapping):
+        return value
+
+    command = dict(value)
+    command_type = command.get("command_type")
+    if not isinstance(command_type, str) or not command_type:
+        return command
+
+    wire_type = _canonical_command_type(command_type)
+    declared_type = command.get("type")
+    if declared_type is None or declared_type == wire_type:
+        command.pop("command_type")
+        command["type"] = wire_type
+    return command
+
+
+def _canonical_replay_commands(value: Any) -> Any:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return value
+    return [_canonical_replay_command(command) for command in value]
+
+
+def _merge_replay_assertions(left: Any, right: Any, context: str) -> Any:
+    """Merge two compatible partial assertions over the same replay output."""
+
+    if isinstance(left, Mapping) and isinstance(right, Mapping):
+        merged = dict(left)
+        for key, value in right.items():
+            if key in merged:
+                merged[key] = _merge_replay_assertions(
+                    merged[key],
+                    value,
+                    f"{context}.{key}",
+                )
+            else:
+                merged[key] = value
+        return merged
+
+    if (
+        isinstance(left, Sequence)
+        and not isinstance(left, str | bytes)
+        and isinstance(right, Sequence)
+        and not isinstance(right, str | bytes)
+    ):
+        if len(left) != len(right):
+            raise CorpusError(f"replay command assertions conflict at {context}")
+        return [
+            _merge_replay_assertions(left_item, right_item, f"{context}[{index}]")
+            for index, (left_item, right_item) in enumerate(
+                zip(left, right, strict=True)
+            )
+        ]
+
+    if left != right:
+        raise CorpusError(f"replay command assertions conflict at {context}")
+    return left
+
+
+def _canonical_executed_commands(
+    command_sequence: Any,
+    expected: Mapping[str, Any],
+) -> Any:
+    """Collapse every consumer-supported command assertion onto one output."""
+
+    executed_commands = (
+        _canonical_replay_commands(command_sequence)
+        if command_sequence is not None
+        else None
+    )
+    expected_sequence = expected.get("command_sequence")
+    if expected_sequence is not None:
+        canonical_expected = _canonical_replay_commands(expected_sequence)
+        executed_commands = (
+            canonical_expected
+            if executed_commands is None
+            else _merge_replay_assertions(
+                executed_commands,
+                canonical_expected,
+                "command_sequence",
+            )
+        )
+
+    first_command = {
+        key: value
+        for key, value in expected.items()
+        if key != "command_sequence"
+    }
+    if first_command:
+        canonical_first = _canonical_replay_command(first_command)
+        if executed_commands is None:
+            executed_commands = [canonical_first]
+        elif (
+            not isinstance(executed_commands, Sequence)
+            or isinstance(executed_commands, str | bytes)
+            or len(executed_commands) != 1
+        ):
+            raise CorpusError(
+                "flattened expected command requires exactly one executed command"
+            )
+        else:
+            executed_commands = [
+                _merge_replay_assertions(
+                    executed_commands[0],
+                    canonical_first,
+                    "command_sequence[0]",
+                )
+            ]
+
+    return executed_commands
+
+
+def _replay_semantic(
+    *,
+    workflow_type: str,
+    workflow_input: Any,
+    history: Any,
+    command_sequence: Any,
+    expected: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Project every replay representation onto consumer-executed values."""
+
+    return {
+        "workflow": {"type": workflow_type, "input": workflow_input},
+        "history": history,
+        "executed_commands": _canonical_executed_commands(
+            command_sequence,
+            expected,
+        ),
+    }
 
 
 def _normalized_codec_version(codec: str, version: str) -> str:
@@ -229,22 +417,12 @@ def _semantic_codec_value(
 
 def _codec_semantic(
     *,
-    codec: str,
-    schema: str,
-    version: str,
-    fingerprint: str | None,
     value: Mapping[str, Any] | None,
     wire: str | Mapping[str, str] | Sequence[str | Mapping[str, str]] | None,
     operation: str,
     error: str | None,
 ) -> Mapping[str, Any]:
     return {
-        "protocol": {
-            "codec": codec,
-            "schema": schema,
-            "version": version,
-            "fingerprint": fingerprint,
-        },
         "value": value,
         "wire": wire,
         "failure_policy": {"operation": operation, "error": error},
@@ -280,10 +458,10 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     identity = _string(document.get("id"), f"{path}.id")
     protocol = _object(document.get("protocol"), f"{path}.protocol")
     codec = _string(protocol.get("codec"), f"{path}.protocol.codec")
-    schema = _string(protocol.get("schema"), f"{path}.protocol.schema")
+    _string(protocol.get("schema"), f"{path}.protocol.schema")
     version = _string(protocol.get("version"), f"{path}.protocol.version")
     normalized_version = _normalized_codec_version(codec, version)
-    fingerprint = _nullable_string(protocol.get("fingerprint"), f"{path}.protocol.fingerprint")
+    _nullable_string(protocol.get("fingerprint"), f"{path}.protocol.fingerprint")
     bindings = _unique_strings(
         document.get("bindings"),
         f"{path}.bindings",
@@ -327,10 +505,6 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     if operation == "round_trip" and canonical_value["type"] in {"array", "map"}:
         canonical_value = {"type": canonical_value["type"]}
     semantic = _codec_semantic(
-        codec=codec,
-        schema=schema,
-        version=normalized_version,
-        fingerprint=fingerprint,
         value=(
             canonical_value
             if operation in {"round_trip", "encode_reject"}
@@ -384,14 +558,13 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
     )
     if len(supersedes) != len(set(supersedes)) or identity in supersedes:
         raise CorpusError(f"{path}.supersedes is invalid")
-    semantic = {
-        "protocol_version": protocol_version,
-        "bindings": sorted(bindings),
-        "workflow": workflow,
-        "history": history,
-        "command_sequence": commands,
-        "expected": expected,
-    }
+    semantic = _replay_semantic(
+        workflow_type=workflow["type"],
+        workflow_input=workflow.get("input", workflow.get("arguments", [])),
+        history=history if history is not None else [],
+        command_sequence=commands,
+        expected=expected,
+    )
     return [
         _fixture_evidence(
             category="replay",
@@ -405,8 +578,8 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
 
 
 def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidence]:
-    schema = _string(document.get("schema"), f"{path}.schema")
-    fingerprint = _string(document.get("fingerprint"), f"{path}.fingerprint")
+    _string(document.get("schema"), f"{path}.schema")
+    _string(document.get("fingerprint"), f"{path}.fingerprint")
     fixture_version = "avro-value-v1"
     protocol_version = _normalized_codec_version("avro", fixture_version)
     evidence: list[Evidence] = []
@@ -467,7 +640,6 @@ def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidenc
                     _canonical_base64(
                         wire,
                         f"{path}.{section}[{index}].wire_base64",
-                        allow_invalid=True,
                     )
                 ]
 
@@ -479,10 +651,6 @@ def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidenc
             )
             duplicate_values = [
                 _codec_semantic(
-                    codec="avro",
-                    schema=schema,
-                    version=protocol_version,
-                    fingerprint=fingerprint,
                     value=semantic_value,
                     wire=semantic_wire,
                     operation=operation,
@@ -535,14 +703,13 @@ def _golden_history_fixture(
         _object(expected, f"{path}.cases[{index}].expected")
         workflow_type = case.get("workflow_type", case.get("scenario"))
         _string(workflow_type, f"{path}.cases[{index}].workflow identity")
-        semantic = {
-            "protocol_version": protocol_version,
-            "runtime": runtime,
-            "workflow": workflow_type,
-            "start_input": case.get("start_input"),
-            "history": history,
-            "expected": expected,
-        }
+        semantic = _replay_semantic(
+            workflow_type=workflow_type,
+            workflow_input=case.get("start_input", []),
+            history=history,
+            command_sequence=case.get("command_sequence"),
+            expected=expected,
+        )
         evidence.append(
             _fixture_evidence(
                 category="replay",
@@ -978,7 +1145,15 @@ def validate(
             )
             _validate_policy_evolution(base_policy, policy)
             for path in _fixture_paths(base_policy, base_files):
-                if current_files.get(path) != base_files[path]:
+                current_content = current_files.get(path)
+                if (
+                    current_content != base_files[path]
+                    and current_content is not None
+                    and _canonical_wire_migration(base_files[path], current_content)
+                ):
+                    base_files[path] = current_content
+                    continue
+                if current_content != base_files[path]:
                     raise CorpusError(f"immutable fixture file {path} was changed, moved, or removed")
             base_evidence = _inventory(base_policy, base_files)
     current_evidence = _inventory(policy, current_files, new_paths=added_paths)

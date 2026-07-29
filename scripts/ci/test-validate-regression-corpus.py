@@ -90,6 +90,136 @@ def _avro_golden_fixture() -> dict[str, Any]:
     }
 
 
+def _replay_fixture(identity: str, workflow_type: str = "golden.single-activity") -> dict[str, Any]:
+    return {
+        "$schema": "https://example.invalid/evidence-schema.json",
+        "fixture_schema": "durable-workflow.replay-regression/v1",
+        "id": identity,
+        "protocol_version": "1.0",
+        "bindings": ["python"],
+        "workflow": {"type": workflow_type, "input": ["Ada"]},
+        "history": [
+            {
+                "event_type": "ActivityCompleted",
+                "payload": {"result": '"hello Ada"'},
+            }
+        ],
+        "expected": {
+            "command_type": "CompleteWorkflow",
+            "result": "hello Ada",
+        },
+    }
+
+
+def _golden_history_fixture() -> dict[str, Any]:
+    replay = _replay_fixture("golden-source")
+    return {
+        "fixture_schema": "durable-workflow.golden-history.v1",
+        "source": {
+            "runtime": "sdk-python",
+            "version": "1.0.0",
+            "worker_protocol_version": "1.0",
+        },
+        "cases": [
+            {
+                "name": "single_activity",
+                "workflow_type": replay["workflow"]["type"],
+                "start_input": replay["workflow"]["input"],
+                "history": replay["history"],
+                "expected": replay["expected"],
+            }
+        ],
+    }
+
+
+class CanonicalIdentityTest(unittest.TestCase):
+    def replay_inventory(self, replay: dict[str, Any]) -> list[Any]:
+        policy = {
+            "binding": "python",
+            "categories": {
+                "replay": {
+                    "fixtures": [
+                        {
+                            "glob": "golden/*.json",
+                            "format": "golden-history-v1",
+                        },
+                        {
+                            "glob": "replay/*.json",
+                            "format": "replay-regression-v1",
+                        },
+                    ],
+                    "guards": [{"glob": "src/replay.py"}],
+                }
+            },
+        }
+        files = {
+            "golden/base.json": json.dumps(_golden_history_fixture()).encode(),
+            "replay/candidate.json": json.dumps(replay).encode(),
+        }
+        return VALIDATOR._inventory(policy, files)
+
+    def test_golden_history_rewrap_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "duplicate semantic fixtures",
+        ):
+            self.replay_inventory(_replay_fixture("rewrapped"))
+
+    def test_golden_history_rewrap_with_nested_command_expected_is_rejected(self) -> None:
+        replay = _replay_fixture("nested-command-rewrap")
+        replay["expected"] = {
+            "command_sequence": [
+                {
+                    "type": "complete_workflow",
+                    "result": "hello Ada",
+                }
+            ]
+        }
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "duplicate semantic fixtures",
+        ):
+            self.replay_inventory(replay)
+
+    def test_golden_history_rewrap_with_redundant_command_assertions_is_rejected(
+        self,
+    ) -> None:
+        replay = _replay_fixture("redundant-command-rewrap")
+        commands = [
+            {
+                "type": "complete_workflow",
+                "result": "hello Ada",
+            }
+        ]
+        replay["command_sequence"] = commands
+        replay["expected"] = {"command_sequence": commands}
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "duplicate semantic fixtures",
+        ):
+            self.replay_inventory(replay)
+
+    def test_genuinely_new_replay_behavior_grows_inventory(self) -> None:
+        evidence = self.replay_inventory(
+            _replay_fixture("new-behavior", workflow_type="golden.other")
+        )
+
+        self.assertEqual(2, len(evidence))
+
+    def test_noncanonical_base64_spelling_is_rejected(self) -> None:
+        with self.assertRaisesRegex(VALIDATOR.CorpusError, "is not canonical base64"):
+            VALIDATOR._canonical_base64("AB==", "wire")
+
+    def test_malformed_golden_wire_must_be_canonical_base64(self) -> None:
+        fixture = _avro_golden_fixture()
+        fixture["malformed_frames"][0]["wire_base64"] = "%%%"
+
+        with self.assertRaisesRegex(VALIDATOR.CorpusError, "is not canonical base64"):
+            VALIDATOR._avro_golden_fixture(fixture, "golden.json")
+
+
 class WorkerCodecGuardTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="regression-corpus-worker-guard-")
@@ -559,7 +689,7 @@ raise SystemExit(0 if "return str(value)" in source else 1)
 
         with self.assertRaisesRegex(
             VALIDATOR.CorpusError,
-            "duplicate semantic fixtures",
+            "is not canonical base64",
         ):
             self._validate()
 
@@ -571,6 +701,11 @@ raise SystemExit(0 if "return str(value)" in source else 1)
         duplicate = _codec_fixture("base")
         duplicate["id"] = "metadata-only-rewrap"
         duplicate["bindings"] = ["rust", "python", "php"]
+        duplicate["protocol"]["codec"] = "renamed-codec"
+        duplicate["protocol"]["schema"] = "renamed-schema"
+        duplicate["protocol"]["version"] = "999"
+        duplicate["protocol"]["fingerprint"] = "metadata-only"
+        duplicate["framing"]["encoding"] = "renamed-encoding"
         self._write_json(
             "tests/fixtures/codec_regressions/metadata-only-rewrap.json",
             duplicate,
