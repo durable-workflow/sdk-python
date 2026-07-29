@@ -1,0 +1,205 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from durable_workflow import Replayer, serializer
+from tests.test_golden_history_replay import (
+    GoldenSagaCompensationWorkflow,
+    GoldenSignalWaitWorkflow,
+    GoldenSingleActivityWorkflow,
+    GoldenTimeoutWaitWorkflow,
+    GoldenVersionMarkerWorkflow,
+)
+
+FIXTURE_SCHEMA = "durable-workflow.replay-regression/v1"
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "replay_regressions"
+WORKFLOWS = [
+    GoldenSagaCompensationWorkflow,
+    GoldenSignalWaitWorkflow,
+    GoldenSingleActivityWorkflow,
+    GoldenTimeoutWaitWorkflow,
+    GoldenVersionMarkerWorkflow,
+]
+WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__)): workflow for workflow in WORKFLOWS}
+
+
+def _fixture_paths() -> list[Path]:
+    return sorted(FIXTURE_DIR.glob("*.json"))
+
+
+def _decode_envelopes(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        if "codec" in value and "blob" in value:
+            return _decode_envelopes(serializer.decode_envelope(dict(value)))
+        return {str(key): _decode_envelopes(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decode_envelopes(item) for item in value]
+    return value
+
+
+def _command_document(command: Any) -> dict[str, Any]:
+    document = command.to_server_command(
+        "regression-corpus",
+        payload_codec=serializer.JSON_CODEC,
+        size_warning=None,
+    )
+    normalized = _decode_envelopes(document)
+    assert isinstance(normalized, dict)
+    normalized["command_type"] = type(command).__name__
+    return normalized
+
+
+def _assert_matches(expected: Any, actual: Any, context: str) -> None:
+    if isinstance(expected, Mapping):
+        assert isinstance(actual, Mapping), f"{context} expected an object, observed {type(actual).__name__}"
+        for key, value in expected.items():
+            assert key in actual, f"{context} is missing {key!r}"
+            _assert_matches(value, actual[key], f"{context}.{key}")
+        return
+
+    if isinstance(expected, Sequence) and not isinstance(expected, str | bytes):
+        assert isinstance(actual, Sequence) and not isinstance(actual, str | bytes), (
+            f"{context} expected an array, observed {type(actual).__name__}"
+        )
+        assert len(expected) == len(actual), f"{context} expected {len(expected)} entries, observed {len(actual)}"
+        for index, (expected_item, actual_item) in enumerate(zip(expected, actual, strict=True)):
+            _assert_matches(expected_item, actual_item, f"{context}[{index}]")
+        return
+
+    assert actual == expected, f"{context} expected {expected!r}, observed {actual!r}"
+
+
+def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    assert fixture.get("fixture_schema") == FIXTURE_SCHEMA
+    assert "python" in fixture.get("bindings", [])
+
+    workflow = fixture.get("workflow")
+    assert isinstance(workflow, dict)
+    workflow_type = workflow.get("type")
+    assert isinstance(workflow_type, str) and workflow_type
+    assert workflow_type in WORKFLOW_TYPES, (
+        f"replay fixture workflow {workflow_type!r} has no Python implementation; "
+        "register its reproducer workflow in WORKFLOWS"
+    )
+    start_input = workflow.get("input", [])
+    assert isinstance(start_input, list)
+
+    history = fixture.get("history", [])
+    assert isinstance(history, list)
+    if "history" in fixture:
+        assert history
+
+    outcome = Replayer(workflows=[WORKFLOW_TYPES[workflow_type]]).replay(
+        history,
+        start_input,
+        workflow_type=workflow_type,
+    )
+    commands = [_command_document(command) for command in outcome.commands]
+
+    declared_commands = fixture.get("command_sequence")
+    if declared_commands is not None:
+        _assert_matches(
+            declared_commands,
+            commands,
+            f"{fixture.get('id', '<unnamed>')}.command_sequence",
+        )
+
+    expected = fixture.get("expected")
+    assert isinstance(expected, dict) and expected
+    observed: dict[str, Any] = {"command_sequence": commands}
+    if len(commands) == 1:
+        observed.update(commands[0])
+    _assert_matches(expected, observed, f"{fixture.get('id', '<unnamed>')}.expected")
+    return commands
+
+
+@pytest.mark.parametrize(
+    "path",
+    _fixture_paths(),
+    ids=lambda path: path.name,
+)
+def test_checked_in_replay_regression_corpus_uses_official_replayer(
+    path: Path,
+) -> None:
+    fixture = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(fixture, dict)
+
+    _execute_fixture(fixture)
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        {
+            "fixture_schema": FIXTURE_SCHEMA,
+            "id": "history-format-contract",
+            "protocol_version": "1.0",
+            "bindings": ["python"],
+            "workflow": {
+                "type": "golden.single-activity",
+                "input": ["Ada"],
+            },
+            "history": [
+                {
+                    "event_type": "ActivityCompleted",
+                    "payload": {"result": '"hello Ada"'},
+                }
+            ],
+            "expected": {"command_sequence": [{"type": "complete_workflow", "result": "hello Ada"}]},
+        },
+        {
+            "fixture_schema": FIXTURE_SCHEMA,
+            "id": "command-sequence-format-contract",
+            "protocol_version": "1.0",
+            "bindings": ["python"],
+            "workflow": {
+                "type": "golden.single-activity",
+                "input": ["Ada"],
+            },
+            "command_sequence": [
+                {
+                    "type": "schedule_activity",
+                    "activity_type": "golden.greet",
+                    "arguments": ["Ada"],
+                }
+            ],
+            "expected": {"command_type": "ScheduleActivity"},
+        },
+    ],
+    ids=lambda fixture: str(fixture["id"]),
+)
+def test_replay_regression_formats_execute_through_official_replayer(
+    fixture: dict[str, Any],
+) -> None:
+    _execute_fixture(fixture)
+
+
+def test_impossible_event_and_command_fixture_is_rejected() -> None:
+    fixture = {
+        "fixture_schema": FIXTURE_SCHEMA,
+        "id": "impossible-event-command",
+        "protocol_version": "1.0",
+        "bindings": ["python"],
+        "workflow": {
+            "type": "golden.single-activity",
+            "input": ["Ada"],
+        },
+        "history": [
+            {
+                "event_type": "ImpossibleEvent",
+                "payload": {},
+            }
+        ],
+        "command_sequence": [{"type": "impossible_command"}],
+        "expected": {
+            "command_sequence": [{"type": "impossible_command"}],
+        },
+    }
+
+    with pytest.raises(AssertionError, match=r"command_sequence\[0\]\.type"):
+        _execute_fixture(fixture)

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/policy-schema.json",
+  "schema": "durable-workflow.regression-corpus-policy/v1",
+  "repository": "sdk-python",
+  "binding": "python",
+  "categories": {
+    "codec": {
+      "fixtures": [
+        {
+          "glob": "schema/avro-value-v1-golden.json",
+          "format": "avro-value-golden-v1"
+        },
+        {
+          "glob": "tests/fixtures/codec_regressions/*.json",
+          "format": "codec-regression-v1"
+        }
+      ],
+      "guards": [
+        {
+          "glob": "src/durable_workflow/_avro.py"
+        },
+        {
+          "glob": "src/durable_workflow/serializer.py"
+        },
+        {
+          "glob": "src/durable_workflow/worker.py",
+          "content_patterns": [
+            "def _command_payload_codec\\(",
+            "def _validate_payload_codec\\(",
+            "_validate_payload_codec\\("
+          ]
+        }
+      ]
+    },
+    "replay": {
+      "fixtures": [
+        {
+          "glob": "tests/fixtures/golden_history/*.json",
+          "format": "golden-history-v1"
+        },
+        {
+          "glob": "tests/fixtures/replay_regressions/*.json",
+          "format": "replay-regression-v1"
+        }
+      ],
+      "guards": [
+        {
+          "glob": "src/durable_workflow/replay*.py"
+        },
+        {
+          "glob": "src/durable_workflow/worker.py",
+          "content_patterns": [
+            "Replay",
+            "replay",
+            "history"
+          ]
+        },
+        {
+          "glob": "src/durable_workflow/workflow.py",
+          "content_patterns": [
+            "Replay",
+            "replay",
+            "history"
+          ]
+        }
+      ]
+    }
+  }
+}
