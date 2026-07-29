@@ -9,9 +9,11 @@ import binascii
 import fnmatch
 import hashlib
 import json
+import math
 import re
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -44,6 +46,7 @@ class Evidence:
     path: str
     protocol_version: str
     semantic_digest: str
+    duplicate_digests: tuple[str, ...]
     supersedes: tuple[str, ...] = ()
 
 
@@ -95,11 +98,157 @@ def _json(content: bytes, path: str) -> Mapping[str, Any]:
     return _object(value, path)
 
 
-def _valid_base64(value: str, context: str) -> None:
+def _canonical_base64(
+    value: str,
+    context: str,
+    *,
+    allow_invalid: bool = False,
+) -> str | Mapping[str, str]:
     try:
-        base64.b64decode(value, validate=True)
+        decoded = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError) as error:
+        if allow_invalid:
+            return {"invalid_base64": value}
         raise CorpusError(f"{context} is not canonical base64") from error
+    return base64.b64encode(decoded).decode("ascii")
+
+
+def _normalized_codec_version(codec: str, version: str) -> str:
+    if codec == "avro":
+        match = re.fullmatch(r"(?:(?:avro-value-)?v)?([1-9][0-9]*)", version)
+        if match is not None:
+            return match.group(1)
+    return version
+
+
+def _semantic_codec_value(
+    value: Mapping[str, Any],
+    context: str,
+    *,
+    wire_backed: bool,
+) -> Mapping[str, Any]:
+    """Normalize tagged codec values independently of their fixture format."""
+
+    kind = _string(value.get("type"), f"{context}.type")
+    if kind == "null":
+        return {"type": kind}
+    if kind == "boolean":
+        raw_boolean = value.get("value")
+        if not isinstance(raw_boolean, bool):
+            raise CorpusError(f"{context}.value must be a boolean")
+        return {"type": kind, "value": raw_boolean}
+    if kind == "long":
+        raw_long = value.get("value")
+        if isinstance(raw_long, bool) or not isinstance(raw_long, int | str):
+            raise CorpusError(f"{context}.value must be an integer string")
+        try:
+            parsed_long = int(raw_long)
+        except ValueError as error:
+            raise CorpusError(f"{context}.value must be an integer string") from error
+        if not -(2**63) <= parsed_long < 2**63:
+            raise CorpusError(f"{context}.value must fit a signed 64-bit integer")
+        return {"type": kind, "value": str(parsed_long)}
+    if kind == "double":
+        raw_double = value.get("value")
+        if isinstance(raw_double, bool) or not isinstance(raw_double, int | float | str):
+            raise CorpusError(f"{context}.value must be a number or numeric string")
+        try:
+            parsed_double = float(raw_double)
+        except ValueError as error:
+            raise CorpusError(f"{context}.value must be a number or numeric string") from error
+        if math.isnan(parsed_double):
+            canonical_double = "nan"
+        elif math.isinf(parsed_double):
+            canonical_double = "-infinity" if parsed_double < 0 else "infinity"
+        else:
+            canonical_double = parsed_double.hex()
+        return {"type": kind, "value": canonical_double}
+    if kind == "bytes":
+        aliases = [field for field in ("base64", "value_base64") if field in value]
+        if not aliases:
+            raise CorpusError(f"{context} must include base64 bytes")
+        canonical_bytes: set[str] = set()
+        for field in aliases:
+            encoded = value[field]
+            if not isinstance(encoded, str):
+                raise CorpusError(f"{context}.{field} must be a string")
+            normalized = _canonical_base64(encoded, f"{context}.{field}")
+            if not isinstance(normalized, str):
+                raise CorpusError(f"{context}.{field} must contain valid base64")
+            canonical_bytes.add(normalized)
+        if len(canonical_bytes) != 1:
+            raise CorpusError(f"{context} contains conflicting base64 byte values")
+        return {"type": kind, "base64": canonical_bytes.pop()}
+    if kind == "string":
+        raw_string = value.get("value")
+        if not isinstance(raw_string, str):
+            raise CorpusError(f"{context}.value must be a string")
+        return {"type": kind, "value": raw_string}
+    if kind == "array":
+        if wire_backed:
+            return {"type": kind}
+        items = _list(value.get("items"), f"{context}.items")
+        return {
+            "type": kind,
+            "items": [
+                _semantic_codec_value(
+                    _object(item, f"{context}.items[{index}]"),
+                    f"{context}.items[{index}]",
+                    wire_backed=False,
+                )
+                for index, item in enumerate(items)
+            ],
+        }
+    if kind == "map":
+        if wire_backed:
+            return {"type": kind}
+        entries = _list(value.get("entries"), f"{context}.entries")
+        canonical_entries: dict[str, Mapping[str, Any]] = {}
+        for index, raw_entry in enumerate(entries):
+            entry_context = f"{context}.entries[{index}]"
+            entry = _object(raw_entry, entry_context)
+            key = entry.get("key")
+            if not isinstance(key, str):
+                raise CorpusError(f"{entry_context}.key must be a string")
+            if key in canonical_entries:
+                raise CorpusError(f"{context}.entries contains duplicate key {key!r}")
+            canonical_entries[key] = _semantic_codec_value(
+                _object(entry.get("value"), f"{entry_context}.value"),
+                f"{entry_context}.value",
+                wire_backed=False,
+            )
+        return {
+            "type": kind,
+            "entries": [
+                {"key": key, "value": canonical_entries[key]}
+                for key in sorted(canonical_entries)
+            ],
+        }
+    raise CorpusError(f"{context}.type is unsupported")
+
+
+def _codec_semantic(
+    *,
+    codec: str,
+    schema: str,
+    version: str,
+    fingerprint: str | None,
+    value: Mapping[str, Any] | None,
+    wire: str | Mapping[str, str] | Sequence[str | Mapping[str, str]] | None,
+    operation: str,
+    error: str | None,
+) -> Mapping[str, Any]:
+    return {
+        "protocol": {
+            "codec": codec,
+            "schema": schema,
+            "version": version,
+            "fingerprint": fingerprint,
+        },
+        "value": value,
+        "wire": wire,
+        "failure_policy": {"operation": operation, "error": error},
+    }
 
 
 def _fixture_evidence(
@@ -109,14 +258,17 @@ def _fixture_evidence(
     path: str,
     protocol_version: str,
     semantic_value: Any,
+    duplicate_values: Sequence[Any] | None = None,
     supersedes: tuple[str, ...] = (),
 ) -> Evidence:
+    duplicate_values = [semantic_value] if duplicate_values is None else duplicate_values
     return Evidence(
         category=category,
         identity=identity,
         path=path,
         protocol_version=protocol_version,
         semantic_digest=_canonical_digest(semantic_value),
+        duplicate_digests=tuple(_canonical_digest(value) for value in duplicate_values),
         supersedes=supersedes,
     )
 
@@ -130,6 +282,7 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     codec = _string(protocol.get("codec"), f"{path}.protocol.codec")
     schema = _string(protocol.get("schema"), f"{path}.protocol.schema")
     version = _string(protocol.get("version"), f"{path}.protocol.version")
+    normalized_version = _normalized_codec_version(codec, version)
     fingerprint = _nullable_string(protocol.get("fingerprint"), f"{path}.protocol.fingerprint")
     bindings = _unique_strings(
         document.get("bindings"),
@@ -140,7 +293,11 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
         raise CorpusError(f"{path} does not name this repository's {binding} binding")
 
     value = _object(document.get("value"), f"{path}.value")
-    _string(value.get("type"), f"{path}.value.type")
+    canonical_value = _semantic_codec_value(
+        value,
+        f"{path}.value",
+        wire_backed=False,
+    )
     framing = _object(document.get("framing"), f"{path}.framing")
     _string(framing.get("encoding"), f"{path}.framing.encoding")
     wire = _nullable_string(framing.get("wire_base64"), f"{path}.framing.wire_base64")
@@ -155,8 +312,11 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
         raise CorpusError(f"{path} round-trip evidence cannot declare an error")
     if operation != "round_trip" and error is None:
         raise CorpusError(f"{path} rejection evidence must declare its stable error policy")
-    if wire is not None:
-        _valid_base64(wire, f"{path}.framing.wire_base64")
+    canonical_wire = (
+        _canonical_base64(wire, f"{path}.framing.wire_base64")
+        if wire is not None
+        else None
+    )
 
     supersedes = tuple(
         _string(item, f"{path}.supersedes[]")
@@ -164,23 +324,28 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     )
     if len(supersedes) != len(set(supersedes)) or identity in supersedes:
         raise CorpusError(f"{path}.supersedes is invalid")
-    semantic = {
-        "protocol": {
-            "codec": codec,
-            "schema": schema,
-            "version": version,
-            "fingerprint": fingerprint,
-        },
-        "value": value if operation == "encode_reject" else None,
-        "wire_base64": wire,
-        "failure_policy": {"operation": operation, "error": error},
-    }
+    if operation == "round_trip" and canonical_value["type"] in {"array", "map"}:
+        canonical_value = {"type": canonical_value["type"]}
+    semantic = _codec_semantic(
+        codec=codec,
+        schema=schema,
+        version=normalized_version,
+        fingerprint=fingerprint,
+        value=(
+            canonical_value
+            if operation in {"round_trip", "encode_reject"}
+            else None
+        ),
+        wire=canonical_wire,
+        operation=operation,
+        error=error,
+    )
     return [
         _fixture_evidence(
             category="codec",
             identity=identity,
             path=path,
-            protocol_version=version,
+            protocol_version=normalized_version,
             semantic_value=semantic,
             supersedes=supersedes,
         )
@@ -242,7 +407,8 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
 def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidence]:
     schema = _string(document.get("schema"), f"{path}.schema")
     fingerprint = _string(document.get("fingerprint"), f"{path}.fingerprint")
-    version = "avro-value-v1"
+    fixture_version = "avro-value-v1"
+    protocol_version = _normalized_codec_version("avro", fixture_version)
     evidence: list[Evidence] = []
     sections = {
         "case": _list(document.get("cases"), f"{path}.cases", nonempty=True),
@@ -254,37 +420,89 @@ def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidenc
             entry = _object(raw_entry, f"{path}.{section}[{index}]")
             name = _string(entry.get("name"), f"{path}.{section}[{index}].name")
             wire = entry.get("wire_base64")
-            semantic_wire: Any = wire
+            semantic_wires: list[str | Mapping[str, str]]
+            semantic_value: Mapping[str, Any] | None = None
             if section == "alternate":
-                semantic_wire = list(_unique_strings(wire, f"{path}.{section}[{index}].wire_base64"))
-                for wire_value in semantic_wire:
-                    _valid_base64(wire_value, f"{path}.{section}[{index}].wire_base64[]")
+                wire_values = _unique_strings(
+                    wire,
+                    f"{path}.{section}[{index}].wire_base64",
+                )
+                semantic_wires = [
+                    _canonical_base64(
+                        wire_value,
+                        f"{path}.{section}[{index}].wire_base64[]",
+                    )
+                    for wire_value in wire_values
+                ]
+                if len({_canonical_digest(value) for value in semantic_wires}) != len(
+                    semantic_wires
+                ):
+                    raise CorpusError(
+                        f"{path}.{section}[{index}].wire_base64 contains equivalent bytes"
+                    )
+                semantic_value = {"type": "map"}
             elif section == "case":
                 wire_value = _string(wire, f"{path}.{section}[{index}].wire_base64")
-                _valid_base64(wire_value, f"{path}.{section}[{index}].wire_base64")
+                semantic_wires = [
+                    _canonical_base64(
+                        wire_value,
+                        f"{path}.{section}[{index}].wire_base64",
+                    )
+                ]
+                kind = _string(entry.get("kind"), f"{path}.{section}[{index}].kind")
+                canonical_value: dict[str, Any] = {"type": kind}
+                if "value" in entry:
+                    canonical_value["value"] = entry["value"]
+                if "value_base64" in entry:
+                    canonical_value["value_base64"] = entry["value_base64"]
+                semantic_value = _semantic_codec_value(
+                    canonical_value,
+                    f"{path}.{section}[{index}]",
+                    wire_backed=True,
+                )
             elif not isinstance(wire, str):
                 raise CorpusError(f"{path}.{section}[{index}].wire_base64 must be a string")
-            semantic = {
-                "protocol": {
-                    "codec": "avro",
-                    "schema": schema,
-                    "version": version,
-                    "fingerprint": fingerprint,
-                },
-                "framing": semantic_wire,
-                "failure_policy": (
-                    {"operation": "decode_reject", "error": entry.get("error")}
-                    if section == "malformed"
-                    else {"operation": "round_trip", "error": None}
-                ),
-            }
+            else:
+                semantic_wires = [
+                    _canonical_base64(
+                        wire,
+                        f"{path}.{section}[{index}].wire_base64",
+                        allow_invalid=True,
+                    )
+                ]
+
+            operation = "decode_reject" if section == "malformed" else "round_trip"
+            error = (
+                _string(entry.get("error"), f"{path}.{section}[{index}].error")
+                if section == "malformed"
+                else None
+            )
+            duplicate_values = [
+                _codec_semantic(
+                    codec="avro",
+                    schema=schema,
+                    version=protocol_version,
+                    fingerprint=fingerprint,
+                    value=semantic_value,
+                    wire=semantic_wire,
+                    operation=operation,
+                    error=error,
+                )
+                for semantic_wire in semantic_wires
+            ]
+            semantic = (
+                duplicate_values[0]
+                if len(duplicate_values) == 1
+                else {"equivalent_wire_encodings": duplicate_values}
+            )
             evidence.append(
                 _fixture_evidence(
                     category="codec",
-                    identity=f"{version}:{section}:{name}",
+                    identity=f"{fixture_version}:{section}:{name}",
                     path=path,
-                    protocol_version=version,
+                    protocol_version=protocol_version,
                     semantic_value=semantic,
+                    duplicate_values=duplicate_values,
                 )
             )
     return evidence
@@ -349,6 +567,95 @@ def _run(command: Sequence[str], root: Path, *, check: bool = True) -> str:
         detail = result.stderr.strip() or result.stdout.strip()
         raise CorpusError(f"{' '.join(command)} failed: {detail}")
     return result.stdout
+
+
+def _run_codec_fixture(
+    *,
+    root: Path,
+    python_executable: str,
+    codec_runner: Path,
+    source_root: Path,
+    fixture: Path,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            python_executable,
+            str(codec_runner),
+            "--source-root",
+            str(source_root),
+            "--fixture",
+            str(fixture),
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _process_detail(result: subprocess.CompletedProcess[str]) -> str:
+    return result.stderr.strip() or result.stdout.strip() or f"exit status {result.returncode}"
+
+
+def _verify_new_codec_evidence(
+    *,
+    root: Path,
+    base_files: Mapping[str, bytes],
+    current_evidence: Sequence[Evidence],
+    added_paths: set[str],
+    python_executable: str,
+    codec_runner: Path,
+) -> int:
+    paths = sorted({item.path for item in current_evidence if item.category == "codec" and item.path in added_paths})
+    if not paths:
+        raise CorpusError(
+            "codec implementation changed but no newly added codec fixture can prove the defective revision"
+        )
+    if not codec_runner.is_file():
+        raise CorpusError(f"official Python codec fixture runner is missing: {codec_runner}")
+
+    with tempfile.TemporaryDirectory(prefix="sdk-python-codec-base-") as temporary:
+        base_root = Path(temporary)
+        source_files = {
+            path: content for path, content in base_files.items() if Path(path).parts and Path(path).parts[0] == "src"
+        }
+        if not source_files:
+            raise CorpusError("the base revision has no Python SDK source tree")
+        for path, content in source_files.items():
+            destination = base_root / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+
+        for path in paths:
+            fixture = root / path
+            candidate = _run_codec_fixture(
+                root=root,
+                python_executable=python_executable,
+                codec_runner=codec_runner,
+                source_root=root,
+                fixture=fixture,
+            )
+            if candidate.returncode != 0:
+                raise CorpusError(
+                    f"new codec fixture {path} does not pass on the candidate "
+                    "through the official Python binding: "
+                    f"{_process_detail(candidate)}"
+                )
+
+            defective = _run_codec_fixture(
+                root=root,
+                python_executable=python_executable,
+                codec_runner=codec_runner,
+                source_root=base_root,
+                fixture=fixture,
+            )
+            if defective.returncode == 0:
+                raise CorpusError(
+                    f"new codec fixture {path} also passes on the defective base; "
+                    "it does not reproduce the guarded codec change"
+                )
+
+    return len(paths)
 
 
 def _policy(document: Mapping[str, Any], path: str) -> Mapping[str, Any]:
@@ -543,11 +850,16 @@ def _inventory(
     repeated_identities = sorted(identity for identity, count in identities.items() if count > 1)
     if repeated_identities:
         raise CorpusError(f"duplicate fixture identities: {repeated_identities}")
-    semantics = Counter((item.category, item.semantic_digest) for item in evidence)
-    duplicate_semantics = sorted(key for key, count in semantics.items() if count > 1)
+    semantic_owners: dict[tuple[str, str], list[Evidence]] = {}
+    for item in evidence:
+        for digest in set(item.duplicate_digests):
+            semantic_owners.setdefault((item.category, digest), []).append(item)
+    duplicate_semantics = sorted(
+        key for key, owners in semantic_owners.items() if len(owners) > 1
+    )
     if duplicate_semantics:
         paths = {
-            key: sorted(item.path for item in evidence if (item.category, item.semantic_digest) == key)
+            key: sorted(item.path for item in semantic_owners[key])
             for key in duplicate_semantics
         }
         raise CorpusError(f"duplicate semantic fixtures: {paths}")
@@ -634,12 +946,21 @@ def _guard_matches(
     return any(re.search(pattern, changed_context) for pattern in patterns)
 
 
-def validate(root: Path, policy_path: Path, base_ref: str | None) -> dict[str, Any]:
+def validate(
+    root: Path,
+    policy_path: Path,
+    base_ref: str | None,
+    *,
+    python_executable: str = sys.executable,
+    codec_runner_path: Path = Path("scripts/ci/run-codec-regression-fixture.py"),
+) -> dict[str, Any]:
     policy_file = policy_path if policy_path.is_absolute() else root / policy_path
+    codec_runner = codec_runner_path if codec_runner_path.is_absolute() else root / codec_runner_path
     policy = _policy(_json(policy_file.read_bytes(), str(policy_path)), str(policy_path))
     current_files = _tracked_worktree_files(root)
     changed: set[str] = set()
     added_paths: set[str] = set()
+    base_files: dict[str, bytes] = {}
     base_evidence: list[Evidence] = []
     if base_ref and not ZERO_COMMIT.fullmatch(base_ref):
         _run(["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"], root)
@@ -703,12 +1024,25 @@ def validate(root: Path, policy_path: Path, base_ref: str | None) -> dict[str, A
                     f"{category_name} implementation changed but its corpus did not grow "
                     f"(base={base_count}, current={current_count})"
                 )
-        counts[category_name] = {
+        revision_verified = 0
+        if category_name == "codec" and related:
+            revision_verified = _verify_new_codec_evidence(
+                root=root,
+                base_files=base_files,
+                current_evidence=current_evidence,
+                added_paths=added_paths,
+                python_executable=python_executable,
+                codec_runner=codec_runner,
+            )
+        count = {
             "base": base_count,
             "current": current_count,
             "added": added_count,
             "related_change": related,
         }
+        if category_name == "codec":
+            count["revision_verified"] = revision_verified
+        counts[category_name] = count
     return {
         "schema": POLICY_SCHEMA,
         "repository": policy["repository"],
@@ -724,9 +1058,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--policy", type=Path, default=Path("regression-corpus-policy.json"))
     parser.add_argument("--base-ref")
+    parser.add_argument("--python-executable", default=sys.executable)
+    parser.add_argument(
+        "--codec-runner",
+        type=Path,
+        default=Path("scripts/ci/run-codec-regression-fixture.py"),
+    )
     args = parser.parse_args(argv)
     try:
-        result = validate(args.root.resolve(), args.policy, args.base_ref)
+        result = validate(
+            args.root.resolve(),
+            args.policy,
+            args.base_ref,
+            python_executable=args.python_executable,
+            codec_runner_path=args.codec_runner,
+        )
     except (CorpusError, OSError) as error:
         print(f"regression corpus validation failed: {error}", file=sys.stderr)
         return 1

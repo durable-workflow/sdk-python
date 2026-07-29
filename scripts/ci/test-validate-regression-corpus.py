@@ -29,6 +29,7 @@ def _load_validator() -> ModuleType:
 
 
 VALIDATOR = _load_validator()
+CODEC_RUNNER = Path(__file__).with_name("run-codec-regression-fixture.py")
 
 
 def _codec_worker_guard() -> dict[str, Any]:
@@ -58,6 +59,34 @@ def _codec_fixture(identity: str) -> dict[str, Any]:
             "wire_base64": "AA==" if identity == "base" else "Ag==",
         },
         "failure_policy": {"operation": "round_trip", "error": None},
+    }
+
+
+def _avro_golden_fixture() -> dict[str, Any]:
+    return {
+        "schema": "durable_workflow.protocol.Value",
+        "fingerprint": "e2a33dff55802237",
+        "cases": [
+            {
+                "name": "long_7",
+                "kind": "long",
+                "value": "7",
+                "wire_base64": "wwHioz3/VYAiNwQO",
+            }
+        ],
+        "malformed_frames": [
+            {
+                "name": "short_frame",
+                "error": "invalid_payload_framing",
+                "wire_base64": "wwE=",
+            }
+        ],
+        "alternate_map_orders": [
+            {
+                "name": "map_order",
+                "wire_base64": ["Ag==", "Aw=="],
+            }
+        ],
     }
 
 
@@ -137,6 +166,44 @@ def health_check(enabled):
         self.assertFalse(self._guard_matches())
 
 
+class OfficialCodecRunnerTest(unittest.TestCase):
+    def test_source_root_selects_candidate_or_base_binding(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="regression-corpus-codec-runner-") as temporary:
+            root = Path(temporary)
+            fixture = root / "fixture.json"
+            fixture.write_text(
+                f"{json.dumps(_codec_fixture('base'), indent=2)}\n",
+                encoding="utf-8",
+            )
+            results: dict[str, subprocess.CompletedProcess[str]] = {}
+            for revision, encoded in (("candidate", "AA=="), ("base", "Ag==")):
+                source = root / revision / "src/durable_workflow"
+                source.mkdir(parents=True)
+                (source / "__init__.py").write_text("", encoding="utf-8")
+                (source / "_avro.py").write_text(
+                    "VALUE_SCHEMA_FINGERPRINT_HEX = None\n"
+                    f"def encode(value):\n    return {encoded!r}\n"
+                    "def decode(wire):\n    return 0\n",
+                    encoding="utf-8",
+                )
+                results[revision] = subprocess.run(
+                    [
+                        sys.executable,
+                        str(CODEC_RUNNER),
+                        "--source-root",
+                        str(root / revision),
+                        "--fixture",
+                        str(fixture),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+            self.assertEqual(results["candidate"].returncode, 0, results["candidate"].stderr)
+            self.assertNotEqual(results["base"].returncode, 0, results["base"].stderr)
+
+
 class PolicyEvolutionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="regression-corpus-policy-")
@@ -164,9 +231,11 @@ class PolicyEvolutionTest(unittest.TestCase):
             },
         }
         self._write_json("regression-corpus-policy.json", self.policy)
+        base_fixture = _codec_fixture("base")
+        base_fixture["bindings"] = ["php", "python"]
         self._write_json(
             "tests/fixtures/codec_regressions/base.json",
-            _codec_fixture("base"),
+            base_fixture,
         )
         self._write_json(
             "tests/fixtures/codec_archive/preexisting.json",
@@ -175,6 +244,27 @@ class PolicyEvolutionTest(unittest.TestCase):
         self._write_text(
             "src/durable_workflow/serializer.py",
             "def encode(value):\n    return value\n",
+        )
+        self.codec_runner = self.root / "codec-runner.py"
+        self._write_text(
+            "codec-runner.py",
+            """\
+import argparse
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--source-root", type=Path, required=True)
+parser.add_argument("--fixture", type=Path, required=True)
+args = parser.parse_args()
+identity = json.loads(args.fixture.read_text())["id"]
+source = (args.source_root / "src/durable_workflow/serializer.py").read_text()
+if identity == "candidate-failure":
+    raise SystemExit(1)
+if identity == "unrelated":
+    raise SystemExit(0)
+raise SystemExit(0 if "return str(value)" in source else 1)
+""",
         )
         self._git("init", "--quiet")
         self._git("add", ".")
@@ -215,6 +305,57 @@ class PolicyEvolutionTest(unittest.TestCase):
             self.root,
             Path("regression-corpus-policy.json"),
             "HEAD",
+            codec_runner_path=self.codec_runner,
+        )
+
+    def _add_avro_golden_to_base(self) -> None:
+        self.policy["categories"]["codec"]["fixtures"].append(
+            {
+                "glob": "schema/avro-value-v1-golden.json",
+                "format": "avro-value-golden-v1",
+            }
+        )
+        self._write_json("regression-corpus-policy.json", self.policy)
+        self._write_json(
+            "schema/avro-value-v1-golden.json",
+            _avro_golden_fixture(),
+        )
+        self._git("add", ".")
+        self._git(
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=add-avro-golden-baseline",
+        )
+
+    def _write_cross_format_codec_fixture(
+        self,
+        *,
+        identity: str,
+        value: dict[str, Any],
+        wire_base64: str,
+        operation: str,
+        error: str | None,
+    ) -> None:
+        fixture = _codec_fixture(identity)
+        fixture["protocol"] = {
+            "codec": "avro",
+            "schema": "durable_workflow.protocol.Value",
+            "version": "1",
+            "fingerprint": "e2a33dff55802237",
+        }
+        fixture["value"] = value
+        fixture["framing"] = {
+            "encoding": "avro-single-object",
+            "wire_base64": wire_base64,
+        }
+        fixture["failure_policy"] = {"operation": operation, "error": error}
+        self._write_json(
+            f"tests/fixtures/codec_regressions/{identity}.json",
+            fixture,
         )
 
     def test_fixture_selector_cannot_narrow_and_hide_deleted_evidence(self) -> None:
@@ -275,7 +416,7 @@ class PolicyEvolutionTest(unittest.TestCase):
         ):
             self._validate()
 
-    def test_guarded_change_accepts_evidence_on_new_fixture_path(self) -> None:
+    def test_guarded_change_accepts_counterfactual_evidence(self) -> None:
         self._write_text(
             "src/durable_workflow/serializer.py",
             "def encode(value):\n    return str(value)\n",
@@ -289,6 +430,177 @@ class PolicyEvolutionTest(unittest.TestCase):
 
         self.assertEqual(result["counts"]["codec"]["added"], 1)
         self.assertTrue(result["counts"]["codec"]["related_change"])
+        self.assertEqual(result["counts"]["codec"]["revision_verified"], 1)
+
+    def test_unrelated_fixture_beside_counterfactual_evidence_is_rejected(self) -> None:
+        self._write_text(
+            "src/durable_workflow/serializer.py",
+            "def encode(value):\n    return str(value)\n",
+        )
+        counterfactual = _codec_fixture("counterfactual")
+        counterfactual["value"] = {"type": "long", "value": 2}
+        counterfactual["framing"]["wire_base64"] = "BA=="
+        self._write_json(
+            "tests/fixtures/codec_regressions/counterfactual.json",
+            counterfactual,
+        )
+        self._write_json(
+            "tests/fixtures/codec_regressions/unrelated.json",
+            _codec_fixture("unrelated"),
+        )
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "also passes on the defective base",
+        ):
+            self._validate()
+
+    def test_guarded_change_rejects_fixture_that_fails_on_candidate(self) -> None:
+        self._write_text(
+            "src/durable_workflow/serializer.py",
+            "def encode(value):\n    return str(value)\n",
+        )
+        self._write_json(
+            "tests/fixtures/codec_regressions/candidate-failure.json",
+            _codec_fixture("candidate-failure"),
+        )
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "does not pass on the candidate through the official Python binding",
+        ):
+            self._validate()
+
+    def test_fixture_content_remains_immutable(self) -> None:
+        fixture = _codec_fixture("base")
+        fixture["framing"]["wire_base64"] = "BA=="
+        self._write_json(
+            "tests/fixtures/codec_regressions/base.json",
+            fixture,
+        )
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "immutable fixture file",
+        ):
+            self._validate()
+
+    def test_newer_protocol_can_explicitly_supersede_existing_evidence(self) -> None:
+        self._write_text(
+            "src/durable_workflow/serializer.py",
+            "def encode(value):\n    return str(value)\n",
+        )
+        fixture = _codec_fixture("successor")
+        fixture["protocol"]["version"] = "2"
+        fixture["supersedes"] = ["base"]
+        self._write_json(
+            "tests/fixtures/codec_regressions/successor.json",
+            fixture,
+        )
+
+        result = self._validate()
+
+        self.assertEqual(result["counts"]["codec"]["added"], 1)
+        self.assertTrue(result["counts"]["codec"]["related_change"])
+
+    def test_cross_format_round_trip_rewrap_cannot_satisfy_guarded_growth(self) -> None:
+        self._add_avro_golden_to_base()
+        self._write_text(
+            "src/durable_workflow/serializer.py",
+            "def encode(value):\n    return str(value)\n",
+        )
+        self._write_cross_format_codec_fixture(
+            identity="rewrapped-long-seven",
+            value={"type": "long", "value": "7"},
+            wire_base64="wwHioz3/VYAiNwQO",
+            operation="round_trip",
+            error=None,
+        )
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "duplicate semantic fixtures",
+        ):
+            self._validate()
+
+    def test_cross_format_rejection_rewrap_cannot_satisfy_guarded_growth(self) -> None:
+        self._add_avro_golden_to_base()
+        self._write_text(
+            "src/durable_workflow/serializer.py",
+            "def encode(value):\n    return str(value)\n",
+        )
+        self._write_cross_format_codec_fixture(
+            identity="rewrapped-short-frame",
+            value={"type": "null"},
+            wire_base64="wwE=",
+            operation="decode_reject",
+            error="invalid_payload_framing",
+        )
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "duplicate semantic fixtures",
+        ):
+            self._validate()
+
+    def test_equivalent_base64_wire_bytes_share_cross_format_identity(self) -> None:
+        self._add_avro_golden_to_base()
+        self._write_text(
+            "src/durable_workflow/serializer.py",
+            "def encode(value):\n    return str(value)\n",
+        )
+        self._write_cross_format_codec_fixture(
+            identity="equivalent-base64-short-frame",
+            value={"type": "null"},
+            wire_base64="wwF=",
+            operation="decode_reject",
+            error="invalid_payload_framing",
+        )
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "duplicate semantic fixtures",
+        ):
+            self._validate()
+
+    def test_metadata_only_rewrap_keeps_the_same_semantic_identity(self) -> None:
+        self._write_text(
+            "src/durable_workflow/serializer.py",
+            "def encode(value):\n    return str(value)\n",
+        )
+        duplicate = _codec_fixture("base")
+        duplicate["id"] = "metadata-only-rewrap"
+        duplicate["bindings"] = ["rust", "python", "php"]
+        self._write_json(
+            "tests/fixtures/codec_regressions/metadata-only-rewrap.json",
+            duplicate,
+        )
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "duplicate semantic fixtures",
+        ):
+            self._validate()
+
+    def test_genuinely_new_cross_format_evidence_satisfies_guarded_growth(self) -> None:
+        self._add_avro_golden_to_base()
+        self._write_text(
+            "src/durable_workflow/serializer.py",
+            "def encode(value):\n    return str(value)\n",
+        )
+        self._write_cross_format_codec_fixture(
+            identity="new-long-eight",
+            value={"type": "long", "value": "8"},
+            wire_base64="wwHioz3/VYAiNwQQ",
+            operation="round_trip",
+            error=None,
+        )
+
+        result = self._validate()
+
+        self.assertEqual(result["counts"]["codec"]["added"], 1)
+        self.assertTrue(result["counts"]["codec"]["related_change"])
+        self.assertEqual(result["counts"]["codec"]["revision_verified"], 1)
 
 
 if __name__ == "__main__":
