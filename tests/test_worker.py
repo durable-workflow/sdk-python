@@ -34,6 +34,7 @@ from durable_workflow.interceptors import (
 )
 from durable_workflow.nexus import NEXUS_OPERATION_RESULT_SCHEMA, NexusOperationResult
 from durable_workflow.worker import (
+    WORKFLOW_UPDATES_CAPABILITY,
     Worker,
     _query_history_with_export_signal_arguments,
     _should_fail_workflow_task_after_completion_error,
@@ -323,6 +324,14 @@ class TestWorkerRegistration:
         assert call_kwargs["task_queue"] == "q1"
         assert "test-wf" in call_kwargs["supported_workflow_types"]
         assert call_kwargs["workflow_definition_fingerprints"]["test-wf"].startswith("sha256:")
+        assert call_kwargs["workflow_command_contracts"]["test-wf"] == {
+            "queries": [],
+            "query_contracts": [],
+            "signals": [],
+            "signal_contracts": [],
+            "updates": [],
+            "update_contracts": [],
+        }
         assert "test-act" in call_kwargs["supported_activity_types"]
         assert call_kwargs["max_concurrent_workflow_tasks"] == 10
         assert call_kwargs["max_concurrent_activity_tasks"] == 10
@@ -334,6 +343,118 @@ class TestWorkerRegistration:
         process_metrics = call_kwargs["process_metrics"]
         assert process_metrics["process_id"] > 0
         assert "process_started_at" in process_metrics
+
+    @pytest.mark.asyncio
+    async def test_register_advertises_typed_workflow_command_contracts(
+        self, mock_client: AsyncMock
+    ) -> None:
+        @workflow.defn(name="typed-command-contract-wf")
+        class TypedCommandContractWorkflow:
+            @workflow.signal("finish")
+            def finish(self) -> None:
+                return None
+
+            @workflow.query("state")
+            def state(self, verbose: bool = False) -> dict[str, object]:
+                return {"verbose": verbose}
+
+            @workflow.update("replace")
+            def replace(
+                self,
+                value: int,
+                note: str | None = None,
+                *tags: str,
+            ) -> dict[str, object]:
+                return {"value": value, "note": note, "tags": tags}
+
+            def run(self, ctx):  # type: ignore[no-untyped-def]
+                yield ctx.wait_condition(lambda: False)
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TypedCommandContractWorkflow],
+            worker_id="w-command-contract",
+            build_id="release-a",
+        )
+
+        await worker._register()
+        await worker._register()
+
+        first_contract = mock_client.register_worker.await_args_list[0].kwargs[
+            "workflow_command_contracts"
+        ]
+        second_contract = mock_client.register_worker.await_args_list[1].kwargs[
+            "workflow_command_contracts"
+        ]
+        assert first_contract == second_contract
+        assert first_contract == {
+            "typed-command-contract-wf": {
+                "queries": ["state"],
+                "query_contracts": [
+                    {
+                        "name": "state",
+                        "parameters": [
+                            {
+                                "name": "verbose",
+                                "position": 0,
+                                "required": False,
+                                "variadic": False,
+                                "default_available": True,
+                                "default": False,
+                                "type": "bool",
+                                "allows_null": False,
+                            }
+                        ],
+                    }
+                ],
+                "signals": ["finish"],
+                "signal_contracts": [{"name": "finish", "parameters": []}],
+                "updates": ["replace"],
+                "update_contracts": [
+                    {
+                        "name": "replace",
+                        "parameters": [
+                            {
+                                "name": "value",
+                                "position": 0,
+                                "required": True,
+                                "variadic": False,
+                                "default_available": False,
+                                "default": None,
+                                "type": "int",
+                                "allows_null": False,
+                            },
+                            {
+                                "name": "note",
+                                "position": 1,
+                                "required": False,
+                                "variadic": False,
+                                "default_available": True,
+                                "default": None,
+                                "type": "string|null",
+                                "allows_null": True,
+                            },
+                            {
+                                "name": "tags",
+                                "position": 2,
+                                "required": False,
+                                "variadic": True,
+                                "default_available": False,
+                                "default": None,
+                                "type": "string",
+                                "allows_null": False,
+                            },
+                        ],
+                    }
+                ],
+            }
+        }
+        assert mock_client.register_worker.await_args_list[0].kwargs["build_id"] == "release-a"
+        assert mock_client.register_worker.await_args_list[0].kwargs["capabilities"] == [
+            "query_tasks",
+            WORKFLOW_UPDATES_CAPABILITY,
+        ]
 
     @pytest.mark.asyncio
     async def test_register_keeps_http_timeout_above_server_long_poll(self, mock_client: AsyncMock) -> None:

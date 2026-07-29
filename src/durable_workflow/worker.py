@@ -19,16 +19,18 @@ import asyncio
 import contextlib
 import hashlib
 import inspect
+import json
 import logging
 import sys
 import threading
 import time
 import traceback
+import types
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import datetime, timezone
 from types import FunctionType
-from typing import Any
+from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from . import serializer
 from .activity import ActivityContext, ActivityInfo, _set_context
@@ -83,6 +85,7 @@ from .workflow import (
 log = logging.getLogger("durable_workflow.worker")
 
 QUERY_TASKS_CAPABILITY = "query_tasks"
+WORKFLOW_UPDATES_CAPABILITY = "workflow_updates"
 
 _TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
 _QUERY_TASK_FINAL_REJECTION_REASONS = {
@@ -493,6 +496,195 @@ def _workflow_definition_fingerprint(cls: type) -> str:
     return f"sha256:{h.hexdigest()}"
 
 
+def _string_annotation_type(annotation: str) -> tuple[str | None, bool]:
+    value = annotation.strip().replace("typing.", "")
+    if (
+        (value.startswith("Optional[") or value.startswith("Union["))
+        and value.endswith("]")
+    ):
+        inner = value[value.index("[") + 1 : -1]
+        separator = "," if value.startswith("Union[") else None
+        members = inner.split(separator) if separator is not None else [inner, "None"]
+        return _union_annotation_type(members)
+    if "|" in value:
+        return _union_annotation_type(value.split("|"))
+
+    base = value.split("[", 1)[0].strip().lower()
+    protocol_type = {
+        "any": "mixed",
+        "bool": "bool",
+        "callable": "callable",
+        "dict": "array",
+        "float": "float",
+        "frozenset": "array",
+        "int": "int",
+        "iterable": "array",
+        "list": "array",
+        "mapping": "array",
+        "none": "null",
+        "nonetype": "null",
+        "object": "mixed",
+        "sequence": "array",
+        "set": "array",
+        "str": "string",
+        "tuple": "array",
+    }.get(base)
+    if protocol_type is None:
+        return None, True
+    return protocol_type, protocol_type in {"mixed", "null"}
+
+
+def _union_annotation_type(annotations: Iterable[Any]) -> tuple[str, bool]:
+    types_seen: list[str] = []
+    allows_null = False
+    for annotation in annotations:
+        protocol_type, member_allows_null = _command_parameter_type(annotation)
+        if protocol_type is None or protocol_type == "mixed":
+            return "mixed", True
+        if protocol_type == "null":
+            allows_null = True
+        if protocol_type not in types_seen:
+            types_seen.append(protocol_type)
+        allows_null = allows_null or member_allows_null
+
+    if not types_seen:
+        return "mixed", True
+    return "|".join(types_seen), allows_null
+
+
+def _command_parameter_type(annotation: Any) -> tuple[str | None, bool]:
+    if annotation is inspect.Parameter.empty:
+        return None, True
+    if isinstance(annotation, str):
+        return _string_annotation_type(annotation)
+    if annotation is Any or annotation is object:
+        return "mixed", True
+    if annotation is None or annotation is type(None):
+        return "null", True
+
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        arguments = get_args(annotation)
+        return _command_parameter_type(arguments[0]) if arguments else ("mixed", True)
+    if origin in {Union, types.UnionType}:
+        return _union_annotation_type(get_args(annotation))
+    if origin is Literal:
+        return _union_annotation_type(type(value) if value is not None else None for value in get_args(annotation))
+
+    scalar_type = {
+        bool: "bool",
+        float: "float",
+        int: "int",
+        str: "string",
+    }.get(annotation)
+    if scalar_type is not None:
+        return scalar_type, False
+    if annotation in {datetime, uuid.UUID}:
+        return "string", False
+
+    candidate = origin or annotation
+    if candidate is Callable:
+        return "callable", False
+    if isinstance(candidate, type):
+        try:
+            if issubclass(candidate, Mapping) or (
+                issubclass(candidate, Iterable) and not issubclass(candidate, str | bytes)
+            ):
+                return "array", False
+        except TypeError:
+            pass
+
+    # Custom Python objects do not have a language-neutral admission type.
+    # Keep their arguments permissive and let the SDK serializer/handler
+    # perform the language-specific conversion and validation.
+    return None, True
+
+
+def _command_handler_contract(
+    workflow_cls: type,
+    command_name: str,
+    attribute_name: str,
+) -> dict[str, Any]:
+    descriptor = inspect.getattr_static(workflow_cls, attribute_name)
+    is_static = isinstance(descriptor, staticmethod)
+    if isinstance(descriptor, staticmethod | classmethod):
+        handler = descriptor.__func__
+    else:
+        handler = getattr(workflow_cls, attribute_name)
+
+    signature = inspect.signature(handler)
+    try:
+        type_hints = get_type_hints(handler)
+    except (NameError, TypeError):
+        type_hints = {}
+
+    signature_parameters = list(signature.parameters.values())
+    if not is_static and signature_parameters:
+        signature_parameters = signature_parameters[1:]
+
+    parameters: list[dict[str, Any]] = []
+    for position, parameter in enumerate(signature_parameters):
+        if parameter.kind in {
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.VAR_KEYWORD,
+        }:
+            raise TypeError(
+                f"Workflow command handler {workflow_cls.__name__}.{attribute_name} "
+                f"uses unsupported parameter {parameter.name!r}; handlers must accept positional arguments."
+            )
+
+        default_available = parameter.default is not inspect.Parameter.empty
+        default: Any = None
+        if default_available:
+            default = parameter.default
+            try:
+                json.dumps(default, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    f"Workflow command handler {workflow_cls.__name__}.{attribute_name} "
+                    f"has a non-serializable default for parameter {parameter.name!r}."
+                ) from exc
+
+        parameter_type, allows_null = _command_parameter_type(
+            type_hints.get(parameter.name, parameter.annotation)
+        )
+        variadic = parameter.kind is inspect.Parameter.VAR_POSITIONAL
+        parameters.append(
+            {
+                "name": parameter.name,
+                "position": position,
+                "required": not default_available and not variadic,
+                "variadic": variadic,
+                "default_available": default_available,
+                "default": default,
+                "type": parameter_type,
+                "allows_null": allows_null,
+            }
+        )
+
+    return {
+        "name": command_name,
+        "parameters": parameters,
+    }
+
+
+def _workflow_command_contract(cls: type) -> dict[str, Any]:
+    contract: dict[str, Any] = {}
+    for plural, singular, registry_name in (
+        ("queries", "query", "__workflow_queries__"),
+        ("signals", "signal", "__workflow_signals__"),
+        ("updates", "update", "__workflow_updates__"),
+    ):
+        registry = getattr(cls, registry_name, {}) or {}
+        names = sorted(registry)
+        contract[plural] = names
+        contract[f"{singular}_contracts"] = [
+            _command_handler_contract(cls, name, registry[name])
+            for name in names
+        ]
+    return contract
+
+
 def _guard_worker_workflow_fingerprints(worker_id: str, fingerprints: dict[str, str]) -> None:
     for workflow_type, fingerprint in fingerprints.items():
         key = (worker_id, workflow_type)
@@ -628,7 +820,7 @@ def _server_long_poll_timeout(info: dict[str, Any]) -> float | None:
     timeout = capabilities.get("long_poll_timeout")
     if isinstance(timeout, bool):
         return None
-    if isinstance(timeout, (int, float)):
+    if isinstance(timeout, int | float):
         return float(timeout) if timeout > 0 else None
     if isinstance(timeout, str):
         try:
@@ -676,6 +868,10 @@ class Worker:
         self.workflows = {_workflow_name(w): w for w in workflows}
         self.workflow_definition_fingerprints = {
             workflow_type: _workflow_definition_fingerprint(workflow_cls)
+            for workflow_type, workflow_cls in self.workflows.items()
+        }
+        self.workflow_command_contracts = {
+            workflow_type: _workflow_command_contract(workflow_cls)
             for workflow_type, workflow_cls in self.workflows.items()
         }
         self.activities = {_activity_name(a): a for a in activities}
@@ -828,16 +1024,26 @@ class Worker:
             _manifest_version(info.get("worker_protocol")),
         )
 
+        capabilities: list[str] = []
+        if self._query_tasks_supported:
+            capabilities.append(QUERY_TASKS_CAPABILITY)
+        if any(
+            contract["updates"]
+            for contract in self.workflow_command_contracts.values()
+        ):
+            capabilities.append(WORKFLOW_UPDATES_CAPABILITY)
+
         ack = await self.client.register_worker(
             worker_id=self.worker_id,
             task_queue=self.task_queue,
             supported_workflow_types=list(self.workflows),
             workflow_definition_fingerprints=self.workflow_definition_fingerprints,
+            workflow_command_contracts=self.workflow_command_contracts,
             supported_activity_types=list(self.activities),
             max_concurrent_workflow_tasks=self.max_concurrent_workflow_tasks,
             max_concurrent_activity_tasks=self.max_concurrent_activity_tasks,
             build_id=self.build_id,
-            capabilities=[QUERY_TASKS_CAPABILITY] if self._query_tasks_supported else None,
+            capabilities=capabilities or None,
             task_slots=self._current_task_slots(),
             process_metrics=self._current_process_metrics(),
         )

@@ -3298,6 +3298,7 @@ class Client:
         task_queue: str,
         supported_workflow_types: list[str] | None = None,
         workflow_definition_fingerprints: dict[str, str] | None = None,
+        workflow_command_contracts: dict[str, dict[str, Any]] | None = None,
         supported_activity_types: list[str] | None = None,
         max_concurrent_workflow_tasks: int | None = None,
         max_concurrent_activity_tasks: int | None = None,
@@ -3332,6 +3333,8 @@ class Client:
         }
         if workflow_definition_fingerprints is not None:
             body["workflow_definition_fingerprints"] = workflow_definition_fingerprints
+        if workflow_command_contracts is not None:
+            body["workflow_command_contracts"] = workflow_command_contracts
         if capabilities is not None:
             body["capabilities"] = [capability for capability in capabilities if capability]
         if build_id is not None:

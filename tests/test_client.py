@@ -2954,12 +2954,26 @@ class TestRegisterWorker:
                 task_queue="q1",
                 supported_workflow_types=["greeter"],
                 workflow_definition_fingerprints={"greeter": "sha256:abc"},
+                workflow_command_contracts={
+                    "greeter": {
+                        "queries": [],
+                        "signals": [],
+                        "updates": ["replace"],
+                    }
+                },
                 supported_activity_types=["greet"],
             )
             assert result["registered"] is True
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["runtime"] == "python"
             assert body["workflow_definition_fingerprints"] == {"greeter": "sha256:abc"}
+            assert body["workflow_command_contracts"] == {
+                "greeter": {
+                    "queries": [],
+                    "signals": [],
+                    "updates": ["replace"],
+                }
+            }
 
     @pytest.mark.asyncio
     async def test_register_sends_worker_capabilities_when_configured(self, client: Client) -> None:

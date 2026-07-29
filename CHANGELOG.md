@@ -6,8 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to the synchronized Durable Workflow `2.0.0-rc.5`
-product train. PyPI displays the normalized PEP 440 identity `2.0.0rc5`. Earlier SDK
+The Python SDK advances to the synchronized Durable Workflow `2.0.0-rc.6`
+product train. PyPI displays the normalized PEP 440 identity `2.0.0rc6`. Earlier SDK
 versions remain historical releases and are not alternate supported 2.0
 baselines; no prerelease compatibility shim is provided.
 
@@ -50,6 +50,9 @@ baselines; no prerelease compatibility shim is provided.
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Worker registration now advertises each workflow's declared signal, query,
+  and update contract with typed parameter metadata, allowing the server to
+  admit declared Python workflow updates while preserving typed refusals.
 - Explicit release recovery rejects terminally superseded plans before and
   after publication preflight while keeping completed-plan verification
   idempotent.
