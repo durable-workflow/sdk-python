@@ -6,8 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to the synchronized Durable Workflow `2.0.0-rc.6`
-product train. PyPI displays the normalized PEP 440 identity `2.0.0rc6`. Earlier SDK
+The Python SDK advances to the synchronized Durable Workflow `2.0.0-rc.7`
+product train. PyPI displays the normalized PEP 440 identity `2.0.0rc7`. Earlier SDK
 versions remain historical releases and are not alternate supported 2.0
 baselines; no prerelease compatibility shim is provided.
 
@@ -50,6 +50,9 @@ baselines; no prerelease compatibility shim is provided.
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Condition-timeout history is now identified by its durable wait identity as
+  well as its timer kind, keeping internal timeout rows out of the ordinary
+  activity cursor when updates and signals resolve a timed condition.
 - Worker registration now advertises each workflow's declared signal, query,
   and update contract with typed parameter metadata, allowing the server to
   admit declared Python workflow updates while preserving typed refusals.

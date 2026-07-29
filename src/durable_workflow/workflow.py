@@ -2080,6 +2080,42 @@ def _workflow_sequence(payload: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _internal_timeout_timer_kind(
+    payload: Mapping[str, Any],
+    condition_wait_ids_by_sequence: Mapping[int, str] | None = None,
+) -> str | None:
+    """Identify internal wait timers without adding them to the command cursor."""
+    timer_kind = payload.get("timer_kind")
+    if timer_kind in ("condition_timeout", "signal_timeout"):
+        return str(timer_kind)
+    if _optional_str(payload.get("condition_wait_id")) is not None:
+        return "condition_timeout"
+    if _optional_str(payload.get("signal_wait_id")) is not None:
+        return "signal_timeout"
+
+    sequence = _workflow_sequence(payload)
+    if (
+        sequence is not None
+        and condition_wait_ids_by_sequence is not None
+        and sequence in condition_wait_ids_by_sequence
+    ):
+        return "condition_timeout"
+    return None
+
+
+def _condition_timeout_wait_id(
+    payload: Mapping[str, Any],
+    condition_wait_ids_by_sequence: Mapping[int, str],
+) -> str | None:
+    if _internal_timeout_timer_kind(payload, condition_wait_ids_by_sequence) != "condition_timeout":
+        return None
+    wait_id = _optional_str(payload.get("condition_wait_id"))
+    if wait_id is not None:
+        return wait_id
+    sequence = _workflow_sequence(payload)
+    return condition_wait_ids_by_sequence.get(sequence) if sequence is not None else None
+
+
 def _activity_type_from_payload(payload: Mapping[str, Any]) -> str | None:
     activity_type = _optional_str(payload.get("activity_type"))
     if activity_type is not None:
@@ -2121,7 +2157,11 @@ def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
     return details
 
 
-def _is_resolved_step_event(event_type: str | None, payload: Mapping[str, Any]) -> bool:
+def _is_resolved_step_event(
+    event_type: str | None,
+    payload: Mapping[str, Any],
+    condition_wait_ids_by_sequence: Mapping[int, str] | None = None,
+) -> bool:
     if event_type in (
         "ActivityCompleted",
         "ActivityFailed",
@@ -2136,7 +2176,7 @@ def _is_resolved_step_event(event_type: str | None, payload: Mapping[str, Any]) 
     ):
         return True
     if event_type == "TimerFired":
-        return payload.get("timer_kind") not in ("condition_timeout", "signal_timeout")
+        return _internal_timeout_timer_kind(payload, condition_wait_ids_by_sequence) is None
     return False
 
 
@@ -2347,12 +2387,23 @@ def _replay_state(
         if event_type is not None:
             event_types_by_sequence.setdefault(sequence, []).append(event_type)
         details_by_sequence.setdefault(sequence, {}).update(_recorded_step_details(payload))
-        if _is_resolved_step_event(event_type, payload):
-            resolved_sequences.add(sequence)
         if event_type == "ConditionWaitOpened":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
                 condition_wait_ids_by_sequence[sequence] = wait_id
+
+    for event in events:
+        event_type = _history_event_type(event)
+        payload = event.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            payload = {}
+        sequence = _workflow_sequence(payload)
+        if sequence is not None and _is_resolved_step_event(
+            event_type,
+            payload,
+            condition_wait_ids_by_sequence,
+        ):
+            resolved_sequences.add(sequence)
 
     workflow_start_time: datetime | None = None
     for ev in events:
@@ -2395,6 +2446,7 @@ def _replay_state(
     # in history, future server-recorded) or 'timed_out' (from a matching
     # condition_timeout TimerFired event).
     wait_resolutions: dict[str, str] = {}
+
     def _append_resolved_result(value: Any, shape: str, event: Mapping[str, Any]) -> None:
         payload = event.get("payload") or {}
         if not isinstance(payload, Mapping):
@@ -2519,7 +2571,11 @@ def _replay_state(
             return "condition"
         if (
             event_type in ("TimerFired", "TimerCancelled")
-            and payload.get("timer_kind") == "condition_timeout"
+            and _internal_timeout_timer_kind(
+                payload,
+                condition_wait_ids_by_sequence,
+            )
+            == "condition_timeout"
         ):
             return "condition"
         if event_type in (
@@ -2533,8 +2589,24 @@ def _replay_state(
         ):
             return "step"
         if event_type == "TimerScheduled":
-            return "step" if payload.get("timer_kind") not in ("condition_timeout", "signal_timeout") else None
-        return "step" if _is_resolved_step_event(event_type, payload) else None
+            return (
+                "step"
+                if _internal_timeout_timer_kind(
+                    payload,
+                    condition_wait_ids_by_sequence,
+                )
+                is None
+                else None
+            )
+        return (
+            "step"
+            if _is_resolved_step_event(
+                event_type,
+                payload,
+                condition_wait_ids_by_sequence,
+            )
+            else None
+        )
 
     def _receiver_condition_wait_bindings() -> dict[int, str | None]:
         bindings: dict[int, str | None] = {}
@@ -2635,18 +2707,27 @@ def _replay_state(
         elif etype in ("ActivityScheduled", "ActivityStarted"):
             _append_pending_step("activity", ev)
         elif etype == "TimerFired":
-            timer_kind = payload.get("timer_kind")
+            timer_kind = _internal_timeout_timer_kind(
+                payload,
+                condition_wait_ids_by_sequence,
+            )
             if timer_kind == "condition_timeout":
-                wait_id = payload.get("condition_wait_id")
-                if isinstance(wait_id, str) and wait_id:
+                wait_id = _condition_timeout_wait_id(
+                    payload,
+                    condition_wait_ids_by_sequence,
+                )
+                if wait_id is not None:
                     wait_resolutions[wait_id] = "timed_out"
                 continue
             if timer_kind == "signal_timeout":
                 continue
             _append_resolved_result(None, "timer", ev)
         elif etype == "TimerScheduled":
-            timer_kind = payload.get("timer_kind")
-            if timer_kind not in ("condition_timeout", "signal_timeout"):
+            timer_kind = _internal_timeout_timer_kind(
+                payload,
+                condition_wait_ids_by_sequence,
+            )
+            if timer_kind is None:
                 _append_pending_step("timer", ev)
         elif etype == "ConditionWaitOpened":
             wait_id = payload.get("condition_wait_id")
@@ -3054,12 +3135,12 @@ def _replay_state(
                     wait_yield_count = next_wait_index
                     return _state(pending)
                 continue
-            if isinstance(cmd, (ScheduleActivity, StartTimer, StartChildWorkflow)):
+            if isinstance(cmd, ScheduleActivity | StartTimer | StartChildWorkflow):
                 if result_cursor < len(resolved_results):
                     _assert_next_step_matches(cmd)
                     val = resolved_results[result_cursor]
                     result_cursor += 1
-                    if isinstance(val, (ActivityFailed, ChildWorkflowFailed)):
+                    if isinstance(val, ActivityFailed | ChildWorkflowFailed):
                         try:
                             advanced_cmd = gen.throw(val)
                             continue
