@@ -78,9 +78,16 @@ def _string(value: Any, context: str) -> str:
     return value
 
 
-def _nullable_string(value: Any, context: str) -> str | None:
+def _nullable_string(
+    value: Any,
+    context: str,
+    *,
+    allow_empty: bool = False,
+) -> str | None:
     if value is None:
         return None
+    if allow_empty and isinstance(value, str):
+        return value
     return _string(value, context)
 
 
@@ -491,7 +498,11 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     )
     framing = _object(document.get("framing"), f"{path}.framing")
     _string(framing.get("encoding"), f"{path}.framing.encoding")
-    wire = _nullable_string(framing.get("wire_base64"), f"{path}.framing.wire_base64")
+    wire = _nullable_string(
+        framing.get("wire_base64"),
+        f"{path}.framing.wire_base64",
+        allow_empty=True,
+    )
     policy = _object(document.get("failure_policy"), f"{path}.failure_policy")
     operation = _string(policy.get("operation"), f"{path}.failure_policy.operation")
     if operation not in {"round_trip", "decode_reject", "encode_reject"}:

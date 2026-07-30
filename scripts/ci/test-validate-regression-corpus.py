@@ -212,6 +212,56 @@ class CanonicalIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(VALIDATOR.CorpusError, "is not canonical base64"):
             VALIDATOR._canonical_base64("AB==", "wire")
 
+    def test_codec_fixture_accepts_empty_canonical_wire_when_required(self) -> None:
+        for operation, error in (
+            ("round_trip", None),
+            ("decode_reject", "invalid_payload_framing"),
+        ):
+            with self.subTest(operation=operation):
+                fixture = _codec_fixture(f"empty-{operation}")
+                fixture["framing"]["wire_base64"] = ""
+                fixture["failure_policy"] = {
+                    "operation": operation,
+                    "error": error,
+                }
+
+                evidence = VALIDATOR._codec_fixture(fixture, "empty-wire.json", "python")
+
+                self.assertEqual(1, len(evidence))
+
+    def test_codec_fixture_required_wire_rejects_null(self) -> None:
+        for operation, error in (
+            ("round_trip", None),
+            ("decode_reject", "invalid_payload_framing"),
+        ):
+            with self.subTest(operation=operation):
+                fixture = _codec_fixture(f"null-{operation}")
+                fixture["framing"]["wire_base64"] = None
+                fixture["failure_policy"] = {
+                    "operation": operation,
+                    "error": error,
+                }
+
+                with self.assertRaisesRegex(
+                    VALIDATOR.CorpusError,
+                    f"must include wire_base64 for {operation}",
+                ):
+                    VALIDATOR._codec_fixture(fixture, "null-wire.json", "python")
+
+    def test_codec_fixture_rejects_non_string_wire(self) -> None:
+        fixture = _codec_fixture("non-string-wire")
+        fixture["framing"]["wire_base64"] = []
+
+        with self.assertRaisesRegex(VALIDATOR.CorpusError, "must be a non-empty string"):
+            VALIDATOR._codec_fixture(fixture, "non-string-wire.json", "python")
+
+    def test_codec_fixture_rejects_noncanonical_wire(self) -> None:
+        fixture = _codec_fixture("noncanonical-wire")
+        fixture["framing"]["wire_base64"] = "AB=="
+
+        with self.assertRaisesRegex(VALIDATOR.CorpusError, "is not canonical base64"):
+            VALIDATOR._codec_fixture(fixture, "noncanonical-wire.json", "python")
+
     def test_malformed_golden_wire_must_be_canonical_base64(self) -> None:
         fixture = _avro_golden_fixture()
         fixture["malformed_frames"][0]["wire_base64"] = "%%%"
@@ -482,6 +532,8 @@ raise SystemExit(0 if "return str(value)" in source else 1)
     def _add_avro_golden_to_base(
         self,
         malformed_wire: str | None = None,
+        *,
+        malformed_name: str | None = None,
     ) -> None:
         self.policy["categories"]["codec"]["fixtures"].append(
             {
@@ -493,6 +545,8 @@ raise SystemExit(0 if "return str(value)" in source else 1)
         golden = _avro_golden_fixture()
         if malformed_wire is not None:
             golden["malformed_frames"][0]["wire_base64"] = malformed_wire
+        if malformed_name is not None:
+            golden["malformed_frames"][0]["name"] = malformed_name
         self._write_json("schema/avro-value-v1-golden.json", golden)
         self._git("add", ".")
         self._git(
@@ -763,6 +817,26 @@ raise SystemExit(0 if "return str(value)" in source else 1)
             identity="rewrapped-short-frame",
             value={"type": "null"},
             wire_base64="wwE=",
+            operation="decode_reject",
+            error="invalid_payload_framing",
+        )
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "duplicate semantic fixtures",
+        ):
+            self._validate()
+
+    def test_empty_wire_rejection_rewrap_is_duplicate_semantic_evidence(self) -> None:
+        self._add_avro_golden_to_base("", malformed_name="empty_blob")
+        self._write_text(
+            "src/durable_workflow/serializer.py",
+            "def encode(value):\n    return str(value)\n",
+        )
+        self._write_cross_format_codec_fixture(
+            identity="rewrapped-empty-blob",
+            value={"type": "null"},
+            wire_base64="",
             operation="decode_reject",
             error="invalid_payload_framing",
         )
