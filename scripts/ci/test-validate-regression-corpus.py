@@ -617,13 +617,12 @@ raise SystemExit(0 if "return str(value)" in source else 1)
 
         self.assertEqual(result["counts"]["codec"]["base"], result["counts"]["codec"]["current"])
 
-    def test_malformed_wire_migration_accepts_explicit_legacy_repair(self) -> None:
+    def test_malformed_wire_migration_rejects_invalid_base64_repair(self) -> None:
         self._add_avro_golden_to_base("%%%")
         self._write_malformed_golden_wire("JSUl")
 
-        result = self._validate()
-
-        self.assertEqual(result["counts"]["codec"]["base"], result["counts"]["codec"]["current"])
+        with self.assertRaisesRegex(VALIDATOR.CorpusError, "immutable fixture file"):
+            self._validate()
 
     def test_guard_selector_cannot_narrow_and_hide_implementation_change(self) -> None:
         self.policy["categories"]["codec"]["guards"][0]["glob"] = "src/durable_workflow/serializer_safe.py"

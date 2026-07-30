@@ -33,9 +33,6 @@ SUPPORTED_FORMATS = {
 SUPPORTED_CATEGORIES = {"codec", "replay"}
 SUPPORTED_BINDINGS = {"php", "python", "rust"}
 ZERO_COMMIT = re.compile(r"^0+$")
-LEGACY_MALFORMED_WIRE_REPAIRS = {
-    "%%%": "JSUl",
-}
 
 
 class CorpusError(RuntimeError):
@@ -128,7 +125,7 @@ def _canonical_wire_replacement(value: str) -> str | None:
     try:
         decoded = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError):
-        return LEGACY_MALFORMED_WIRE_REPAIRS.get(value)
+        return None
 
     canonical = base64.b64encode(decoded).decode("ascii")
     return canonical if canonical != value else None
