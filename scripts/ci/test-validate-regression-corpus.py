@@ -570,6 +570,13 @@ class PolicyEvolutionTest(unittest.TestCase):
             "tests/fixtures/codec_archive/preexisting.json",
             _codec_fixture("preexisting"),
         )
+        candidate_failure = _codec_fixture("candidate-failure")
+        candidate_failure["value"] = {"type": "long", "value": 2}
+        candidate_failure["framing"]["wire_base64"] = "BA=="
+        self._write_json(
+            "tests/fixtures/codec_archive/candidate-failure.json",
+            candidate_failure,
+        )
         self._write_text(
             "src/durable_workflow/serializer.py",
             "def encode(value):\n    return value\n",
@@ -590,7 +597,7 @@ identity = json.loads(args.fixture.read_text())["id"]
 source = (args.source_root / "src/durable_workflow/serializer.py").read_text()
 if identity == "candidate-failure":
     raise SystemExit(1)
-if identity == "unrelated":
+if identity in {"preexisting", "unrelated"}:
     raise SystemExit(0)
 raise SystemExit(0 if "return str(value)" in source else 1)
 """,
@@ -797,6 +804,50 @@ raise SystemExit(0 if "return str(value)" in source else 1)
         with self.assertRaisesRegex(
             VALIDATOR.CorpusError,
             "newly added fixture",
+        ):
+            self._validate()
+
+    def test_policy_only_selector_expansion_runs_candidate_binding(self) -> None:
+        self.policy["categories"]["codec"]["fixtures"].append(
+            {
+                "glob": "tests/fixtures/codec_archive/preexisting.json",
+                "format": "codec-regression-v1",
+            }
+        )
+        self._write_json("regression-corpus-policy.json", self.policy)
+
+        result = self._validate()
+
+        self.assertEqual(result["counts"]["codec"]["added"], 0)
+        self.assertFalse(result["counts"]["codec"]["related_change"])
+        self.assertEqual(result["counts"]["codec"]["revision_verified"], 1)
+
+    def test_policy_only_selector_expansion_rejects_candidate_failure(self) -> None:
+        self.policy["categories"]["codec"]["fixtures"].append(
+            {
+                "glob": "tests/fixtures/codec_archive/candidate-failure.json",
+                "format": "codec-regression-v1",
+            }
+        )
+        self._write_json("regression-corpus-policy.json", self.policy)
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "does not pass on the candidate through the official Python binding",
+        ):
+            self._validate()
+
+    def test_rename_into_selected_path_rejects_candidate_failure(self) -> None:
+        source = "tests/fixtures/codec_archive/candidate-failure.json"
+        destination = "tests/fixtures/codec_regressions/candidate-failure.json"
+        self._git("mv", source, destination)
+
+        changed, added = VALIDATOR._changed_paths(self.root, "HEAD")
+        self.assertEqual(changed, {source, destination})
+        self.assertEqual(added, set())
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "does not pass on the candidate through the official Python binding",
         ):
             self._validate()
 

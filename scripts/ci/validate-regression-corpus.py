@@ -841,7 +841,7 @@ def _verify_new_codec_evidence(
         )
         if candidate.returncode != 0:
             raise CorpusError(
-                f"new codec fixture {path} does not pass on the candidate "
+                f"newly admitted codec fixture {path} does not pass on the candidate "
                 "through the official Python binding: "
                 f"{_process_detail(candidate)}"
             )
@@ -872,7 +872,7 @@ def _verify_new_codec_evidence(
             )
             if defective.returncode == 0:
                 raise CorpusError(
-                    f"new codec fixture {path} also passes on the defective base; "
+                    f"newly admitted codec fixture {path} also passes on the defective base; "
                     "it does not reproduce the guarded codec change"
                 )
 
@@ -1260,19 +1260,25 @@ def validate(
                 fixture = _object(raw_fixture, "categories.codec.fixtures[]")
                 if _string(fixture["format"], "fixture.format") == "codec-regression-v1":
                     codec_fixture_patterns.append(_string(fixture["glob"], "fixture.glob"))
-            new_codec_fixture_paths = sorted(
-                {
-                    item.path
-                    for item in current_evidence
-                    if item.category == "codec"
-                    and item.path in added_paths
-                    and any(_matches(item.path, pattern) for pattern in codec_fixture_patterns)
-                }
+            current_codec_fixture_paths = {
+                item.path
+                for item in current_evidence
+                if item.category == "codec" and any(_matches(item.path, pattern) for pattern in codec_fixture_patterns)
+            }
+            base_codec_fixture_paths = {
+                item.path
+                for item in base_evidence
+                if item.category == "codec" and any(_matches(item.path, pattern) for pattern in codec_fixture_patterns)
+            }
+            newly_admitted_codec_fixture_paths = (
+                sorted(current_codec_fixture_paths - base_codec_fixture_paths)
+                if base_ref and not ZERO_COMMIT.fullmatch(base_ref)
+                else []
             )
             revision_verified = _verify_new_codec_evidence(
                 root=root,
                 base_files=base_files,
-                fixture_paths=new_codec_fixture_paths,
+                fixture_paths=newly_admitted_codec_fixture_paths,
                 require_defective_base=related,
                 python_executable=python_executable,
                 codec_runner=codec_runner,
