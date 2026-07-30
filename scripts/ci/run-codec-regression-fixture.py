@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 FIXTURE_SCHEMA = "durable-workflow.codec-regression/v1"
+AVRO_PROTOCOL_VERSION = "1"
 
 
 def _require(condition: bool, message: str) -> None:
@@ -41,9 +42,15 @@ def execute_fixture(fixture: dict[str, Any], codec: Any) -> None:
         f"fixture_schema must be {FIXTURE_SCHEMA}",
     )
     _require("python" in fixture["bindings"], "fixture must name the python binding")
-    _require(fixture["protocol"]["codec"] == "avro", "fixture codec must be avro")
+    protocol = fixture["protocol"]
+    _require(protocol["codec"] == "avro", "fixture codec must be avro")
     _require(
-        fixture["protocol"]["fingerprint"] == codec.VALUE_SCHEMA_FINGERPRINT_HEX,
+        protocol["version"] == AVRO_PROTOCOL_VERSION,
+        "fixture protocol.version must be the canonical version supported by "
+        f"the Python Avro binding: {AVRO_PROTOCOL_VERSION}",
+    )
+    _require(
+        protocol["fingerprint"] == codec.VALUE_SCHEMA_FINGERPRINT_HEX,
         "fixture fingerprint does not match the Python binding",
     )
 

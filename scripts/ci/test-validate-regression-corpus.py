@@ -333,6 +333,47 @@ class OfficialCodecRunnerTest(unittest.TestCase):
             self.assertEqual(results["candidate"].returncode, 0, results["candidate"].stderr)
             self.assertNotEqual(results["base"].returncode, 0, results["base"].stderr)
 
+    def test_rejects_noncanonical_and_unsupported_protocol_versions(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="regression-corpus-codec-version-") as temporary:
+            root = Path(temporary)
+            source = root / "src/durable_workflow"
+            source.mkdir(parents=True)
+            (source / "__init__.py").write_text("", encoding="utf-8")
+            (source / "_avro.py").write_text(
+                "VALUE_SCHEMA_FINGERPRINT_HEX = None\n"
+                "def encode(value):\n    return 'AA=='\n"
+                "def decode(wire):\n    return 0\n",
+                encoding="utf-8",
+            )
+            fixture_path = root / "fixture.json"
+            for version in ("01", "v1", "avro-value-v1", "2"):
+                with self.subTest(version=version):
+                    fixture = _codec_fixture("version-alias")
+                    fixture["protocol"]["version"] = version
+                    fixture_path.write_text(
+                        f"{json.dumps(fixture, indent=2)}\n",
+                        encoding="utf-8",
+                    )
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            str(CODEC_RUNNER),
+                            "--source-root",
+                            str(root),
+                            "--fixture",
+                            str(fixture_path),
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(
+                        "canonical version supported by the Python Avro binding",
+                        result.stderr,
+                    )
+
 
 class PolicyEvolutionTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -681,6 +722,34 @@ raise SystemExit(0 if "return str(value)" in source else 1)
         with self.assertRaisesRegex(
             VALIDATOR.CorpusError,
             "duplicate semantic fixtures",
+        ):
+            self._validate()
+
+    def test_fixture_only_leading_zero_rewrap_cannot_increase_corpus(self) -> None:
+        self._add_avro_golden_to_base()
+        baseline = self._validate()
+        self._write_cross_format_codec_fixture(
+            identity="leading-zero-long-seven",
+            value={"type": "long", "value": "7"},
+            wire_base64="wwHioz3/VYAiNwQO",
+            operation="round_trip",
+            error=None,
+        )
+        fixture_path = self.root / "tests/fixtures/codec_regressions/leading-zero-long-seven.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        fixture["protocol"]["version"] = "01"
+        self._write_json(
+            "tests/fixtures/codec_regressions/leading-zero-long-seven.json",
+            fixture,
+        )
+
+        self.assertEqual(
+            baseline["counts"]["codec"]["base"],
+            baseline["counts"]["codec"]["current"],
+        )
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "protocol.version must be a canonical positive integer",
         ):
             self._validate()
 

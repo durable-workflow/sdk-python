@@ -312,11 +312,9 @@ def _replay_semantic(
     }
 
 
-def _normalized_codec_version(codec: str, version: str) -> str:
-    if codec == "avro":
-        match = re.fullmatch(r"(?:(?:avro-value-)?v)?([1-9][0-9]*)", version)
-        if match is not None:
-            return match.group(1)
+def _canonical_codec_version(codec: str, version: str, context: str) -> str:
+    if codec == "avro" and re.fullmatch(r"[1-9][0-9]*", version) is None:
+        raise CorpusError(f"{context} must be a canonical positive integer")
     return version
 
 
@@ -471,7 +469,11 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     codec = _string(protocol.get("codec"), f"{path}.protocol.codec")
     _string(protocol.get("schema"), f"{path}.protocol.schema")
     version = _string(protocol.get("version"), f"{path}.protocol.version")
-    normalized_version = _normalized_codec_version(codec, version)
+    canonical_version = _canonical_codec_version(
+        codec,
+        version,
+        f"{path}.protocol.version",
+    )
     _nullable_string(protocol.get("fingerprint"), f"{path}.protocol.fingerprint")
     bindings = _unique_strings(
         document.get("bindings"),
@@ -530,7 +532,7 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
             category="codec",
             identity=identity,
             path=path,
-            protocol_version=normalized_version,
+            protocol_version=canonical_version,
             semantic_value=semantic,
             supersedes=supersedes,
         )
@@ -592,7 +594,7 @@ def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidenc
     _string(document.get("schema"), f"{path}.schema")
     _string(document.get("fingerprint"), f"{path}.fingerprint")
     fixture_version = "avro-value-v1"
-    protocol_version = _normalized_codec_version("avro", fixture_version)
+    protocol_version = "1"
     evidence: list[Evidence] = []
     sections = {
         "case": _list(document.get("cases"), f"{path}.cases", nonempty=True),
