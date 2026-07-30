@@ -88,6 +88,12 @@ def _nullable_string(
     return _string(value, context)
 
 
+def _required_member(value: Mapping[str, Any], member: str, context: str) -> Any:
+    if member not in value:
+        raise CorpusError(f"{context}.{member} is required")
+    return value[member]
+
+
 def _unique_strings(value: Any, context: str, *, allowed: set[str] | None = None) -> tuple[str, ...]:
     values = tuple(_string(item, f"{context}[]") for item in _list(value, context, nonempty=True))
     if len(values) != len(set(values)):
@@ -493,7 +499,10 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
         version,
         f"{path}.protocol.version",
     )
-    _nullable_string(protocol.get("fingerprint"), f"{path}.protocol.fingerprint")
+    _nullable_string(
+        _required_member(protocol, "fingerprint", f"{path}.protocol"),
+        f"{path}.protocol.fingerprint",
+    )
     bindings = _unique_strings(
         document.get("bindings"),
         f"{path}.bindings",
@@ -511,7 +520,7 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     framing = _object(document.get("framing"), f"{path}.framing")
     _string(framing.get("encoding"), f"{path}.framing.encoding")
     wire = _nullable_string(
-        framing.get("wire_base64"),
+        _required_member(framing, "wire_base64", f"{path}.framing"),
         f"{path}.framing.wire_base64",
         allow_empty=True,
     )
@@ -519,7 +528,10 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     operation = _string(policy.get("operation"), f"{path}.failure_policy.operation")
     if operation not in {"round_trip", "decode_reject", "encode_reject"}:
         raise CorpusError(f"{path}.failure_policy.operation is unsupported")
-    error = _nullable_string(policy.get("error"), f"{path}.failure_policy.error")
+    error = _nullable_string(
+        _required_member(policy, "error", f"{path}.failure_policy"),
+        f"{path}.failure_policy.error",
+    )
     if operation in {"round_trip", "decode_reject"} and wire is None:
         raise CorpusError(f"{path} must include wire_base64 for {operation}")
     if operation == "round_trip" and error is not None:
@@ -804,18 +816,38 @@ def _verify_new_codec_evidence(
     *,
     root: Path,
     base_files: Mapping[str, bytes],
-    current_evidence: Sequence[Evidence],
-    added_paths: set[str],
+    fixture_paths: Sequence[str],
+    require_defective_base: bool,
     python_executable: str,
     codec_runner: Path,
 ) -> int:
-    paths = sorted({item.path for item in current_evidence if item.category == "codec" and item.path in added_paths})
-    if not paths:
+    if not fixture_paths:
+        if not require_defective_base:
+            return 0
         raise CorpusError(
             "codec implementation changed but no newly added codec fixture can prove the defective revision"
         )
     if not codec_runner.is_file():
         raise CorpusError(f"official Python codec fixture runner is missing: {codec_runner}")
+
+    for path in fixture_paths:
+        fixture = root / path
+        candidate = _run_codec_fixture(
+            root=root,
+            python_executable=python_executable,
+            codec_runner=codec_runner,
+            source_root=root,
+            fixture=fixture,
+        )
+        if candidate.returncode != 0:
+            raise CorpusError(
+                f"new codec fixture {path} does not pass on the candidate "
+                "through the official Python binding: "
+                f"{_process_detail(candidate)}"
+            )
+
+    if not require_defective_base:
+        return len(fixture_paths)
 
     with tempfile.TemporaryDirectory(prefix="sdk-python-codec-base-") as temporary:
         base_root = Path(temporary)
@@ -829,22 +861,8 @@ def _verify_new_codec_evidence(
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(content)
 
-        for path in paths:
+        for path in fixture_paths:
             fixture = root / path
-            candidate = _run_codec_fixture(
-                root=root,
-                python_executable=python_executable,
-                codec_runner=codec_runner,
-                source_root=root,
-                fixture=fixture,
-            )
-            if candidate.returncode != 0:
-                raise CorpusError(
-                    f"new codec fixture {path} does not pass on the candidate "
-                    "through the official Python binding: "
-                    f"{_process_detail(candidate)}"
-                )
-
             defective = _run_codec_fixture(
                 root=root,
                 python_executable=python_executable,
@@ -858,7 +876,7 @@ def _verify_new_codec_evidence(
                     "it does not reproduce the guarded codec change"
                 )
 
-    return len(paths)
+    return len(fixture_paths)
 
 
 def _policy(document: Mapping[str, Any], path: str) -> Mapping[str, Any]:
@@ -1214,12 +1232,12 @@ def validate(
 
     counts: dict[str, dict[str, int | bool]] = {}
     for category_name, raw_category in _object(policy["categories"], "categories").items():
+        category = _object(raw_category, f"categories.{category_name}")
         current_count = sum(item.category == category_name for item in current_evidence)
         base_count = sum(item.category == category_name for item in base_evidence)
         added_count = sum(item.category == category_name and item.path in added_paths for item in current_evidence)
         related = False
         if base_ref and not ZERO_COMMIT.fullmatch(base_ref):
-            category = _object(raw_category, f"categories.{category_name}")
             related = any(
                 _guard_matches(root, base_ref, changed, guard)
                 for guard in _list(category["guards"], f"categories.{category_name}.guards")
@@ -1236,12 +1254,26 @@ def validate(
                     f"(base={base_count}, current={current_count})"
                 )
         revision_verified = 0
-        if category_name == "codec" and related:
+        if category_name == "codec":
+            codec_fixture_patterns: list[str] = []
+            for raw_fixture in _list(category["fixtures"], "categories.codec.fixtures"):
+                fixture = _object(raw_fixture, "categories.codec.fixtures[]")
+                if _string(fixture["format"], "fixture.format") == "codec-regression-v1":
+                    codec_fixture_patterns.append(_string(fixture["glob"], "fixture.glob"))
+            new_codec_fixture_paths = sorted(
+                {
+                    item.path
+                    for item in current_evidence
+                    if item.category == "codec"
+                    and item.path in added_paths
+                    and any(_matches(item.path, pattern) for pattern in codec_fixture_patterns)
+                }
+            )
             revision_verified = _verify_new_codec_evidence(
                 root=root,
                 base_files=base_files,
-                current_evidence=current_evidence,
-                added_paths=added_paths,
+                fixture_paths=new_codec_fixture_paths,
+                require_defective_base=related,
                 python_executable=python_executable,
                 codec_runner=codec_runner,
             )

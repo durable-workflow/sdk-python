@@ -320,6 +320,42 @@ class CanonicalIdentityTest(unittest.TestCase):
                 ):
                     VALIDATOR._codec_fixture(fixture, "null-wire.json", "python")
 
+    def test_codec_fixture_rejects_missing_required_nullable_members(self) -> None:
+        fixtures = []
+
+        missing_fingerprint = _codec_fixture("missing-fingerprint")
+        del missing_fingerprint["protocol"]["fingerprint"]
+        fixtures.append((missing_fingerprint, "protocol.fingerprint"))
+
+        missing_wire = _encode_reject_fixture("missing-wire")
+        del missing_wire["framing"]["wire_base64"]
+        fixtures.append((missing_wire, "framing.wire_base64"))
+
+        missing_error = _codec_fixture("missing-error")
+        del missing_error["failure_policy"]["error"]
+        fixtures.append((missing_error, "failure_policy.error"))
+
+        for fixture, member in fixtures:
+            with self.subTest(member=member), self.assertRaisesRegex(
+                VALIDATOR.CorpusError,
+                rf"{member} is required",
+            ):
+                VALIDATOR._codec_fixture(fixture, "missing-member.json", "python")
+
+    def test_codec_fixture_accepts_explicit_null_for_nullable_members(self) -> None:
+        round_trip = _codec_fixture("nullable-metadata")
+        encode_reject = _encode_reject_fixture("nullable-wire")
+        encode_reject["framing"]["wire_base64"] = None
+
+        self.assertEqual(
+            1,
+            len(VALIDATOR._codec_fixture(round_trip, "round-trip.json", "python")),
+        )
+        self.assertEqual(
+            1,
+            len(VALIDATOR._codec_fixture(encode_reject, "encode-reject.json", "python")),
+        )
+
     def test_codec_fixture_rejects_non_string_wire(self) -> None:
         fixture = _codec_fixture("non-string-wire")
         fixture["framing"]["wire_base64"] = []
@@ -779,6 +815,30 @@ raise SystemExit(0 if "return str(value)" in source else 1)
         self.assertEqual(result["counts"]["codec"]["added"], 1)
         self.assertTrue(result["counts"]["codec"]["related_change"])
         self.assertEqual(result["counts"]["codec"]["revision_verified"], 1)
+
+    def test_fixture_only_growth_runs_candidate_binding(self) -> None:
+        self._write_json(
+            "tests/fixtures/codec_regressions/unrelated.json",
+            _codec_fixture("unrelated"),
+        )
+
+        result = self._validate()
+
+        self.assertEqual(result["counts"]["codec"]["added"], 1)
+        self.assertFalse(result["counts"]["codec"]["related_change"])
+        self.assertEqual(result["counts"]["codec"]["revision_verified"], 1)
+
+    def test_fixture_only_growth_rejects_candidate_failure(self) -> None:
+        self._write_json(
+            "tests/fixtures/codec_regressions/candidate-failure.json",
+            _codec_fixture("candidate-failure"),
+        )
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "does not pass on the candidate through the official Python binding",
+        ):
+            self._validate()
 
     def test_guarded_growth_rejects_encode_reject_wire_only_variant(self) -> None:
         self._write_json(
