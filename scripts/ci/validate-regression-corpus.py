@@ -33,6 +33,9 @@ SUPPORTED_FORMATS = {
 SUPPORTED_CATEGORIES = {"codec", "replay"}
 SUPPORTED_BINDINGS = {"php", "python", "rust"}
 ZERO_COMMIT = re.compile(r"^0+$")
+LEGACY_MALFORMED_WIRE_REPAIRS = {
+    "%%%": "JSUl",
+}
 
 
 class CorpusError(RuntimeError):
@@ -112,6 +115,18 @@ def _canonical_base64(
     return canonical
 
 
+def _canonical_wire_replacement(value: str) -> str | None:
+    """Return the only permitted canonical replacement for a legacy wire."""
+
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        return LEGACY_MALFORMED_WIRE_REPAIRS.get(value)
+
+    canonical = base64.b64encode(decoded).decode("ascii")
+    return canonical if canonical != value else None
+
+
 def _canonical_wire_migration(base_content: bytes, current_content: bytes) -> bool:
     """Allow the one-way repair of legacy malformed-frame wire spellings."""
 
@@ -141,11 +156,7 @@ def _canonical_wire_migration(base_content: bytes, current_content: bytes) -> bo
             continue
         if not isinstance(base_wire, str) or not isinstance(current_wire, str):
             return False
-        try:
-            _canonical_base64(base_wire, f"base.malformed_frames[{index}].wire_base64")
-        except CorpusError:
-            pass
-        else:
+        if current_wire != _canonical_wire_replacement(base_wire):
             return False
         try:
             _canonical_base64(

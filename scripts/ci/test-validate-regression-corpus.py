@@ -438,7 +438,10 @@ raise SystemExit(0 if "return str(value)" in source else 1)
             codec_runner_path=self.codec_runner,
         )
 
-    def _add_avro_golden_to_base(self) -> None:
+    def _add_avro_golden_to_base(
+        self,
+        malformed_wire: str | None = None,
+    ) -> None:
         self.policy["categories"]["codec"]["fixtures"].append(
             {
                 "glob": "schema/avro-value-v1-golden.json",
@@ -446,10 +449,10 @@ raise SystemExit(0 if "return str(value)" in source else 1)
             }
         )
         self._write_json("regression-corpus-policy.json", self.policy)
-        self._write_json(
-            "schema/avro-value-v1-golden.json",
-            _avro_golden_fixture(),
-        )
+        golden = _avro_golden_fixture()
+        if malformed_wire is not None:
+            golden["malformed_frames"][0]["wire_base64"] = malformed_wire
+        self._write_json("schema/avro-value-v1-golden.json", golden)
         self._git("add", ".")
         self._git(
             "-c",
@@ -460,6 +463,11 @@ raise SystemExit(0 if "return str(value)" in source else 1)
             "--quiet",
             "--message=add-avro-golden-baseline",
         )
+
+    def _write_malformed_golden_wire(self, wire: str) -> None:
+        golden = _avro_golden_fixture()
+        golden["malformed_frames"][0]["wire_base64"] = wire
+        self._write_json("schema/avro-value-v1-golden.json", golden)
 
     def _write_cross_format_codec_fixture(
         self,
@@ -498,6 +506,29 @@ raise SystemExit(0 if "return str(value)" in source else 1)
             "fixture selector was removed or narrowed",
         ):
             self._validate()
+
+    def test_malformed_wire_migration_rejects_different_decoded_bytes(self) -> None:
+        self._add_avro_golden_to_base("AR==")
+        self._write_malformed_golden_wire("Ag==")
+
+        with self.assertRaisesRegex(VALIDATOR.CorpusError, "immutable fixture file"):
+            self._validate()
+
+    def test_malformed_wire_migration_accepts_same_decoded_bytes(self) -> None:
+        self._add_avro_golden_to_base("AR==")
+        self._write_malformed_golden_wire("AQ==")
+
+        result = self._validate()
+
+        self.assertEqual(result["counts"]["codec"]["base"], result["counts"]["codec"]["current"])
+
+    def test_malformed_wire_migration_accepts_explicit_legacy_repair(self) -> None:
+        self._add_avro_golden_to_base("%%%")
+        self._write_malformed_golden_wire("JSUl")
+
+        result = self._validate()
+
+        self.assertEqual(result["counts"]["codec"]["base"], result["counts"]["codec"]["current"])
 
     def test_guard_selector_cannot_narrow_and_hide_implementation_change(self) -> None:
         self.policy["categories"]["codec"]["guards"][0]["glob"] = "src/durable_workflow/serializer_safe.py"
