@@ -62,6 +62,25 @@ def _codec_fixture(identity: str) -> dict[str, Any]:
     }
 
 
+def _encode_reject_fixture(
+    identity: str,
+    *,
+    value: dict[str, Any] | None = None,
+    wire_base64: str = "AA==",
+    error: str = "non_finite_float",
+) -> dict[str, Any]:
+    fixture = _codec_fixture(identity)
+    fixture["value"] = (
+        value if value is not None else {"type": "double", "value": "nan"}
+    )
+    fixture["framing"]["wire_base64"] = wire_base64
+    fixture["failure_policy"] = {
+        "operation": "encode_reject",
+        "error": error,
+    }
+    return fixture
+
+
 def _avro_golden_fixture() -> dict[str, Any]:
     return {
         "schema": "durable_workflow.protocol.Value",
@@ -133,6 +152,27 @@ def _golden_history_fixture() -> dict[str, Any]:
 
 
 class CanonicalIdentityTest(unittest.TestCase):
+    def codec_inventory(self, *fixtures: dict[str, Any]) -> list[Any]:
+        policy = {
+            "binding": "python",
+            "categories": {
+                "codec": {
+                    "fixtures": [
+                        {
+                            "glob": "codec/*.json",
+                            "format": "codec-regression-v1",
+                        }
+                    ],
+                    "guards": [{"glob": "src/codec.py"}],
+                }
+            },
+        }
+        files = {
+            f"codec/{index}.json": json.dumps(fixture).encode()
+            for index, fixture in enumerate(fixtures)
+        }
+        return VALIDATOR._inventory(policy, files)
+
     def replay_inventory(self, replay: dict[str, Any]) -> list[Any]:
         policy = {
             "binding": "python",
@@ -211,6 +251,38 @@ class CanonicalIdentityTest(unittest.TestCase):
     def test_noncanonical_base64_spelling_is_rejected(self) -> None:
         with self.assertRaisesRegex(VALIDATOR.CorpusError, "is not canonical base64"):
             VALIDATOR._canonical_base64("AB==", "wire")
+
+    def test_encode_reject_wire_only_variant_is_duplicate_semantic_evidence(self) -> None:
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "duplicate semantic fixtures",
+        ):
+            self.codec_inventory(
+                _encode_reject_fixture("base", wire_base64="AA=="),
+                _encode_reject_fixture("wire-only-variant", wire_base64="Ag=="),
+            )
+
+    def test_encode_reject_value_and_error_policy_remain_distinct(self) -> None:
+        evidence = self.codec_inventory(
+            _encode_reject_fixture("base"),
+            _encode_reject_fixture(
+                "different-value",
+                value={"type": "double", "value": "infinity"},
+            ),
+            _encode_reject_fixture(
+                "different-error",
+                error="Avro Value doubles must be finite",
+            ),
+        )
+
+        self.assertEqual(3, len(evidence))
+        self.assertEqual(3, len({item.semantic_digest for item in evidence}))
+
+    def test_encode_reject_fixture_still_validates_wire_syntax(self) -> None:
+        fixture = _encode_reject_fixture("noncanonical-wire", wire_base64="AB==")
+
+        with self.assertRaisesRegex(VALIDATOR.CorpusError, "is not canonical base64"):
+            VALIDATOR._codec_fixture(fixture, "noncanonical-wire.json", "python")
 
     def test_codec_fixture_accepts_empty_canonical_wire_when_required(self) -> None:
         for operation, error in (
@@ -686,6 +758,39 @@ raise SystemExit(0 if "return str(value)" in source else 1)
         self.assertEqual(result["counts"]["codec"]["added"], 1)
         self.assertTrue(result["counts"]["codec"]["related_change"])
         self.assertEqual(result["counts"]["codec"]["revision_verified"], 1)
+
+    def test_guarded_growth_rejects_encode_reject_wire_only_variant(self) -> None:
+        self._write_json(
+            "tests/fixtures/codec_regressions/base.json",
+            _encode_reject_fixture("base"),
+        )
+        self._git("add", ".")
+        self._git(
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=encode-reject-baseline",
+        )
+        self._write_text(
+            "src/durable_workflow/serializer.py",
+            "def encode(value):\n    return str(value)\n",
+        )
+        self._write_json(
+            "tests/fixtures/codec_regressions/wire-only-variant.json",
+            _encode_reject_fixture(
+                "wire-only-variant",
+                wire_base64="Ag==",
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            VALIDATOR.CorpusError,
+            "duplicate semantic fixtures",
+        ):
+            self._validate()
 
     def test_unrelated_fixture_beside_counterfactual_evidence_is_rejected(self) -> None:
         self._write_text(

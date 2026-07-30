@@ -435,11 +435,13 @@ def _codec_semantic(
     operation: str,
     error: str | None,
 ) -> Mapping[str, Any]:
-    return {
+    semantic: dict[str, Any] = {
         "value": value,
-        "wire": wire,
         "failure_policy": {"operation": operation, "error": error},
     }
+    if operation != "encode_reject":
+        semantic["wire"] = wire
+    return semantic
 
 
 def _fixture_evidence(
