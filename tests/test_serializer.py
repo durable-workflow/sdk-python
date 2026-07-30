@@ -551,6 +551,27 @@ class TestAvroCodec:
         with pytest.raises(ValueError, match="invalid_payload_framing"):
             serializer.decode(weird_blob, codec="avro")
 
+    def test_invalid_base64_envelope_is_distinct_from_canonical_malformed_frame(self) -> None:
+        import base64
+
+        malformed = next(case for case in _GOLDEN_FIXTURE["malformed_frames"] if case["name"] == "invalid_base64")
+        canonical_wire = malformed["wire_base64"]
+        decoded_wire = base64.b64decode(canonical_wire, validate=True)
+        assert base64.b64encode(decoded_wire).decode("ascii") == canonical_wire
+        assert decoded_wire == b"%%%"
+
+        with pytest.raises(ValueError) as invalid_envelope:
+            serializer.decode("%%%", codec="avro")
+        assert str(invalid_envelope.value) == (
+            "invalid_payload_framing: failed to base64-decode Avro payload bytes. "
+            "Avro payloads must be strict base64 containing a c301 single-object frame."
+        )
+
+        with pytest.raises(ValueError) as malformed_frame:
+            serializer.decode(canonical_wire, codec="avro")
+        assert str(malformed_frame.value) == "invalid_payload_framing: expected Avro single-object magic c301."
+        assert str(invalid_envelope.value) != str(malformed_frame.value)
+
     def test_json_tagged_avro_raises_diagnostic(self) -> None:
         # A JSON string wrongly tagged as `avro` produces a typed, actionable
         # error rather than a silent mis-decode.
