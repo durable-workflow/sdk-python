@@ -554,7 +554,9 @@ class TestAvroCodec:
     def test_invalid_base64_envelope_is_distinct_from_canonical_malformed_frame(self) -> None:
         import base64
 
-        malformed = next(case for case in _GOLDEN_FIXTURE["malformed_frames"] if case["name"] == "invalid_base64")
+        malformed = next(
+            case for case in _GOLDEN_FIXTURE["malformed_frames"] if case["name"] == "decoded_non_magic_bytes"
+        )
         canonical_wire = malformed["wire_base64"]
         decoded_wire = base64.b64decode(canonical_wire, validate=True)
         assert base64.b64encode(decoded_wire).decode("ascii") == canonical_wire

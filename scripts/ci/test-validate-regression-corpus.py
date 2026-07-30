@@ -636,6 +636,12 @@ raise SystemExit(0 if "return str(value)" in source else 1)
         golden["malformed_frames"][0]["wire_base64"] = wire
         self._write_json("schema/avro-value-v1-golden.json", golden)
 
+    def _write_malformed_golden_name(self, name: str) -> None:
+        golden = _avro_golden_fixture()
+        golden["malformed_frames"][0]["wire_base64"] = "JSUl"
+        golden["malformed_frames"][0]["name"] = name
+        self._write_json("schema/avro-value-v1-golden.json", golden)
+
     def _write_cross_format_codec_fixture(
         self,
         *,
@@ -692,6 +698,21 @@ raise SystemExit(0 if "return str(value)" in source else 1)
     def test_malformed_wire_migration_rejects_invalid_base64_repair(self) -> None:
         self._add_avro_golden_to_base("%%%")
         self._write_malformed_golden_wire("JSUl")
+
+        with self.assertRaisesRegex(VALIDATOR.CorpusError, "immutable fixture file"):
+            self._validate()
+
+    def test_malformed_name_migration_accepts_decoded_behavior_reclassification(self) -> None:
+        self._add_avro_golden_to_base("JSUl", malformed_name="invalid_base64")
+        self._write_malformed_golden_name("decoded_non_magic_bytes")
+
+        result = self._validate()
+
+        self.assertEqual(result["counts"]["codec"]["base"], result["counts"]["codec"]["current"])
+
+    def test_malformed_name_migration_rejects_unrelated_reclassification(self) -> None:
+        self._add_avro_golden_to_base("JSUl", malformed_name="invalid_base64")
+        self._write_malformed_golden_name("unrelated_name")
 
         with self.assertRaisesRegex(VALIDATOR.CorpusError, "immutable fixture file"):
             self._validate()
