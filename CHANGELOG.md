@@ -6,10 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to the synchronized Durable Workflow `2.0.0-rc.7`
-product train. PyPI displays the normalized PEP 440 identity `2.0.0rc7`. Earlier SDK
-versions remain historical releases and are not alternate supported 2.0
-baselines; no prerelease compatibility shim is provided.
+The Python SDK advances to prerelease `2.0.0-rc.8`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc8`. This SDK release is qualified with Server
+`2.0.0-rc.12`; SDK and Server prerelease sequence numbers advance independently.
+Earlier SDK versions remain historical releases and are not alternate supported
+2.0 baselines; no prerelease compatibility shim is provided.
 
 ### Added
 - The optimized `fastavro` payload path now uses the fixed recursive
@@ -50,6 +51,10 @@ baselines; no prerelease compatibility shim is provided.
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Client construction now rejects base URLs with a terminal SDK-owned `/api`
+  suffix, query, or fragment while preserving self-hosted and managed-runtime
+  path prefixes. The quickstart also uses unique durable workflow identities
+  and documents typed duplicate-start handling.
 - Condition-timeout history is now identified by its durable wait identity as
   well as its timer kind, keeping internal timeout rows out of the ordinary
   activity cursor when updates and signals resolve a timed condition.

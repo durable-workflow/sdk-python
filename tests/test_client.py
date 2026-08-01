@@ -48,6 +48,70 @@ def client() -> Client:
     return Client("http://localhost:8080", token="test-token", namespace="ns1")
 
 
+class TestClientBaseUrl:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("base_url", "expected"),
+        [
+            pytest.param(
+                "http://localhost:8080/",
+                "http://localhost:8080",
+                id="self-hosted-root",
+            ),
+            pytest.param(
+                "https://self-hosted.example/durable-workflow/",
+                "https://self-hosted.example/durable-workflow",
+                id="self-hosted-path-prefix",
+            ),
+            pytest.param(
+                "https://cloud.example/api/runtime/v1/namespaces/acme/",
+                "https://cloud.example/api/runtime/v1/namespaces/acme",
+                id="managed-runtime-prefix",
+            ),
+        ],
+    )
+    async def test_accepts_server_and_runtime_prefixes(self, base_url: str, expected: str) -> None:
+        client = Client(base_url)
+
+        assert client.base_url == expected
+        assert str(client._http.build_request("GET", "/api/health").url) == f"{expected}/api/health"
+
+        await client.aclose()
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            pytest.param("http://localhost:8080/api", id="self-hosted"),
+            pytest.param("http://localhost:8080/api/", id="self-hosted-trailing-slash"),
+            pytest.param(
+                "https://cloud.example/api/runtime/v1/namespaces/acme/api",
+                id="managed-runtime",
+            ),
+            pytest.param(
+                "https://cloud.example/api/runtime/v1/namespaces/acme/api/",
+                id="managed-runtime-trailing-slash",
+            ),
+        ],
+    )
+    def test_rejects_sdk_owned_api_suffix(self, base_url: str) -> None:
+        with pytest.raises(ValueError, match=r"remove the trailing '/api'"):
+            Client(base_url)
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            pytest.param("http://localhost:8080?region=local", id="self-hosted-query"),
+            pytest.param(
+                "https://cloud.example/api/runtime/v1/namespaces/acme#workers",
+                id="managed-runtime-fragment",
+            ),
+        ],
+    )
+    def test_rejects_query_and_fragment(self, base_url: str) -> None:
+        with pytest.raises(ValueError, match="query or fragment"):
+            Client(base_url)
+
+
 class TestHeaders:
     def test_control_plane_headers(self, client: Client) -> None:
         h = client._headers(worker=False)

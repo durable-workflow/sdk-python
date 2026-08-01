@@ -2,8 +2,8 @@
 
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
-Status: **Beta** — this SDK is part of the synchronized Durable Workflow
-`2.0.0-rc.7` product train. Core features include workflows, activities,
+Status: **Beta** — this is Python SDK prerelease `2.0.0-rc.8` in the Durable
+Workflow 2.0 line. Core features include workflows, activities,
 schedules, signals, timers, child workflows, continue-as-new, side effects,
 version markers, worker-applied accepted updates, replay verification, the
 in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
@@ -11,7 +11,7 @@ in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
 ## Install
 
 ```bash
-pip install durable-workflow==2.0.0-rc.7
+pip install durable-workflow==2.0.0-rc.8
 ```
 
 Or for development:
@@ -24,6 +24,7 @@ pip install -e '.[dev]'
 
 ```python
 import asyncio
+from uuid import uuid4
 
 from durable_workflow import Client, Worker, workflow, activity
 
@@ -38,26 +39,45 @@ class GreeterWorkflow:
         return result
 
 async def main():
-    client = Client("http://server:8080", token="dev-token-123", namespace="default")
-    worker = Worker(
-        client,
-        task_queue="python-workers",
-        workflows=[GreeterWorkflow],
-        activities=[greet],
-    )
-    handle = await client.start_workflow(
-        workflow_type="greeter",
-        workflow_id="greet-1",
-        task_queue="python-workers",
-        input=["world"],
-    )
-    await worker.run_until(workflow_id="greet-1", timeout=30.0)
-    result = await client.get_result(handle)
-    print(result)  # "hello, world"
+    workflow_id = f"greet-{uuid4().hex}"
+    async with Client(
+        "http://server:8080",
+        token="dev-token-123",
+        namespace="default",
+    ) as client:
+        worker = Worker(
+            client,
+            task_queue="python-workers",
+            workflows=[GreeterWorkflow],
+            activities=[greet],
+        )
+        handle = await client.start_workflow(
+            workflow_type="greeter",
+            workflow_id=workflow_id,
+            task_queue="python-workers",
+            input=["world"],
+        )
+        await worker.run_until(workflow_id=workflow_id, timeout=30.0)
+        result = await client.get_result(handle)
+        print(result)  # "hello, world"
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+Pass the server or managed-runtime base URL to `Client`; the SDK appends its
+own `/api` routes. For example, use `http://server:8080`, not
+`http://server:8080/api`. Managed-runtime paths such as
+`https://cloud.example/api/runtime/v1/namespaces/acme` are valid as written.
+
+A workflow ID is the durable identity of an instance, not a per-attempt request
+ID. Starting the same ID again with the default `reject` duplicate policy raises
+the typed `WorkflowAlreadyStarted` exception. Generate a unique ID for each new
+instance, as the quickstart does. For an intentionally idempotent start, catch
+`WorkflowAlreadyStarted` and reconnect with
+`client.get_workflow_handle(workflow_id)`; choose `allow` or
+`terminate_existing` only when creating another run or replacing the current
+instance is the intended behavior.
 
 For a fuller deployable example, see
 [`examples/order_processing`](examples/order_processing), which runs a
@@ -585,8 +605,11 @@ Full documentation is available at
 
 ## Compatibility
 
-SDK version `2.0.0-rc.7` is supported with server `2.0.0-rc.7`. The server
-must advertise these protocol manifests from `GET /api/cluster/info`:
+SDK version `2.0.0-rc.8` is qualified with
+`durableworkflow/server:2.0.0-rc.12`. The SDK package and Server release
+identities advance independently; matching RC sequence numbers are not
+required. The server must advertise these protocol manifests from
+`GET /api/cluster/info`:
 
 - `control_plane.version: "2"`
 - `control_plane.request_contract.schema: durable-workflow.v2.control-plane-request.contract` version `1`

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 
@@ -95,6 +95,21 @@ def _protocol_version_from_env(name: str, default: str) -> str:
         return default
 
     return value.strip()
+
+
+def _normalize_base_url(base_url: str) -> str:
+    parsed = urlsplit(base_url)
+    if parsed.query or parsed.fragment:
+        raise ValueError("base_url must not include a query or fragment; pass only the server or managed-runtime URL")
+
+    normalized_path = parsed.path.rstrip("/")
+    if normalized_path.endswith("/api"):
+        raise ValueError(
+            "base_url must be the server or managed-runtime root without the SDK-owned '/api' suffix; "
+            "remove the trailing '/api' because Client appends it automatically"
+        )
+
+    return base_url.rstrip("/")
 
 
 def _route_for_metrics(path: str) -> str:
@@ -1232,6 +1247,9 @@ class ScheduleHandle:
 class Client:
     """Async HTTP client for Durable Workflow control-plane and worker APIs.
 
+    ``base_url`` is the server or managed-runtime prefix. Do not append the
+    SDK-owned ``/api`` route prefix or include a query string or fragment.
+
     The client owns one `httpx.AsyncClient` connection pool. Use it as an async
     context manager or call `aclose()` when finished.
     """
@@ -1254,7 +1272,7 @@ class Client:
         external_storage_threshold_bytes: int | None = None,
         external_storage_cache: ExternalPayloadCache | None = None,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = _normalize_base_url(base_url)
         self.token = token
         self.control_token = control_token
         self.worker_token = worker_token
@@ -1676,7 +1694,7 @@ class Client:
 
     # ── Health ─────────────────────────────────────────────────────────
     async def health(self) -> dict[str, Any]:
-        """Call the server's ``/health`` endpoint and return the JSON response."""
+        """Call the server's ``/api/health`` endpoint and return the JSON response."""
         result = await self._request("GET", "/health")
         if not isinstance(result, dict):
             raise ServerError(
