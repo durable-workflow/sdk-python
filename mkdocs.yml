@@ -27,6 +27,12 @@ theme:
         icon: material/weather-sunny
         name: Switch to light mode
 
+extra_javascript:
+  - javascripts/analytics.js
+
+extra_css:
+  - stylesheets/analytics.css
+
 plugins:
   - search
   - mkdocstrings:
