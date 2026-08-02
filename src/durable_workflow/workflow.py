@@ -2116,20 +2116,20 @@ def _condition_timeout_wait_id(
     return condition_wait_ids_by_sequence.get(sequence) if sequence is not None else None
 
 
-def _condition_timeout_timer_sequence_aliases(
+def _legacy_condition_timeout_timer_sequence_aliases(
     events: Iterable[Mapping[str, Any]],
     condition_wait_ids_by_sequence: Mapping[int, str],
 ) -> dict[int, str]:
-    """Correlate metadata-poor timeout timers with the open timed condition.
+    """Read the metadata-poor condition-timer shape emitted by older servers.
 
-    A worker-protocol history can persist the internal timer at a sequence after
-    ``ConditionWaitOpened`` without repeating the wait id or timer kind. While a
-    condition is open, the workflow generator cannot yield an ordinary timer,
-    so its first untyped ``TimerScheduled`` row is the condition's timeout.
+    The legacy row must have its own sequence, a timer id, and a delay equal to
+    the open condition's positive timeout. Current histories identify the timer
+    directly and never enter this adjacency-based compatibility path.
     """
     aliases: dict[int, str] = {}
     active_wait_id: str | None = None
-    active_wait_has_timeout = False
+    active_wait_sequence: int | None = None
+    active_wait_timeout: int | None = None
 
     for event in events:
         event_type = _history_event_type(event)
@@ -2139,28 +2139,32 @@ def _condition_timeout_timer_sequence_aliases(
 
         if event_type == "ConditionWaitOpened":
             active_wait_id = _optional_str(payload.get("condition_wait_id"))
+            active_wait_sequence = _workflow_sequence(payload)
             timeout_seconds = payload.get("timeout_seconds")
-            active_wait_has_timeout = (isinstance(timeout_seconds, (int, float)) and timeout_seconds > 0) or (
-                isinstance(timeout_seconds, str) and timeout_seconds.isdigit() and int(timeout_seconds) > 0
-            )
+            if isinstance(timeout_seconds, bool):
+                active_wait_timeout = None
+            elif isinstance(timeout_seconds, int) and timeout_seconds > 0:
+                active_wait_timeout = timeout_seconds
+            elif isinstance(timeout_seconds, str) and timeout_seconds.isdigit() and int(timeout_seconds) > 0:
+                active_wait_timeout = int(timeout_seconds)
+            else:
+                active_wait_timeout = None
             continue
 
         if event_type == "TimerScheduled":
             sequence = _workflow_sequence(payload)
-            explicit_kind = _internal_timeout_timer_kind(
-                payload,
-                condition_wait_ids_by_sequence,
-            )
+            explicit_kind = _internal_timeout_timer_kind(payload)
             timer_kind = _optional_str(payload.get("timer_kind"))
             if explicit_kind == "condition_timeout":
-                wait_id = _optional_str(payload.get("condition_wait_id")) or active_wait_id
-                if sequence is not None and wait_id is not None:
-                    aliases[sequence] = wait_id
                 continue
             if (
                 sequence is not None
                 and active_wait_id is not None
-                and active_wait_has_timeout
+                and active_wait_sequence is not None
+                and sequence != active_wait_sequence
+                and active_wait_timeout is not None
+                and payload.get("delay_seconds") == active_wait_timeout
+                and _optional_str(payload.get("timer_id")) is not None
                 and timer_kind is None
                 and _optional_str(payload.get("signal_wait_id")) is None
             ):
@@ -2168,7 +2172,8 @@ def _condition_timeout_timer_sequence_aliases(
                 continue
 
             active_wait_id = None
-            active_wait_has_timeout = False
+            active_wait_sequence = None
+            active_wait_timeout = None
             continue
 
         if event_type in ("TimerFired", "TimerCancelled"):
@@ -2177,14 +2182,16 @@ def _condition_timeout_timer_sequence_aliases(
                 payload, condition_wait_ids_by_sequence
             ) == "condition_timeout":
                 active_wait_id = None
-                active_wait_has_timeout = False
+                active_wait_sequence = None
+                active_wait_timeout = None
             continue
 
         if event_type in ("ConditionWaitSatisfied", "ConditionWaitTimedOut"):
             resolved_wait_id = _optional_str(payload.get("condition_wait_id"))
             if resolved_wait_id is None or resolved_wait_id == active_wait_id:
                 active_wait_id = None
-                active_wait_has_timeout = False
+                active_wait_sequence = None
+                active_wait_timeout = None
             continue
 
         if event_type in (
@@ -2195,9 +2202,26 @@ def _condition_timeout_timer_sequence_aliases(
             "ChildWorkflowScheduled",
         ):
             active_wait_id = None
-            active_wait_has_timeout = False
+            active_wait_sequence = None
+            active_wait_timeout = None
 
     return aliases
+
+
+def _has_metadata_poor_timer_schedule(events: Iterable[Mapping[str, Any]]) -> bool:
+    for event in events:
+        if _history_event_type(event) != "TimerScheduled":
+            continue
+        payload = event.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            continue
+        if (
+            _internal_timeout_timer_kind(payload) is None
+            and _optional_str(payload.get("timer_id")) is not None
+            and _optional_str(payload.get("timer_kind")) is None
+        ):
+            return True
+    return False
 
 
 def _activity_type_from_payload(payload: Mapping[str, Any]) -> str | None:
@@ -2476,12 +2500,13 @@ def _replay_state(
             if isinstance(wait_id, str) and wait_id:
                 condition_wait_ids_by_sequence[sequence] = wait_id
 
-    condition_wait_ids_by_sequence.update(
-        _condition_timeout_timer_sequence_aliases(
-            events,
-            condition_wait_ids_by_sequence,
+    if _has_metadata_poor_timer_schedule(events):
+        condition_wait_ids_by_sequence.update(
+            _legacy_condition_timeout_timer_sequence_aliases(
+                events,
+                condition_wait_ids_by_sequence,
+            )
         )
-    )
 
     for event in events:
         event_type = _history_event_type(event)

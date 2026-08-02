@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from copy import deepcopy
 from typing import Any
+from unittest.mock import patch
 
 from durable_workflow import serializer, workflow
 from durable_workflow.errors import ActivityFailed
@@ -133,14 +135,16 @@ def _history() -> list[dict[str, Any]]:
                 "timeout_seconds": 1,
             },
         ),
-        # Worker-protocol snapshots can assign the internal timer its own
-        # sequence without repeating the wait id or internal timer kind.
+        # The internal timer owns its sequence but remains self-identifying.
         _event(
             "TimerScheduled",
             {
                 "sequence": 9,
                 "timer_id": "condition-timer:9",
                 "delay_seconds": 1,
+                "timer_kind": "condition_timeout",
+                "condition_wait_id": "condition:8",
+                "condition_key": "update-and-signal",
             },
         ),
         _event(
@@ -183,6 +187,9 @@ def _history() -> list[dict[str, Any]]:
                 "sequence": 9,
                 "timer_id": "condition-timer:9",
                 "delay_seconds": 1,
+                "timer_kind": "condition_timeout",
+                "condition_wait_id": "condition:8",
+                "condition_key": "update-and-signal",
             },
         ),
         _event(
@@ -210,6 +217,7 @@ def _history() -> list[dict[str, Any]]:
             "TimerScheduled",
             {
                 "sequence": 11,
+                "timer_kind": "condition_timeout",
                 "condition_wait_id": "condition:11",
                 "condition_key": "finish",
                 "delay_seconds": 30,
@@ -235,7 +243,36 @@ def _history() -> list[dict[str, Any]]:
     ]
 
 
+def _legacy_history() -> list[dict[str, Any]]:
+    history = deepcopy(_history())
+    for event in history:
+        payload = event.get("payload", {})
+        if payload.get("timer_id") != "condition-timer:9":
+            continue
+        payload.pop("timer_kind", None)
+        payload.pop("condition_wait_id", None)
+        payload.pop("condition_key", None)
+    return history
+
+
 class TestUpdateSignalConditionReplay:
+    def test_current_history_uses_explicit_timeout_identity_without_legacy_classification(self) -> None:
+        with patch(
+            "durable_workflow.workflow._legacy_condition_timeout_timer_sequence_aliases",
+            side_effect=AssertionError("current history entered the legacy timeout classifier"),
+        ):
+            outcome = replay(UpdateSignalConditionTimerWorkflow, _history(), [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+
+    def test_legacy_metadata_poor_timeout_history_remains_replayable(self) -> None:
+        outcome = replay(UpdateSignalConditionTimerWorkflow, _legacy_history(), [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result["status"] == "completed"
+
     def test_update_task_replay_does_not_advance_the_ordinary_command_cursor(self) -> None:
         history = _history()
         accepted_index = next(index for index, event in enumerate(history) if event["event_type"] == "UpdateAccepted")

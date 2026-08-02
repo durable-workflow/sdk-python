@@ -1166,11 +1166,11 @@ class TestReplayWaitCondition:
             },
             {
                 "event_type": "TimerScheduled",
-                "payload": {"sequence": 9, "timer_id": "condition-timer"},
+                "payload": {"sequence": 9, "timer_id": "condition-timer", "delay_seconds": 10},
             },
             {
                 "event_type": "TimerFired",
-                "payload": {"sequence": 9, "timer_id": "condition-timer"},
+                "payload": {"sequence": 9, "timer_id": "condition-timer", "delay_seconds": 10},
             },
             {
                 "event_type": "TimerScheduled",

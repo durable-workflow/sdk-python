@@ -6,9 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.9`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc9`. This SDK release is qualified with Server
-`2.0.0-rc.14`; SDK and Server prerelease sequence numbers advance independently.
+The Python SDK advances to prerelease `2.0.0-rc.16`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc16`. This SDK release is qualified with Server
+`2.0.0-rc.16`; SDK and Server prerelease sequence numbers advance independently.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
 
@@ -57,9 +57,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
   suffix, query, or fragment while preserving self-hosted and managed-runtime
   path prefixes. The quickstart also uses unique durable workflow identities
   and documents typed duplicate-start handling.
-- Condition-timeout history now remains correlated when a worker snapshot gives
-  the internal timer its own sequence without repeating its wait id or timer
-  kind, keeping updates and signals from shifting the ordinary activity cursor.
+- Current condition-timeout history uses explicit timer and condition identity
+  without adjacency inference, while the metadata-poor historical shape keeps a
+  narrowly bounded replay fallback. Interleaved updates and signals no longer
+  shift the ordinary activity cursor.
 - Worker registration now advertises each workflow's declared signal, query,
   and update contract with typed parameter metadata, allowing the server to
   admit declared Python workflow updates while preserving typed refusals.
