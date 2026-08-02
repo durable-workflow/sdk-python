@@ -6,8 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.9`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc9`. This SDK release is qualified with Server
+The Python SDK advances to prerelease `2.0.0-rc.8`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc8`. This SDK release is qualified with Server
 `2.0.0-rc.12`; SDK and Server prerelease sequence numbers advance independently.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
