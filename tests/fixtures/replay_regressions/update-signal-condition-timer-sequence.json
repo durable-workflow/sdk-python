@@ -1,0 +1,201 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "update-signal-condition-timer-sequence",
+  "protocol_version": "1.1",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.update-signal-condition-timer",
+    "input": []
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_type": "tests.replay.update-signal-condition-timer"
+      }
+    },
+    {
+      "event_type": "TimerScheduled",
+      "payload": {
+        "sequence": 1,
+        "timer_kind": "sleep"
+      }
+    },
+    {
+      "event_type": "TimerFired",
+      "payload": {
+        "sequence": 1,
+        "timer_kind": "sleep"
+      }
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "successful"
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "successful",
+        "result": "{\"activity\":\"successful\"}"
+      }
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 3,
+        "activity_type": "non-retryable-failure"
+      }
+    },
+    {
+      "event_type": "ActivityFailed",
+      "payload": {
+        "sequence": 3,
+        "activity_type": "non-retryable-failure",
+        "message": "planned typed failure",
+        "exception_type": "PlannedFailure",
+        "exception_class": "tests.PlannedFailure",
+        "non_retryable": true
+      }
+    },
+    {
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "sequence": 8,
+        "condition_wait_id": "condition:8",
+        "condition_key": "update-and-signal",
+        "timeout_seconds": 1
+      }
+    },
+    {
+      "event_type": "TimerScheduled",
+      "payload": {
+        "sequence": 9,
+        "timer_id": "condition-timer:9",
+        "delay_seconds": 1
+      }
+    },
+    {
+      "event_type": "UpdateAccepted",
+      "payload": {
+        "update_id": "update-1",
+        "update_name": "set_message",
+        "arguments": "[\"updated\"]"
+      }
+    },
+    {
+      "event_type": "UpdateApplied",
+      "payload": {
+        "sequence": 8,
+        "update_id": "update-1",
+        "update_name": "set_message",
+        "arguments": "[\"updated\"]"
+      }
+    },
+    {
+      "event_type": "UpdateCompleted",
+      "payload": {
+        "sequence": 8,
+        "update_id": "update-1",
+        "update_name": "set_message",
+        "result": "{\"message\":\"updated\"}"
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "workflow_sequence": 8,
+        "signal_name": "condition_ready",
+        "value": "[\"delivered\"]"
+      }
+    },
+    {
+      "event_type": "TimerFired",
+      "payload": {
+        "sequence": 9,
+        "timer_id": "condition-timer:9",
+        "delay_seconds": 1
+      }
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 10,
+        "activity_type": "after-condition"
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 10,
+        "activity_type": "after-condition",
+        "result": "{\"activity\":\"after-condition\"}"
+      }
+    },
+    {
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "sequence": 11,
+        "condition_wait_id": "condition:11",
+        "condition_key": "finish",
+        "timeout_seconds": 30
+      }
+    },
+    {
+      "event_type": "TimerScheduled",
+      "payload": {
+        "sequence": 11,
+        "condition_wait_id": "condition:11",
+        "condition_key": "finish",
+        "delay_seconds": 30
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "workflow_sequence": 11,
+        "signal_name": "finish",
+        "value": "[{\"typed\":\"non-null\"}]"
+      }
+    },
+    {
+      "event_type": "ConditionWaitSatisfied",
+      "payload": {
+        "sequence": 11,
+        "condition_wait_id": "condition:11",
+        "condition_key": "finish"
+      }
+    },
+    {
+      "event_type": "WorkflowCompleted",
+      "payload": {
+        "result": "{\"typed\":\"non-null\"}"
+      }
+    }
+  ],
+  "expected": {
+    "command_type": "CompleteWorkflow",
+    "result": {
+      "status": "completed",
+      "successful": {
+        "activity": "successful"
+      },
+      "failure_type": "PlannedFailure",
+      "message": "updated",
+      "signal_marker": "delivered",
+      "condition_completed": false,
+      "after_condition": {
+        "activity": "after-condition"
+      },
+      "result": {
+        "typed": "non-null"
+      }
+    }
+  }
+}

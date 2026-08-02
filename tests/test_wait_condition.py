@@ -1143,5 +1143,47 @@ class TestReplayWaitCondition:
         # the workflow past the sleep too. We expect to land at the sleep yield.
         assert len(outcome.commands) == 1
         from durable_workflow.workflow import StartTimer
+
         assert isinstance(outcome.commands[0], StartTimer)
         assert outcome.commands[0].delay_seconds == 60
+
+    def test_metadata_poor_condition_timeout_does_not_hide_following_timer(self) -> None:
+        @workflow.defn(name="timed-wait-then-sleep")
+        class TimedWaitThenSleep:
+            def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+                yield ctx.wait_condition(lambda: False, timeout=10)
+                yield ctx.sleep(60)
+                return "done"
+
+        history = [
+            {
+                "event_type": "ConditionWaitOpened",
+                "payload": {
+                    "sequence": 8,
+                    "condition_wait_id": "wait-8",
+                    "timeout_seconds": 10,
+                },
+            },
+            {
+                "event_type": "TimerScheduled",
+                "payload": {"sequence": 9, "timer_id": "condition-timer"},
+            },
+            {
+                "event_type": "TimerFired",
+                "payload": {"sequence": 9, "timer_id": "condition-timer"},
+            },
+            {
+                "event_type": "TimerScheduled",
+                "payload": {"sequence": 10, "timer_id": "ordinary-timer"},
+            },
+            {
+                "event_type": "TimerFired",
+                "payload": {"sequence": 10, "timer_id": "ordinary-timer"},
+            },
+        ]
+
+        outcome = replay(TimedWaitThenSleep, history, [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == "done"

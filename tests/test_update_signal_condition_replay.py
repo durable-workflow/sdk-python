@@ -127,18 +127,19 @@ def _history() -> list[dict[str, Any]]:
         _event(
             "ConditionWaitOpened",
             {
-                "sequence": 9,
-                "condition_wait_id": "condition:9",
+                "sequence": 8,
+                "condition_wait_id": "condition:8",
                 "condition_key": "update-and-signal",
                 "timeout_seconds": 1,
             },
         ),
+        # Worker-protocol snapshots can assign the internal timer its own
+        # sequence without repeating the wait id or internal timer kind.
         _event(
             "TimerScheduled",
             {
                 "sequence": 9,
-                "condition_wait_id": "condition:9",
-                "condition_key": "update-and-signal",
+                "timer_id": "condition-timer:9",
                 "delay_seconds": 1,
             },
         ),
@@ -153,7 +154,7 @@ def _history() -> list[dict[str, Any]]:
         _event(
             "UpdateApplied",
             {
-                "sequence": 9,
+                "sequence": 8,
                 "update_id": "update-1",
                 "update_name": "set_message",
                 "arguments": _payload(["updated"]),
@@ -162,7 +163,7 @@ def _history() -> list[dict[str, Any]]:
         _event(
             "UpdateCompleted",
             {
-                "sequence": 9,
+                "sequence": 8,
                 "update_id": "update-1",
                 "update_name": "set_message",
                 "result": _payload({"message": "updated"}),
@@ -171,7 +172,7 @@ def _history() -> list[dict[str, Any]]:
         _event(
             "SignalReceived",
             {
-                "workflow_sequence": 9,
+                "workflow_sequence": 8,
                 "signal_name": "condition_ready",
                 "value": _payload(["delivered"]),
             },
@@ -180,8 +181,7 @@ def _history() -> list[dict[str, Any]]:
             "TimerFired",
             {
                 "sequence": 9,
-                "condition_wait_id": "condition:9",
-                "condition_key": "update-and-signal",
+                "timer_id": "condition-timer:9",
                 "delay_seconds": 1,
             },
         ),
