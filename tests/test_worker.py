@@ -221,6 +221,13 @@ async def echo_async_activity(val: str) -> str:
 def mock_client() -> AsyncMock:
     client = AsyncMock(spec=Client)
     client.register_worker = AsyncMock(return_value={"worker_id": "w1", "registered": True})
+    client.deregister_worker_registration = AsyncMock(
+        return_value={
+            "worker_id": "w1",
+            "outcome": "deregistered",
+            "recovered_workflow_task_count": 0,
+        }
+    )
     client.heartbeat_worker = AsyncMock(
         return_value={"worker_id": "w1", "acknowledged": True, "heartbeat_interval_seconds": 60}
     )
@@ -2792,6 +2799,107 @@ class TestConcurrencyLimits:
         gate.set()
         await asyncio.gather(*tasks)
         assert mock_client.complete_activity_task.call_count == 4
+
+
+class TestWorkerShutdown:
+    @pytest.mark.asyncio
+    async def test_normal_shutdown_drains_before_deregistering_once(self, mock_client: AsyncMock) -> None:
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            poll_timeout=0.01,
+        )
+        run_task = asyncio.create_task(worker.run())
+        while mock_client.register_worker.await_count == 0:
+            await asyncio.sleep(0)
+
+        in_flight_started = asyncio.Event()
+        release_in_flight = asyncio.Event()
+
+        async def in_flight_task() -> None:
+            in_flight_started.set()
+            await release_in_flight.wait()
+
+        tracked_task = worker._track(in_flight_task())
+        await in_flight_started.wait()
+
+        stop_task = asyncio.create_task(worker.stop())
+        await asyncio.sleep(0)
+        mock_client.deregister_worker_registration.assert_not_awaited()
+
+        release_in_flight.set()
+        await stop_task
+        await run_task
+
+        assert tracked_task.done()
+        assert all(task.done() for task in worker._poller_tasks)
+        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+
+    @pytest.mark.asyncio
+    async def test_failed_registration_does_not_deregister(self, mock_client: AsyncMock) -> None:
+        mock_client.register_worker.side_effect = RuntimeError("registration failed")
+        worker = Worker(mock_client, task_queue="q1")
+
+        with pytest.raises(RuntimeError, match="registration failed"):
+            await worker.run()
+
+        await worker.stop()
+        mock_client.deregister_worker_registration.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_repeated_stop_paths_share_one_deregistration(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q1")
+        await worker._register()
+
+        await asyncio.gather(worker.stop(), worker.stop())
+        await worker.stop()
+
+        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+
+    @pytest.mark.asyncio
+    async def test_deregistration_403_is_propagated_without_retrying(self, mock_client: AsyncMock) -> None:
+        cleanup_error = ServerError(
+            403,
+            {
+                "reason": "worker_registration_forbidden",
+                "message": "worker token cannot deregister this registration",
+            },
+        )
+        mock_client.deregister_worker_registration.side_effect = cleanup_error
+        worker = Worker(mock_client, task_queue="q1")
+        await worker._register()
+
+        for _ in range(2):
+            with pytest.raises(ServerError) as exc_info:
+                await worker.stop()
+            assert exc_info.value.status == 403
+            assert exc_info.value.reason() == "worker_registration_forbidden"
+
+        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+
+    @pytest.mark.asyncio
+    async def test_worker_loop_error_remains_primary_when_deregistration_fails(self, mock_client: AsyncMock) -> None:
+        cleanup_error = ServerError(
+            403,
+            {
+                "reason": "worker_registration_forbidden",
+                "message": "worker token cannot deregister this registration",
+            },
+        )
+        mock_client.deregister_worker_registration.side_effect = cleanup_error
+        worker = Worker(mock_client, task_queue="q1")
+        worker._poll_workflow_tasks = AsyncMock(  # type: ignore[method-assign]
+            side_effect=RuntimeError("worker loop failed")
+        )
+
+        with pytest.raises(RuntimeError, match="worker loop failed") as exc_info:
+            await worker.run()
+
+        assert exc_info.value.__cause__ is cleanup_error
+        assert cleanup_error.reason() == "worker_registration_forbidden"
+        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
 
 
 class TestPollLoops:

@@ -6,9 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.16`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc16`. This SDK release is qualified with Server
-`2.0.0-rc.16`; SDK and Server prerelease sequence numbers advance independently.
+The Python SDK advances to prerelease `2.0.0-rc.17`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc17`. This SDK release is qualified with Server
+`2.0.0-rc.17`; SDK and Server prerelease sequence numbers advance independently.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
 
@@ -51,6 +51,13 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Successful worker registrations are now removed through the worker protocol
+  after pollers and in-flight tasks drain. Shutdown is idempotent, surfaces
+  authentication and protocol failures, and retains cleanup context without
+  replacing a primary worker-loop failure.
+- Scoped worker and control tokens are no longer substituted across protocol
+  planes. Missing role-appropriate credentials fail before transport, while the
+  shared token continues to authorize both planes.
 - The MkDocs search overlay no longer widens the document beyond responsive
   viewports, keeping search and navigation usable without horizontal panning.
 - Client construction now rejects base URLs with a terminal SDK-owned `/api`

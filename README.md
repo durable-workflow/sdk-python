@@ -2,7 +2,7 @@
 
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
-Status: **Beta** — this is Python SDK prerelease `2.0.0-rc.16` in the Durable
+Status: **Beta** — this is Python SDK prerelease `2.0.0-rc.17` in the Durable
 Workflow 2.0 line. Core features include workflows, activities,
 schedules, signals, timers, child workflows, continue-as-new, side effects,
 version markers, worker-applied accepted updates, replay verification, the
@@ -11,7 +11,7 @@ in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
 ## Install
 
 ```bash
-pip install durable-workflow==2.0.0-rc.16
+pip install durable-workflow==2.0.0-rc.17
 ```
 
 Or for development:
@@ -533,7 +533,11 @@ client = Client(
 
 Create one client per namespace when your deployment issues namespace-scoped
 tokens. The SDK sends the configured token as `Authorization: Bearer ...` and
-the namespace as `X-Namespace` on every request.
+the namespace as `X-Namespace` on every request. Scoped credentials are never
+substituted across roles: `worker_token` authorizes only worker-plane requests,
+and `control_token` authorizes only control-plane requests. A client configured
+with only the opposite role's token fails before transport; use `token` when one
+shared credential intentionally authorizes both planes.
 
 ## Metrics
 
@@ -605,8 +609,8 @@ Full documentation is available at
 
 ## Compatibility
 
-SDK version `2.0.0-rc.16` is qualified with
-`durableworkflow/server:2.0.0-rc.16`. The SDK package and Server release
+SDK version `2.0.0-rc.17` is qualified with
+`durableworkflow/server:2.0.0-rc.17`. The SDK package and Server release
 identities advance independently; matching RC sequence numbers are not
 required. The server must advertise these protocol manifests from
 `GET /api/cluster/info`:

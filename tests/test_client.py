@@ -153,14 +153,52 @@ class TestHeaders:
         assert control_headers["Authorization"] == "Bearer operator-token"
         assert worker_headers["Authorization"] == "Bearer worker-token"
 
-    def test_single_plane_token_can_fetch_cluster_info(self) -> None:
-        c = Client("http://localhost:8080", worker_token="worker-token")
+    @pytest.mark.asyncio
+    async def test_worker_request_rejects_control_only_token_before_transport(self) -> None:
+        client = Client("http://localhost:8080", control_token="operator-token")
 
-        control_headers = c._headers(worker=False)
-        worker_headers = c._headers(worker=True)
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock) as request,
+            pytest.raises(ValueError, match="worker_token or the shared token"),
+        ):
+            await client.register_worker(worker_id="worker-1", task_queue="orders")
 
-        assert control_headers["Authorization"] == "Bearer worker-token"
-        assert worker_headers["Authorization"] == "Bearer worker-token"
+        request.assert_not_awaited()
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_control_request_rejects_worker_only_token_before_transport(self) -> None:
+        client = Client("http://localhost:8080", worker_token="worker-token")
+
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock) as request,
+            pytest.raises(ValueError, match="control_token or the shared token"),
+        ):
+            await client.get_cluster_info()
+
+        request.assert_not_awaited()
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_shared_token_authorizes_both_protocol_planes(self) -> None:
+        client = Client("http://localhost:8080", token="shared-token", namespace="orders")
+        responses = [
+            _mock_response(200, {"version": "2.0.0"}),
+            _mock_response(200, {"worker_id": "worker-1", "acknowledged": True}),
+        ]
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, side_effect=responses) as request:
+            await client.get_cluster_info()
+            await client.heartbeat_worker(worker_id="worker-1")
+
+        control_headers = request.await_args_list[0].kwargs["headers"]
+        worker_headers = request.await_args_list[1].kwargs["headers"]
+        assert control_headers["Authorization"] == "Bearer shared-token"
+        assert control_headers["X-Durable-Workflow-Control-Plane-Version"] == CONTROL_PLANE_VERSION
+        assert worker_headers["Authorization"] == "Bearer shared-token"
+        assert worker_headers["X-Durable-Workflow-Protocol-Version"] == PROTOCOL_VERSION
+
+        await client.aclose()
 
 
 class TestNexusOperations:
@@ -3127,6 +3165,59 @@ class TestRegisterWorker:
             )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["sdk_version"] == "custom-runtime/9.9.9"
+
+    @pytest.mark.asyncio
+    async def test_deregister_registration_uses_worker_plane_route_and_headers(self) -> None:
+        client = Client(
+            "http://localhost:8080",
+            control_token="operator-token",
+            worker_token="worker-token",
+            namespace="workers",
+        )
+        response_body = {
+            "worker_id": "worker / one",
+            "outcome": "deregistered",
+            "recovered_workflow_task_count": 2,
+        }
+        resp = _mock_response(200, response_body)
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.deregister_worker_registration("worker / one")
+
+        assert result == response_body
+        assert result["worker_id"] == "worker / one"
+        assert result["outcome"] == "deregistered"
+        assert result["recovered_workflow_task_count"] == 2
+        assert mock.call_args.args[:2] == (
+            "DELETE",
+            "/api/worker/registrations/worker%20%2F%20one",
+        )
+        headers = mock.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer worker-token"
+        assert headers["X-Namespace"] == "workers"
+        assert headers["X-Durable-Workflow-Protocol-Version"] == PROTOCOL_VERSION
+        assert "X-Durable-Workflow-Control-Plane-Version" not in headers
+
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_deregister_registration_propagates_http_403(self, client: Client) -> None:
+        resp = _mock_response(
+            403,
+            {
+                "reason": "worker_registration_forbidden",
+                "message": "worker token cannot deregister this registration",
+            },
+        )
+
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(ServerError) as exc_info,
+        ):
+            await client.deregister_worker_registration("worker-1")
+
+        assert exc_info.value.status == 403
+        assert exc_info.value.reason() == "worker_registration_forbidden"
 
 
 class TestWorkers:

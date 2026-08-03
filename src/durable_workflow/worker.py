@@ -4,8 +4,8 @@
 spawns poll loops for both workflow tasks and activity tasks. Each received
 task is dispatched to the registered workflow class or activity function,
 results are serialized, and success/failure commands are sent back to the
-server. Workers drain in-flight tasks on shutdown up to a configurable
-``shutdown_timeout``.
+server. Workers stop their pollers, drain in-flight tasks on shutdown up to a
+configurable ``shutdown_timeout``, and remove successful worker registrations.
 
 Most applications create one :class:`Worker` per task queue and pass it the
 same :class:`~durable_workflow.Client` used for control-plane calls, plus
@@ -899,6 +899,11 @@ class Worker:
         self._act_semaphore = asyncio.Semaphore(max_concurrent_activity_tasks)
         self._shutdown_timeout = shutdown_timeout
         self._in_flight: set[asyncio.Task[Any]] = set()
+        self._poller_tasks: set[asyncio.Task[Any]] = set()
+        self._registered = False
+        self._run_started = False
+        self._registration_done = asyncio.Event()
+        self._shutdown_task: asyncio.Task[None] | None = None
         self._query_tasks_supported = False
         self._query_thread_stop = threading.Event()
         self._query_thread: threading.Thread | None = None
@@ -1047,6 +1052,7 @@ class Worker:
             task_slots=self._current_task_slots(),
             process_metrics=self._current_process_metrics(),
         )
+        self._registered = True
         # Adapt to the server-advertised cadence when present so a cluster
         # can pin the worker fleet's heartbeat beat without each worker
         # passing the cadence explicitly. Falls back to the constructor
@@ -2128,21 +2134,38 @@ class Worker:
 
     async def run(self) -> None:
         """Register the worker and poll until `stop()` is called or the task is cancelled."""
-        await self._register()
-        wf_loop = asyncio.create_task(self._poll_workflow_tasks())
-        act_loop = asyncio.create_task(self._poll_activity_tasks())
-        hb_loop = asyncio.create_task(self._heartbeat_loop())
-        loops = [wf_loop, act_loop, hb_loop]
-        if self._query_tasks_supported:
-            if self._can_clone_client_for_query_tasks():
-                self._start_query_task_thread()
-            else:
-                loops.append(asyncio.create_task(self._poll_query_tasks()))
+        self._begin_run()
         try:
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(*loops)
+            await self._register()
         finally:
-            await self._stop_query_task_thread()
+            self._registration_done.set()
+
+        try:
+            wf_loop = asyncio.create_task(self._poll_workflow_tasks())
+            act_loop = asyncio.create_task(self._poll_activity_tasks())
+            hb_loop = asyncio.create_task(self._heartbeat_loop())
+            loops = [wf_loop, act_loop, hb_loop]
+            if self._query_tasks_supported:
+                if self._can_clone_client_for_query_tasks():
+                    self._start_query_task_thread()
+                else:
+                    loops.append(asyncio.create_task(self._poll_query_tasks()))
+            self._poller_tasks.update(loops)
+
+            try:
+                await asyncio.gather(*loops)
+            except asyncio.CancelledError:
+                if not self._stop.is_set():
+                    raise
+        finally:
+            primary_error = sys.exc_info()[1]
+            primary_traceback = primary_error.__traceback__ if primary_error is not None else None
+            try:
+                await self.stop()
+            except BaseException as shutdown_error:
+                if primary_error is not None:
+                    raise primary_error.with_traceback(primary_traceback) from shutdown_error
+                raise
 
     async def _heartbeat_loop(self) -> None:
         """Periodically refresh the server-side worker registration.
@@ -2265,14 +2288,20 @@ class Worker:
         next_task_kind = "workflow"
         background_tasks: list[asyncio.Task[Any]] = []
 
+        self._begin_run()
         try:
             await self._register()
+        finally:
+            self._registration_done.set()
+
+        try:
             background_tasks.append(asyncio.create_task(self._heartbeat_loop()))
             if self._query_tasks_supported:
                 if self._can_clone_client_for_query_tasks():
                     self._start_query_task_thread()
                 else:
                     background_tasks.append(asyncio.create_task(self._poll_query_tasks()))
+            self._poller_tasks.update(background_tasks)
 
             while True:
                 desc = await self.client.describe_workflow(workflow_id)
@@ -2342,24 +2371,56 @@ class Worker:
                     self._record_task_metrics("activity", outcome, time.perf_counter() - task_start)
                 next_task_kind = "workflow"
         finally:
-            self._stop.set()
-            for task in background_tasks:
-                task.cancel()
-            for task in background_tasks:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-            await self.stop()
+            primary_error = sys.exc_info()[1]
+            primary_traceback = primary_error.__traceback__ if primary_error is not None else None
+            try:
+                await self.stop()
+            except BaseException as shutdown_error:
+                if primary_error is not None:
+                    raise primary_error.with_traceback(primary_traceback) from shutdown_error
+                raise
+
+    def _begin_run(self) -> None:
+        if self._run_started:
+            raise RuntimeError("worker is already running or has already run")
+        if self._stop.is_set():
+            raise RuntimeError("worker cannot run after stop() has been called")
+        self._run_started = True
 
     async def stop(self) -> None:
-        """Stop polling and drain in-flight tasks up to the configured shutdown timeout."""
+        """Stop polling, drain tasks, and remove the worker registration.
+
+        Repeated calls share one shutdown result. A failed deregistration is
+        therefore propagated to every caller without sending another DELETE.
+        """
         self._stop.set()
+        if self._shutdown_task is None:
+            self._shutdown_task = asyncio.create_task(self._shutdown())
+        await asyncio.shield(self._shutdown_task)
+
+    async def _shutdown(self) -> None:
+        if self._run_started and not self._registration_done.is_set():
+            await self._registration_done.wait()
+
+        current_task = asyncio.current_task()
+        pollers = [task for task in self._poller_tasks if task is not current_task]
+        for task in pollers:
+            if not task.done():
+                task.cancel()
+        if pollers:
+            await asyncio.gather(*pollers, return_exceptions=True)
+
         await self._stop_query_task_thread()
         if self._in_flight:
             log.info("draining %d in-flight task(s)…", len(self._in_flight))
-            done, pending = await asyncio.wait(
-                self._in_flight, timeout=self._shutdown_timeout
-            )
+            _, pending = await asyncio.wait(self._in_flight, timeout=self._shutdown_timeout)
             for t in pending:
                 t.cancel()
             if pending:
                 log.warning("cancelled %d task(s) after shutdown timeout", len(pending))
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        if self._registered:
+            await self.client.deregister_worker_registration(self.worker_id)
+            self._registered = False
+            log.info("worker %s deregistered", self.worker_id)

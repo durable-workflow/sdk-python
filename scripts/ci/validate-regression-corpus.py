@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import binascii
 import fnmatch
@@ -33,6 +34,7 @@ SUPPORTED_FORMATS = {
 SUPPORTED_CATEGORIES = {"codec", "replay"}
 SUPPORTED_BINDINGS = {"php", "python", "rust"}
 ZERO_COMMIT = re.compile(r"^0+$")
+DIFF_HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 class CorpusError(RuntimeError):
@@ -1124,6 +1126,98 @@ def _changed_paths(root: Path, base_ref: str) -> tuple[set[str], set[str]]:
     return changed | untracked, added | untracked
 
 
+def _smallest_changed_python_symbols(source: str, changed_lines: set[int]) -> list[str]:
+    if not changed_lines:
+        return []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    source_lines = source.splitlines()
+    spans: list[tuple[int, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        end = getattr(node, "end_lineno", None)
+        if not isinstance(end, int):
+            continue
+        start = min(
+            [node.lineno, *(decorator.lineno for decorator in node.decorator_list)]
+        )
+        spans.append((start, end))
+
+    selected: set[tuple[int, int]] = set()
+    for line in changed_lines:
+        containing = [span for span in spans if span[0] <= line <= span[1]]
+        if containing:
+            selected.add(min(containing, key=lambda span: span[1] - span[0]))
+
+    return [
+        "\n".join(source_lines[start - 1 : end])
+        for start, end in sorted(selected)
+    ]
+
+
+def _changed_content(root: Path, base_ref: str, path: str) -> list[str]:
+    diff = _run(
+        [
+            "git",
+            "diff",
+            "--unified=0",
+            "--no-ext-diff",
+            "--no-color",
+            base_ref,
+            "--",
+            path,
+        ],
+        root,
+    )
+    old_lines: set[int] = set()
+    new_lines: set[int] = set()
+    changed: list[str] = []
+    old_line = 0
+    new_line = 0
+    inside_hunk = False
+    for line in diff.splitlines():
+        hunk = DIFF_HUNK.match(line)
+        if hunk:
+            old_line = int(hunk.group(1))
+            new_line = int(hunk.group(2))
+            inside_hunk = True
+            continue
+        if line.startswith("diff --git "):
+            inside_hunk = False
+            continue
+        if not inside_hunk or line.startswith("\\"):
+            continue
+        if line.startswith("-"):
+            old_lines.add(old_line)
+            old_line += 1
+            changed.append(line[1:])
+        elif line.startswith("+"):
+            new_lines.add(new_line)
+            new_line += 1
+            changed.append(line[1:])
+        elif line.startswith(" "):
+            old_line += 1
+            new_line += 1
+
+    if path.endswith(".py"):
+        base_source = _run(["git", "show", f"{base_ref}:{path}"], root, check=False)
+        if base_source:
+            changed.extend(_smallest_changed_python_symbols(base_source, old_lines))
+        current_path = root / path
+        if current_path.is_file():
+            changed.extend(
+                _smallest_changed_python_symbols(
+                    current_path.read_text(encoding="utf-8", errors="replace"),
+                    new_lines,
+                )
+            )
+    return changed
+
+
 def _guard_matches(
     root: Path,
     base_ref: str,
@@ -1137,32 +1231,13 @@ def _guard_matches(
     patterns = guard.get("content_patterns")
     if patterns is None:
         return True
-    diff = _run(
-        [
-            "git",
-            "diff",
-            "--function-context",
-            "--no-ext-diff",
-            "--no-color",
-            base_ref,
-            "--",
-            *matching,
-        ],
-        root,
-    )
     untracked = set(_run(["git", "ls-files", "--others", "--exclude-standard"], root).splitlines())
     context_lines: list[str] = []
-    inside_hunk = False
-    for line in diff.splitlines():
-        if line.startswith("diff --git "):
-            inside_hunk = False
-        elif line.startswith("@@"):
-            inside_hunk = True
-        elif inside_hunk and line.startswith((" ", "+", "-")):
-            context_lines.append(line[1:])
     for path in matching:
         if path in untracked and (root / path).is_file():
             context_lines.append((root / path).read_text(encoding="utf-8", errors="replace"))
+        else:
+            context_lines.extend(_changed_content(root, base_ref, path))
     changed_context = "\n".join(context_lines)
     return any(re.search(pattern, changed_context) for pattern in patterns)
 

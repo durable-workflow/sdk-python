@@ -3,8 +3,8 @@
 The :class:`Client` wraps the server's HTTP/JSON protocol. Control-plane
 methods (``start_workflow``, ``signal_workflow``, ``describe_workflow``,
 schedule management, …) are what callers use to drive workflows from outside.
-Worker-plane methods (``register_worker``, ``poll_workflow_task``,
-``poll_query_task``, ``complete_activity_task``, …) are what the
+Worker-plane methods (``register_worker``, ``deregister_worker_registration``,
+``poll_workflow_task``, ``poll_query_task``, ``complete_activity_task``, …) are what the
 :class:`~durable_workflow.Worker`
 uses to run tasks; they are public so advanced users can build custom
 workers, but most applications should not call them directly.
@@ -130,6 +130,8 @@ def _route_for_metrics(path: str) -> str:
         parts[1] = "{name}"
     elif parts[0] == "workers" and len(parts) >= 2:
         parts[1] = "{worker_id}"
+    elif parts[:2] == ["worker", "registrations"] and len(parts) >= 3:
+        parts[2] = "{worker_id}"
     elif parts[:2] == ["bridge-adapters", "webhook"] and len(parts) >= 3:
         parts[2] = "{adapter}"
     elif (
@@ -1333,8 +1335,25 @@ class Client:
 
     def _auth_token(self, *, worker: bool = False) -> str | None:
         if worker:
-            return self.worker_token or self.token or self.control_token
-        return self.control_token or self.token or self.worker_token
+            token = self.worker_token or self.token
+            if token:
+                return token
+            if self.control_token:
+                raise ValueError(
+                    "worker-plane requests require worker_token or the shared token; "
+                    "control_token cannot authorize worker operations"
+                )
+            return None
+
+        token = self.control_token or self.token
+        if token:
+            return token
+        if self.worker_token:
+            raise ValueError(
+                "control-plane requests require control_token or the shared token; "
+                "worker_token cannot authorize control operations"
+            )
+        return None
 
     def _payload_context(
         self,
@@ -3368,6 +3387,31 @@ class Client:
         if heartbeat_interval_seconds is not None:
             body["heartbeat_interval_seconds"] = heartbeat_interval_seconds
         return await self._request("POST", "/worker/register", worker=True, json=body)
+
+    async def deregister_worker_registration(self, worker_id: str) -> dict[str, Any]:
+        """Remove this runtime's successful worker-plane registration.
+
+        Called by :class:`~durable_workflow.Worker` after its pollers and
+        in-flight tasks have drained. This is distinct from the operator-only
+        :meth:`deregister_worker` control-plane management operation. Returns
+        the worker deregistration envelope, including recovered workflow-task
+        count.
+        """
+        data = await self._request(
+            "DELETE",
+            f"/worker/registrations/{quote(worker_id, safe='')}",
+            worker=True,
+            context=worker_id,
+        )
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {
+                    "reason": "invalid_worker_deregistration_response",
+                    "message": f"expected JSON object, got {type(data).__name__}",
+                },
+            )
+        return data
 
     async def heartbeat_worker(
         self,

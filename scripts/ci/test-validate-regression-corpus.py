@@ -392,8 +392,13 @@ def _validate_payload_codec(codec):
     return codec
 
 
-def health_check(enabled):
-    return enabled
+def _command_payload_codec(codec):
+    return codec or "avro"
+
+
+class Worker:
+    async def stop(self):
+        self.stopped = True
 """,
             encoding="utf-8",
         )
@@ -445,13 +450,25 @@ def health_check(enabled):
         source = self.root / "src/durable_workflow/worker.py"
         source.write_text(
             source.read_text(encoding="utf-8").replace(
-                "def health_check(enabled):\n    return enabled",
-                "def health_check(enabled):\n    return not enabled",
+                "async def stop(self):\n        self.stopped = True",
+                "async def stop(self):\n        self.stopped = False",
             ),
             encoding="utf-8",
         )
 
         self.assertFalse(self._guard_matches())
+
+    def test_edit_inside_command_payload_codec_is_related(self) -> None:
+        source = self.root / "src/durable_workflow/worker.py"
+        source.write_text(
+            source.read_text(encoding="utf-8").replace(
+                'return codec or "avro"',
+                'return codec or "json"',
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertTrue(self._guard_matches())
 
 
 class OfficialCodecRunnerTest(unittest.TestCase):
