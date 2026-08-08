@@ -27,10 +27,16 @@ CUSTOMER_FACING_EXTENSIONS = (
     ".vue",
 )
 
-SEARCH_EVIDENCE_POLICY_PATHS = frozenset(
+INTERACTION_EVIDENCE_POLICY_PATHS = frozenset(
     {
         ".github/workflows/docs-visual.yml",
         "scripts/ci/classify_docs_visual_changes.py",
+    }
+)
+NAVIGATION_SOURCE_PATHS = frozenset(
+    {
+        "docs/javascripts/navigation-accessibility.js",
+        "overrides/main.html",
     }
 )
 SEARCH_SOURCE_PATHS = frozenset(
@@ -157,13 +163,14 @@ def classify_changes(root: Path, paths: Sequence[str], base_ref: str | None = No
             matches["navigation"].add(path)
             matches["search"].add(path)
             continue
-        if path in SEARCH_EVIDENCE_POLICY_PATHS:
+        if path in INTERACTION_EVIDENCE_POLICY_PATHS:
+            matches["navigation"].add(path)
             matches["search"].add(path)
             continue
         if not path.lower().endswith(CUSTOMER_FACING_EXTENSIONS):
             continue
         searchable = "\n".join(semantic_source(path, source) for source in _file_versions(root, path, base_ref))
-        if NAVIGATION_PATTERN.search(searchable):
+        if path in NAVIGATION_SOURCE_PATHS or NAVIGATION_PATTERN.search(searchable):
             matches["navigation"].add(path)
         if path in SEARCH_SOURCE_PATHS or SEARCH_PATTERN.search(searchable):
             matches["search"].add(path)

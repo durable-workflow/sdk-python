@@ -230,15 +230,18 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     assert "visual-controller/scripts/visual_evidence.py validate" in commands
     assert "1440x900 768x1024 390x844 640x360" in commands
     assert "capture default" in commands
+    assert "capture navigation-open" in commands
     assert "capture search-open" in commands
     assert "capture search-populated" in commands
     assert "?q=workflow" in commands
     assert '--click "$search_selector"' in commands
+    assert "--click \".md-header__button[for='__drawer']\"" in commands
+    assert "--state-scope responsive" in commands
     assert "capture_args+=(--full-page)" in commands
     assert "python-docs-visual-classification" in commands
     assert "visual-review/classification.json" in commands
-    assert 'if [ "$NAVIGATION_REQUIRED" = true ]' in commands
-    assert "separately qualified navigation-open matrix" in commands
+    assert 'if [ "$NAVIGATION_REQUIRED" = true ] && [ "$width" -lt 960 ]' in commands
+    assert "separately qualified navigation-open matrix" not in commands
     assert "--changed-file documentation.css" in commands
     assert "--changed-file search.html" in commands
     assert "source-repository durable-workflow/sdk-python" in commands

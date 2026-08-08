@@ -102,13 +102,21 @@ class DocumentationVisualClassificationTest(unittest.TestCase):
                 classify_changes(root, ["docs/stylesheets/layout.css"], base_ref),
             )
 
-    def test_policy_source_changes_requalify_the_supported_search_evidence(self) -> None:
+    def test_policy_source_changes_requalify_every_supported_interaction(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(
                 {
+                    "navigation": ["scripts/ci/classify_docs_visual_changes.py"],
                     "search": ["scripts/ci/classify_docs_visual_changes.py"],
                 },
                 classify_changes(Path(directory), ["scripts/ci/classify_docs_visual_changes.py"]),
+            )
+
+    def test_navigation_runtime_changes_require_navigation_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(
+                {"navigation": ["docs/javascripts/navigation-accessibility.js"]},
+                classify_changes(Path(directory), ["docs/javascripts/navigation-accessibility.js"]),
             )
 
 

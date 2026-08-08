@@ -89,6 +89,7 @@ jobs:
       - name: Capture candidate interaction states
         if: steps.classify.outputs.required == 'true'
         env:
+          NAVIGATION_REQUIRED: ${{ steps.classify.outputs.navigation }}
           SEARCH_REQUIRED: ${{ steps.classify.outputs.search }}
           SOURCE_REVISION: ${{ steps.classify.outputs.source_revision }}
           TMPDIR: ${{ runner.temp }}/python-docs-visual-${{ github.run_id }}-${{ github.run_attempt }}
@@ -138,6 +139,11 @@ jobs:
             width=${viewport%x*}
             height=${viewport#*x}
             capture default "$width" "$height"
+            if [ "$NAVIGATION_REQUIRED" = true ] && [ "$width" -lt 960 ]; then
+              capture navigation-open "$width" "$height" \
+                --state-scope responsive \
+                --click ".md-header__button[for='__drawer']"
+            fi
             if [ "$SEARCH_REQUIRED" = true ]; then
               if [ "$width" -ge 960 ]; then
                 search_selector=.md-search__input
@@ -152,13 +158,8 @@ jobs:
       - name: Validate candidate evidence
         if: steps.classify.outputs.required == 'true'
         env:
-          NAVIGATION_REQUIRED: ${{ steps.classify.outputs.navigation }}
           SEARCH_REQUIRED: ${{ steps.classify.outputs.search }}
         run: |
-          if [ "$NAVIGATION_REQUIRED" = true ]; then
-            echo "Semantic navigation changes require the separately qualified navigation-open matrix." >&2
-            exit 1
-          fi
           classification_root="$RUNNER_TEMP/python-docs-visual-classification"
           mkdir -p "$classification_root"
           validation_args=(

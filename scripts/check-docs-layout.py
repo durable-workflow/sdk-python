@@ -198,6 +198,27 @@ def assert_background_is_inert(page: Page, label: str) -> None:
     assert all(control["inert"] for control in background), f"{label} left covered controls active: {background}"
 
 
+def assert_navigation_background_is_inert(page: Page, label: str) -> None:
+    background = page.evaluate(
+        """() => {
+            const drawer = document.querySelector('.md-sidebar--primary')
+            const backdrop = document.querySelector('.md-overlay[for="__drawer"]')
+            const toggle = document.querySelector('#__drawer')
+            return [...document.querySelectorAll(
+                'input, select, textarea, button, a[href], summary, [role="button"]'
+            )]
+                .filter((element) => !drawer.contains(element) && element !== backdrop && element !== toggle)
+                .map((element) => ({
+                    tag: element.tagName.toLowerCase(),
+                    className: element.className,
+                    inert: Boolean(element.closest('[inert]')),
+                }))
+        }"""
+    )
+    assert background, f"{label} did not find covered page controls"
+    assert all(control["inert"] for control in background), f"{label} left covered controls active: {background}"
+
+
 def assert_wrapped_inline_control_is_reachable(page: Page, runtime_errors: list[str], label: str) -> None:
     fragment_count = page.evaluate(
         """() => {
@@ -369,6 +390,28 @@ def assert_results_focus_wraps(page: Page, label: str) -> None:
         )
 
 
+def assert_navigation_focus_wraps(page: Page, label: str) -> None:
+    drawer = page.locator(".md-sidebar--primary")
+    close_control = drawer.locator(".dw-navigation__close")
+    assert close_control.evaluate("(element) => element === document.activeElement"), (
+        f"{label} did not move focus to the drawer close control"
+    )
+
+    page.keyboard.press("Shift+Tab")
+    assert drawer.evaluate("(element) => element.contains(document.activeElement)"), (
+        f"{label} allowed reverse focus to leave navigation"
+    )
+    page.keyboard.press("Tab")
+    assert close_control.evaluate("(element) => element === document.activeElement"), (
+        f"{label} did not wrap forward focus to the first drawer control"
+    )
+
+    page.locator(".md-header .md-logo").focus()
+    assert close_control.evaluate("(element) => element === document.activeElement"), (
+        f"{label} allowed programmatic focus to leave navigation"
+    )
+
+
 def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> None:
     context = browser.new_context(viewport={"width": width, "height": height}, reduced_motion="reduce")
     github_api_requests: list[str] = []
@@ -450,6 +493,9 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
                 searchAccessibility: [...document.scripts].filter(
                     script => script.src.endsWith('/javascripts/search-accessibility.js')
                 ).length,
+                navigationAccessibility: [...document.scripts].filter(
+                    script => script.src.endsWith('/javascripts/navigation-accessibility.js')
+                ).length,
                 repositoryLinks: document.querySelectorAll(
                     '[data-dw-component="repository-link"]'
                 ).length,
@@ -470,6 +516,7 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
             "googleScripts": 0,
             "runtimes": 1,
             "searchAccessibility": 1,
+            "navigationAccessibility": 1,
             "repositoryLinks": 2,
             "liveRepositoryMetadata": 0,
             "externalStylesheets": [],
@@ -518,15 +565,50 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
         )
 
         if width < 960:
-            page.locator(".md-header__button[for='__drawer']").click()
+            navigation_opener = page.locator(".md-header__button[for='__drawer']")
+            navigation_drawer = page.locator(".md-sidebar--primary")
+            navigation_close = navigation_drawer.locator(".dw-navigation__close")
+            navigation_backdrop = page.locator(".md-overlay[for='__drawer']")
+
+            navigation_opener.click()
             page.wait_for_function("document.querySelector('#__drawer').checked")
-            assert page.locator(".md-nav--primary").is_visible(), f"navigation drawer is not visible at {label}"
-            assert_rendered_health(
-                page,
-                f"open navigation at {label}",
-                runtime_errors,
-                check_reachability=False,
+            page.wait_for_function(
+                "document.querySelector('.md-sidebar--primary').getAttribute('aria-modal') === 'true'"
             )
+            assert navigation_drawer.is_visible(), f"navigation drawer is not visible at {label}"
+            assert_navigation_background_is_inert(page, f"open navigation at {label}")
+            assert_navigation_focus_wraps(page, f"open navigation at {label}")
+            assert_rendered_health(page, f"open navigation at {label}", runtime_errors)
+
+            navigation_backdrop.click(position={"x": width - 8, "y": height / 2})
+            page.wait_for_function("!document.querySelector('#__drawer').checked")
+            assert navigation_opener.evaluate("(element) => element === document.activeElement"), (
+                f"backdrop-closing navigation did not restore opener focus at {label}"
+            )
+            assert page.locator("[inert]").count() == 0, f"backdrop-closing navigation left the page inert at {label}"
+
+            navigation_opener.click()
+            page.wait_for_function("document.querySelector('#__drawer').checked")
+            page.keyboard.press("Escape")
+            page.wait_for_function("!document.querySelector('#__drawer').checked")
+            assert navigation_opener.evaluate("(element) => element === document.activeElement"), (
+                f"Escape-closing navigation did not restore opener focus at {label}"
+            )
+            assert page.locator("[inert]").count() == 0, f"Escape-closing navigation left the page inert at {label}"
+
+            navigation_opener.click()
+            page.wait_for_function("document.querySelector('#__drawer').checked")
+            navigation_close.focus()
+            page.keyboard.press("Enter")
+            page.wait_for_function("!document.querySelector('#__drawer').checked")
+            assert navigation_opener.evaluate("(element) => element === document.activeElement"), (
+                f"explicitly closing navigation did not restore opener focus at {label}"
+            )
+            assert page.locator("[inert]").count() == 0, f"explicitly closing navigation left the page inert at {label}"
+            assert navigation_drawer.get_attribute("aria-modal") is None, (
+                f"closing navigation left modal semantics behind at {label}"
+            )
+            assert_rendered_health(page, f"closed navigation at {label}", runtime_errors)
 
         assert github_api_requests == [], (
             f"documentation requested live GitHub repository metadata at {label}: {github_api_requests}"
@@ -560,7 +642,7 @@ def main() -> None:
             browser.close()
 
     print(
-        "Validated contained documentation search focus, populated results, navigation, and rendered health "
+        "Validated contained documentation search and navigation focus, close behavior, and rendered health "
         "at desktop, intermediate, mobile, and compact-height viewports."
     )
 

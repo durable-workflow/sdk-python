@@ -46,6 +46,7 @@ def load_workflow(path: Path) -> dict[str, Any]:
     [
         "docs/index.md",
         "docs/assets/diagram.svg",
+        "docs/javascripts/navigation-accessibility.js",
         "docs/javascripts/search-accessibility.js",
         "docs/stylesheets/layout.css",
         "overrides/main.html",
@@ -212,6 +213,7 @@ def test_focused_path_retains_docs_layout_visual_and_public_boundary_contracts()
     visual = load_workflow(DOCS_VISUAL_WORKFLOW)
     visual_commands = "\n".join(step.get("run", "") for step in visual["jobs"]["visual-evidence"]["steps"])
     assert "1440x900 768x1024 390x844 640x360" in visual_commands
+    assert "capture navigation-open" in visual_commands
     assert "capture search-open" in visual_commands
     assert "capture search-populated" in visual_commands
 
