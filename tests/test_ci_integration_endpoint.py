@@ -193,7 +193,8 @@ def test_ci_isolates_the_stack_and_emits_diagnostics_before_teardown() -> None:
     assert 'logs --no-color --tail 200 "$service"' in integration_job
     assert diagnostics_offset < teardown_offset
     assert "DURABLE_WORKFLOW_SERVER_URL: http://localhost:8080" not in integration_job
-    assert "needs: [lint, test, package, cli-parity, integration]" in qualification_job
+    assert "      - qualification-class\n" in qualification_job
+    assert "      - integration\n" in qualification_job
     assert 'test "$INTEGRATION_RESULT" = success' in qualification_job
 
 

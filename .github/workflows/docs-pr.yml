@@ -9,6 +9,8 @@ on:
       - 'overrides/**'
       - 'mkdocs.yml'
       - 'pyproject.toml'
+      - 'scripts/ci/classify_docs_visual_changes.py'
+      - 'scripts/ci/test-classify-docs-visual-changes.py'
       - 'scripts/api_reference_release.py'
       - 'scripts/check_api_reference_install.py'
       - 'scripts/check-docs-analytics.py'
@@ -27,6 +29,7 @@ concurrency:
 
 jobs:
   validate:
+    name: Strict documentation build and rendered layout
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -43,12 +46,14 @@ jobs:
 
       - name: Build site
         run: |
+          python scripts/ci/test-classify-docs-visual-changes.py
           mkdocs build --strict
           python scripts/check_api_reference_install.py --site site
           python scripts/check-docs-analytics.py site
           python scripts/check-docs-layout.py site
 
   visual-evidence:
+    name: Supported viewport interaction evidence
     uses: ./.github/workflows/docs-visual.yml
     with:
       source_base_sha: ${{ github.event.pull_request.base.sha }}

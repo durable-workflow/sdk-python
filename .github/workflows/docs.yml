@@ -9,6 +9,8 @@ on:
       - 'overrides/**'
       - 'mkdocs.yml'
       - 'pyproject.toml'
+      - 'scripts/ci/classify_docs_visual_changes.py'
+      - 'scripts/ci/test-classify-docs-visual-changes.py'
       - 'scripts/api_reference_release.py'
       - 'scripts/check_api_reference_install.py'
       - 'scripts/check-docs-analytics.py'
@@ -45,6 +47,7 @@ jobs:
         env:
           CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
         run: |
+          python scripts/ci/test-classify-docs-visual-changes.py
           mkdocs build --strict
           python scripts/check_api_reference_install.py --site site
           python scripts/check-docs-analytics.py site

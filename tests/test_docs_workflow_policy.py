@@ -18,6 +18,8 @@ DOCS_PATHS = [
     "overrides/**",
     "mkdocs.yml",
     "pyproject.toml",
+    "scripts/ci/classify_docs_visual_changes.py",
+    "scripts/ci/test-classify-docs-visual-changes.py",
     "scripts/api_reference_release.py",
     "scripts/check_api_reference_install.py",
     "scripts/check-docs-analytics.py",
@@ -107,6 +109,7 @@ def test_docs_pull_request_checks_are_read_only_and_complete() -> None:
     assert references == [CHECKOUT_ACTION, SETUP_PYTHON_ACTION]
     assert_actions_are_pinned(references)
     commands = run_commands(validate)
+    assert "python scripts/ci/test-classify-docs-visual-changes.py" in commands
     assert "mkdocs build --strict" in commands
     assert "python scripts/check_api_reference_install.py --site site" in commands
     assert "python scripts/check-docs-analytics.py site" in commands
@@ -137,6 +140,7 @@ def test_pages_deployment_is_push_only_and_has_exact_authority() -> None:
     assert build_references == [CHECKOUT_ACTION, SETUP_PYTHON_ACTION, UPLOAD_PAGES_ACTION]
     assert_actions_are_pinned(build_references)
     commands = run_commands(build)
+    assert "python scripts/ci/test-classify-docs-visual-changes.py" in commands
     assert "mkdocs build --strict" in commands
     assert "python scripts/check_api_reference_install.py --site site" in commands
     assert "python scripts/check-docs-analytics.py site" in commands
@@ -200,7 +204,7 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     assert_actions_are_pinned(references)
 
     commands = run_commands(visual)
-    assert "visual-controller/scripts/visual_evidence.py classify" in commands
+    assert "candidate/scripts/ci/classify_docs_visual_changes.py" in commands
     assert "visual-controller/scripts/visual_evidence.py validate" in commands
     assert "1440x900 768x1024 390x844 640x360" in commands
     assert "capture default" in commands
@@ -209,10 +213,10 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     assert "?q=workflow" in commands
     assert '--click "$search_selector"' in commands
     assert "capture_args+=(--full-page)" in commands
-    for classified_path in (
-        "docs/javascripts/search-accessibility.js",
-        "overrides/main.html",
-        "overrides/partials/source.html",
-    ):
-        assert commands.count(f"--changed-file {classified_path}") == 2
+    assert "python-docs-visual-classification" in commands
+    assert "visual-review/classification.json" in commands
+    assert 'if [ "$NAVIGATION_REQUIRED" = true ]' in commands
+    assert "separately qualified navigation-open matrix" in commands
+    assert "--changed-file documentation.css" in commands
+    assert "--changed-file search.html" in commands
     assert "source-repository durable-workflow/sdk-python" in commands

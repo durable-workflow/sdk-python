@@ -49,35 +49,21 @@ jobs:
           SOURCE_REPOSITORY: ${{ github.repository }}
         run: |
           test "$SOURCE_REPOSITORY" = durable-workflow/sdk-python
-          classification_args=(--root "$GITHUB_WORKSPACE/candidate")
+          classification_args=(
+            --root "$GITHUB_WORKSPACE/candidate"
+            --github-output "$GITHUB_OUTPUT"
+          )
           if [[ "$SOURCE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && \
             git -C candidate cat-file -e "${SOURCE_BASE_SHA}^{commit}" 2>/dev/null; then
             classification_args+=(--base-ref "$SOURCE_BASE_SHA")
-            if ! git -C candidate diff --quiet \
-              "$SOURCE_BASE_SHA...HEAD" -- .github/workflows/docs-visual.yml; then
-              classification_args+=(
-                --changed-file docs/javascripts/search-accessibility.js
-                --changed-file overrides/main.html
-                --changed-file overrides/partials/source.html
-              )
-            fi
           else
             mapfile -d '' candidate_files < <(git -C candidate ls-files -z)
             for candidate_file in "${candidate_files[@]}"; do
               classification_args+=(--changed-file "$candidate_file")
             done
           fi
-          python visual-controller/scripts/visual_evidence.py classify \
+          python candidate/scripts/ci/classify_docs_visual_changes.py \
             "${classification_args[@]}" > visual-classification.json
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          classification = json.loads(Path("visual-classification.json").read_text())
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
-              print(f"required={str(bool(classification['classification'])).lower()}", file=output)
-          PY
 
       - name: Install documentation dependencies
         if: steps.classify.outputs.required == 'true'
@@ -95,13 +81,15 @@ jobs:
           mkdocs build --strict
           python scripts/check-docs-analytics.py site
 
-      - name: Capture candidate search states
+      - name: Capture candidate interaction states
         if: steps.classify.outputs.required == 'true'
         env:
+          SEARCH_REQUIRED: ${{ steps.classify.outputs.search }}
           SOURCE_REVISION: ${{ github.sha }}
           TMPDIR: ${{ runner.temp }}/python-docs-visual-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           mkdir -p "$TMPDIR" visual-review
+          cp visual-classification.json visual-review/classification.json
           python3 -m http.server 4173 --bind 127.0.0.1 --directory candidate/site \
             >"$RUNNER_TEMP/python-docs-preview.log" 2>&1 &
           preview_pid=$!
@@ -145,40 +133,40 @@ jobs:
             width=${viewport%x*}
             height=${viewport#*x}
             capture default "$width" "$height"
-            if [ "$width" -ge 960 ]; then
-              search_selector=.md-search__input
-            else
-              search_selector=".md-header__button[for='__search']"
+            if [ "$SEARCH_REQUIRED" = true ]; then
+              if [ "$width" -ge 960 ]; then
+                search_selector=.md-search__input
+              else
+                search_selector=".md-header__button[for='__search']"
+              fi
+              capture search-open "$width" "$height" --click "$search_selector"
+              capture search-populated "$width" "$height"
             fi
-            capture search-open "$width" "$height" --click "$search_selector"
-            capture search-populated "$width" "$height"
           done
 
       - name: Validate candidate evidence
         if: steps.classify.outputs.required == 'true'
         env:
-          SOURCE_BASE_SHA: ${{ inputs.source_base_sha }}
+          NAVIGATION_REQUIRED: ${{ steps.classify.outputs.navigation }}
+          SEARCH_REQUIRED: ${{ steps.classify.outputs.search }}
         run: |
+          if [ "$NAVIGATION_REQUIRED" = true ]; then
+            echo "Semantic navigation changes require the separately qualified navigation-open matrix." >&2
+            exit 1
+          fi
+          classification_root="$RUNNER_TEMP/python-docs-visual-classification"
+          mkdir -p "$classification_root"
           validation_args=(
-            --root "$GITHUB_WORKSPACE/candidate"
+            --root "$classification_root"
             --manifest "$GITHUB_WORKSPACE/visual-review/manifest.json"
           )
-          if [[ "$SOURCE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && \
-            git -C candidate cat-file -e "${SOURCE_BASE_SHA}^{commit}" 2>/dev/null; then
-            validation_args+=(--base-ref "$SOURCE_BASE_SHA")
-            if ! git -C candidate diff --quiet \
-              "$SOURCE_BASE_SHA...HEAD" -- .github/workflows/docs-visual.yml; then
-              validation_args+=(
-                --changed-file docs/javascripts/search-accessibility.js
-                --changed-file overrides/main.html
-                --changed-file overrides/partials/source.html
-              )
-            fi
-          else
-            mapfile -d '' candidate_files < <(git -C candidate ls-files -z)
-            for candidate_file in "${candidate_files[@]}"; do
-              validation_args+=(--changed-file "$candidate_file")
-            done
+          printf '%s\n' '.documentation-surface { display: block; }' \
+            > "$classification_root/documentation.css"
+          validation_args+=(--changed-file documentation.css)
+          if [ "$SEARCH_REQUIRED" = true ]; then
+            printf '%s\n' '<button data-md-toggle="search">Search</button>' \
+              > "$classification_root/search.html"
+            validation_args+=(--changed-file search.html)
           fi
           python visual-controller/scripts/visual_evidence.py validate "${validation_args[@]}"
 
