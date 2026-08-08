@@ -1,4 +1,10 @@
-<a href="{{ config.repo_url }}" title="{{ lang.t('source') }}" class="md-source">
+{# Keep repository navigation static; Material's source component fetches live repository metadata. #}
+<a
+  href="{{ config.repo_url }}"
+  title="{{ lang.t('source') }}"
+  class="md-source"
+  data-dw-component="repository-link"
+>
   <div class="md-source__icon md-icon">
     {% set icon = config.theme.icon.repo or "fontawesome/brands/git-alt" %}
     {% include ".icons/" ~ icon ~ ".svg" %}

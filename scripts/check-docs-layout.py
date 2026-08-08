@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -13,9 +14,16 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from playwright.sync_api import Browser, Locator, Page, Response, sync_playwright
+from playwright.sync_api import Browser, Locator, Page, Response, Route, sync_playwright
 
 VIEWPORTS = ((1440, 900), (768, 1024), (390, 844), (640, 360))
+GITHUB_API_ENDPOINTS = (
+    "https://api.github.com/repos/durable-workflow/sdk-python",
+    "https://api.github.com/repos/durable-workflow/sdk-python/releases/latest",
+)
+GITHUB_API_ENDPOINT = re.compile(
+    r"^https://api\.github\.com/repos/durable-workflow/sdk-python(?:/releases/latest)?(?:\?.*)?$"
+)
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
@@ -363,7 +371,28 @@ def assert_results_focus_wraps(page: Page, label: str) -> None:
 
 def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> None:
     context = browser.new_context(viewport={"width": width, "height": height}, reduced_motion="reduce")
+    github_api_requests: list[str] = []
+
+    def reject_github_api(route: Route) -> None:
+        github_api_requests.append(route.request.url)
+        route.fulfill(
+            status=403,
+            content_type="application/json",
+            body='{"message":"API rate limit exceeded"}',
+        )
+
+    context.route(GITHUB_API_ENDPOINT, reject_github_api)
     page = context.new_page()
+    for endpoint in GITHUB_API_ENDPOINTS:
+        intercepted = page.goto(endpoint)
+        assert intercepted is not None and intercepted.status == 403, (
+            f"GitHub API regression route did not return HTTP 403 for {endpoint}"
+        )
+    assert github_api_requests == list(GITHUB_API_ENDPOINTS), (
+        f"GitHub API regression routes were not exercised: {github_api_requests}"
+    )
+    github_api_requests.clear()
+
     label = f"{width}x{height}"
     runtime_errors: list[str] = []
     page.on(
@@ -421,6 +450,12 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
                 searchAccessibility: [...document.scripts].filter(
                     script => script.src.endsWith('/javascripts/search-accessibility.js')
                 ).length,
+                repositoryLinks: document.querySelectorAll(
+                    '[data-dw-component="repository-link"]'
+                ).length,
+                liveRepositoryMetadata: document.querySelectorAll(
+                    '[data-md-component="source"]'
+                ).length,
                 externalStylesheets: [...document.querySelectorAll('link[rel="stylesheet"][href]')]
                     .map(link => link.href)
                     .filter(href => new URL(href).origin !== location.origin),
@@ -435,6 +470,8 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
             "googleScripts": 0,
             "runtimes": 1,
             "searchAccessibility": 1,
+            "repositoryLinks": 2,
+            "liveRepositoryMetadata": 0,
             "externalStylesheets": [],
             "externalPreconnects": [],
         }, f"documentation runtime boundary is invalid at {label}: {runtime_boundary}"
@@ -490,6 +527,10 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
                 runtime_errors,
                 check_reachability=False,
             )
+
+        assert github_api_requests == [], (
+            f"documentation requested live GitHub repository metadata at {label}: {github_api_requests}"
+        )
     finally:
         context.close()
 
