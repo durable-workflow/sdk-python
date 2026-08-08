@@ -6,12 +6,14 @@ on:
     paths:
       - 'src/**'
       - 'docs/**'
+      - 'overrides/**'
       - 'mkdocs.yml'
       - 'pyproject.toml'
       - 'scripts/check-docs-analytics.py'
       - 'scripts/check-docs-layout.py'
       - '.github/workflows/docs.yml'
       - '.github/workflows/docs-pr.yml'
+      - '.github/workflows/docs-visual.yml'
 
 permissions:
   contents: read
@@ -41,3 +43,10 @@ jobs:
           mkdocs build --strict
           python scripts/check-docs-analytics.py site
           python scripts/check-docs-layout.py site
+
+  visual-evidence:
+    uses: ./.github/workflows/docs-visual.yml
+    with:
+      source_base_sha: ${{ github.event.pull_request.base.sha }}
+    permissions:
+      contents: read

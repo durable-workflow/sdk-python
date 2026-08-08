@@ -10,21 +10,27 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_ROOT = REPO_ROOT / ".github" / "workflows"
 DOCS_CHECKS = WORKFLOW_ROOT / "docs-pr.yml"
 DOCS_DEPLOYMENT = WORKFLOW_ROOT / "docs.yml"
+DOCS_VISUAL = WORKFLOW_ROOT / "docs-visual.yml"
 
 DOCS_PATHS = [
     "src/**",
     "docs/**",
+    "overrides/**",
     "mkdocs.yml",
     "pyproject.toml",
     "scripts/check-docs-analytics.py",
     "scripts/check-docs-layout.py",
     ".github/workflows/docs.yml",
     ".github/workflows/docs-pr.yml",
+    ".github/workflows/docs-visual.yml",
 ]
 CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
 SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
 UPLOAD_PAGES_ACTION = "actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9"
 DEPLOY_PAGES_ACTION = "actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128"
+SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38"
+UPLOAD_ARTIFACT_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+VISUAL_WORKFLOW = "./.github/workflows/docs-visual.yml"
 
 
 def load_workflow(path: Path) -> dict[str, Any]:
@@ -91,7 +97,7 @@ def test_docs_pull_request_checks_are_read_only_and_complete() -> None:
         }
     }
     assert workflow["permissions"] == {"contents": "read"}
-    assert set(workflow["jobs"]) == {"validate"}
+    assert set(workflow["jobs"]) == {"validate", "visual-evidence"}
 
     validate = workflow["jobs"]["validate"]
     references = action_references(validate)
@@ -104,6 +110,11 @@ def test_docs_pull_request_checks_are_read_only_and_complete() -> None:
     assert "upload-pages-artifact" not in DOCS_CHECKS.read_text(encoding="utf-8")
     assert "deploy-pages" not in DOCS_CHECKS.read_text(encoding="utf-8")
 
+    visual = workflow["jobs"]["visual-evidence"]
+    assert visual["uses"] == VISUAL_WORKFLOW
+    assert visual["with"] == {"source_base_sha": "${{ github.event.pull_request.base.sha }}"}
+    assert visual["permissions"] == {"contents": "read"}
+
 
 def test_pages_deployment_is_push_only_and_has_exact_authority() -> None:
     workflow = load_workflow(DOCS_DEPLOYMENT)
@@ -114,7 +125,7 @@ def test_pages_deployment_is_push_only_and_has_exact_authority() -> None:
         }
     }
     assert workflow["permissions"] == {"contents": "read"}
-    assert set(workflow["jobs"]) == {"build", "deploy"}
+    assert set(workflow["jobs"]) == {"build", "visual-evidence", "deploy"}
 
     build = workflow["jobs"]["build"]
     assert "permissions" not in build
@@ -126,8 +137,13 @@ def test_pages_deployment_is_push_only_and_has_exact_authority() -> None:
     assert "python scripts/check-docs-analytics.py site" in commands
     assert "python scripts/check-docs-layout.py site" in commands
 
+    visual = workflow["jobs"]["visual-evidence"]
+    assert visual["uses"] == VISUAL_WORKFLOW
+    assert visual["with"] == {"source_base_sha": "${{ github.event.before }}"}
+    assert visual["permissions"] == {"contents": "read"}
+
     deploy = workflow["jobs"]["deploy"]
-    assert deploy["needs"] == "build"
+    assert deploy["needs"] == ["build", "visual-evidence"]
     assert deploy["permissions"] == {
         "contents": "read",
         "id-token": "write",
@@ -141,3 +157,45 @@ def test_pages_deployment_is_push_only_and_has_exact_authority() -> None:
     assert "actions/download-artifact@" not in source
     assert (REPO_ROOT / "docs" / "CNAME").read_text(encoding="utf-8").strip() == "python.durable-workflow.com"
     assert "site_url: https://python.durable-workflow.com/" in (REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+
+
+def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_viewports() -> None:
+    workflow = load_workflow(DOCS_VISUAL)
+    assert set(workflow["on"]) == {"workflow_call"}
+    inputs = workflow["on"]["workflow_call"]["inputs"]
+    assert set(inputs) == {"source_base_sha"}
+    assert inputs["source_base_sha"]["required"] == "false"
+    assert inputs["source_base_sha"]["type"] == "string"
+    assert inputs["source_base_sha"]["description"]
+    assert workflow["permissions"] == {"contents": "read"}
+    assert set(workflow["jobs"]) == {"visual-evidence"}
+
+    visual = workflow["jobs"]["visual-evidence"]
+    assert visual["if"] == "github.api_url == 'https://api.github.com'"
+    references = action_references(visual)
+    assert references == [
+        CHECKOUT_ACTION,
+        CHECKOUT_ACTION,
+        SETUP_PYTHON_ACTION,
+        SETUP_NODE_ACTION,
+        UPLOAD_ARTIFACT_ACTION,
+    ]
+    assert_actions_are_pinned(references)
+
+    commands = run_commands(visual)
+    assert "visual-controller/scripts/visual_evidence.py classify" in commands
+    assert "visual-controller/scripts/visual_evidence.py validate" in commands
+    assert "1440x900 768x1024 390x844 640x360" in commands
+    assert "capture default" in commands
+    assert "capture search-open" in commands
+    assert "capture search-populated" in commands
+    assert "?q=workflow" in commands
+    assert '--click "$search_selector"' in commands
+    assert "capture_args+=(--full-page)" in commands
+    for classified_path in (
+        "docs/javascripts/search-accessibility.js",
+        "overrides/main.html",
+        "overrides/partials/source.html",
+    ):
+        assert commands.count(f"--changed-file {classified_path}") == 2
+    assert "source-repository durable-workflow/sdk-python" in commands

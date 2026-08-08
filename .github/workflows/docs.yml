@@ -6,12 +6,14 @@ on:
     paths:
       - 'src/**'
       - 'docs/**'
+      - 'overrides/**'
       - 'mkdocs.yml'
       - 'pyproject.toml'
       - 'scripts/check-docs-analytics.py'
       - 'scripts/check-docs-layout.py'
       - '.github/workflows/docs.yml'
       - '.github/workflows/docs-pr.yml'
+      - '.github/workflows/docs-visual.yml'
 
 permissions:
   contents: read
@@ -58,8 +60,15 @@ jobs:
         with:
           path: site
 
+  visual-evidence:
+    uses: ./.github/workflows/docs-visual.yml
+    with:
+      source_base_sha: ${{ github.event.before }}
+    permissions:
+      contents: read
+
   deploy:
-    needs: build
+    needs: [build, visual-evidence]
     if: ${{ github.server_url == 'https://github.com' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:

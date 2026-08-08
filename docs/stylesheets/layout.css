@@ -3,3 +3,47 @@
     font-size: 0.75rem;
   }
 }
+
+@media screen and (max-width: 59.984375em) {
+  #__search:checked ~ header .md-search__overlay {
+    border-radius: 0;
+    height: 100dvh;
+    inset: 0;
+    position: fixed;
+    transform: none;
+    width: 100vw;
+  }
+
+  #__search:checked ~ .md-container {
+    visibility: hidden;
+  }
+}
+
+.md-header__button[role="button"]:focus-visible,
+.md-search__icon[role="button"]:focus-visible {
+  border-radius: 0.1rem;
+  outline: 0.15rem solid currentColor;
+  outline-offset: 0.1rem;
+}
+
+#__search:checked ~ header .md-search__icon[for="__search"][role="button"] {
+  pointer-events: auto;
+}
+
+#__search:checked ~ header .md-search__icon[for="__search"][role="button"] svg:first-child {
+  display: none;
+}
+
+#__search:checked ~ header .md-search__icon[for="__search"][role="button"] svg:last-child {
+  display: block;
+}
+
+/* Keep result-group expanders in flow inside the modal instead of floating
+   above unrelated inert document content at the overlay boundary. */
+.md-search-result__more > summary {
+  position: static;
+}
+
+#__search:checked ~ header [inert] {
+  visibility: hidden;
+}

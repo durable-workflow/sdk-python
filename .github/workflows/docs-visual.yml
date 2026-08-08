@@ -1,0 +1,192 @@
+name: Python documentation visual evidence
+
+on:
+  workflow_call:
+    inputs:
+      source_base_sha:
+        description: Candidate comparison revision; an unavailable revision fails safe to all tracked files.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  visual-evidence:
+    if: github.api_url == 'https://api.github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          repository: ${{ github.repository }}
+
+      - name: Check out visual evidence controller
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          path: visual-controller
+          persist-credentials: false
+          ref: 0421c2e3a78ba4ca2adfe118e57db88d2264a62b
+          repository: durable-workflow/.github
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
+        with:
+          node-version: "24"
+
+      - name: Classify candidate changes
+        id: classify
+        env:
+          SOURCE_BASE_SHA: ${{ inputs.source_base_sha }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+        run: |
+          test "$SOURCE_REPOSITORY" = durable-workflow/sdk-python
+          classification_args=(--root "$GITHUB_WORKSPACE/candidate")
+          if [[ "$SOURCE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && \
+            git -C candidate cat-file -e "${SOURCE_BASE_SHA}^{commit}" 2>/dev/null; then
+            classification_args+=(--base-ref "$SOURCE_BASE_SHA")
+            if ! git -C candidate diff --quiet \
+              "$SOURCE_BASE_SHA...HEAD" -- .github/workflows/docs-visual.yml; then
+              classification_args+=(
+                --changed-file docs/javascripts/search-accessibility.js
+                --changed-file overrides/main.html
+                --changed-file overrides/partials/source.html
+              )
+            fi
+          else
+            mapfile -d '' candidate_files < <(git -C candidate ls-files -z)
+            for candidate_file in "${candidate_files[@]}"; do
+              classification_args+=(--changed-file "$candidate_file")
+            done
+          fi
+          python visual-controller/scripts/visual_evidence.py classify \
+            "${classification_args[@]}" > visual-classification.json
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          classification = json.loads(Path("visual-classification.json").read_text())
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              print(f"required={str(bool(classification['classification'])).lower()}", file=output)
+          PY
+
+      - name: Install documentation dependencies
+        if: steps.classify.outputs.required == 'true'
+        working-directory: candidate
+        run: pip install -e '.[docs]'
+
+      - name: Install pinned visual capture runtime
+        if: steps.classify.outputs.required == 'true'
+        run: npm ci --prefix visual-controller
+
+      - name: Build candidate reference
+        if: steps.classify.outputs.required == 'true'
+        working-directory: candidate
+        run: |
+          mkdocs build --strict
+          python scripts/check-docs-analytics.py site
+
+      - name: Capture candidate search states
+        if: steps.classify.outputs.required == 'true'
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+          TMPDIR: ${{ runner.temp }}/python-docs-visual-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          mkdir -p "$TMPDIR" visual-review
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory candidate/site \
+            >"$RUNNER_TEMP/python-docs-preview.log" 2>&1 &
+          preview_pid=$!
+          trap 'kill "$preview_pid" 2>/dev/null || true' EXIT
+          python - <<'PY'
+          import time
+          import urllib.request
+
+          for _ in range(50):
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:4173/", timeout=1) as response:
+                      if response.status == 200:
+                          break
+              except OSError:
+                  time.sleep(0.1)
+          else:
+              raise SystemExit("candidate documentation preview did not become ready")
+          PY
+          capture() {
+            local state=$1 width=$2 height=$3
+            shift 3
+            local capture_args=()
+            local capture_url=http://127.0.0.1:4173/
+            if [ "$width" = 640 ] && [ "$height" = 360 ]; then
+              capture_args+=(--full-page)
+            fi
+            if [ "$state" = search-populated ]; then
+              capture_url="${capture_url}?q=workflow"
+            fi
+            node visual-controller/scripts/pipeline_visual_capture.mjs \
+              --url "$capture_url" \
+              --surface python-sdk-reference --state "$state" \
+              --width "$width" --height "$height" \
+              --source-repository durable-workflow/sdk-python \
+              --source-revision "$SOURCE_REVISION" \
+              --screenshot "visual-review/${state}-${width}x${height}.png" \
+              --report "visual-review/${state}-${width}x${height}.json" \
+              --manifest visual-review/manifest.json "${capture_args[@]}" "$@"
+          }
+          for viewport in 1440x900 768x1024 390x844 640x360; do
+            width=${viewport%x*}
+            height=${viewport#*x}
+            capture default "$width" "$height"
+            if [ "$width" -ge 960 ]; then
+              search_selector=.md-search__input
+            else
+              search_selector=".md-header__button[for='__search']"
+            fi
+            capture search-open "$width" "$height" --click "$search_selector"
+            capture search-populated "$width" "$height"
+          done
+
+      - name: Validate candidate evidence
+        if: steps.classify.outputs.required == 'true'
+        env:
+          SOURCE_BASE_SHA: ${{ inputs.source_base_sha }}
+        run: |
+          validation_args=(
+            --root "$GITHUB_WORKSPACE/candidate"
+            --manifest "$GITHUB_WORKSPACE/visual-review/manifest.json"
+          )
+          if [[ "$SOURCE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && \
+            git -C candidate cat-file -e "${SOURCE_BASE_SHA}^{commit}" 2>/dev/null; then
+            validation_args+=(--base-ref "$SOURCE_BASE_SHA")
+            if ! git -C candidate diff --quiet \
+              "$SOURCE_BASE_SHA...HEAD" -- .github/workflows/docs-visual.yml; then
+              validation_args+=(
+                --changed-file docs/javascripts/search-accessibility.js
+                --changed-file overrides/main.html
+                --changed-file overrides/partials/source.html
+              )
+            fi
+          else
+            mapfile -d '' candidate_files < <(git -C candidate ls-files -z)
+            for candidate_file in "${candidate_files[@]}"; do
+              validation_args+=(--changed-file "$candidate_file")
+            done
+          fi
+          python visual-controller/scripts/visual_evidence.py validate "${validation_args[@]}"
+
+      - name: Retain candidate visual evidence
+        if: always() && steps.classify.outputs.required == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          if-no-files-found: error
+          name: python-docs-visual-${{ github.sha }}
+          path: visual-review
+          retention-days: 30
