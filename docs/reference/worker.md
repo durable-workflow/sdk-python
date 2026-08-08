@@ -3,10 +3,18 @@
 ## Lifecycle and shutdown
 
 `Worker.run()` and `Worker.run_until()` register through the worker protocol
-before polling. After registration succeeds, shutdown stops the pollers, waits
-up to `shutdown_timeout` for in-flight tasks, and then removes that worker-plane
-registration. Calling `stop()` more than once is safe and sends at most one
+before polling. After registration succeeds, shutdown stops every poller and
+waits for accepted work within the shared `shutdown_timeout` deadline before
+removing that worker-plane registration. Work still running at the deadline is
+cancelled. Calling `stop()` more than once is safe and sends at most one
 deregistration request. No deregistration is sent if registration failed.
+
+An external `stop()` also interrupts `run_until()`; the pending `run_until()`
+call ends with `asyncio.CancelledError` after its accepted workflow or activity
+work has drained or been cancelled. If an async poller, the query-poller thread,
+or accepted work cannot be stopped, `stop()` raises `RuntimeError` and leaves
+the registration active. Treat that as an incomplete shutdown requiring
+operator attention rather than continuing as though the worker stopped cleanly.
 
 For a long-running process, coordinate shutdown with the same worker instance
 and await both `stop()` and the run task:

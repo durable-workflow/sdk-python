@@ -907,6 +907,8 @@ class Worker:
         self._query_tasks_supported = False
         self._query_thread_stop = threading.Event()
         self._query_thread: threading.Thread | None = None
+        self._query_thread_loop: asyncio.AbstractEventLoop | None = None
+        self._query_thread_task: asyncio.Task[None] | None = None
         # In-flight slot accounting feeds the periodic heartbeat so operators
         # see free-slot counts without the worker having to re-derive them at
         # shutdown. Counters are bumped/decremented around dispatch.
@@ -1925,6 +1927,8 @@ class Worker:
                 )
             except Exception as e:
                 self._wf_semaphore.release()
+                if self._stop.is_set():
+                    return
                 self._record_poll_metrics("workflow", "error", time.perf_counter() - poll_start)
                 log.warning("workflow poll error: %s", e)
                 await asyncio.sleep(1.0)
@@ -1932,9 +1936,14 @@ class Worker:
             if task is None:
                 self._wf_semaphore.release()
                 self._record_poll_metrics("workflow", "empty", time.perf_counter() - poll_start)
+                if self._stop.is_set():
+                    return
                 await asyncio.sleep(0)
                 continue
             self._record_poll_metrics("workflow", "task", time.perf_counter() - poll_start)
+            if self._stop.is_set():
+                self._wf_semaphore.release()
+                return
             self._track(self._dispatch_workflow_task(task))
 
     async def _dispatch_workflow_task(self, task: dict[str, Any]) -> None:
@@ -2003,6 +2012,8 @@ class Worker:
                 )
             except Exception as e:
                 self._act_semaphore.release()
+                if self._stop.is_set():
+                    return
                 self._record_poll_metrics("activity", "error", time.perf_counter() - poll_start)
                 log.warning("activity poll error: %s", e)
                 await asyncio.sleep(1.0)
@@ -2010,9 +2021,14 @@ class Worker:
             if task is None:
                 self._act_semaphore.release()
                 self._record_poll_metrics("activity", "empty", time.perf_counter() - poll_start)
+                if self._stop.is_set():
+                    return
                 await asyncio.sleep(0)
                 continue
             self._record_poll_metrics("activity", "task", time.perf_counter() - poll_start)
+            if self._stop.is_set():
+                self._act_semaphore.release()
+                return
             self._track(self._dispatch_activity_task(task))
 
     async def _dispatch_activity_task(self, task: dict[str, Any]) -> None:
@@ -2043,15 +2059,27 @@ class Worker:
                     build_id=self.build_id,
                 )
             except Exception as e:
+                if self._stop.is_set() or (
+                    query_thread_stop is not None and query_thread_stop.is_set()
+                ):
+                    return
                 self._record_poll_metrics("query", "error", time.perf_counter() - poll_start)
                 log.warning("query poll error: %s", e)
                 await asyncio.sleep(1.0)
                 continue
             if task is None:
                 self._record_poll_metrics("query", "empty", time.perf_counter() - poll_start)
+                if self._stop.is_set() or (
+                    query_thread_stop is not None and query_thread_stop.is_set()
+                ):
+                    return
                 await asyncio.sleep(0)
                 continue
             self._record_poll_metrics("query", "task", time.perf_counter() - poll_start)
+            if self._stop.is_set() or (
+                query_thread_stop is not None and query_thread_stop.is_set()
+            ):
+                return
             if track_tasks:
                 self._track(self._dispatch_query_task(task, client=client))
             else:
@@ -2113,24 +2141,46 @@ class Worker:
     def _run_query_task_thread(self) -> None:
         try:
             asyncio.run(self._query_task_thread_main())
+        except asyncio.CancelledError:
+            if not self._query_thread_stop.is_set():
+                log.exception("query task poller thread was cancelled unexpectedly")
         except Exception:
             log.exception("query task poller thread stopped unexpectedly")
 
     async def _query_task_thread_main(self) -> None:
-        async with self._clone_client_for_query_tasks() as client:
-            await self._poll_query_tasks(client=client, track_tasks=False)
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        self._query_thread_loop = loop
+        self._query_thread_task = task
+        try:
+            async with self._clone_client_for_query_tasks() as client:
+                await self._poll_query_tasks(client=client, track_tasks=False)
+        finally:
+            if self._query_thread_task is task:
+                self._query_thread_task = None
+                self._query_thread_loop = None
 
-    async def _stop_query_task_thread(self) -> None:
+    def _request_query_task_thread_stop(self) -> None:
         self._query_thread_stop.set()
+        loop = self._query_thread_loop
+        task = self._query_thread_task
+        if loop is not None and task is not None and not task.done():
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(task.cancel)
+
+    async def _stop_query_task_thread(self, *, deadline: float) -> None:
+        self._request_query_task_thread_stop()
         thread = self._query_thread
 
         if thread is None or not thread.is_alive():
             return
 
-        await asyncio.to_thread(
-            thread.join,
-            min(self._shutdown_timeout, self._poll_http_timeout + 1),
-        )
+        await asyncio.to_thread(thread.join, self._remaining_shutdown_time(deadline))
+        if thread.is_alive():
+            raise RuntimeError(
+                "worker shutdown timed out while stopping the query poller thread; "
+                "the worker registration remains active"
+            )
 
     async def run(self) -> None:
         """Register the worker and poll until `stop()` is called or the task is cancelled."""
@@ -2141,6 +2191,8 @@ class Worker:
             self._registration_done.set()
 
         try:
+            if self._stop.is_set():
+                return
             wf_loop = asyncio.create_task(self._poll_workflow_tasks())
             act_loop = asyncio.create_task(self._poll_activity_tasks())
             hb_loop = asyncio.create_task(self._heartbeat_loop())
@@ -2284,8 +2336,6 @@ class Worker:
         Long-running workers should call :meth:`run` and coordinate shutdown from
         their process supervisor.
         """
-        deadline = time.monotonic() + timeout
-        next_task_kind = "workflow"
         background_tasks: list[asyncio.Task[Any]] = []
 
         self._begin_run()
@@ -2295,6 +2345,8 @@ class Worker:
             self._registration_done.set()
 
         try:
+            if self._stop.is_set():
+                raise asyncio.CancelledError
             background_tasks.append(asyncio.create_task(self._heartbeat_loop()))
             if self._query_tasks_supported:
                 if self._can_clone_client_for_query_tasks():
@@ -2302,74 +2354,15 @@ class Worker:
                 else:
                     background_tasks.append(asyncio.create_task(self._poll_query_tasks()))
             self._poller_tasks.update(background_tasks)
-
-            while True:
-                desc = await self.client.describe_workflow(workflow_id)
-                status = (desc.status or "").lower()
-                if status in _TERMINAL_WORKFLOW_STATUSES:
-                    return desc
-
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"workflow {workflow_id} not terminal after {timeout}s (status={desc.status})"
-                    )
-
-                if next_task_kind == "workflow":
-                    poll_start = time.perf_counter()
-                    task = await self.client.poll_workflow_task(
-                        worker_id=self.worker_id,
-                        task_queue=self.task_queue,
-                        timeout=self._poll_http_timeout,
-                        build_id=self.build_id,
-                    )
-                    self._record_poll_metrics(
-                        "workflow",
-                        "task" if task is not None else "empty",
-                        time.perf_counter() - poll_start,
-                    )
-                    if task is None:
-                        next_task_kind = "activity"
-                        await asyncio.sleep(poll_interval)
-                        continue
-
-                    task_start = time.perf_counter()
-                    outcome = "error"
-                    try:
-                        commands = await self._run_workflow_task(task)
-                        outcome = "completed" if commands is not None else "failed"
-                    finally:
-                        self._record_task_metrics("workflow", outcome, time.perf_counter() - task_start)
-
-                    if commands and any(command.get("type") == "schedule_activity" for command in commands):
-                        next_task_kind = "activity"
-                    else:
-                        next_task_kind = "workflow"
-                    continue
-
-                poll_start = time.perf_counter()
-                task = await self.client.poll_activity_task(
-                    worker_id=self.worker_id,
-                    task_queue=self.task_queue,
-                    timeout=self._poll_http_timeout,
-                    build_id=self.build_id,
+            run_until_loop = asyncio.create_task(
+                self._run_until_loop(
+                    workflow_id=workflow_id,
+                    timeout=timeout,
+                    poll_interval=poll_interval,
                 )
-                self._record_poll_metrics(
-                    "activity",
-                    "task" if task is not None else "empty",
-                    time.perf_counter() - poll_start,
-                )
-                if task is None:
-                    next_task_kind = "workflow"
-                    await asyncio.sleep(poll_interval)
-                    continue
-
-                task_start = time.perf_counter()
-                outcome = "error"
-                try:
-                    outcome = await self._run_activity_task(task)
-                finally:
-                    self._record_task_metrics("activity", outcome, time.perf_counter() - task_start)
-                next_task_kind = "workflow"
+            )
+            self._poller_tasks.add(run_until_loop)
+            return await run_until_loop
         finally:
             primary_error = sys.exc_info()[1]
             primary_traceback = primary_error.__traceback__ if primary_error is not None else None
@@ -2379,6 +2372,108 @@ class Worker:
                 if primary_error is not None:
                     raise primary_error.with_traceback(primary_traceback) from shutdown_error
                 raise
+
+    async def _run_until_loop(
+        self,
+        *,
+        workflow_id: str,
+        timeout: float,
+        poll_interval: float,
+    ) -> WorkflowExecution:
+        deadline = time.monotonic() + timeout
+        next_task_kind = "workflow"
+
+        while not self._stop.is_set():
+            desc = await self.client.describe_workflow(workflow_id)
+            if self._stop.is_set():
+                raise asyncio.CancelledError
+            status = (desc.status or "").lower()
+            if status in _TERMINAL_WORKFLOW_STATUSES:
+                return desc
+
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"workflow {workflow_id} not terminal after {timeout}s (status={desc.status})"
+                )
+
+            if next_task_kind == "workflow":
+                poll_start = time.perf_counter()
+                task = await self.client.poll_workflow_task(
+                    worker_id=self.worker_id,
+                    task_queue=self.task_queue,
+                    timeout=self._poll_http_timeout,
+                    build_id=self.build_id,
+                )
+                if self._stop.is_set():
+                    raise asyncio.CancelledError
+                self._record_poll_metrics(
+                    "workflow",
+                    "task" if task is not None else "empty",
+                    time.perf_counter() - poll_start,
+                )
+                if task is None:
+                    next_task_kind = "activity"
+                    await asyncio.sleep(poll_interval)
+                    continue
+
+                commands = await asyncio.shield(
+                    self._track(self._run_until_workflow_task(task))
+                )
+                if commands and any(
+                    command.get("type") == "schedule_activity" for command in commands
+                ):
+                    next_task_kind = "activity"
+                else:
+                    next_task_kind = "workflow"
+                continue
+
+            poll_start = time.perf_counter()
+            task = await self.client.poll_activity_task(
+                worker_id=self.worker_id,
+                task_queue=self.task_queue,
+                timeout=self._poll_http_timeout,
+                build_id=self.build_id,
+            )
+            if self._stop.is_set():
+                raise asyncio.CancelledError
+            self._record_poll_metrics(
+                "activity",
+                "task" if task is not None else "empty",
+                time.perf_counter() - poll_start,
+            )
+            if task is None:
+                next_task_kind = "workflow"
+                await asyncio.sleep(poll_interval)
+                continue
+
+            await asyncio.shield(self._track(self._run_until_activity_task(task)))
+            next_task_kind = "workflow"
+
+        raise asyncio.CancelledError
+
+    async def _run_until_workflow_task(
+        self, task: dict[str, Any]
+    ) -> list[dict[str, Any]] | None:
+        task_start = time.perf_counter()
+        outcome = "error"
+        self._workflow_inflight += 1
+        try:
+            commands = await self._run_workflow_task(task)
+            outcome = "completed" if commands is not None else "failed"
+            return commands
+        finally:
+            self._workflow_inflight = max(0, self._workflow_inflight - 1)
+            self._record_task_metrics("workflow", outcome, time.perf_counter() - task_start)
+
+    async def _run_until_activity_task(self, task: dict[str, Any]) -> None:
+        task_start = time.perf_counter()
+        outcome = "error"
+        self._activity_inflight += 1
+        try:
+            outcome = await self._run_activity_task(task)
+        finally:
+            self._activity_inflight = max(0, self._activity_inflight - 1)
+            self._record_task_metrics("activity", outcome, time.perf_counter() - task_start)
 
     def _begin_run(self) -> None:
         if self._run_started:
@@ -2402,25 +2497,54 @@ class Worker:
         if self._run_started and not self._registration_done.is_set():
             await self._registration_done.wait()
 
+        deadline = asyncio.get_running_loop().time() + max(0.0, self._shutdown_timeout)
+        self._request_query_task_thread_stop()
         current_task = asyncio.current_task()
         pollers = [task for task in self._poller_tasks if task is not current_task]
         for task in pollers:
             if not task.done():
                 task.cancel()
         if pollers:
+            await asyncio.sleep(0)
+            _, pending_pollers = await asyncio.wait(
+                pollers,
+                timeout=self._remaining_shutdown_time(deadline),
+            )
+            if pending_pollers:
+                raise RuntimeError(
+                    "worker shutdown timed out while stopping "
+                    f"{len(pending_pollers)} async poller(s); "
+                    "the worker registration remains active"
+                )
             await asyncio.gather(*pollers, return_exceptions=True)
 
-        await self._stop_query_task_thread()
+        await self._stop_query_task_thread(deadline=deadline)
         if self._in_flight:
             log.info("draining %d in-flight task(s)…", len(self._in_flight))
-            _, pending = await asyncio.wait(self._in_flight, timeout=self._shutdown_timeout)
+            in_flight = set(self._in_flight)
+            _, pending = await asyncio.wait(
+                in_flight,
+                timeout=self._remaining_shutdown_time(deadline),
+            )
             for t in pending:
                 t.cancel()
             if pending:
                 log.warning("cancelled %d task(s) after shutdown timeout", len(pending))
-                await asyncio.gather(*pending, return_exceptions=True)
+                await asyncio.sleep(0)
+            still_running = {task for task in pending if not task.done()}
+            if still_running:
+                raise RuntimeError(
+                    "worker shutdown timed out while cancelling "
+                    f"{len(still_running)} in-flight task(s); "
+                    "the worker registration remains active"
+                )
+            await asyncio.gather(*in_flight, return_exceptions=True)
 
         if self._registered:
             await self.client.deregister_worker_registration(self.worker_id)
             self._registered = False
             log.info("worker %s deregistered", self.worker_id)
+
+    @staticmethod
+    def _remaining_shutdown_time(deadline: float) -> float:
+        return max(0.0, deadline - asyncio.get_running_loop().time())

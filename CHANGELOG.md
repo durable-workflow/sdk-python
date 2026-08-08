@@ -51,6 +51,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Worker shutdown now quiesces inline `run_until()` work and fully stops the
+  query-poller thread before deregistration. A worker that cannot stop every
+  execution path by its shutdown deadline reports a failure and keeps its
+  registration instead of allowing stale completions after lease recovery.
 - Workers configured with only `worker_token` can now authenticate cluster
   discovery and complete registration, polling, heartbeat, and graceful
   deregistration without receiving a control credential. Actual worker and

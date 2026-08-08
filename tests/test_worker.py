@@ -2907,6 +2907,94 @@ class TestWorkerShutdown:
         mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
 
     @pytest.mark.asyncio
+    async def test_run_drains_accepted_work_before_deregistering(self, mock_client: AsyncMock) -> None:
+        events: list[str] = []
+        completion_started = asyncio.Event()
+        release_completion = asyncio.Event()
+        workflow_task = {
+            "task_id": "t-shutdown-run",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": '["hello"]',
+            "payload_codec": "json",
+        }
+        workflow_polled = False
+
+        async def poll_workflow_task(**_: object) -> dict[str, object] | None:
+            nonlocal workflow_polled
+            events.append("workflow_poll")
+            if not workflow_polled:
+                workflow_polled = True
+                return workflow_task
+            await asyncio.Event().wait()
+            return None
+
+        async def complete_workflow_task(**_: object) -> dict[str, str]:
+            events.append("workflow_completion_started")
+            completion_started.set()
+            await release_completion.wait()
+            events.append("workflow_completion_finished")
+            return {"outcome": "completed"}
+
+        async def deregister_worker(_: str) -> dict[str, object]:
+            events.append("deregister")
+            return {"outcome": "deregistered"}
+
+        mock_client.poll_workflow_task.side_effect = poll_workflow_task
+        mock_client.complete_workflow_task.side_effect = complete_workflow_task
+        mock_client.deregister_worker_registration.side_effect = deregister_worker
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            poll_timeout=0.01,
+        )
+
+        run_task = asyncio.create_task(worker.run())
+        await completion_started.wait()
+        stop_task = asyncio.create_task(worker.stop())
+        await asyncio.sleep(0)
+
+        mock_client.deregister_worker_registration.assert_not_awaited()
+        release_completion.set()
+        await stop_task
+        await run_task
+
+        assert events[-2:] == ["workflow_completion_finished", "deregister"]
+        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+
+    @pytest.mark.asyncio
+    async def test_shutdown_deadline_cancels_work_before_deregistering(
+        self, mock_client: AsyncMock
+    ) -> None:
+        events: list[str] = []
+        work_started = asyncio.Event()
+
+        async def accepted_work() -> None:
+            work_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                events.append("work_cancelled")
+
+        async def deregister_worker(_: str) -> dict[str, object]:
+            events.append("deregister")
+            return {"outcome": "deregistered"}
+
+        mock_client.deregister_worker_registration.side_effect = deregister_worker
+        worker = Worker(mock_client, task_queue="q1", shutdown_timeout=0.01)
+        await worker._register()
+        tracked_task = worker._track(accepted_work())
+        await work_started.wait()
+
+        await worker.stop()
+
+        assert tracked_task.cancelled()
+        assert events == ["work_cancelled", "deregister"]
+        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+
+    @pytest.mark.asyncio
     async def test_failed_registration_does_not_deregister(self, mock_client: AsyncMock) -> None:
         mock_client.register_worker.side_effect = RuntimeError("registration failed")
         worker = Worker(mock_client, task_queue="q1")
@@ -2969,6 +3057,124 @@ class TestWorkerShutdown:
         assert exc_info.value.__cause__ is cleanup_error
         assert cleanup_error.reason() == "worker_registration_forbidden"
         mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+
+    @pytest.mark.asyncio
+    async def test_query_returned_during_shutdown_is_not_dispatched_before_deregistering(
+        self, mock_client: AsyncMock
+    ) -> None:
+        events: list[str] = []
+        poll_started = threading.Event()
+        query_task = {
+            "query_task_id": "qt-shutdown",
+            "query_task_attempt": 1,
+            "workflow_type": "query-wf",
+            "workflow_id": "wf-1",
+            "run_id": "run-1",
+            "query_name": "status",
+            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "query_arguments": serializer.envelope([], codec="json"),
+            "history_events": [],
+        }
+
+        class QueryThreadClient:
+            async def __aenter__(self) -> QueryThreadClient:
+                return self
+
+            async def __aexit__(self, *_: object) -> None:
+                events.append("query_thread_exited")
+
+            async def poll_query_task(self, **_: object) -> dict[str, object] | None:
+                events.append("query_poll_started")
+                poll_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    events.append("query_returned_during_shutdown")
+                    return query_task
+
+            async def complete_query_task(self, **_: object) -> dict[str, str]:
+                events.append("query_dispatched")
+                return {"outcome": "completed"}
+
+            async def fail_query_task(self, **_: object) -> dict[str, str]:
+                events.append("query_dispatched")
+                return {"outcome": "failed"}
+
+        async def deregister_worker(_: str) -> dict[str, object]:
+            assert events[-1] == "query_thread_exited"
+            events.append("deregister")
+            return {"outcome": "deregistered"}
+
+        query_client = QueryThreadClient()
+        mock_client.deregister_worker_registration.side_effect = deregister_worker
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[QueryWorkflow],
+            shutdown_timeout=0.2,
+        )
+        worker._clone_client_for_query_tasks = lambda: query_client  # type: ignore[method-assign]
+        await worker._register()
+        worker._start_query_task_thread()
+
+        assert await asyncio.to_thread(poll_started.wait, 1.0)
+        await worker.stop()
+
+        assert events == [
+            "query_poll_started",
+            "query_returned_during_shutdown",
+            "query_thread_exited",
+            "deregister",
+        ]
+        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+
+    @pytest.mark.asyncio
+    async def test_live_query_thread_blocks_deregistration_with_actionable_failure(
+        self, mock_client: AsyncMock
+    ) -> None:
+        poll_started = threading.Event()
+        cancellation_seen = threading.Event()
+        release_poll = threading.Event()
+
+        class StuckQueryThreadClient:
+            async def __aenter__(self) -> StuckQueryThreadClient:
+                return self
+
+            async def __aexit__(self, *_: object) -> None:
+                return None
+
+            async def poll_query_task(self, **_: object) -> None:
+                poll_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancellation_seen.set()
+                    while not release_poll.is_set():
+                        await asyncio.sleep(0.01)
+                return None
+
+        query_client = StuckQueryThreadClient()
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[QueryWorkflow],
+            shutdown_timeout=0.02,
+        )
+        worker._clone_client_for_query_tasks = lambda: query_client  # type: ignore[method-assign]
+        await worker._register()
+        worker._start_query_task_thread()
+
+        assert await asyncio.to_thread(poll_started.wait, 1.0)
+        with pytest.raises(RuntimeError, match="query poller thread.*registration remains active"):
+            await worker.stop()
+
+        assert cancellation_seen.is_set()
+        mock_client.deregister_worker_registration.assert_not_awaited()
+        release_poll.set()
+        assert worker._query_thread is not None
+        await asyncio.to_thread(worker._query_thread.join, 1.0)
+        assert not worker._query_thread.is_alive()
 
 
 class TestPollLoops:
@@ -3278,6 +3484,164 @@ class TestRunUntil:
             await worker.run_until(workflow_id="wf-timeout", timeout=0.02, poll_interval=0.01)
 
         assert worker._stop.is_set()
+
+    @pytest.mark.asyncio
+    async def test_external_stop_drains_inline_workflow_completion_before_deregistering(
+        self, mock_client: AsyncMock
+    ) -> None:
+        events: list[str] = []
+        completion_started = asyncio.Event()
+        release_completion = asyncio.Event()
+        workflow_task = {
+            "task_id": "t-run-until-shutdown",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": '["hello"]',
+            "payload_codec": "json",
+        }
+
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(worker_protocol={"version": PROTOCOL_VERSION})
+        )
+        mock_client.describe_workflow = AsyncMock(
+            return_value=WorkflowExecution(
+                workflow_id="wf-1",
+                run_id="run-1",
+                workflow_type="test-wf",
+                status="running",
+            )
+        )
+        mock_client.poll_workflow_task = AsyncMock(return_value=workflow_task)
+
+        async def complete_workflow_task(**_: object) -> dict[str, str]:
+            events.append("workflow_completion_started")
+            completion_started.set()
+            await release_completion.wait()
+            events.append("workflow_completion_finished")
+            return {"outcome": "completed"}
+
+        async def deregister_worker(_: str) -> dict[str, object]:
+            events.append("deregister")
+            return {"outcome": "deregistered"}
+
+        mock_client.complete_workflow_task.side_effect = complete_workflow_task
+        mock_client.deregister_worker_registration.side_effect = deregister_worker
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            poll_timeout=0.01,
+        )
+
+        run_until_task = asyncio.create_task(
+            worker.run_until(workflow_id="wf-1", timeout=1.0, poll_interval=0.01)
+        )
+        await completion_started.wait()
+        stop_task = asyncio.create_task(worker.stop())
+        await asyncio.sleep(0)
+
+        mock_client.deregister_worker_registration.assert_not_awaited()
+        release_completion.set()
+        await stop_task
+        with pytest.raises(asyncio.CancelledError):
+            await run_until_task
+
+        assert events == [
+            "workflow_completion_started",
+            "workflow_completion_finished",
+            "deregister",
+        ]
+        request_counts = (
+            mock_client.describe_workflow.await_count,
+            mock_client.poll_workflow_task.await_count,
+            mock_client.complete_workflow_task.await_count,
+        )
+        await asyncio.sleep(0)
+        assert request_counts == (
+            mock_client.describe_workflow.await_count,
+            mock_client.poll_workflow_task.await_count,
+            mock_client.complete_workflow_task.await_count,
+        )
+        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+
+    @pytest.mark.asyncio
+    async def test_external_stop_drains_inline_activity_completion_before_deregistering(
+        self, mock_client: AsyncMock
+    ) -> None:
+        events: list[str] = []
+        completion_started = asyncio.Event()
+        release_completion = asyncio.Event()
+        workflow_task = {
+            "task_id": "t-run-until-activity-shutdown",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": '["hello"]',
+            "payload_codec": "json",
+        }
+        activity_task = {
+            "task_id": "at-run-until-shutdown",
+            "activity_attempt_id": "aa-run-until-shutdown",
+            "activity_type": "test-act",
+            "arguments": '["hello"]',
+            "payload_codec": "json",
+        }
+
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(worker_protocol={"version": PROTOCOL_VERSION})
+        )
+        mock_client.describe_workflow = AsyncMock(
+            return_value=WorkflowExecution(
+                workflow_id="wf-1",
+                run_id="run-1",
+                workflow_type="test-wf",
+                status="running",
+            )
+        )
+        mock_client.poll_workflow_task = AsyncMock(return_value=workflow_task)
+        mock_client.poll_activity_task = AsyncMock(return_value=activity_task)
+
+        async def complete_activity_task(**_: object) -> dict[str, str]:
+            events.append("activity_completion_started")
+            completion_started.set()
+            await release_completion.wait()
+            events.append("activity_completion_finished")
+            return {"outcome": "completed"}
+
+        async def deregister_worker(_: str) -> dict[str, object]:
+            events.append("deregister")
+            return {"outcome": "deregistered"}
+
+        mock_client.complete_activity_task.side_effect = complete_activity_task
+        mock_client.deregister_worker_registration.side_effect = deregister_worker
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+            poll_timeout=0.01,
+        )
+
+        run_until_task = asyncio.create_task(
+            worker.run_until(workflow_id="wf-1", timeout=1.0, poll_interval=0.01)
+        )
+        await completion_started.wait()
+        stop_task = asyncio.create_task(worker.stop())
+        await asyncio.sleep(0)
+
+        mock_client.deregister_worker_registration.assert_not_awaited()
+        release_completion.set()
+        await stop_task
+        with pytest.raises(asyncio.CancelledError):
+            await run_until_task
+
+        assert events == [
+            "activity_completion_started",
+            "activity_completion_finished",
+            "deregister",
+        ]
+        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
 
     @pytest.mark.asyncio
     async def test_run_until_processes_query_tasks_while_waiting(self, mock_client: AsyncMock) -> None:
