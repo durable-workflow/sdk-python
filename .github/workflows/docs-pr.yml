@@ -54,7 +54,7 @@ jobs:
 
   visual-evidence:
     name: Supported viewport interaction evidence
-    uses: ./.github/workflows/docs-visual.yml
+    uses: ./.github/workflows/docs-visual.yml  # local
     with:
       source_base_sha: ${{ github.event.pull_request.base.sha }}
     permissions:

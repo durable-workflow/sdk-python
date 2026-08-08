@@ -138,7 +138,7 @@ jobs:
           path: site
 
   visual-evidence:
-    uses: ./.github/workflows/docs-visual.yml
+    uses: ./.github/workflows/docs-visual.yml  # local
     with:
       source_base_sha: ${{ inputs.source_base_sha || github.event.before }}
       source_ref: ${{ inputs.source_ref || github.sha }}

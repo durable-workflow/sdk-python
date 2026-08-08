@@ -36,6 +36,8 @@ DEPLOY_PAGES_ACTION = "actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58f
 SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38"
 UPLOAD_ARTIFACT_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 VISUAL_WORKFLOW = "./.github/workflows/docs-visual.yml"
+LOCAL_WORKFLOW_REFERENCE = re.compile(r"^\s*uses:\s*['\"]?\./")
+LOCAL_VERSION_COMMENT = re.compile(r"#\s*local(?:\s|$)")
 
 
 def load_workflow(path: Path) -> dict[str, Any]:
@@ -67,6 +69,20 @@ def run_commands(job: dict[str, Any]) -> str:
 def assert_actions_are_pinned(references: list[str]) -> None:
     for reference in references:
         assert re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", reference), f"action is not commit-pinned: {reference}"
+
+
+def test_local_workflow_references_carry_readable_version_markers() -> None:
+    references: list[str] = []
+    for path in sorted(WORKFLOW_ROOT.glob("*.y*ml")):
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not LOCAL_WORKFLOW_REFERENCE.search(line):
+                continue
+            references.append(f"{path.name}:{line_number}")
+            assert LOCAL_VERSION_COMMENT.search(line), (
+                f"{path.name}:{line_number} local workflow reference must carry a '# local' marker"
+            )
+
+    assert references, "sdk-python workflows must include local reusable-workflow references"
 
 
 def test_pull_request_workflows_do_not_grant_write_permissions() -> None:
