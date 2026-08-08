@@ -159,6 +159,11 @@ def test_pages_deployment_is_push_only_and_has_exact_authority() -> None:
     assert "site_url: https://python.durable-workflow.com/" in (REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
 
 
+def test_documentation_typography_does_not_require_external_font_hosts() -> None:
+    config = yaml.safe_load((REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8"))
+    assert config["theme"]["font"] is False
+
+
 def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_viewports() -> None:
     workflow = load_workflow(DOCS_VISUAL)
     assert set(workflow["on"]) == {"workflow_call"}

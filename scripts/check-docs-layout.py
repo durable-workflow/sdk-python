@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 from playwright.sync_api import Browser, Locator, Page, Response, sync_playwright
 
@@ -51,14 +52,8 @@ def assert_control_within_viewport(page: Page, locator: Locator, label: str) -> 
     )
 
 
-def assert_rendered_health(
-    page: Page,
-    state: str,
-    runtime_errors: list[str],
-    *,
-    check_reachability: bool = True,
-) -> None:
-    geometry = page.evaluate(
+def rendered_geometry(page: Page) -> dict[str, Any]:
+    return page.evaluate(
         """() => {
             const visibleFragments = (element) => {
                 const style = getComputedStyle(element)
@@ -84,7 +79,9 @@ def assert_rendered_health(
                             visible.bottom = Math.min(visible.bottom, ancestorBox.bottom)
                         }
                     }
-                    return visible.left < visible.right && visible.top < visible.bottom ? [visible] : []
+                    const visibleWidth = visible.right - visible.left
+                    const visibleHeight = visible.bottom - visible.top
+                    return visibleWidth >= 1 && visibleHeight >= 1 ? [visible] : []
                 })
             }
             const relatedHit = (hit, control) => {
@@ -160,6 +157,16 @@ def assert_rendered_health(
             }
         }"""
     )
+
+
+def assert_rendered_health(
+    page: Page,
+    state: str,
+    runtime_errors: list[str],
+    *,
+    check_reachability: bool = True,
+) -> None:
+    geometry = rendered_geometry(page)
     assert geometry["document"] <= geometry["viewport"] + 1, f"{state} overflowed: {geometry}"
     assert geometry["clippedControls"] == [], f"{state} has clipped control text: {geometry['clippedControls']}"
     if check_reachability:
@@ -207,6 +214,78 @@ def assert_wrapped_inline_control_is_reachable(page: Page, runtime_errors: list[
         assert_rendered_health(page, label, runtime_errors)
     finally:
         page.locator('[data-reachability-fixture="wrapped-inline"]').evaluate("element => element.remove()")
+
+
+def assert_viewport_edge_fragment_threshold(page: Page, runtime_errors: list[str], label: str) -> None:
+    visible_heights = page.evaluate(
+        """() => {
+            const fixture = document.createElement('div')
+            fixture.dataset.reachabilityFixture = 'viewport-edge'
+
+            const addControl = (href, left, visibleHeight) => {
+                const control = document.createElement('a')
+                control.href = href
+                control.textContent = href.slice(1)
+                control.style.cssText = [
+                    'position: fixed',
+                    `left: ${left}px`,
+                    `top: calc(100vh - ${visibleHeight}px)`,
+                    'width: 160px',
+                    'height: 20px',
+                    'z-index: 9998',
+                    'background: white',
+                ].join(';')
+                fixture.append(control)
+                return control
+            }
+
+            const subpixel = addControl('#subpixel-viewport-edge', 16, 0.03125)
+            const meaningful = addControl('#meaningful-viewport-edge', 192, 2)
+            const blocker = document.createElement('div')
+            blocker.style.cssText = [
+                'position: fixed',
+                'inset: auto 0 0',
+                'height: 2px',
+                'z-index: 9999',
+                'pointer-events: auto',
+            ].join(';')
+            fixture.append(blocker)
+            document.body.append(fixture)
+
+            const clippedHeight = (control) => {
+                const bounds = control.getBoundingClientRect()
+                return Math.min(innerHeight, bounds.bottom) - Math.max(0, bounds.top)
+            }
+            return {
+                subpixel: clippedHeight(subpixel),
+                meaningful: clippedHeight(meaningful),
+            }
+        }"""
+    )
+    try:
+        assert 0 < visible_heights["subpixel"] < 1, (
+            f"{label} did not produce a sub-pixel viewport-edge fragment: {visible_heights}"
+        )
+        assert visible_heights["meaningful"] >= 1, (
+            f"{label} did not produce a meaningfully visible partial control: {visible_heights}"
+        )
+
+        geometry = rendered_geometry(page)
+        findings = {
+            finding["href"]: finding
+            for finding in geometry["unreachable"]
+            if finding["href"] in {"#subpixel-viewport-edge", "#meaningful-viewport-edge"}
+        }
+        assert "#subpixel-viewport-edge" not in findings, (
+            f"{label} sampled a sub-pixel viewport-edge fragment: {findings}"
+        )
+        assert "#meaningful-viewport-edge" in findings, (
+            f"{label} stopped sampling meaningfully visible partial controls: {findings}"
+        )
+    finally:
+        page.locator('[data-reachability-fixture="viewport-edge"]').evaluate("element => element.remove()")
+
+    assert_rendered_health(page, label, runtime_errors)
 
 
 def assert_focus_wraps(page: Page, label: str) -> None:
@@ -312,8 +391,13 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
                 runtime_errors,
                 f"wrapped inline control at {label}",
             )
+            assert_viewport_edge_fragment_threshold(
+                page,
+                runtime_errors,
+                f"viewport-edge controls at {label}",
+            )
 
-        analytics_boundary = page.evaluate(
+        runtime_boundary = page.evaluate(
             """() => ({
                 retiredUi: document.querySelectorAll(
                     '.dw-analytics-consent, .dw-analytics-preferences, '
@@ -329,15 +413,23 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
                 searchAccessibility: [...document.scripts].filter(
                     script => script.src.endsWith('/javascripts/search-accessibility.js')
                 ).length,
+                externalStylesheets: [...document.querySelectorAll('link[rel="stylesheet"][href]')]
+                    .map(link => link.href)
+                    .filter(href => new URL(href).origin !== location.origin),
+                externalPreconnects: [...document.querySelectorAll('link[rel="preconnect"][href]')]
+                    .map(link => link.href)
+                    .filter(href => new URL(href).origin !== location.origin),
             })"""
         )
-        assert analytics_boundary == {
+        assert runtime_boundary == {
             "retiredUi": 0,
             "retiredStorage": None,
             "googleScripts": 0,
             "runtimes": 1,
             "searchAccessibility": 1,
-        }, f"documentation runtime boundary is invalid at {label}: {analytics_boundary}"
+            "externalStylesheets": [],
+            "externalPreconnects": [],
+        }, f"documentation runtime boundary is invalid at {label}: {runtime_boundary}"
 
         opener_selector = ".md-header__button[for='__search']" if width < 960 else ".md-search__input"
         opener = page.locator(opener_selector)
