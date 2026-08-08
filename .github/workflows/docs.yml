@@ -37,7 +37,17 @@ jobs:
         run: python -m playwright install --with-deps chromium
 
       - name: Build site
+        env:
+          CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
         run: |
+          if [ "$GITHUB_SERVER_URL" = https://github.com ]; then
+            if ! printf '%s' "$CLOUDFLARE_WEB_ANALYTICS_TOKEN" | grep -Eq '^[a-f0-9]{32}$'; then
+              echo 'CLOUDFLARE_WEB_ANALYTICS_TOKEN must be the canonical 32-character site token' >&2
+              exit 1
+            fi
+            sed -i "s/__CLOUDFLARE_WEB_ANALYTICS_TOKEN__/$CLOUDFLARE_WEB_ANALYTICS_TOKEN/" \
+              docs/javascripts/analytics.js
+          fi
           mkdocs build --strict
           python scripts/check-docs-analytics.py site
           python scripts/check-docs-layout.py site

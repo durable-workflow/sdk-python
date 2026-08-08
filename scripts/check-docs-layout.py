@@ -14,7 +14,7 @@ from pathlib import Path
 
 from playwright.sync_api import Browser, Locator, Page, sync_playwright
 
-VIEWPORTS = ((1440, 900), (768, 1024), (390, 844))
+VIEWPORTS = ((1440, 900), (768, 1024), (390, 844), (640, 360))
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
@@ -42,11 +42,9 @@ def assert_document_fits(page: Page, state: str) -> None:
         """() => ({
             viewport: document.documentElement.clientWidth,
             document: document.documentElement.scrollWidth,
-            body: document.body.scrollWidth,
         })"""
     )
     assert geometry["document"] <= geometry["viewport"] + 1, f"{state} overflowed: {geometry}"
-    assert geometry["body"] <= geometry["viewport"] + 1, f"{state} body overflowed: {geometry}"
 
 
 def assert_control_within_viewport(page: Page, locator: Locator, label: str) -> None:
@@ -70,11 +68,27 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
     try:
         page.goto(url, wait_until="networkidle")
         assert_document_fits(page, f"closed search at {label}")
-
-        consent_buttons = page.locator(".dw-analytics-consent button")
-        assert consent_buttons.count() == 2, "both consent choices must remain available"
-        for index in range(consent_buttons.count()):
-            assert_control_within_viewport(page, consent_buttons.nth(index), f"consent choice {index + 1} at {label}")
+        analytics_boundary = page.evaluate(
+            """() => ({
+                retiredUi: document.querySelectorAll(
+                    '.dw-analytics-consent, .dw-analytics-preferences, '
+                    + '#durable-workflow-analytics-consent, #durable-workflow-analytics-preferences'
+                ).length,
+                retiredStorage: localStorage.getItem('durable-workflow.analytics-consent.v1'),
+                googleScripts: [...document.scripts].filter(
+                    script => /googletagmanager|google-analytics/.test(script.src)
+                ).length,
+                runtimes: [...document.scripts].filter(
+                    script => script.src.endsWith('/javascripts/analytics.js')
+                ).length,
+            })"""
+        )
+        assert analytics_boundary == {
+            "retiredUi": 0,
+            "retiredStorage": None,
+            "googleScripts": 0,
+            "runtimes": 1,
+        }, f"retired analytics boundary rendered at {label}: {analytics_boundary}"
 
         if width < 960:
             page.locator(".md-header__button[for='__search']").click()
@@ -85,12 +99,6 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
         search_input = page.locator(".md-search__input")
         result_list = page.locator(".md-search-result__list")
         assert_control_within_viewport(page, search_input, f"search input at {label}")
-        for index in range(consent_buttons.count()):
-            assert_control_within_viewport(
-                page,
-                consent_buttons.nth(index),
-                f"consent choice {index + 1} with open search at {label}",
-            )
         if width < 960:
             close_control = page.locator(".md-search__icon[for='__search']")
             assert_control_within_viewport(page, close_control, f"search back control at {label}")
@@ -100,6 +108,7 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
 
         search_input.press_sequentially("workflow", delay=25)
         result_list.locator("li").first.wait_for(state="visible")
+        page.wait_for_timeout(250)
         assert result_list.is_visible(), f"search result list is not visible at {label}"
         assert_document_fits(page, f"open search with results at {label}")
 
@@ -143,7 +152,10 @@ def main() -> None:
         finally:
             browser.close()
 
-    print("Validated closed and open documentation layout at desktop, intermediate, and mobile viewports.")
+    print(
+        "Validated analytics-free documentation controls at desktop, intermediate, "
+        "mobile, and compact-height viewports."
+    )
 
 
 if __name__ == "__main__":

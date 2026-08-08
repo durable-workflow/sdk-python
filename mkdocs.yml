@@ -28,10 +28,10 @@ theme:
         name: Switch to light mode
 
 extra_javascript:
-  - javascripts/analytics.js
-
+  - path: javascripts/analytics.js
+    type: module
 extra_css:
-  - stylesheets/analytics.css
+  - stylesheets/layout.css
 
 plugins:
   - search
