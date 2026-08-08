@@ -5,13 +5,13 @@ API reference for [`durable-workflow`](https://pypi.org/project/durable-workflow
 ## Install
 
 ```bash
-pip install durable-workflow
+pip install durable-workflow=={{ durable_workflow_sdk_version }}
 ```
 
 With the optional Prometheus metrics recorder:
 
 ```bash
-pip install 'durable-workflow[prometheus]'
+pip install 'durable-workflow[prometheus]=={{ durable_workflow_sdk_version }}'
 ```
 
 ## Quick links
@@ -31,3 +31,9 @@ pip install 'durable-workflow[prometheus]'
 ## Versioning
 
 This reference is generated from the `main` branch of [`durable-workflow/sdk-python`](https://github.com/durable-workflow/sdk-python) on every push. For the version installed in your project, check `durable_workflow.__version__`.
+
+The install commands above select SDK prerelease
+`{{ durable_workflow_sdk_version }}`, which is qualified with
+`durableworkflow/server:{{ durable_workflow_server_version }}`. The SDK and
+Server release identities advance independently; use the versions shown here
+together.

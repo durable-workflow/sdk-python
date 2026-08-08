@@ -2161,6 +2161,8 @@ class Worker:
                 self._query_thread_loop = None
 
     def _request_query_task_thread_stop(self) -> None:
+        if self._query_thread_stop.is_set():
+            return
         self._query_thread_stop.set()
         loop = self._query_thread_loop
         task = self._query_thread_task

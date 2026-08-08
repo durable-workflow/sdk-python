@@ -9,8 +9,11 @@ on:
       - 'overrides/**'
       - 'mkdocs.yml'
       - 'pyproject.toml'
+      - 'scripts/api_reference_release.py'
+      - 'scripts/check_api_reference_install.py'
       - 'scripts/check-docs-analytics.py'
       - 'scripts/check-docs-layout.py'
+      - 'scripts/mkdocs_hooks.py'
       - '.github/workflows/docs.yml'
       - '.github/workflows/docs-pr.yml'
       - '.github/workflows/docs-visual.yml'
@@ -41,6 +44,7 @@ jobs:
       - name: Build site
         run: |
           mkdocs build --strict
+          python scripts/check_api_reference_install.py --site site
           python scripts/check-docs-analytics.py site
           python scripts/check-docs-layout.py site
 

@@ -9,8 +9,11 @@ on:
       - 'overrides/**'
       - 'mkdocs.yml'
       - 'pyproject.toml'
+      - 'scripts/api_reference_release.py'
+      - 'scripts/check_api_reference_install.py'
       - 'scripts/check-docs-analytics.py'
       - 'scripts/check-docs-layout.py'
+      - 'scripts/mkdocs_hooks.py'
       - '.github/workflows/docs.yml'
       - '.github/workflows/docs-pr.yml'
       - '.github/workflows/docs-visual.yml'
@@ -42,6 +45,10 @@ jobs:
         env:
           CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
         run: |
+          mkdocs build --strict
+          python scripts/check_api_reference_install.py --site site
+          python scripts/check-docs-analytics.py site
+          python scripts/check-docs-layout.py site
           if [ "$GITHUB_SERVER_URL" = https://github.com ]; then
             if ! printf '%s' "$CLOUDFLARE_WEB_ANALYTICS_TOKEN" | grep -Eq '^[a-f0-9]{32}$'; then
               echo 'CLOUDFLARE_WEB_ANALYTICS_TOKEN must be the canonical 32-character site token' >&2
@@ -49,10 +56,10 @@ jobs:
             fi
             sed -i "s/__CLOUDFLARE_WEB_ANALYTICS_TOKEN__/$CLOUDFLARE_WEB_ANALYTICS_TOKEN/" \
               docs/javascripts/analytics.js
+            mkdocs build --strict
+            python scripts/check_api_reference_install.py --site site
+            python scripts/check-docs-analytics.py site --require-token
           fi
-          mkdocs build --strict
-          python scripts/check-docs-analytics.py site
-          python scripts/check-docs-layout.py site
 
       - name: Upload GitHub Pages artifact
         if: ${{ github.server_url == 'https://github.com' }}

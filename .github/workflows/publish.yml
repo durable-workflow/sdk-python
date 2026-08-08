@@ -242,6 +242,16 @@ jobs:
         with:
           ref: ${{ needs.build.outputs.release_tag }}
 
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+
+      - name: Build and exercise the API-reference install path
+        run: |
+          pip install -e '.[docs]'
+          mkdocs build --strict
+          python scripts/check_api_reference_install.py --site site --install
+
       - name: Verify live docs release audit after PyPI publish
         env:
           DOCS_RELEASE_AUDIT_ARTIFACT: sdk-python

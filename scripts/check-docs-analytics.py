@@ -1,8 +1,17 @@
+import argparse
 import re
-import sys
 from pathlib import Path
 
-build_directory = Path(sys.argv[1] if len(sys.argv) > 1 else "site")
+parser = argparse.ArgumentParser(description="Validate the rendered documentation analytics runtime.")
+parser.add_argument("build_directory", nargs="?", type=Path, default=Path("site"))
+parser.add_argument(
+    "--require-token",
+    action="store_true",
+    help="Require a canonical token in the final public artifact instead of the build placeholder.",
+)
+args = parser.parse_args()
+
+build_directory = args.build_directory
 runtime = Path("docs/javascripts/analytics.js").read_text(encoding="utf-8")
 
 if (build_directory / "javascripts/analytics.js").read_text(encoding="utf-8") != runtime:
@@ -31,6 +40,11 @@ runtime_forbidden = re.compile(
 if runtime_forbidden.search(runtime):
     raise SystemExit("Analytics runtime contains retired Google or browser-storage behavior")
 
+if args.require_token and (
+    "__CLOUDFLARE_WEB_ANALYTICS_TOKEN__" in runtime or not re.search(r"\|\|\s*'[a-f0-9]{32}'", runtime)
+):
+    raise SystemExit("Final public analytics runtime does not contain the canonical site token")
+
 html_files = list(build_directory.rglob("*.html"))
 if not html_files:
     raise SystemExit("MkDocs did not render HTML pages")
@@ -55,4 +69,5 @@ for html_file in html_files:
     if html_forbidden.search(html):
         raise SystemExit(f"{html_file} contains retired Google analytics or consent state")
 
-print(f"Validated cookie-free Cloudflare Web Analytics in {len(html_files)} rendered pages.")
+instrumentation = " with the canonical site token" if args.require_token else ""
+print(f"Validated cookie-free Cloudflare Web Analytics{instrumentation} in {len(html_files)} rendered pages.")

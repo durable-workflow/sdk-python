@@ -18,8 +18,11 @@ DOCS_PATHS = [
     "overrides/**",
     "mkdocs.yml",
     "pyproject.toml",
+    "scripts/api_reference_release.py",
+    "scripts/check_api_reference_install.py",
     "scripts/check-docs-analytics.py",
     "scripts/check-docs-layout.py",
+    "scripts/mkdocs_hooks.py",
     ".github/workflows/docs.yml",
     ".github/workflows/docs-pr.yml",
     ".github/workflows/docs-visual.yml",
@@ -105,6 +108,7 @@ def test_docs_pull_request_checks_are_read_only_and_complete() -> None:
     assert_actions_are_pinned(references)
     commands = run_commands(validate)
     assert "mkdocs build --strict" in commands
+    assert "python scripts/check_api_reference_install.py --site site" in commands
     assert "python scripts/check-docs-analytics.py site" in commands
     assert "python scripts/check-docs-layout.py site" in commands
     assert "upload-pages-artifact" not in DOCS_CHECKS.read_text(encoding="utf-8")
@@ -134,8 +138,14 @@ def test_pages_deployment_is_push_only_and_has_exact_authority() -> None:
     assert_actions_are_pinned(build_references)
     commands = run_commands(build)
     assert "mkdocs build --strict" in commands
+    assert "python scripts/check_api_reference_install.py --site site" in commands
     assert "python scripts/check-docs-analytics.py site" in commands
     assert "python scripts/check-docs-layout.py site" in commands
+    assert commands.count("mkdocs build --strict") == 2
+    assert commands.index("python scripts/check-docs-layout.py site") < commands.index('sed -i "s/__CLOUDFLARE')
+    assert commands.index('sed -i "s/__CLOUDFLARE') < commands.index(
+        "python scripts/check-docs-analytics.py site --require-token"
+    )
 
     visual = workflow["jobs"]["visual-evidence"]
     assert visual["uses"] == VISUAL_WORKFLOW
@@ -156,7 +166,9 @@ def test_pages_deployment_is_push_only_and_has_exact_authority() -> None:
     source = DOCS_DEPLOYMENT.read_text(encoding="utf-8")
     assert "actions/download-artifact@" not in source
     assert (REPO_ROOT / "docs" / "CNAME").read_text(encoding="utf-8").strip() == "python.durable-workflow.com"
-    assert "site_url: https://python.durable-workflow.com/" in (REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+    mkdocs = yaml.load((REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    assert mkdocs["site_url"] == "https://python.durable-workflow.com/"
+    assert mkdocs["theme"]["font"] == "false"
 
 
 def test_documentation_typography_does_not_require_external_font_hosts() -> None:

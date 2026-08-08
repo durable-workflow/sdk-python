@@ -374,6 +374,14 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
     )
     page.on("pageerror", lambda error: runtime_errors.append(f"page: {error}"))
     page.on("requestfailed", lambda request: runtime_errors.append(f"request: {request.url} {request.failure}"))
+    page.on(
+        "request",
+        lambda request: (
+            runtime_errors.append(f"external request: {request.url}")
+            if request.url.startswith(("http://", "https://")) and not request.url.startswith(url)
+            else None
+        ),
+    )
 
     def record_http_error(response: Response) -> None:
         if response.status >= 400:

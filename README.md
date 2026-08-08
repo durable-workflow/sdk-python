@@ -2,8 +2,8 @@
 
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
-Status: **Beta** — this is Python SDK prerelease `2.0.0-rc.18` in the Durable
-Workflow 2.0 line. Core features include workflows, activities,
+Status: **Beta** — this is the Python SDK prerelease in the Durable Workflow
+2.0 line. Core features include workflows, activities,
 schedules, signals, timers, child workflows, continue-as-new, side effects,
 version markers, worker-applied accepted updates, replay verification, the
 in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
@@ -11,8 +11,13 @@ in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
 ## Install
 
 ```bash
-pip install durable-workflow==2.0.0-rc.18
+pip install --pre 'durable-workflow~=2.0.0rc0'
 ```
+
+The prerelease flag and compatible-release constraint select the newest
+published 2.0 prerelease without implying that stable 2.0 has shipped. The
+[API reference](https://python.durable-workflow.com/) shows the exact supported
+SDK and Server versions.
 
 Or for development:
 
@@ -628,11 +633,10 @@ Full documentation is available at
 
 ## Compatibility
 
-SDK version `2.0.0-rc.18` is qualified with
-`durableworkflow/server:2.0.0-rc.18`. The SDK package and Server release
-identities advance independently; matching RC sequence numbers are not
-required. The server must advertise these protocol manifests from
-`GET /api/cluster/info`:
+The exact SDK and qualified Server versions are published together in the
+[API reference](https://python.durable-workflow.com/). Their release identities
+advance independently; matching RC sequence numbers are not required. The
+server must advertise these protocol manifests from `GET /api/cluster/info`:
 
 - `control_plane.version: "2"`
 - `control_plane.request_contract.schema: durable-workflow.v2.control-plane-request.contract` version `1`
