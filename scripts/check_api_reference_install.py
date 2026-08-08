@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 try:
@@ -119,13 +120,73 @@ def validate_rendered_site(site: Path, identity: ReleaseIdentity) -> str:
     return validate_command(command, identity)
 
 
-def run_clean_install(requirement: str, identity: ReleaseIdentity) -> None:
+PUBLIC_PYPI_INDEX = "https://pypi.org/simple"
+
+
+def install_public_requirement(
+    python: Path,
+    requirement: str,
+    *,
+    cwd: Path,
+    attempts: int,
+    retry_sleep: float,
+) -> None:
+    """Install an exact requirement from public PyPI, retrying propagation delays."""
+    if attempts < 1:
+        raise ValueError("Public PyPI install attempts must be at least 1")
+    if retry_sleep < 0:
+        raise ValueError("Public PyPI install retry sleep must not be negative")
+
+    command = [
+        str(python),
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-cache-dir",
+        "--index-url",
+        PUBLIC_PYPI_INDEX,
+        requirement,
+    ]
+    env = {**os.environ, "PIP_CONFIG_FILE": os.devnull, "PIP_INDEX_URL": PUBLIC_PYPI_INDEX, "PYTHONPATH": ""}
+    for variable in ("PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "PIP_NO_INDEX"):
+        env.pop(variable, None)
+
+    result: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(command, cwd=cwd, env=env, check=False, text=True)
+        if result.returncode == 0:
+            return
+        if attempt < attempts:
+            print(
+                f"Public PyPI does not yet serve {requirement}; retrying in {retry_sleep:g}s ({attempt}/{attempts})",
+                file=sys.stderr,
+            )
+            time.sleep(retry_sleep)
+
+    assert result is not None
+    raise subprocess.CalledProcessError(result.returncode, command)
+
+
+def run_clean_install(
+    requirement: str,
+    identity: ReleaseIdentity,
+    *,
+    install_attempts: int = 6,
+    install_retry_sleep: float = 20,
+) -> None:
     with tempfile.TemporaryDirectory(prefix="dw-api-reference-install-") as temporary:
         clean_root = Path(temporary)
         venv = clean_root / ".venv"
         subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
         python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        subprocess.run([str(python), "-m", "pip", "install", requirement], cwd=clean_root, check=True)
+        install_public_requirement(
+            python,
+            requirement,
+            cwd=clean_root,
+            attempts=install_attempts,
+            retry_sleep=install_retry_sleep,
+        )
         check = """
 import importlib.metadata
 import os
@@ -157,6 +218,18 @@ def main() -> int:
         action="store_true",
         help="Install the rendered requirement from the package registry in a clean virtual environment.",
     )
+    parser.add_argument(
+        "--install-attempts",
+        type=int,
+        default=6,
+        help="Number of public PyPI attempts allowed while a new release propagates.",
+    )
+    parser.add_argument(
+        "--install-retry-sleep",
+        type=float,
+        default=20,
+        help="Seconds between public PyPI install attempts.",
+    )
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
@@ -165,7 +238,12 @@ def main() -> int:
     validate_source_templates(repo_root, identity)
     requirement = validate_rendered_site(site, identity)
     if args.install:
-        run_clean_install(requirement, identity)
+        run_clean_install(
+            requirement,
+            identity,
+            install_attempts=args.install_attempts,
+            install_retry_sleep=args.install_retry_sleep,
+        )
     print(
         f"API-reference install command selects {identity.package} {identity.version} "
         f"with Server {identity.server_version}"

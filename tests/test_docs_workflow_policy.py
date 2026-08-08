@@ -123,14 +123,15 @@ def test_docs_pull_request_checks_are_read_only_and_complete() -> None:
     assert visual["permissions"] == {"contents": "read"}
 
 
-def test_pages_deployment_is_push_only_and_has_exact_authority() -> None:
+def test_pages_deployment_requires_main_or_published_release_authority() -> None:
     workflow = load_workflow(DOCS_DEPLOYMENT)
-    assert workflow["on"] == {
-        "push": {
-            "branches": ["main"],
-            "paths": DOCS_PATHS,
-        }
+    assert workflow["on"]["push"] == {
+        "branches": ["main"],
+        "paths": DOCS_PATHS,
     }
+    call_inputs = workflow["on"]["workflow_call"]["inputs"]
+    assert set(call_inputs) == {"published_release", "source_base_sha", "source_ref"}
+    assert call_inputs["published_release"]["default"] == "false"
     assert workflow["permissions"] == {"contents": "read"}
     assert set(workflow["jobs"]) == {"build", "visual-evidence", "deploy"}
 
@@ -143,6 +144,7 @@ def test_pages_deployment_is_push_only_and_has_exact_authority() -> None:
     assert "python scripts/ci/test-classify-docs-visual-changes.py" in commands
     assert "mkdocs build --strict" in commands
     assert "python scripts/check_api_reference_install.py --site site" in commands
+    assert "python scripts/check_api_reference_install.py --site site --install" in commands
     assert "python scripts/check-docs-analytics.py site" in commands
     assert "python scripts/check-docs-layout.py site" in commands
     assert commands.count("mkdocs build --strict") == 2
@@ -150,10 +152,25 @@ def test_pages_deployment_is_push_only_and_has_exact_authority() -> None:
     assert commands.index('sed -i "s/__CLOUDFLARE') < commands.index(
         "python scripts/check-docs-analytics.py site --require-token"
     )
+    build_steps = build["steps"]
+    public_install = next(
+        index
+        for index, step in enumerate(build_steps)
+        if step.get("name") == "Verify the rendered command against public PyPI"
+    )
+    pages_upload = next(
+        index for index, step in enumerate(build_steps) if step.get("name") == "Upload GitHub Pages artifact"
+    )
+    assert public_install < pages_upload
+    assert build_steps[public_install]["if"] == "${{ github.server_url == 'https://github.com' }}"
+    assert build_steps[0]["with"]["ref"] == "${{ inputs.source_ref || github.sha }}"
 
     visual = workflow["jobs"]["visual-evidence"]
     assert visual["uses"] == VISUAL_WORKFLOW
-    assert visual["with"] == {"source_base_sha": "${{ github.event.before }}"}
+    assert visual["with"] == {
+        "source_base_sha": "${{ inputs.source_base_sha || github.event.before }}",
+        "source_ref": "${{ inputs.source_ref || github.sha }}",
+    }
     assert visual["permissions"] == {"contents": "read"}
 
     deploy = workflow["jobs"]["deploy"]
@@ -163,6 +180,7 @@ def test_pages_deployment_is_push_only_and_has_exact_authority() -> None:
         "id-token": "write",
         "pages": "write",
     }
+    assert "inputs.published_release" in deploy["if"]
     deploy_references = action_references(deploy)
     assert deploy_references == [DEPLOY_PAGES_ACTION]
     assert_actions_are_pinned(deploy_references)
@@ -184,10 +202,13 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     workflow = load_workflow(DOCS_VISUAL)
     assert set(workflow["on"]) == {"workflow_call"}
     inputs = workflow["on"]["workflow_call"]["inputs"]
-    assert set(inputs) == {"source_base_sha"}
+    assert set(inputs) == {"source_base_sha", "source_ref"}
     assert inputs["source_base_sha"]["required"] == "false"
     assert inputs["source_base_sha"]["type"] == "string"
     assert inputs["source_base_sha"]["description"]
+    assert inputs["source_ref"]["required"] == "false"
+    assert inputs["source_ref"]["type"] == "string"
+    assert inputs["source_ref"]["description"]
     assert workflow["permissions"] == {"contents": "read"}
     assert set(workflow["jobs"]) == {"visual-evidence"}
 
@@ -204,6 +225,7 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     assert_actions_are_pinned(references)
 
     commands = run_commands(visual)
+    assert visual["steps"][0]["with"]["ref"] == "${{ inputs.source_ref || github.sha }}"
     assert "candidate/scripts/ci/classify_docs_visual_changes.py" in commands
     assert "visual-controller/scripts/visual_evidence.py validate" in commands
     assert "1440x900 768x1024 390x844 640x360" in commands
@@ -220,3 +242,5 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     assert "--changed-file documentation.css" in commands
     assert "--changed-file search.html" in commands
     assert "source-repository durable-workflow/sdk-python" in commands
+    assert "git -C candidate rev-parse HEAD" in commands
+    assert "steps.classify.outputs.source_revision" in DOCS_VISUAL.read_text(encoding="utf-8")

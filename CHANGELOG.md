@@ -6,8 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.19`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc19`. This SDK release is qualified with Server
+The Python SDK advances to prerelease `2.0.0-rc.20`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc20`. This SDK release is qualified with Server
 `2.0.0-rc.19`; SDK and Server prerelease sequence numbers advance independently.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
@@ -51,6 +51,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- API-reference deployment now installs its exact rendered command from public
+  PyPI before handing a candidate to GitHub Pages. Package publication invokes
+  the same fail-safe deployment after the release is installable, while a
+  delayed or failed publication leaves the prior reference live.
 - The published API reference now renders its exact prerelease installation
   command and qualified Server pairing from the package release manifest.
 - Worker shutdown now quiesces inline `run_until()` work and fully stops the

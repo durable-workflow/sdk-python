@@ -69,6 +69,7 @@ def test_publish_workflow_separates_publication_authority_from_docs_freshness() 
     workflow = read_repo_file(".github/workflows/publish.yml")
     build_job = workflow_job_block(workflow, "build")
     publish_job = workflow_job_block(workflow, "publish")
+    deployment_job = workflow_job_block(workflow, "deploy-api-reference")
     docs_audit_job = workflow_job_block(workflow, "verify-docs-release-audit")
 
     assert '[[ ! "$REQUESTED_TAG" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+' in build_job
@@ -76,6 +77,12 @@ def test_publish_workflow_separates_publication_authority_from_docs_freshness() 
     assert 'if [ "$tag_commit" != "$head_commit" ]' in build_job
     assert "pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247" in publish_job
     assert 'gh release create "$RELEASE_TAG"' in publish_job
+    assert "needs: [build, publish]" in deployment_job
+    assert "uses: ./.github/workflows/docs.yml" in deployment_job
+    assert "published_release: true" in deployment_job
+    assert "source_base_sha: ${{ needs.build.outputs.release_base_commit }}" in deployment_job
+    assert "source_ref: ${{ needs.build.outputs.release_commit }}" in deployment_job
+    assert "pages: write" in deployment_job
     assert "DOCS_RELEASE_AUDIT_ENFORCEMENT: advisory" in docs_audit_job
     assert "DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json" in docs_audit_job
     assert "DOCS_RELEASE_AUDIT_HANDOFF: docs-release-audit-handoff.json" in docs_audit_job

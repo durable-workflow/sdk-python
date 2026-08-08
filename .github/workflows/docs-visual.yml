@@ -7,6 +7,10 @@ on:
         description: Candidate comparison revision; an unavailable revision fails safe to all tracked files.
         required: false
         type: string
+      source_ref:
+        description: Immutable candidate revision; the calling workflow's commit is the default.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -23,7 +27,7 @@ jobs:
           fetch-depth: 0
           path: candidate
           persist-credentials: false
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.source_ref || github.sha }}
           repository: ${{ github.repository }}
 
       - name: Check out visual evidence controller
@@ -62,6 +66,7 @@ jobs:
               classification_args+=(--changed-file "$candidate_file")
             done
           fi
+          printf 'source_revision=%s\n' "$(git -C candidate rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           python candidate/scripts/ci/classify_docs_visual_changes.py \
             "${classification_args[@]}" > visual-classification.json
 
@@ -85,7 +90,7 @@ jobs:
         if: steps.classify.outputs.required == 'true'
         env:
           SEARCH_REQUIRED: ${{ steps.classify.outputs.search }}
-          SOURCE_REVISION: ${{ github.sha }}
+          SOURCE_REVISION: ${{ steps.classify.outputs.source_revision }}
           TMPDIR: ${{ runner.temp }}/python-docs-visual-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           mkdir -p "$TMPDIR" visual-review
@@ -175,6 +180,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           if-no-files-found: error
-          name: python-docs-visual-${{ github.sha }}
+          name: python-docs-visual-${{ steps.classify.outputs.source_revision }}
           path: visual-review
           retention-days: 30

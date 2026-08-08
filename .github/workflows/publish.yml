@@ -52,6 +52,7 @@ jobs:
       artifact-id: ${{ steps.privileged-handoff.outputs.artifact-id }}
       release_tag: ${{ steps.release_source.outputs.tag }}
       release_commit: ${{ steps.release_source.outputs.commit }}
+      release_base_commit: ${{ steps.release_source.outputs.base_commit }}
       source-run-attempt: ${{ github.run_attempt }}
       source-run-id: ${{ github.run_id }}
     steps:
@@ -72,6 +73,7 @@ jobs:
           set -euo pipefail
           package_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           head_commit="$(git rev-parse HEAD)"
+          base_commit="$(git rev-parse "$head_commit^")"
           if [ "$PUBLISH_REQUESTED" = true ]; then
             if [[ ! "$REQUESTED_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
               printf 'release tag must be an exact SDK SemVer: %s\n' "$REQUESTED_TAG" >&2
@@ -104,6 +106,7 @@ jobs:
           {
             printf 'tag=%s\n' "$REQUESTED_TAG"
             printf 'commit=%s\n' "$head_commit"
+            printf 'base_commit=%s\n' "$base_commit"
           } >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
@@ -230,6 +233,21 @@ jobs:
             fi
             gh release create "$RELEASE_TAG" "${arguments[@]}"
           fi
+
+  deploy-api-reference:
+    needs: [build, publish]
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    uses: ./.github/workflows/docs.yml
+    with:
+      published_release: true
+      source_base_sha: ${{ needs.build.outputs.release_base_commit }}
+      source_ref: ${{ needs.build.outputs.release_commit }}
+    permissions:
+      contents: read
+      id-token: write
+      pages: write
 
   verify-docs-release-audit:
     needs: [build, publish]
