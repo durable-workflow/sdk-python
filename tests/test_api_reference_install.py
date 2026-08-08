@@ -1,18 +1,27 @@
 from __future__ import annotations
 
+import io
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from scripts.api_reference_release import load_release_identity
+from scripts.api_reference_release import (
+    RELEASE_EVIDENCE_FILENAME,
+    load_release_identity,
+    release_evidence,
+    write_release_evidence,
+)
 from scripts.check_api_reference_install import (
     PUBLIC_PYPI_INDEX,
+    PublicRequirementUnavailable,
     install_public_requirement,
     rendered_install_command,
     validate_command,
     validate_rendered_site,
     validate_source_templates,
+    verify_public_deployment,
 )
 from scripts.mkdocs_hooks import on_page_markdown
 
@@ -137,11 +146,72 @@ def test_unavailable_public_pypi_release_fails_closed(
     monkeypatch.setattr("scripts.check_api_reference_install.subprocess.run", unavailable)
     monkeypatch.setattr("scripts.check_api_reference_install.time.sleep", lambda _: None)
 
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(PublicRequirementUnavailable):
         install_public_requirement(
             Path("/clean/bin/python"),
             requirement,
             cwd=tmp_path,
             attempts=2,
+            retry_sleep=0,
+        )
+
+
+def test_public_release_evidence_derives_from_manifest(tmp_path: Path) -> None:
+    identity = load_release_identity(REPO_ROOT)
+    source_revision = "a" * 40
+
+    evidence_path = write_release_evidence(tmp_path, identity, source_revision)
+
+    assert evidence_path == tmp_path / RELEASE_EVIDENCE_FILENAME
+    assert json.loads(evidence_path.read_text(encoding="utf-8")) == {
+        "schema": "durable-workflow.python-api-reference.release",
+        "source_revision": source_revision,
+        "install_command": identity.install_command,
+        "artifact_versions": {
+            "sdk-python": identity.version,
+            "server": identity.server_version,
+        },
+    }
+
+
+def test_public_deployment_waits_for_the_exact_source_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = load_release_identity(REPO_ROOT)
+    source_revision = "b" * 40
+    stale = release_evidence(identity, "a" * 40)
+    current = release_evidence(identity, source_revision)
+    responses = iter((stale, current))
+    sleeps: list[float] = []
+
+    def fake_urlopen(request: object, *, timeout: int) -> io.BytesIO:
+        del request
+        assert timeout == 30
+        return io.BytesIO(json.dumps(next(responses)).encode())
+
+    monkeypatch.setattr("scripts.check_api_reference_install.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scripts.check_api_reference_install.time.sleep", sleeps.append)
+
+    evidence = verify_public_deployment(
+        "https://python.durable-workflow.com/release-audit.json",
+        identity,
+        source_revision,
+        attempts=2,
+        retry_sleep=0.25,
+    )
+
+    assert evidence == current
+    assert sleeps == [0.25]
+
+
+def test_public_deployment_rejects_non_https_evidence_url() -> None:
+    identity = load_release_identity(REPO_ROOT)
+
+    with pytest.raises(ValueError, match="must use HTTPS"):
+        verify_public_deployment(
+            "http://python.durable-workflow.com/release-audit.json",
+            identity,
+            "a" * 40,
+            attempts=1,
             retry_sleep=0,
         )

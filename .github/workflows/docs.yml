@@ -20,6 +20,13 @@ on:
       - '.github/workflows/docs-pr.yml'
       - '.github/workflows/docs-visual.yml'
   workflow_call:
+    outputs:
+      deployed_revision:
+        description: Exact public source revision deployed by this invocation.
+        value: ${{ jobs.deploy.outputs.source_revision }}
+      deployment_url:
+        description: Public Pages deployment URL for this invocation.
+        value: ${{ jobs.deploy.outputs.page_url }}
     inputs:
       source_ref:
         description: Immutable SDK release commit to render; direct main pushes use the event commit.
@@ -45,11 +52,18 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      release_ready: ${{ steps.public_install.outputs.release_ready }}
+      source_revision: ${{ steps.source.outputs.revision }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false
           ref: ${{ inputs.source_ref || github.sha }}
+
+      - name: Record the checked-out source revision
+        id: source
+        run: printf 'revision=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
@@ -64,6 +78,7 @@ jobs:
       - name: Build site
         env:
           CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
+          SOURCE_REVISION: ${{ steps.source.outputs.revision }}
         run: |
           python scripts/ci/test-classify-docs-visual-changes.py
           mkdocs build --strict
@@ -81,13 +96,43 @@ jobs:
             python scripts/check_api_reference_install.py --site site
             python scripts/check-docs-analytics.py site --require-token
           fi
+          python scripts/check_api_reference_install.py \
+            --site site \
+            --source-revision "$SOURCE_REVISION"
 
       - name: Verify the rendered command against public PyPI
+        id: public_install
         if: ${{ github.server_url == 'https://github.com' }}
-        run: python scripts/check_api_reference_install.py --site site --install
+        env:
+          PUBLISHED_RELEASE: ${{ inputs.published_release }}
+        run: |
+          arguments=(--site site --install)
+          if [ "$PUBLISHED_RELEASE" = true ]; then
+            python scripts/check_api_reference_install.py "${arguments[@]}"
+          else
+            set +e
+            python scripts/check_api_reference_install.py \
+              "${arguments[@]}" \
+              --install-attempts 1 \
+              --install-retry-sleep 0 \
+              --unavailable-exit-code 75
+            status="$?"
+            set -e
+            if [ "$status" -eq 75 ]; then
+              printf 'release_ready=false\n' >> "$GITHUB_OUTPUT"
+              printf '::notice title=API reference preserved::The exact SDK release is not yet public on PyPI.\n'
+              exit 0
+            fi
+            if [ "$status" -ne 0 ]; then
+              exit "$status"
+            fi
+          fi
+          printf 'release_ready=true\n' >> "$GITHUB_OUTPUT"
 
       - name: Upload GitHub Pages artifact
-        if: ${{ github.server_url == 'https://github.com' }}
+        if: >-
+          github.server_url == 'https://github.com' &&
+          steps.public_install.outputs.release_ready == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         with:
           path: site
@@ -104,8 +149,12 @@ jobs:
     needs: [build, visual-evidence]
     if: >-
       github.server_url == 'https://github.com' &&
+      needs.build.outputs.release_ready == 'true' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.published_release)
     runs-on: ubuntu-latest
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+      source_revision: ${{ steps.evidence.outputs.source_revision }}
     permissions:
       contents: read
       id-token: write
@@ -116,3 +165,15 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5
+      - name: Record the deployed public source revision
+        id: evidence
+        env:
+          DEPLOYED_REVISION: ${{ needs.build.outputs.source_revision }}
+          DEPLOYMENT_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          printf 'source_revision=%s\n' "$DEPLOYED_REVISION" >> "$GITHUB_OUTPUT"
+          {
+            printf '## Python API reference deployed\n\n'
+            printf -- '- Source revision: `%s`\n' "$DEPLOYED_REVISION"
+            printf -- '- Public URL: %s\n' "$DEPLOYMENT_URL"
+          } >> "$GITHUB_STEP_SUMMARY"

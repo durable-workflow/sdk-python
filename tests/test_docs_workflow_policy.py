@@ -132,6 +132,9 @@ def test_pages_deployment_requires_main_or_published_release_authority() -> None
     call_inputs = workflow["on"]["workflow_call"]["inputs"]
     assert set(call_inputs) == {"published_release", "source_base_sha", "source_ref"}
     assert call_inputs["published_release"]["default"] == "false"
+    call_outputs = workflow["on"]["workflow_call"]["outputs"]
+    assert set(call_outputs) == {"deployed_revision", "deployment_url"}
+    assert call_outputs["deployed_revision"]["value"] == "${{ jobs.deploy.outputs.source_revision }}"
     assert workflow["permissions"] == {"contents": "read"}
     assert set(workflow["jobs"]) == {"build", "visual-evidence", "deploy"}
 
@@ -144,7 +147,8 @@ def test_pages_deployment_requires_main_or_published_release_authority() -> None
     assert "python scripts/ci/test-classify-docs-visual-changes.py" in commands
     assert "mkdocs build --strict" in commands
     assert "python scripts/check_api_reference_install.py --site site" in commands
-    assert "python scripts/check_api_reference_install.py --site site --install" in commands
+    assert 'python scripts/check_api_reference_install.py "${arguments[@]}"' in commands
+    assert '--source-revision "$SOURCE_REVISION"' in commands
     assert "python scripts/check-docs-analytics.py site" in commands
     assert "python scripts/check-docs-layout.py site" in commands
     assert commands.count("mkdocs build --strict") == 2
@@ -162,7 +166,19 @@ def test_pages_deployment_requires_main_or_published_release_authority() -> None
         index for index, step in enumerate(build_steps) if step.get("name") == "Upload GitHub Pages artifact"
     )
     assert public_install < pages_upload
-    assert build_steps[public_install]["if"] == "${{ github.server_url == 'https://github.com' }}"
+    public_install_step = build_steps[public_install]
+    assert public_install_step["if"] == "${{ github.server_url == 'https://github.com' }}"
+    assert "continue-on-error" not in public_install_step
+    assert "--install-attempts 1" in public_install_step["run"]
+    assert "--install-retry-sleep 0" in public_install_step["run"]
+    assert "--unavailable-exit-code 75" in public_install_step["run"]
+    assert 'if [ "$status" -eq 75 ]' in public_install_step["run"]
+    assert "release_ready=false" in public_install_step["run"]
+    assert "steps.public_install.outputs.release_ready == 'true'" in build_steps[pages_upload]["if"]
+    assert build["outputs"] == {
+        "release_ready": "${{ steps.public_install.outputs.release_ready }}",
+        "source_revision": "${{ steps.source.outputs.revision }}",
+    }
     assert build_steps[0]["with"]["ref"] == "${{ inputs.source_ref || github.sha }}"
 
     visual = workflow["jobs"]["visual-evidence"]
@@ -181,6 +197,11 @@ def test_pages_deployment_requires_main_or_published_release_authority() -> None
         "pages": "write",
     }
     assert "inputs.published_release" in deploy["if"]
+    assert "needs.build.outputs.release_ready == 'true'" in deploy["if"]
+    assert deploy["outputs"] == {
+        "page_url": "${{ steps.deployment.outputs.page_url }}",
+        "source_revision": "${{ steps.evidence.outputs.source_revision }}",
+    }
     deploy_references = action_references(deploy)
     assert deploy_references == [DEPLOY_PAGES_ACTION]
     assert_actions_are_pinned(deploy_references)

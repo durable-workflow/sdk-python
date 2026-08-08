@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 try:
     import tomllib  # type: ignore[import-not-found]
@@ -14,6 +16,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by the Python 3.10 C
 
 SDK_VERSION_TOKEN = "{{ durable_workflow_sdk_version }}"
 SERVER_VERSION_TOKEN = "{{ durable_workflow_server_version }}"
+RELEASE_EVIDENCE_FILENAME = "release-audit.json"
+RELEASE_EVIDENCE_SCHEMA = "durable-workflow.python-api-reference.release"
 
 
 @dataclass(frozen=True)
@@ -83,3 +87,41 @@ def render_release_identity(markdown: str, identity: ReleaseIdentity) -> str:
     if re.search(r"{{\s*durable_workflow_(?:sdk|server)_version\s*}}", rendered):
         raise ValueError("API-reference release template contains an unresolved release token")
     return rendered
+
+
+def release_evidence(identity: ReleaseIdentity, source_revision: str) -> dict[str, Any]:
+    """Build the public record that binds a deployed page to its release source."""
+    if re.fullmatch(r"[0-9a-f]{40}", source_revision) is None:
+        raise ValueError("API-reference source revision must be an exact Git object ID")
+
+    return {
+        "schema": RELEASE_EVIDENCE_SCHEMA,
+        "source_revision": source_revision,
+        "install_command": identity.install_command,
+        "artifact_versions": {
+            "sdk-python": identity.version,
+            "server": identity.server_version,
+        },
+    }
+
+
+def write_release_evidence(site: Path, identity: ReleaseIdentity, source_revision: str) -> Path:
+    """Write the release record into a built API-reference site."""
+    path = site / RELEASE_EVIDENCE_FILENAME
+    path.write_text(
+        f"{json.dumps(release_evidence(identity, source_revision), indent=2)}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def validate_release_evidence(
+    evidence: object,
+    identity: ReleaseIdentity,
+    source_revision: str,
+) -> dict[str, Any]:
+    """Require a deployed release record to match the manifest-derived tuple."""
+    expected = release_evidence(identity, source_revision)
+    if evidence != expected:
+        raise ValueError("Deployed API-reference release evidence does not match the expected release tuple")
+    return expected

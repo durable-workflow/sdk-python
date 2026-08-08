@@ -86,9 +86,12 @@ def test_publish_workflow_separates_publication_authority_from_docs_freshness() 
     assert "DOCS_RELEASE_AUDIT_ENFORCEMENT: advisory" in docs_audit_job
     assert "DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json" in docs_audit_job
     assert "DOCS_RELEASE_AUDIT_HANDOFF: docs-release-audit-handoff.json" in docs_audit_job
-    assert "needs: [build, publish]" in docs_audit_job
+    assert "needs: [build, publish, deploy-api-reference]" in docs_audit_job
     assert "mkdocs build --strict" in docs_audit_job
     assert "python scripts/check_api_reference_install.py --site site --install" in docs_audit_job
+    assert "needs.deploy-api-reference.outputs.deployed_revision" in docs_audit_job
+    assert "--verify-deployed-url https://python.durable-workflow.com/release-audit.json" in docs_audit_job
+    assert 'if [ "$DEPLOYED_REVISION" != "$EXPECTED_REVISION" ]' in docs_audit_job
     assert "contents: write" not in docs_audit_job
     assert "if: always()" in docs_audit_job
     assert docs_audit_job.index("scripts/ci/check-docs-release-audit.sh") < docs_audit_job.index(

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import html.parser
+import json
 import os
 import re
 import shlex
@@ -12,15 +13,29 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
+from typing import Any
 
 try:
-    from scripts.api_reference_release import ReleaseIdentity, load_release_identity, render_release_identity
+    from scripts.api_reference_release import (
+        ReleaseIdentity,
+        load_release_identity,
+        render_release_identity,
+        validate_release_evidence,
+        write_release_evidence,
+    )
 except ModuleNotFoundError as error:  # pragma: no cover - used by the documented command-line entry point
     if error.name != "scripts":
         raise
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from scripts.api_reference_release import ReleaseIdentity, load_release_identity, render_release_identity
+    from scripts.api_reference_release import (
+        ReleaseIdentity,
+        load_release_identity,
+        render_release_identity,
+        validate_release_evidence,
+        write_release_evidence,
+    )
 
 
 class InstallCodeParser(html.parser.HTMLParser):
@@ -123,6 +138,10 @@ def validate_rendered_site(site: Path, identity: ReleaseIdentity) -> str:
 PUBLIC_PYPI_INDEX = "https://pypi.org/simple"
 
 
+class PublicRequirementUnavailable(subprocess.CalledProcessError):
+    """The exact requirement could not be installed from the public channel."""
+
+
 def install_public_requirement(
     python: Path,
     requirement: str,
@@ -165,7 +184,7 @@ def install_public_requirement(
             time.sleep(retry_sleep)
 
     assert result is not None
-    raise subprocess.CalledProcessError(result.returncode, command)
+    raise PublicRequirementUnavailable(result.returncode, command)
 
 
 def run_clean_install(
@@ -209,6 +228,43 @@ print(f"clean API-reference install imported durable-workflow {installed}")
         subprocess.run([str(python), "-c", check], cwd=clean_root, env=env, check=True)
 
 
+def verify_public_deployment(
+    url: str,
+    identity: ReleaseIdentity,
+    source_revision: str,
+    *,
+    attempts: int,
+    retry_sleep: float,
+) -> dict[str, Any]:
+    """Wait for the live release record to identify the deployed release source."""
+    if attempts < 1:
+        raise ValueError("Public deployment attempts must be at least 1")
+    if retry_sleep < 0:
+        raise ValueError("Public deployment retry sleep must not be negative")
+    if not url.startswith("https://"):
+        raise ValueError("Public deployment evidence URL must use HTTPS")
+
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            request = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - fixed public HTTPS URL
+                evidence = json.load(response)
+            return validate_release_evidence(evidence, identity, source_revision)
+        except (OSError, ValueError) as error:
+            last_error = error
+            if attempt < attempts:
+                print(
+                    f"Public API reference does not yet identify {source_revision}; "
+                    f"retrying in {retry_sleep:g}s ({attempt}/{attempts})",
+                    file=sys.stderr,
+                )
+                time.sleep(retry_sleep)
+
+    assert last_error is not None
+    raise last_error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parent.parent)
@@ -230,19 +286,63 @@ def main() -> int:
         default=20,
         help="Seconds between public PyPI install attempts.",
     )
+    parser.add_argument(
+        "--unavailable-exit-code",
+        type=int,
+        help="Return this distinct code only when public PyPI cannot install the exact requirement.",
+    )
+    parser.add_argument(
+        "--source-revision",
+        help="Exact source revision to record in the built site and require from a public deployment.",
+    )
+    parser.add_argument(
+        "--verify-deployed-url",
+        help="Public release-evidence URL to verify after deployment.",
+    )
+    parser.add_argument(
+        "--deployment-attempts",
+        type=int,
+        default=12,
+        help="Number of attempts allowed while the deployed release evidence propagates.",
+    )
+    parser.add_argument(
+        "--deployment-retry-sleep",
+        type=float,
+        default=10,
+        help="Seconds between public deployment evidence attempts.",
+    )
     args = parser.parse_args()
+    if args.unavailable_exit_code is not None and not 1 <= args.unavailable_exit_code <= 125:
+        parser.error("--unavailable-exit-code must be between 1 and 125")
 
     repo_root = args.repo_root.resolve()
     site = args.site if args.site.is_absolute() else repo_root / args.site
     identity = load_release_identity(repo_root)
     validate_source_templates(repo_root, identity)
     requirement = validate_rendered_site(site, identity)
+    if args.source_revision:
+        write_release_evidence(site, identity, args.source_revision)
     if args.install:
-        run_clean_install(
-            requirement,
+        try:
+            run_clean_install(
+                requirement,
+                identity,
+                install_attempts=args.install_attempts,
+                install_retry_sleep=args.install_retry_sleep,
+            )
+        except PublicRequirementUnavailable:
+            if args.unavailable_exit_code is None:
+                raise
+            return args.unavailable_exit_code
+    if args.verify_deployed_url:
+        if not args.source_revision:
+            parser.error("--verify-deployed-url requires --source-revision")
+        verify_public_deployment(
+            args.verify_deployed_url,
             identity,
-            install_attempts=args.install_attempts,
-            install_retry_sleep=args.install_retry_sleep,
+            args.source_revision,
+            attempts=args.deployment_attempts,
+            retry_sleep=args.deployment_retry_sleep,
         )
     print(
         f"API-reference install command selects {identity.package} {identity.version} "

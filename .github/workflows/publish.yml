@@ -250,7 +250,7 @@ jobs:
       pages: write
 
   verify-docs-release-audit:
-    needs: [build, publish]
+    needs: [build, publish, deploy-api-reference]
     runs-on: ubuntu-latest
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
@@ -269,6 +269,28 @@ jobs:
           pip install -e '.[docs]'
           mkdocs build --strict
           python scripts/check_api_reference_install.py --site site --install
+
+      - name: Verify the deployed API-reference release record
+        env:
+          DEPLOYED_REVISION: ${{ needs.deploy-api-reference.outputs.deployed_revision }}
+          DOCS_RELEASE_AUDIT_VERSION: ${{ needs.build.outputs.release_tag }}
+          EXPECTED_REVISION: ${{ needs.build.outputs.release_commit }}
+        run: |
+          if [ "$DEPLOYED_REVISION" != "$EXPECTED_REVISION" ]; then
+            printf 'deployed revision %s does not match release revision %s\n' \
+              "$DEPLOYED_REVISION" "$EXPECTED_REVISION" >&2
+            exit 1
+          fi
+          python scripts/check_api_reference_install.py \
+            --site site \
+            --source-revision "$EXPECTED_REVISION" \
+            --verify-deployed-url https://python.durable-workflow.com/release-audit.json
+          {
+            printf '## Python API reference publication verified\n\n'
+            printf -- '- SDK release: `%s`\n' "$DOCS_RELEASE_AUDIT_VERSION"
+            printf -- '- Source revision: `%s`\n' "$EXPECTED_REVISION"
+            printf -- '- Release evidence: https://python.durable-workflow.com/release-audit.json\n'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify live docs release audit after PyPI publish
         env:
