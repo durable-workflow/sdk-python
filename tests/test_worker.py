@@ -7,6 +7,7 @@ import sys
 import threading
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from durable_workflow import activity, serializer, workflow
@@ -2802,6 +2803,74 @@ class TestConcurrencyLimits:
 
 
 class TestWorkerShutdown:
+    @pytest.mark.asyncio
+    async def test_worker_only_token_supports_complete_lifecycle(self) -> None:
+        requests: list[tuple[str, str, dict[str, str]]] = []
+        active_lifecycle = asyncio.Event()
+        active_paths = {
+            "/api/cluster/info",
+            "/api/worker/register",
+            "/api/worker/workflow-tasks/poll",
+            "/api/worker/activity-tasks/poll",
+            "/api/worker/heartbeat",
+        }
+
+        async def request(method: str, path: str, **kwargs: object) -> httpx.Response:
+            headers = kwargs["headers"]
+            assert isinstance(headers, dict)
+            requests.append((method, path, headers))
+
+            if path == "/api/cluster/info":
+                payload: dict[str, object] = compatible_cluster_info(worker_protocol={"version": PROTOCOL_VERSION})
+            elif path in {"/api/worker/register", "/api/worker/heartbeat"}:
+                payload = {"worker_id": "worker-only", "acknowledged": True}
+            elif path == "/api/worker/registrations/worker-only":
+                payload = {
+                    "worker_id": "worker-only",
+                    "outcome": "deregistered",
+                    "recovered_workflow_task_count": 0,
+                }
+            else:
+                payload = {"task": None, "poll_status": "timeout"}
+
+            if active_paths.issubset({observed_path for _, observed_path, _ in requests}):
+                active_lifecycle.set()
+
+            return httpx.Response(
+                200,
+                json=payload,
+                request=httpx.Request(method, f"http://localhost:8080{path}"),
+            )
+
+        async with Client(
+            "http://localhost:8080",
+            worker_token="worker-token",
+            namespace="workers",
+        ) as client:
+            client._http.request = AsyncMock(side_effect=request)  # type: ignore[method-assign]
+            worker = Worker(
+                client,
+                task_queue="orders",
+                worker_id="worker-only",
+                poll_timeout=0.01,
+                heartbeat_interval=0.01,
+            )
+
+            run_task = asyncio.create_task(worker.run())
+            await asyncio.wait_for(active_lifecycle.wait(), timeout=1.0)
+            await worker.stop()
+            await run_task
+
+        observed_paths = {path for _, path, _ in requests}
+        expected_paths = active_paths | {"/api/worker/registrations/worker-only"}
+        assert expected_paths <= observed_paths
+        for _, _, headers in requests:
+            assert headers["Authorization"] == "Bearer worker-token"
+
+        discovery_headers = next(headers for _, path, headers in requests if path == "/api/cluster/info")
+        assert discovery_headers["X-Durable-Workflow-Protocol-Version"] == PROTOCOL_VERSION
+        assert "X-Durable-Workflow-Control-Plane-Version" not in discovery_headers
+
     @pytest.mark.asyncio
     async def test_normal_shutdown_drains_before_deregistering_once(self, mock_client: AsyncMock) -> None:
         worker = Worker(

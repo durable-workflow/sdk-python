@@ -174,7 +174,7 @@ class TestHeaders:
             patch.object(client._http, "request", new_callable=AsyncMock) as request,
             pytest.raises(ValueError, match="control_token or the shared token"),
         ):
-            await client.get_cluster_info()
+            await client.list_namespaces()
 
         request.assert_not_awaited()
         await client.aclose()
@@ -3415,6 +3415,40 @@ class TestQueryTasks:
 
 
 class TestGetClusterInfo:
+    @pytest.mark.asyncio
+    async def test_worker_token_authenticates_discovery(self) -> None:
+        client = Client("http://localhost:8080", worker_token="worker-token", namespace="workers")
+        resp = _mock_response(200, {"version": "2.0.0"})
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as request:
+            info = await client.get_cluster_info()
+
+        assert info == {"version": "2.0.0"}
+        headers = request.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer worker-token"
+        assert headers["X-Namespace"] == "workers"
+        assert headers["X-Durable-Workflow-Protocol-Version"] == PROTOCOL_VERSION
+        assert "X-Durable-Workflow-Control-Plane-Version" not in headers
+
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_control_token_authenticates_discovery(self) -> None:
+        client = Client("http://localhost:8080", control_token="operator-token", namespace="operations")
+        resp = _mock_response(200, {"version": "2.0.0"})
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as request:
+            info = await client.get_cluster_info()
+
+        assert info == {"version": "2.0.0"}
+        headers = request.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer operator-token"
+        assert headers["X-Namespace"] == "operations"
+        assert headers["X-Durable-Workflow-Control-Plane-Version"] == CONTROL_PLANE_VERSION
+        assert "X-Durable-Workflow-Protocol-Version" not in headers
+
+        await client.aclose()
+
     @pytest.mark.asyncio
     async def test_returns_dict_payload(self, client: Client) -> None:
         payload = {"version": "2.0.0", "capabilities": {"workflow": True}}

@@ -6,9 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.17`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc17`. This SDK release is qualified with Server
-`2.0.0-rc.17`; SDK and Server prerelease sequence numbers advance independently.
+The Python SDK advances to prerelease `2.0.0-rc.18`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc18`. This SDK release is qualified with Server
+`2.0.0-rc.18`; SDK and Server prerelease sequence numbers advance independently.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
 
@@ -51,6 +51,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Workers configured with only `worker_token` can now authenticate cluster
+  discovery and complete registration, polling, heartbeat, and graceful
+  deregistration without receiving a control credential. Actual worker and
+  control operations remain fail-closed across credential roles.
 - Successful worker registrations are now removed through the worker protocol
   after pollers and in-flight tasks drain. Shutdown is idempotent, surfaces
   authentication and protocol failures, and retains cleanup context without

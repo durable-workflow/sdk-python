@@ -1316,8 +1316,10 @@ class Client:
         await self.aclose()
 
     def _headers(self, *, worker: bool = False) -> dict[str, str]:
+        return self._headers_with_token(self._auth_token(worker=worker), worker=worker)
+
+    def _headers_with_token(self, token: str | None, *, worker: bool) -> dict[str, str]:
         h: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
-        token = self._auth_token(worker=worker)
         if token:
             h["Authorization"] = f"Bearer {token}"
         h["X-Namespace"] = self.namespace
@@ -1332,6 +1334,14 @@ class Client:
                 CONTROL_PLANE_VERSION,
             )
         return h
+
+    def _discovery_headers(self) -> dict[str, str]:
+        """Select one credential accepted by the cluster discovery route."""
+        if self.worker_token:
+            return self._headers_with_token(self.worker_token, worker=True)
+        if self.control_token:
+            return self._headers_with_token(self.control_token, worker=False)
+        return self._headers_with_token(self.token, worker=False)
 
     def _auth_token(self, *, worker: bool = False) -> str | None:
         if worker:
@@ -1463,13 +1473,20 @@ class Client:
         path: str,
         *,
         worker: bool = False,
+        discovery: bool = False,
         json: Any = None,
         timeout: float | None = None,
         context: str = "",
     ) -> Any:
+        if worker and discovery:
+            raise ValueError("a request cannot be both worker-plane and cluster discovery")
+        if discovery and path != "/cluster/info":
+            raise ValueError("cluster discovery credentials can only authorize /cluster/info")
+
         start = time.perf_counter()
         route = _route_for_metrics(path)
-        plane = "worker" if worker else "control"
+        discovery_uses_worker_token = discovery and bool(self.worker_token)
+        plane = "worker" if worker or discovery_uses_worker_token else "control"
         status_code = "none"
         outcome = "pending"
 
@@ -1477,7 +1494,7 @@ class Client:
             resp = await self._http.request(
                 method,
                 f"/api{path}",
-                headers=self._headers(worker=worker),
+                headers=self._discovery_headers() if discovery else self._headers(worker=worker),
                 json=json,
                 timeout=timeout,
             )
@@ -1584,8 +1601,13 @@ class Client:
             self.metrics.record(CLIENT_REQUEST_DURATION_SECONDS, time.perf_counter() - start, tags=tags)
 
     async def get_cluster_info(self) -> dict[str, Any]:
-        """Fetch server build identity, capabilities, and protocol manifests."""
-        result = await self._request("GET", "/cluster/info", worker=False, context="get_cluster_info")
+        """Fetch server build identity, capabilities, and protocol manifests.
+
+        Cluster discovery accepts a worker-scoped, control-scoped, or shared
+        credential. Other client methods continue to require the credential
+        for their own protocol plane.
+        """
+        result = await self._request("GET", "/cluster/info", discovery=True, context="get_cluster_info")
         if not isinstance(result, dict):
             raise ServerError(
                 200,
