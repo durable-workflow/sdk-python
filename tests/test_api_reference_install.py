@@ -166,6 +166,7 @@ def test_public_release_evidence_derives_from_manifest(tmp_path: Path) -> None:
     assert json.loads(evidence_path.read_text(encoding="utf-8")) == {
         "schema": "durable-workflow.python-api-reference.release",
         "source_revision": source_revision,
+        "pypi_version": identity.registry_version,
         "install_command": identity.install_command,
         "artifact_versions": {
             "sdk-python": identity.version,

@@ -11,6 +11,7 @@ on:
       - 'pyproject.toml'
       - 'scripts/ci/classify_docs_visual_changes.py'
       - 'scripts/ci/test-classify-docs-visual-changes.py'
+      - 'scripts/ci/validate-release-docs-source.py'
       - 'scripts/api_reference_release.py'
       - 'scripts/check_api_reference_install.py'
       - 'scripts/check-docs-analytics.py'

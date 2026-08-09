@@ -97,6 +97,7 @@ def release_evidence(identity: ReleaseIdentity, source_revision: str) -> dict[st
     return {
         "schema": RELEASE_EVIDENCE_SCHEMA,
         "source_revision": source_revision,
+        "pypi_version": identity.registry_version,
         "install_command": identity.install_command,
         "artifact_versions": {
             "sdk-python": identity.version,

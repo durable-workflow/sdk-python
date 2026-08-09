@@ -1,5 +1,11 @@
 name: Docs deployment
 
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+  && format('Deploy Python release docs {0}@{1} from release run {2}.{3}',
+  inputs.release_version, inputs.release_source_sha, inputs.release_run_id, inputs.release_run_attempt)
+  || format('Deploy Python docs from main@{0}', github.sha) }}
+
 on:
   push:
     branches: [main]
@@ -11,6 +17,7 @@ on:
       - 'pyproject.toml'
       - 'scripts/ci/classify_docs_visual_changes.py'
       - 'scripts/ci/test-classify-docs-visual-changes.py'
+      - 'scripts/ci/validate-release-docs-source.py'
       - 'scripts/api_reference_release.py'
       - 'scripts/check_api_reference_install.py'
       - 'scripts/check-docs-analytics.py'
@@ -19,28 +26,28 @@ on:
       - '.github/workflows/docs.yml'
       - '.github/workflows/docs-pr.yml'
       - '.github/workflows/docs-visual.yml'
-  workflow_call:
-    outputs:
-      deployed_revision:
-        description: Exact public source revision deployed by this invocation.
-        value: ${{ jobs.deploy.outputs.source_revision }}
-      deployment_url:
-        description: Public Pages deployment URL for this invocation.
-        value: ${{ jobs.deploy.outputs.page_url }}
+  workflow_dispatch:
     inputs:
-      source_ref:
-        description: Immutable SDK release commit to render; direct main pushes use the event commit.
-        required: false
+      release_version:
+        description: Exact public PyPI version and immutable source tag.
+        required: true
         type: string
-      source_base_sha:
-        description: Immutable parent revision used to classify release visual changes.
-        required: false
+      release_source_sha:
+        description: Exact release source commit to render and audit.
+        required: true
         type: string
-      published_release:
-        description: Allow deployment after the caller has published this exact release to PyPI.
-        required: false
-        type: boolean
-        default: false
+      release_parent_sha:
+        description: Exact first parent of the release source commit.
+        required: true
+        type: string
+      release_run_id:
+        description: Authenticated publication workflow run requesting this deployment.
+        required: true
+        type: string
+      release_run_attempt:
+        description: Exact attempt of the publication workflow run.
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -54,28 +61,97 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_ready: ${{ steps.public_install.outputs.release_ready }}
+      release_version: ${{ steps.source.outputs.release_version }}
+      source_base_revision: ${{ steps.source.outputs.base_revision }}
       source_revision: ${{ steps.source.outputs.revision }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - name: Checkout the trusted main-context workflow controller
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false
-          ref: ${{ inputs.source_ref || github.sha }}
+          path: controller
+          ref: ${{ github.sha }}
 
-      - name: Record the checked-out source revision
-        id: source
-        run: printf 'revision=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Checkout the exact documentation source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          path: candidate
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_source_sha || github.sha }}
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.12"
 
+      - name: Validate and record the deployment source identity
+        id: source
+        env:
+          EVENT_BEFORE: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_PARENT_SHA: ${{ inputs.release_parent_sha }}
+          RELEASE_RUN_ATTEMPT: ${{ inputs.release_run_attempt }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_SOURCE_SHA: ${{ inputs.release_source_sha }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$WORKFLOW_REF" != refs/heads/main ]; then
+            printf 'docs deployment workflow must execute from refs/heads/main, got %s\n' "$WORKFLOW_REF" >&2
+            exit 1
+          fi
+          observed_source="$(git -C candidate rev-parse HEAD)"
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            for identity in "$RELEASE_RUN_ID" "$RELEASE_RUN_ATTEMPT"; do
+              if [[ ! "$identity" =~ ^[1-9][0-9]*$ ]]; then
+                printf 'release workflow run identity is invalid\n' >&2
+                exit 1
+              fi
+            done
+            python controller/scripts/ci/validate-release-docs-source.py \
+              --repo-root candidate \
+              --source-sha "$RELEASE_SOURCE_SHA" \
+              --parent-sha "$RELEASE_PARENT_SHA" \
+              --release-version "$RELEASE_VERSION"
+            source_revision="$RELEASE_SOURCE_SHA"
+            base_revision="$RELEASE_PARENT_SHA"
+            release_version="$RELEASE_VERSION"
+          elif [ "$EVENT_NAME" = push ]; then
+            if [ "$observed_source" != "$WORKFLOW_SHA" ]; then
+              printf 'main docs checkout is %s, expected event commit %s\n' "$observed_source" "$WORKFLOW_SHA" >&2
+              exit 1
+            fi
+            source_revision="$observed_source"
+            base_revision="$EVENT_BEFORE"
+            release_version="$(python -c \
+              'import tomllib; print(tomllib.load(open("candidate/pyproject.toml", "rb"))["project"]["version"])')"
+          else
+            printf 'docs deployment does not accept event %s\n' "$EVENT_NAME" >&2
+            exit 1
+          fi
+          if [[ ! "$source_revision" =~ ^[0-9a-f]{40}$ ]] ||
+             [[ ! "$base_revision" =~ ^[0-9a-f]{40}$ ]]; then
+            printf 'docs deployment source identities must be exact Git object IDs\n' >&2
+            exit 1
+          fi
+          {
+            printf 'revision=%s\n' "$source_revision"
+            printf 'base_revision=%s\n' "$base_revision"
+            printf 'release_version=%s\n' "$release_version"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Install package + docs deps
+        working-directory: candidate
         run: pip install -e '.[docs]'
 
       - name: Install browser for responsive layout checks
+        working-directory: candidate
         run: python -m playwright install --with-deps chromium
 
       - name: Build site
+        working-directory: candidate
         env:
           CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
           SOURCE_REVISION: ${{ steps.source.outputs.revision }}
@@ -103,8 +179,9 @@ jobs:
       - name: Verify the rendered command against public PyPI
         id: public_install
         if: ${{ github.server_url == 'https://github.com' }}
+        working-directory: candidate
         env:
-          PUBLISHED_RELEASE: ${{ inputs.published_release }}
+          PUBLISHED_RELEASE: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           arguments=(--site site --install)
           if [ "$PUBLISHED_RELEASE" = true ]; then
@@ -135,13 +212,14 @@ jobs:
           steps.public_install.outputs.release_ready == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         with:
-          path: site
+          path: candidate/site
 
   visual-evidence:
+    needs: build
     uses: ./.github/workflows/docs-visual.yml  # local
     with:
-      source_base_sha: ${{ inputs.source_base_sha || github.event.before }}
-      source_ref: ${{ inputs.source_ref || github.sha }}
+      source_base_sha: ${{ needs.build.outputs.source_base_revision }}
+      source_ref: ${{ needs.build.outputs.source_revision }}
     permissions:
       contents: read
 
@@ -149,8 +227,9 @@ jobs:
     needs: [build, visual-evidence]
     if: >-
       github.server_url == 'https://github.com' &&
+      github.ref == 'refs/heads/main' &&
       needs.build.outputs.release_ready == 'true' &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.published_release)
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     outputs:
       page_url: ${{ steps.deployment.outputs.page_url }}
@@ -170,10 +249,88 @@ jobs:
         env:
           DEPLOYED_REVISION: ${{ needs.build.outputs.source_revision }}
           DEPLOYMENT_URL: ${{ steps.deployment.outputs.page_url }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
         run: |
           printf 'source_revision=%s\n' "$DEPLOYED_REVISION" >> "$GITHUB_OUTPUT"
           {
             printf '## Python API reference deployed\n\n'
+            printf -- '- SDK version: `%s`\n' "$RELEASE_VERSION"
             printf -- '- Source revision: `%s`\n' "$DEPLOYED_REVISION"
             printf -- '- Public URL: %s\n' "$DEPLOYMENT_URL"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  audit-release:
+    needs: [build, deploy]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the trusted main-context workflow controller
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+          path: controller
+          ref: ${{ github.sha }}
+
+      - name: Checkout the exact audited release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+          path: candidate
+          ref: ${{ needs.build.outputs.source_revision }}
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+
+      - name: Build and exercise the API-reference install path
+        working-directory: candidate
+        run: |
+          pip install -e '.[docs]'
+          mkdocs build --strict
+          python ../controller/scripts/check_api_reference_install.py \
+            --repo-root . \
+            --site site \
+            --install
+
+      - name: Verify the deployed API-reference release record
+        working-directory: candidate
+        env:
+          DEPLOYED_REVISION: ${{ needs.deploy.outputs.source_revision }}
+          EXPECTED_REVISION: ${{ needs.build.outputs.source_revision }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+        run: |
+          if [ "$DEPLOYED_REVISION" != "$EXPECTED_REVISION" ]; then
+            printf 'deployed revision %s does not match release revision %s\n' \
+              "$DEPLOYED_REVISION" "$EXPECTED_REVISION" >&2
+            exit 1
+          fi
+          python ../controller/scripts/check_api_reference_install.py \
+            --repo-root . \
+            --site site \
+            --source-revision "$EXPECTED_REVISION" \
+            --verify-deployed-url https://python.durable-workflow.com/release-audit.json
+          {
+            printf '## Python API reference release audit passed\n\n'
+            printf -- '- SDK release: `%s`\n' "$RELEASE_VERSION"
+            printf -- '- Source revision: `%s`\n' "$EXPECTED_REVISION"
+            printf -- '- Release evidence: https://python.durable-workflow.com/release-audit.json\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify live docs release audit after PyPI publish
+        env:
+          DOCS_RELEASE_AUDIT_ARTIFACT: sdk-python
+          DOCS_RELEASE_AUDIT_VERSION: ${{ needs.build.outputs.release_version }}
+          DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json
+          DOCS_RELEASE_AUDIT_HANDOFF: docs-release-audit-handoff.json
+          DOCS_RELEASE_AUDIT_ENFORCEMENT: advisory
+        run: controller/scripts/ci/check-docs-release-audit.sh
+
+      - name: Upload docs release audit evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: docs-release-audit-evidence-${{ needs.build.outputs.release_version }}
+          path: |
+            docs-release-audit-evidence.json
+            docs-release-audit-handoff.json
+          if-no-files-found: warn

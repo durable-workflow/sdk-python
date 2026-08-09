@@ -20,6 +20,7 @@ DOCS_PATHS = [
     "pyproject.toml",
     "scripts/ci/classify_docs_visual_changes.py",
     "scripts/ci/test-classify-docs-visual-changes.py",
+    "scripts/ci/validate-release-docs-source.py",
     "scripts/api_reference_release.py",
     "scripts/check_api_reference_install.py",
     "scripts/check-docs-analytics.py",
@@ -139,27 +140,36 @@ def test_docs_pull_request_checks_are_read_only_and_complete() -> None:
     assert visual["permissions"] == {"contents": "read"}
 
 
-def test_pages_deployment_requires_main_or_published_release_authority() -> None:
+def test_pages_deployment_requires_main_context_and_an_exact_release_tuple() -> None:
     workflow = load_workflow(DOCS_DEPLOYMENT)
     assert workflow["on"]["push"] == {
         "branches": ["main"],
         "paths": DOCS_PATHS,
     }
-    call_inputs = workflow["on"]["workflow_call"]["inputs"]
-    assert set(call_inputs) == {"published_release", "source_base_sha", "source_ref"}
-    assert call_inputs["published_release"]["default"] == "false"
-    call_outputs = workflow["on"]["workflow_call"]["outputs"]
-    assert set(call_outputs) == {"deployed_revision", "deployment_url"}
-    assert call_outputs["deployed_revision"]["value"] == "${{ jobs.deploy.outputs.source_revision }}"
+    dispatch_inputs = workflow["on"]["workflow_dispatch"]["inputs"]
+    assert set(dispatch_inputs) == {
+        "release_parent_sha",
+        "release_run_attempt",
+        "release_run_id",
+        "release_source_sha",
+        "release_version",
+    }
+    assert all(value["required"] == "true" for value in dispatch_inputs.values())
+    assert all(value["type"] == "string" for value in dispatch_inputs.values())
     assert workflow["permissions"] == {"contents": "read"}
-    assert set(workflow["jobs"]) == {"build", "visual-evidence", "deploy"}
+    assert set(workflow["jobs"]) == {"audit-release", "build", "deploy", "visual-evidence"}
 
     build = workflow["jobs"]["build"]
     assert "permissions" not in build
     build_references = action_references(build)
-    assert build_references == [CHECKOUT_ACTION, SETUP_PYTHON_ACTION, UPLOAD_PAGES_ACTION]
+    assert build_references == [CHECKOUT_ACTION, CHECKOUT_ACTION, SETUP_PYTHON_ACTION, UPLOAD_PAGES_ACTION]
     assert_actions_are_pinned(build_references)
     commands = run_commands(build)
+    assert "docs deployment workflow must execute from refs/heads/main" in commands
+    assert "controller/scripts/ci/validate-release-docs-source.py" in commands
+    assert '--source-sha "$RELEASE_SOURCE_SHA"' in commands
+    assert '--parent-sha "$RELEASE_PARENT_SHA"' in commands
+    assert '--release-version "$RELEASE_VERSION"' in commands
     assert "python scripts/ci/test-classify-docs-visual-changes.py" in commands
     assert "mkdocs build --strict" in commands
     assert "python scripts/check_api_reference_install.py --site site" in commands
@@ -193,15 +203,27 @@ def test_pages_deployment_requires_main_or_published_release_authority() -> None
     assert "steps.public_install.outputs.release_ready == 'true'" in build_steps[pages_upload]["if"]
     assert build["outputs"] == {
         "release_ready": "${{ steps.public_install.outputs.release_ready }}",
+        "release_version": "${{ steps.source.outputs.release_version }}",
+        "source_base_revision": "${{ steps.source.outputs.base_revision }}",
         "source_revision": "${{ steps.source.outputs.revision }}",
     }
-    assert build_steps[0]["with"]["ref"] == "${{ inputs.source_ref || github.sha }}"
+    assert build_steps[0]["with"] == {
+        "persist-credentials": "false",
+        "path": "controller",
+        "ref": "${{ github.sha }}",
+    }
+    assert build_steps[1]["with"]["ref"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.release_source_sha || github.sha }}"
+    )
+    assert build_steps[1]["with"]["persist-credentials"] == "false"
+    assert build_steps[1]["with"]["fetch-depth"] == "0"
 
     visual = workflow["jobs"]["visual-evidence"]
+    assert visual["needs"] == "build"
     assert visual["uses"] == VISUAL_WORKFLOW
     assert visual["with"] == {
-        "source_base_sha": "${{ inputs.source_base_sha || github.event.before }}",
-        "source_ref": "${{ inputs.source_ref || github.sha }}",
+        "source_base_sha": "${{ needs.build.outputs.source_base_revision }}",
+        "source_ref": "${{ needs.build.outputs.source_revision }}",
     }
     assert visual["permissions"] == {"contents": "read"}
 
@@ -212,7 +234,8 @@ def test_pages_deployment_requires_main_or_published_release_authority() -> None
         "id-token": "write",
         "pages": "write",
     }
-    assert "inputs.published_release" in deploy["if"]
+    assert "github.ref == 'refs/heads/main'" in deploy["if"]
+    assert "github.event_name == 'workflow_dispatch'" in deploy["if"]
     assert "needs.build.outputs.release_ready == 'true'" in deploy["if"]
     assert deploy["outputs"] == {
         "page_url": "${{ steps.deployment.outputs.page_url }}",
@@ -222,8 +245,23 @@ def test_pages_deployment_requires_main_or_published_release_authority() -> None
     assert deploy_references == [DEPLOY_PAGES_ACTION]
     assert_actions_are_pinned(deploy_references)
 
+    audit = workflow["jobs"]["audit-release"]
+    assert audit["needs"] == ["build", "deploy"]
+    assert audit["if"] == "${{ github.event_name == 'workflow_dispatch' }}"
+    audit_references = action_references(audit)
+    assert audit_references == [CHECKOUT_ACTION, CHECKOUT_ACTION, SETUP_PYTHON_ACTION, UPLOAD_ARTIFACT_ACTION]
+    assert_actions_are_pinned(audit_references)
+    audit_commands = run_commands(audit)
+    assert "python ../controller/scripts/check_api_reference_install.py" in audit_commands
+    assert '--source-revision "$EXPECTED_REVISION"' in audit_commands
+    assert "--verify-deployed-url https://python.durable-workflow.com/release-audit.json" in audit_commands
+    assert 'if [ "$DEPLOYED_REVISION" != "$EXPECTED_REVISION" ]' in audit_commands
+    assert "controller/scripts/ci/check-docs-release-audit.sh" in audit_commands
+    assert "DOCS_RELEASE_AUDIT_ENFORCEMENT: advisory" in DOCS_DEPLOYMENT.read_text(encoding="utf-8")
+
     source = DOCS_DEPLOYMENT.read_text(encoding="utf-8")
     assert "actions/download-artifact@" not in source
+    assert "workflow_call:" not in source
     assert (REPO_ROOT / "docs" / "CNAME").read_text(encoding="utf-8").strip() == "python.durable-workflow.com"
     mkdocs = yaml.load((REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     assert mkdocs["site_url"] == "https://python.durable-workflow.com/"

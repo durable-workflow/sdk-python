@@ -69,8 +69,7 @@ def test_publish_workflow_separates_publication_authority_from_docs_freshness() 
     workflow = read_repo_file(".github/workflows/publish.yml")
     build_job = workflow_job_block(workflow, "build")
     publish_job = workflow_job_block(workflow, "publish")
-    deployment_job = workflow_job_block(workflow, "deploy-api-reference")
-    docs_audit_job = workflow_job_block(workflow, "verify-docs-release-audit")
+    deployment_job = workflow_job_block(workflow, "deploy-and-audit-api-reference")
 
     assert '[[ ! "$REQUESTED_TAG" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+' in build_job
     assert 'if [ "$REQUESTED_TAG" != "$package_version" ]' in build_job
@@ -78,25 +77,25 @@ def test_publish_workflow_separates_publication_authority_from_docs_freshness() 
     assert "pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247" in publish_job
     assert 'gh release create "$RELEASE_TAG"' in publish_job
     assert "needs: [build, publish]" in deployment_job
-    assert "uses: ./.github/workflows/docs.yml" in deployment_job
-    assert "published_release: true" in deployment_job
-    assert "source_base_sha: ${{ needs.build.outputs.release_base_commit }}" in deployment_job
-    assert "source_ref: ${{ needs.build.outputs.release_commit }}" in deployment_job
-    assert "pages: write" in deployment_job
-    assert "DOCS_RELEASE_AUDIT_ENFORCEMENT: advisory" in docs_audit_job
-    assert "DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json" in docs_audit_job
-    assert "DOCS_RELEASE_AUDIT_HANDOFF: docs-release-audit-handoff.json" in docs_audit_job
-    assert "needs: [build, publish, deploy-api-reference]" in docs_audit_job
-    assert "mkdocs build --strict" in docs_audit_job
-    assert "python scripts/check_api_reference_install.py --site site --install" in docs_audit_job
-    assert "needs.deploy-api-reference.outputs.deployed_revision" in docs_audit_job
-    assert "--verify-deployed-url https://python.durable-workflow.com/release-audit.json" in docs_audit_job
-    assert 'if [ "$DEPLOYED_REVISION" != "$EXPECTED_REVISION" ]' in docs_audit_job
-    assert "contents: write" not in docs_audit_job
-    assert "if: always()" in docs_audit_job
-    assert docs_audit_job.index("scripts/ci/check-docs-release-audit.sh") < docs_audit_job.index(
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-    )
+    assert "actions: write" in deployment_job
+    assert "contents: read" in deployment_job
+    assert "pages: write" not in deployment_job
+    assert "id-token: write" not in deployment_job
+    assert "environment: github-pages" not in deployment_job
+    assert "gh workflow run docs.yml" in deployment_job
+    assert "--ref main" in deployment_job
+    assert '-f release_version="$RELEASE_VERSION"' in deployment_job
+    assert '-f release_source_sha="$RELEASE_SOURCE_SHA"' in deployment_job
+    assert '-f release_parent_sha="$RELEASE_PARENT_SHA"' in deployment_job
+    assert '-f release_run_id="$RELEASE_RUN_ID"' in deployment_job
+    assert '-f release_run_attempt="$RELEASE_RUN_ATTEMPT"' in deployment_job
+    assert 'gh run watch "$docs_run_id"' in deployment_job
+    assert "--exit-status" in deployment_job
+    assert '.event == "workflow_dispatch"' in deployment_job
+    assert '.headBranch == "main"' in deployment_job
+    assert '.conclusion == "success"' in deployment_job
+    assert "uses: ./.github/workflows/docs.yml" not in deployment_job
+    assert workflow.index("pypa/gh-action-pypi-publish@") < workflow.index("gh workflow run docs.yml")
 
 
 def test_stale_tuple_is_actionable_without_reversing_publication(tmp_path: Path) -> None:

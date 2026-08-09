@@ -234,84 +234,101 @@ jobs:
             gh release create "$RELEASE_TAG" "${arguments[@]}"
           fi
 
-  deploy-api-reference:
+  deploy-and-audit-api-reference:
     needs: [build, publish]
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
       (github.event_name == 'workflow_dispatch' &&
        github.ref == 'refs/heads/main' && inputs.publish)
-    uses: ./.github/workflows/docs.yml  # local
-    with:
-      published_release: true
-      source_base_sha: ${{ needs.build.outputs.release_base_commit }}
-      source_ref: ${{ needs.build.outputs.release_commit }}
-    permissions:
-      contents: read
-      id-token: write
-      pages: write
-
-  verify-docs-release-audit:
-    needs: [build, publish, deploy-api-reference]
     runs-on: ubuntu-latest
-    if: >-
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
-      (github.event_name == 'workflow_dispatch' &&
-       github.ref == 'refs/heads/main' && inputs.publish)
+    permissions:
+      actions: write
+      contents: read
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-        with:
-          ref: ${{ needs.build.outputs.release_tag }}
-
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: "3.12"
-
-      - name: Build and exercise the API-reference install path
-        run: |
-          pip install -e '.[docs]'
-          mkdocs build --strict
-          python scripts/check_api_reference_install.py --site site --install
-
-      - name: Verify the deployed API-reference release record
+      - name: Dispatch the main-context release docs workflow
         env:
-          DEPLOYED_REVISION: ${{ needs.deploy-api-reference.outputs.deployed_revision }}
-          DOCS_RELEASE_AUDIT_VERSION: ${{ needs.build.outputs.release_tag }}
-          EXPECTED_REVISION: ${{ needs.build.outputs.release_commit }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PARENT_SHA: ${{ needs.build.outputs.release_base_commit }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_SOURCE_SHA: ${{ needs.build.outputs.release_commit }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_tag }}
         run: |
-          if [ "$DEPLOYED_REVISION" != "$EXPECTED_REVISION" ]; then
-            printf 'deployed revision %s does not match release revision %s\n' \
-              "$DEPLOYED_REVISION" "$EXPECTED_REVISION" >&2
+          set -euo pipefail
+          expected_title="Deploy Python release docs ${RELEASE_VERSION}@${RELEASE_SOURCE_SHA} from release run ${RELEASE_RUN_ID}.${RELEASE_RUN_ATTEMPT}"
+          existing_runs="$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow docs.yml \
+            --event workflow_dispatch \
+            --branch main \
+            --limit 100 \
+            --json databaseId,displayTitle,headBranch)"
+          if jq -e --arg title "$expected_title" \
+            'any(.[]; .displayTitle == $title and .headBranch == "main")' \
+            <<<"$existing_runs" >/dev/null; then
+            printf 'a release docs run already exists for this release run identity\n' >&2
             exit 1
           fi
-          python scripts/check_api_reference_install.py \
-            --site site \
-            --source-revision "$EXPECTED_REVISION" \
-            --verify-deployed-url https://python.durable-workflow.com/release-audit.json
+          gh workflow run docs.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f release_version="$RELEASE_VERSION" \
+            -f release_source_sha="$RELEASE_SOURCE_SHA" \
+            -f release_parent_sha="$RELEASE_PARENT_SHA" \
+            -f release_run_id="$RELEASE_RUN_ID" \
+            -f release_run_attempt="$RELEASE_RUN_ATTEMPT"
+          printf 'expected_title=%s\n' "$expected_title" >> "$GITHUB_ENV"
+
+      - name: Wait for the exact docs deployment and audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE_SHA: ${{ needs.build.outputs.release_commit }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          docs_run_id=''
+          for attempt in {1..60}; do
+            runs="$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow docs.yml \
+              --event workflow_dispatch \
+              --branch main \
+              --limit 100 \
+              --json databaseId,displayTitle,headBranch)"
+            docs_run_id="$(jq -r --arg title "$expected_title" \
+              '[.[] | select(.displayTitle == $title and .headBranch == "main")] | max_by(.databaseId) | .databaseId // empty' \
+              <<<"$runs")"
+            if [ -n "$docs_run_id" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$docs_run_id" ]; then
+            printf 'the authenticated main-context docs run was not created\n' >&2
+            exit 1
+          fi
+          gh run watch "$docs_run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --exit-status \
+            --interval 10
+          details="$(gh run view "$docs_run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json conclusion,displayTitle,event,headBranch,url,workflowName)"
+          jq -e --arg title "$expected_title" '
+            .conclusion == "success" and
+            .displayTitle == $title and
+            .event == "workflow_dispatch" and
+            .headBranch == "main" and
+            .workflowName == "Docs deployment"
+          ' <<<"$details" >/dev/null
+          docs_url="$(jq -r '.url' <<<"$details")"
           {
             printf '## Python API reference publication verified\n\n'
-            printf -- '- SDK release: `%s`\n' "$DOCS_RELEASE_AUDIT_VERSION"
-            printf -- '- Source revision: `%s`\n' "$EXPECTED_REVISION"
+            printf -- '- SDK release: `%s`\n' "$RELEASE_VERSION"
+            printf -- '- Source revision: `%s`\n' "$RELEASE_SOURCE_SHA"
+            printf -- '- Main-context deployment and audit: %s\n' "$docs_url"
             printf -- '- Release evidence: https://python.durable-workflow.com/release-audit.json\n'
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Verify live docs release audit after PyPI publish
-        env:
-          DOCS_RELEASE_AUDIT_ARTIFACT: sdk-python
-          DOCS_RELEASE_AUDIT_VERSION: ${{ needs.build.outputs.release_tag }}
-          DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json
-          DOCS_RELEASE_AUDIT_HANDOFF: docs-release-audit-handoff.json
-          DOCS_RELEASE_AUDIT_ENFORCEMENT: advisory
-        run: scripts/ci/check-docs-release-audit.sh
-
-      - name: Upload docs release audit evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
-        with:
-          name: docs-release-audit-evidence
-          path: |
-            docs-release-audit-evidence.json
-            docs-release-audit-handoff.json
-          if-no-files-found: warn
 
   publish-test:
     needs: build
