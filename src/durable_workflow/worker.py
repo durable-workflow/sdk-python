@@ -940,7 +940,7 @@ class Worker:
         self._query_thread_task: asyncio.Task[None] | None = None
         # In-flight slot accounting feeds the periodic heartbeat so operators
         # see free-slot counts without the worker having to re-derive them at
-        # shutdown. Counters are bumped/decremented around dispatch.
+        # shutdown. Validator work shares the workflow counter and capacity.
         self._workflow_inflight = 0
         self._activity_inflight = 0
         self._heartbeat_interval = float(heartbeat_interval)
@@ -2275,6 +2275,13 @@ class Worker:
 
     async def _poll_update_validation_tasks(self) -> None:
         while not self._stop.is_set():
+            # Validator execution reconstructs workflow state, so it shares the
+            # workflow-task pool instead of leasing work outside the worker's
+            # configured and heartbeat-visible capacity.
+            await self._wf_semaphore.acquire()
+            if self._stop.is_set():
+                self._wf_semaphore.release()
+                return
             try:
                 poll_start = time.perf_counter()
                 task = await self.client.poll_update_validation_task(
@@ -2282,7 +2289,11 @@ class Worker:
                     task_queue=self.task_queue,
                     timeout=self._poll_http_timeout,
                 )
+            except asyncio.CancelledError:
+                self._wf_semaphore.release()
+                raise
             except Exception as exc:
+                self._wf_semaphore.release()
                 if self._stop.is_set():
                     return
                 self._record_poll_metrics("update_validation", "error", time.perf_counter() - poll_start)
@@ -2290,6 +2301,7 @@ class Worker:
                 await asyncio.sleep(1.0)
                 continue
             if task is None:
+                self._wf_semaphore.release()
                 self._record_poll_metrics("update_validation", "empty", time.perf_counter() - poll_start)
                 if self._stop.is_set():
                     return
@@ -2297,8 +2309,22 @@ class Worker:
                 continue
             self._record_poll_metrics("update_validation", "task", time.perf_counter() - poll_start)
             if self._stop.is_set():
+                self._wf_semaphore.release()
                 return
-            self._track(self._dispatch_update_validation_task(task))
+            self._admit_update_validation_task(task)
+
+    def _admit_update_validation_task(self, task: dict[str, Any]) -> asyncio.Task[Any]:
+        self._workflow_inflight += 1
+        dispatched = self._track(self._dispatch_update_validation_task(task))
+
+        def release_capacity(_: asyncio.Task[Any]) -> None:
+            self._workflow_inflight = max(0, self._workflow_inflight - 1)
+            self._wf_semaphore.release()
+
+        # A done callback owns the reservation so cancellation releases it
+        # even when the coroutine is cancelled before its first instruction.
+        dispatched.add_done_callback(release_capacity)
+        return dispatched
 
     async def _dispatch_update_validation_task(self, task: dict[str, Any]) -> None:
         task_start = time.perf_counter()

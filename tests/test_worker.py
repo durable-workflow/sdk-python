@@ -256,9 +256,12 @@ def mock_client() -> AsyncMock:
     client.poll_workflow_task = AsyncMock(return_value=None)
     client.poll_activity_task = AsyncMock(return_value=None)
     client.poll_query_task = AsyncMock(return_value=None)
+    client.poll_update_validation_task = AsyncMock(return_value=None)
     client.complete_workflow_task = AsyncMock(return_value={"outcome": "completed"})
     client.complete_activity_task = AsyncMock(return_value={"outcome": "completed"})
     client.complete_query_task = AsyncMock(return_value={"outcome": "completed"})
+    client.approve_update_validation_task = AsyncMock(return_value={"outcome": "approved"})
+    client.reject_update_validation_task = AsyncMock(return_value={"outcome": "rejected"})
     client.fail_workflow_task = AsyncMock(return_value={"outcome": "failed"})
     client.fail_activity_task = AsyncMock(return_value={"outcome": "failed"})
     client.fail_query_task = AsyncMock(return_value={"outcome": "failed"})
@@ -2303,6 +2306,242 @@ class TestUpdateValidationTaskExecution:
         rejection = mock_client.reject_update_validation_task.await_args.kwargs
         assert rejection["reason"] == "update_validator_rejected"
         assert rejection["failure_type"] == "ValueError"
+        mock_client.approve_update_validation_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_polling_shares_workflow_capacity_and_waits_for_a_released_slot(self, mock_client: AsyncMock) -> None:
+        started = [asyncio.Event() for _ in range(3)]
+        releases = [asyncio.Event() for _ in range(3)]
+        blocked_poll_started = asyncio.Event()
+        running = 0
+        max_running = 0
+
+        @workflow.defn(name="blocked-validation-wf")
+        class BlockedValidationWorkflow:
+            @workflow.update("approve")
+            def approve(self, index: int) -> bool:
+                return index >= 0
+
+            @approve.validator  # type: ignore[attr-defined]
+            async def validate_approve(self, index: int) -> None:
+                nonlocal running, max_running
+                running += 1
+                max_running = max(max_running, running)
+                started[index].set()
+                try:
+                    await releases[index].wait()
+                finally:
+                    running -= 1
+
+            def run(self, ctx):  # type: ignore[no-untyped-def]
+                return "waiting"
+
+        validation_tasks = [
+            {
+                "update_validation_task_id": f"uv-{index}",
+                "update_validation_attempt": 1,
+                "workflow_type": "blocked-validation-wf",
+                "update_name": "approve",
+                "history_events": [],
+                "workflow_arguments": serializer.envelope([], codec="json"),
+                "update_arguments": serializer.envelope([index], codec="json"),
+                "payload_codec": "json",
+                "workflow_id": "wf1",
+                "run_id": "run1",
+            }
+            for index in range(3)
+        ]
+
+        async def poll_validation_task(**_: object) -> dict[str, object] | None:
+            if validation_tasks:
+                return validation_tasks.pop(0)
+            blocked_poll_started.set()
+            await asyncio.Event().wait()
+            return None
+
+        mock_client.poll_update_validation_task.side_effect = poll_validation_task
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[BlockedValidationWorkflow],
+            max_concurrent_workflow_tasks=2,
+        )
+        poller = asyncio.create_task(worker._poll_update_validation_tasks())
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(started[0].wait(), started[1].wait()),
+                timeout=1.0,
+            )
+            await asyncio.sleep(0)
+
+            assert mock_client.poll_update_validation_task.await_count == 2
+            assert max_running == 2
+            assert worker._current_task_slots()["workflow_available"] == 0
+
+            worker._heartbeat_interval = 0.001
+            heartbeat_loop = asyncio.create_task(worker._heartbeat_loop())
+            try:
+
+                async def wait_for_heartbeat() -> None:
+                    while mock_client.heartbeat_worker.await_count == 0:
+                        await asyncio.sleep(0)
+
+                await asyncio.wait_for(wait_for_heartbeat(), timeout=1.0)
+            finally:
+                heartbeat_loop.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await heartbeat_loop
+            heartbeat_slots = mock_client.heartbeat_worker.await_args.kwargs["task_slots"]
+            assert heartbeat_slots["workflow_available"] == 0
+
+            releases[0].set()
+            await asyncio.wait_for(started[2].wait(), timeout=1.0)
+
+            assert mock_client.poll_update_validation_task.await_count == 3
+            assert max_running == 2
+            assert worker._current_task_slots()["workflow_available"] == 0
+
+            releases[1].set()
+            releases[2].set()
+            await asyncio.wait_for(blocked_poll_started.wait(), timeout=1.0)
+        finally:
+            for release in releases:
+                release.set()
+            poller.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await poller
+            if worker._in_flight:
+                await asyncio.gather(*set(worker._in_flight), return_exceptions=True)
+
+        assert worker._workflow_inflight == 0
+        assert worker._wf_semaphore._value == 2
+        assert worker._current_task_slots()["workflow_available"] == 2
+        assert mock_client.approve_update_validation_task.await_count == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("approved", "transport_failure"),
+        [(True, False), (False, False), (True, True)],
+        ids=["approval", "rejection", "transport-failure"],
+    )
+    async def test_dispatch_releases_workflow_capacity_after_completion_outcomes(
+        self,
+        mock_client: AsyncMock,
+        *,
+        approved: bool,
+        transport_failure: bool,
+    ) -> None:
+        completion_started = asyncio.Event()
+        release_completion = asyncio.Event()
+
+        async def complete_validation(**_: object) -> dict[str, str]:
+            completion_started.set()
+            await release_completion.wait()
+            if transport_failure:
+                raise RuntimeError("completion transport failed")
+            return {"outcome": "completed"}
+
+        if approved:
+            mock_client.approve_update_validation_task.side_effect = complete_validation
+        else:
+            mock_client.reject_update_validation_task.side_effect = complete_validation
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[ValidatedUpdateWorkflow],
+            max_concurrent_workflow_tasks=1,
+        )
+        await worker._wf_semaphore.acquire()
+        dispatched = worker._admit_update_validation_task(self.task(approved))
+
+        await asyncio.wait_for(completion_started.wait(), timeout=1.0)
+        assert worker._current_task_slots()["workflow_available"] == 0
+        assert worker._wf_semaphore._value == 0
+
+        release_completion.set()
+        await dispatched
+
+        assert worker._workflow_inflight == 0
+        assert worker._wf_semaphore._value == 1
+        assert worker._current_task_slots()["workflow_available"] == 1
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_validation_and_deregisters_after_releasing_capacity(
+        self, mock_client: AsyncMock
+    ) -> None:
+        validation_started = asyncio.Event()
+        validation_cancelled = asyncio.Event()
+
+        async def blocked_validation(_: dict[str, object]) -> str:
+            validation_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                validation_cancelled.set()
+
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(
+                worker_protocol={
+                    "version": PROTOCOL_VERSION,
+                    "server_capabilities": {
+                        "query_tasks": True,
+                        "update_validation_tasks": True,
+                        "synchronous_update_validation": {
+                            "supported": True,
+                            "acceptance_boundary": "validator_approved",
+                            "worker_capability": UPDATE_VALIDATION_TASKS_CAPABILITY,
+                            "workflow_contract_field": "update_validators",
+                        },
+                    },
+                }
+            )
+        )
+        mock_client.poll_update_validation_task.side_effect = [self.task(True)]
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[ValidatedUpdateWorkflow],
+            max_concurrent_workflow_tasks=1,
+            shutdown_timeout=0.01,
+        )
+        worker._run_update_validation_task = blocked_validation  # type: ignore[method-assign]
+        await worker._register()
+        poller = asyncio.create_task(worker._poll_update_validation_tasks())
+        worker._poller_tasks.add(poller)
+
+        await asyncio.wait_for(validation_started.wait(), timeout=1.0)
+        assert worker._current_task_slots()["workflow_available"] == 0
+
+        await worker.stop()
+
+        assert validation_cancelled.is_set()
+        assert worker._workflow_inflight == 0
+        assert worker._wf_semaphore._value == 1
+        assert worker._current_task_slots()["workflow_available"] == 1
+        assert worker._registered is False
+        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+
+    @pytest.mark.asyncio
+    async def test_cancellation_before_dispatch_starts_releases_admitted_capacity(self, mock_client: AsyncMock) -> None:
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[ValidatedUpdateWorkflow],
+            max_concurrent_workflow_tasks=1,
+        )
+        await worker._wf_semaphore.acquire()
+
+        dispatched = worker._admit_update_validation_task(self.task(True))
+        dispatched.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await dispatched
+        await asyncio.sleep(0)
+
+        assert worker._workflow_inflight == 0
+        assert worker._wf_semaphore._value == 1
+        assert worker._current_task_slots()["workflow_available"] == 1
         mock_client.approve_update_validation_task.assert_not_awaited()
 
 

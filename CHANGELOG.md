@@ -6,8 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.22`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc22`. This SDK release is qualified with Server
+The Python SDK advances to prerelease `2.0.0-rc.23`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc23`. This SDK release is qualified with Server
 `2.0.0-rc.23` for synchronous pre-accept update validation.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
@@ -55,6 +55,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Update-validation polling now shares workflow concurrency capacity. Pollers
+  reserve workflow capacity before leasing work, and admitted validator replays
+  reduce heartbeat-visible workflow slots until approval, rejection, transport
+  failure, or cancellation.
 - Package publication now treats exact-version PyPI JSON as the authoritative
   integrity surface. The rendered project-page audit remains visible evidence,
   but a client challenge or presentation mismatch no longer blocks creation of
