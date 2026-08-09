@@ -5,6 +5,10 @@
 }
 
 @media screen and (max-width: 59.984375em) {
+  .md-sidebar--primary .md-nav__list.dw-navigation__ancestor-list {
+    overflow: visible;
+  }
+
   .md-nav--primary > .dw-navigation__close {
     display: flex;
   }

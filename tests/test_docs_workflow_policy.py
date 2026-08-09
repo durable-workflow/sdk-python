@@ -326,15 +326,24 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     assert "python-sdk-$route-reference" in commands
     assert 'capture_nested "$route" "$position" default' in commands
     assert 'capture_nested "$route" "$position" navigation-open' in commands
-    assert "--full-page" in shell_function(commands, "capture")
-    assert "--full-page" in shell_function(commands, "capture_nested")
+    root_capture = shell_function(commands, "capture")
+    nested_capture = shell_function(commands, "capture_nested")
+    assert "--full-page" in root_capture
+    assert "--full-page" in nested_capture
+    assert '[ "$state" = default ]' in root_capture
+    assert '[ "$state" = default ]' in nested_capture
     assert '--source-revision "$SOURCE_REVISION"' in commands
     assert 'Path("visual-review").glob("nested-*-*x*.json")' in commands
     assert 'geometry["unreachable_controls"]' in commands
     assert 'captured.get("full_page") is not expected_full_page' in commands
+    assert 'viewport_key == (640, 360) and state == "default"' in commands
     assert "nested-navigation-qualification.json" in commands
+    assert "durable-workflow.python-docs.nested-navigation/v3" in commands
+    assert "retained visual-evidence validation accepted the three-row clipped-list fixture" in commands
+    assert 'three_row_fixture.get("visible_rows") != 3' in commands
     assert "active_keyboard_controls" in commands
     assert "interactive_control_count" in commands
+    assert 'keyboard_state.get("reference_panel")' in commands
     assert "?q=workflow" in commands
     assert '--click "$search_selector"' in commands
     assert "--click \".md-header__button[for='__drawer']\"" in commands

@@ -225,10 +225,16 @@ def test_focused_path_retains_docs_layout_visual_and_public_boundary_contracts()
     assert "reference/$route/" in visual_commands
     assert "first:client middle:serializer final:testing" in visual_commands
     assert "nested-navigation-keyboard.json" in visual_commands
-    assert "--full-page" in shell_function(visual_commands, "capture_nested")
+    nested_capture = shell_function(visual_commands, "capture_nested")
+    assert "--full-page" in nested_capture
+    assert '[ "$state" = default ]' in nested_capture
     assert 'captured.get("full_page") is not expected_full_page' in visual_commands
+    assert 'viewport_key == (640, 360) and state == "default"' in visual_commands
     assert "nested-navigation-qualification.json" in visual_commands
     assert 'geometry["unreachable_controls"]' in visual_commands
+    assert "durable-workflow.python-docs.nested-navigation/v3" in visual_commands
+    assert "three-row clipped-list fixture" in visual_commands
+    assert 'keyboard_state.get("reference_panel")' in visual_commands
     assert "capture search-open" in visual_commands
     assert "capture search-populated" in visual_commands
 

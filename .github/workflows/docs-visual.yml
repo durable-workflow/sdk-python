@@ -142,7 +142,7 @@ jobs:
             shift 3
             local capture_args=()
             local capture_url=http://127.0.0.1:4173/
-            if [ "$width" = 640 ] && [ "$height" = 360 ]; then
+            if [ "$width" = 640 ] && [ "$height" = 360 ] && [ "$state" = default ]; then
               capture_args+=(--full-page)
             fi
             if [ "$state" = search-populated ]; then
@@ -162,7 +162,7 @@ jobs:
             local route=$1 position=$2 state=$3 width=$4 height=$5
             shift 5
             local capture_args=()
-            if [ "$width" = 640 ] && [ "$height" = 360 ]; then
+            if [ "$width" = 640 ] && [ "$height" = 360 ] && [ "$state" = default ]; then
               capture_args+=(--full-page)
             fi
             node visual-controller/scripts/pipeline_visual_capture.mjs \
@@ -218,18 +218,73 @@ jobs:
               "revision": os.environ["SOURCE_REVISION"],
           }
           expected_routes = {
-              "/reference/client/": {"position": "first", "surface": "python-sdk-client-reference"},
-              "/reference/serializer/": {"position": "middle", "surface": "python-sdk-serializer-reference"},
-              "/reference/testing/": {"position": "final", "surface": "python-sdk-testing-reference"},
+              "/reference/client/": {
+                  "active": "Client",
+                  "position": "first",
+                  "surface": "python-sdk-client-reference",
+              },
+              "/reference/serializer/": {
+                  "active": "Serializer",
+                  "position": "middle",
+                  "surface": "python-sdk-serializer-reference",
+              },
+              "/reference/testing/": {
+                  "active": "Testing",
+                  "position": "final",
+                  "surface": "python-sdk-testing-reference",
+              },
           }
+
+          def validate_reference_panel(panel, expected_active, label):
+              if not isinstance(panel, dict):
+                  raise ValueError(f"{label} has no measured reference panel")
+              try:
+                  active = panel["active"]
+                  drawer = panel["drawer"]
+                  reference_list = panel["list"]
+                  active_top = float(active["top"])
+                  active_bottom = float(active["bottom"])
+                  list_top = float(reference_list["top"])
+                  list_bottom = float(reference_list["bottom"])
+                  drawer_bottom = float(drawer["bottom"])
+                  client_height = float(reference_list["clientHeight"])
+              except (KeyError, TypeError, ValueError) as error:
+                  raise ValueError(f"{label} has malformed reference panel geometry") from error
+              if active.get("text") != expected_active:
+                  raise ValueError(f"{label} does not identify its active destination")
+              if active_top < list_top - 1 or active_bottom > list_bottom + 1:
+                  raise ValueError(f"{label} clips its active destination")
+              if abs(list_bottom - drawer_bottom) > 1 or client_height < 200:
+                  raise ValueError(f"{label} does not use the available drawer height")
+              if reference_list.get("overflowY") != "auto":
+                  raise ValueError(f"{label} does not expose the qualified nested-list viewport")
+
           if (
-              keyboard.get("schema") != "durable-workflow.python-docs.nested-navigation/v2"
+              keyboard.get("schema") != "durable-workflow.python-docs.nested-navigation/v3"
               or keyboard.get("outcome") != "pass"
               or set(keyboard.get("routes", [])) != set(expected_routes)
           ):
               raise SystemExit("nested reference keyboard evidence did not qualify the required route positions")
           if keyboard.get("source") != expected_source:
               raise SystemExit("nested reference keyboard evidence is not bound to the captured source")
+          regression = keyboard.get("regression", {})
+          three_row_fixture = regression.get("three_row_list", {})
+          if (
+              three_row_fixture.get("visible_rows") != 3
+              or three_row_fixture.get("geometry") != "affected fixture rejected"
+              or three_row_fixture.get("interaction") != "affected fixture rejected"
+          ):
+              raise SystemExit("nested reference evidence did not exercise the three-row clipped-list fixture")
+          try:
+              validate_reference_panel(
+                  three_row_fixture.get("reference_panel"),
+                  expected_routes["/reference/testing/"]["active"],
+                  "three-row clipped-list fixture",
+              )
+          except ValueError:
+              pass
+          else:
+              raise SystemExit("retained visual-evidence validation accepted the three-row clipped-list fixture")
           keyboard_viewports = {
               (entry["route"], entry["viewport"]["width"], entry["viewport"]["height"]): entry
               for entry in keyboard.get("viewports", [])
@@ -261,7 +316,7 @@ jobs:
               viewport_key = (viewport.get("width"), viewport.get("height"))
               page_route = urlsplit(captured.get("page_url", "")).path
               route_contract = expected_routes.get(page_route)
-              expected_full_page = viewport_key == (640, 360)
+              expected_full_page = viewport_key == (640, 360) and state == "default"
               if (
                   route_contract is None
                   or captured.get("surface") != route_contract["surface"]
@@ -280,6 +335,16 @@ jobs:
               active_keyboard_controls = keyboard_state.get("active_keyboard_controls")
               if state == "navigation-open" and not active_keyboard_controls:
                   raise SystemExit(f"{report.name} has no active drawer keyboard traversal evidence")
+              reference_panel = keyboard_state.get("reference_panel")
+              if state == "navigation-open":
+                  try:
+                      validate_reference_panel(
+                          reference_panel,
+                          route_contract["active"],
+                          report.name,
+                      )
+                  except ValueError as error:
+                      raise SystemExit(str(error)) from error
               geometry = captured["geometry"]
               if geometry["unreachable_controls"]:
                   raise SystemExit(
@@ -300,18 +365,19 @@ jobs:
                       "full_page": captured["full_page"],
                       "pointer_unreachable_controls": geometry["unreachable_controls"],
                       "active_keyboard_controls": active_keyboard_controls or [],
+                      "reference_panel": reference_panel,
                   }
               )
           if observed_states != expected_states:
               raise SystemExit(f"nested reference state matrix does not match: {sorted(observed_states)}")
 
           qualification = {
-              "schema": "durable-workflow.python-docs.nested-navigation-qualification/v2",
+              "schema": "durable-workflow.python-docs.nested-navigation-qualification/v3",
               "outcome": "pass",
               "source": expected_source,
               "routes": list(expected_routes),
               "states": qualified_states,
-              "regression": keyboard.get("regression"),
+              "regression": regression,
           }
           (evidence_root / "nested-navigation-qualification.json").write_text(
               f"{json.dumps(qualification, indent=2)}\n",

@@ -69,33 +69,60 @@ def assert_control_within_viewport(page: Page, locator: Locator, label: str) -> 
 def rendered_geometry(page: Page) -> dict[str, Any]:
     return page.evaluate(
         """() => {
-            const visibleFragments = (element) => {
+            const renderedFragments = (element) => {
                 const style = getComputedStyle(element)
                 if (style.display === 'none' || style.visibility === 'hidden') return []
                 if (Number.parseFloat(style.opacity || '1') <= 0) return []
-                return [...element.getClientRects()].flatMap((fragment) => {
-                    if (fragment.width <= 0 || fragment.height <= 0) return []
+                return [...element.getClientRects()]
+                    .filter((fragment) => fragment.width > 0 && fragment.height > 0)
+                    .map((fragment) => ({
+                        left: fragment.left,
+                        right: fragment.right,
+                        top: fragment.top,
+                        bottom: fragment.bottom,
+                    }))
+            }
+            const clipToAncestors = (element) => {
+                let fragments = renderedFragments(element)
+                for (
+                    let ancestor = element.parentElement;
+                    ancestor && fragments.length;
+                    ancestor = ancestor.parentElement
+                ) {
+                    const style = getComputedStyle(ancestor)
+                    const clipsX = style.overflowX !== 'visible'
+                    const clipsY = style.overflowY !== 'visible'
+                    if (!clipsX && !clipsY) continue
+                    const ancestorBox = ancestor.getBoundingClientRect()
+                    const clipped = fragments.map((fragment) => ({
+                        left: clipsX ? Math.max(fragment.left, ancestorBox.left) : fragment.left,
+                        right: clipsX ? Math.min(fragment.right, ancestorBox.right) : fragment.right,
+                        top: clipsY ? Math.max(fragment.top, ancestorBox.top) : fragment.top,
+                        bottom: clipsY ? Math.min(fragment.bottom, ancestorBox.bottom) : fragment.bottom,
+                    })).filter((fragment) => fragment.right > fragment.left && fragment.bottom > fragment.top)
+                    if (!clipped.length) {
+                        const scrollsX = clipsX && ['auto', 'scroll'].includes(style.overflowX)
+                            && ancestor.scrollWidth > ancestor.clientWidth + 1
+                        const scrollsY = clipsY && ['auto', 'scroll'].includes(style.overflowY)
+                            && ancestor.scrollHeight > ancestor.clientHeight + 1
+                        return {fragments: [], fullyClipped: true, usableScroll: scrollsX || scrollsY}
+                    }
+                    fragments = clipped
+                }
+                return {fragments, fullyClipped: false, usableScroll: false}
+            }
+            const visibleFragments = (element) => {
+                const clipped = clipToAncestors(element)
+                return clipped.fragments.flatMap((fragment) => {
                     const visible = {
                         left: Math.max(0, fragment.left),
                         right: Math.min(innerWidth, fragment.right),
                         top: Math.max(0, fragment.top),
                         bottom: Math.min(innerHeight, fragment.bottom),
                     }
-                    for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
-                        const ancestorStyle = getComputedStyle(ancestor)
-                        const ancestorBox = ancestor.getBoundingClientRect()
-                        if (ancestorStyle.overflowX !== 'visible') {
-                            visible.left = Math.max(visible.left, ancestorBox.left)
-                            visible.right = Math.min(visible.right, ancestorBox.right)
-                        }
-                        if (ancestorStyle.overflowY !== 'visible') {
-                            visible.top = Math.max(visible.top, ancestorBox.top)
-                            visible.bottom = Math.min(visible.bottom, ancestorBox.bottom)
-                        }
-                    }
-                    const visibleWidth = visible.right - visible.left
-                    const visibleHeight = visible.bottom - visible.top
-                    return visibleWidth >= 1 && visibleHeight >= 1 ? [visible] : []
+                    return visible.right - visible.left >= 1 && visible.bottom - visible.top >= 1
+                        ? [visible]
+                        : []
                 })
             }
             const relatedHit = (hit, control) => {
@@ -108,7 +135,7 @@ def rendered_geometry(page: Page) -> dict[str, Any]:
             const interactive = [...document.querySelectorAll(
                 'input, select, textarea, button, a[href], summary, [role="button"]'
             )].filter((element) => {
-                if (!visibleFragments(element).length || element.matches(':disabled') || element.closest('[inert]')) {
+                if (!renderedFragments(element).length || element.matches(':disabled') || element.closest('[inert]')) {
                     return false
                 }
                 return !element.closest('details:not([open])') || Boolean(element.closest('summary'))
@@ -116,7 +143,37 @@ def rendered_geometry(page: Page) -> dict[str, Any]:
             const fractions = [0.08, 0.29, 0.5, 0.71, 0.92]
             const unreachable = interactive.flatMap((control) => {
                 const fragments = visibleFragments(control)
-                if (!fragments.length) return []
+                if (!fragments.length) {
+                    const clipping = clipToAncestors(control)
+                    const inactiveResponsiveSurface = control.closest('.md-sidebar, .md-search')
+                        && !control.closest('[aria-modal="true"]')
+                    const bounds = control.getBoundingClientRect()
+                    const intersectsViewport = bounds.right > 0 && bounds.left < innerWidth
+                        && bounds.bottom > 0 && bounds.top < innerHeight
+                    if (
+                        !clipping.fullyClipped
+                        || clipping.usableScroll
+                        || inactiveResponsiveSurface
+                        || !intersectsViewport
+                    ) return []
+                    return [{
+                        tag: control.tagName.toLowerCase(),
+                        role: control.getAttribute('role'),
+                        name: control.getAttribute('name') || control.getAttribute('aria-label') || '',
+                        className: control.className,
+                        href: control.getAttribute('href'),
+                        box: {
+                            left: bounds.left,
+                            right: bounds.right,
+                            top: bounds.top,
+                            bottom: bounds.bottom,
+                        },
+                        fragments: [],
+                        reachable: 0,
+                        samples: 0,
+                        fullyClipped: true,
+                    }]
+                }
                 const box = fragments.reduce((bounds, fragment) => ({
                     left: Math.min(bounds.left, fragment.left),
                     right: Math.max(bounds.right, fragment.right),
@@ -154,15 +211,19 @@ def rendered_geometry(page: Page) -> dict[str, Any]:
                     samples,
                 }]
             })
-            const clippedControls = interactive.flatMap((control) => {
-                const widthFits = control.scrollWidth <= control.clientWidth + 1
-                const heightFits = control.scrollHeight <= control.clientHeight + 1
-                if (widthFits && heightFits) {
-                    return []
-                }
-                const text = (control.value || control.textContent || control.getAttribute('aria-label') || '').trim()
-                return text ? [{tag: control.tagName.toLowerCase(), text: text.slice(0, 80)}] : []
-            })
+            const clippedControls = interactive
+                .filter((control) => visibleFragments(control).length)
+                .flatMap((control) => {
+                    const widthFits = control.scrollWidth <= control.clientWidth + 1
+                    const heightFits = control.scrollHeight <= control.clientHeight + 1
+                    if (widthFits && heightFits) {
+                        return []
+                    }
+                    const text = (
+                        control.value || control.textContent || control.getAttribute('aria-label') || ''
+                    ).trim()
+                    return text ? [{tag: control.tagName.toLowerCase(), text: text.slice(0, 80)}] : []
+                })
             return {
                 viewport: document.documentElement.clientWidth,
                 document: document.documentElement.scrollWidth,
@@ -184,7 +245,7 @@ def assert_rendered_health(
     assert geometry["document"] <= geometry["viewport"] + 1, f"{state} overflowed: {geometry}"
     assert geometry["clippedControls"] == [], f"{state} has clipped control text: {geometry['clippedControls']}"
     if check_reachability:
-        assert geometry["unreachable"] == [], f"{state} has unreachable visible controls: {geometry['unreachable']}"
+        assert geometry["unreachable"] == [], f"{state} has unreachable controls: {geometry['unreachable']}"
     assert runtime_errors == [], f"{state} emitted browser or HTTP errors: {runtime_errors}"
 
 
@@ -193,7 +254,13 @@ def assert_reference_panel_uses_drawer(
     label: str,
     expected_active: str,
 ) -> dict[str, Any]:
-    geometry = page.evaluate(
+    geometry = reference_panel_geometry(page)
+    assert_reference_panel_geometry(geometry, label, expected_active)
+    return geometry
+
+
+def reference_panel_geometry(page: Page) -> dict[str, Any] | None:
+    return page.evaluate(
         """() => {
             const drawer = document.querySelector('.md-sidebar--primary')
             let activePanel = drawer.querySelector('.md-nav--primary')
@@ -254,6 +321,13 @@ def assert_reference_panel_uses_drawer(
             }
         }"""
     )
+
+
+def assert_reference_panel_geometry(
+    geometry: dict[str, Any] | None,
+    label: str,
+    expected_active: str,
+) -> None:
     assert geometry is not None, f"{label} did not render an active reference list"
     active = geometry["active"]
     actions = geometry["actions"]
@@ -269,14 +343,13 @@ def assert_reference_panel_uses_drawer(
     assert actions["close"]["backgroundColor"] != "rgba(0, 0, 0, 0)", (
         f"{label} did not visually frame its close action: {actions}"
     )
+    assert active["top"] >= reference_list["top"] - 1, f"{label} hid the active destination above the list"
+    assert active["bottom"] <= reference_list["bottom"] + 1, f"{label} hid the active destination below the list"
     assert abs(reference_list["bottom"] - drawer["bottom"]) <= 1, (
         f"{label} did not use the available drawer height: {geometry}"
     )
     assert reference_list["clientHeight"] >= 200, f"{label} retained a constrained list: {geometry}"
     assert reference_list["overflowY"] == "auto", f"{label} lost its bounded overflow region: {geometry}"
-    assert active["top"] >= reference_list["top"] - 1, f"{label} hid the active destination above the list"
-    assert active["bottom"] <= reference_list["bottom"] + 1, f"{label} hid the active destination below the list"
-    return geometry
 
 
 def assert_background_is_inert(page: Page, label: str) -> None:
@@ -737,8 +810,8 @@ def exercise_nested_navigation_viewport(
             )
             assert_navigation_background_is_inert(page, f"open navigation at {label}")
             reference_panel = assert_reference_panel_uses_drawer(page, label, route.replace("_", " ").title())
-            stops = assert_navigation_focus_wraps(page, f"open navigation at {label}")
             assert_rendered_health(page, f"open navigation at {label}", runtime_errors)
+            stops = assert_navigation_focus_wraps(page, f"open navigation at {label}")
             assert navigation_drawer.locator("[inert]").count() >= 3, (
                 f"open navigation at {label} did not isolate translated parent-panel controls"
             )
@@ -752,7 +825,7 @@ def exercise_nested_navigation_viewport(
         context.close()
 
 
-def exercise_nested_navigation_regression(browser: Browser, url: str) -> dict[str, str]:
+def exercise_nested_navigation_regression(browser: Browser, url: str) -> dict[str, Any]:
     context = browser.new_context(viewport={"width": 390, "height": 844}, reduced_motion="reduce")
     page = context.new_page()
     runtime_errors: list[str] = []
@@ -785,7 +858,7 @@ def exercise_nested_navigation_regression(browser: Browser, url: str) -> dict[st
             assert_rendered_health(page, "affected nested navigation pointer fixture", runtime_errors)
         except AssertionError as error:
             pointer_failure = str(error)
-        assert "unreachable visible controls" in pointer_failure, (
+        assert "unreachable controls" in pointer_failure, (
             f"nested navigation pointer regression was not detected: {pointer_failure or 'no failure'}"
         )
 
@@ -797,9 +870,81 @@ def exercise_nested_navigation_regression(browser: Browser, url: str) -> dict[st
         assert "occluded or translated panel" in keyboard_failure, (
             f"nested navigation keyboard regression was not detected: {keyboard_failure or 'no failure'}"
         )
-        return {
-            "pointer": "affected fixture rejected",
+        translated_panel_result = {
+            "geometry": "affected fixture rejected",
             "keyboard": "affected fixture rejected",
+        }
+
+        response = page.goto(f"{url}reference/{NESTED_REFERENCE_ROUTES[-1][0]}/", wait_until="networkidle")
+        assert response is not None and response.ok, "three-row nested navigation fixture returned a failure"
+        page.locator(".md-header__button[for='__drawer']").click()
+        page.wait_for_function("document.querySelector('#__drawer').checked")
+        page.wait_for_function("document.querySelector('.md-sidebar--primary').getAttribute('aria-modal') === 'true'")
+        fixture = page.evaluate(
+            """() => {
+                const drawer = document.querySelector('.md-sidebar--primary')
+                let activePanel = drawer.querySelector('.md-nav--primary')
+                for (const panelToggle of drawer.querySelectorAll('input.md-nav__toggle:checked')) {
+                    const panel = panelToggle.parentElement?.querySelector(':scope > nav.md-nav')
+                    if (panel instanceof HTMLElement && activePanel.contains(panel)) activePanel = panel
+                }
+                const active = activePanel.querySelector('.md-nav__link--active')
+                const list = active?.closest('.md-nav__list')
+                if (!(list instanceof HTMLElement) || !(active instanceof HTMLElement)) return null
+                const rows = [...list.querySelectorAll(':scope > .md-nav__item')]
+                    .map((row) => row.querySelector(':scope > .md-nav__link'))
+                    .filter((row) => row instanceof HTMLElement)
+                if (rows.length < 4) return null
+                const listTop = list.getBoundingClientRect().top
+                const threeRowHeight = Math.ceil(rows[2].getBoundingClientRect().bottom - listTop)
+                list.style.setProperty('height', `${threeRowHeight}px`, 'important')
+                list.style.setProperty('max-height', `${threeRowHeight}px`, 'important')
+                list.style.setProperty('min-height', `${threeRowHeight}px`, 'important')
+                list.style.setProperty('overflow-y', 'clip', 'important')
+                list.scrollTop = 0
+                const listBounds = list.getBoundingClientRect()
+                const visibleRows = rows.filter((row) => {
+                    const bounds = row.getBoundingClientRect()
+                    return bounds.bottom > listBounds.top + 1 && bounds.top < listBounds.bottom - 1
+                }).length
+                return {
+                    active: active.textContent.trim().replace(/\s+/g, ' '),
+                    overflowY: getComputedStyle(list).overflowY,
+                    visibleRows,
+                }
+            }"""
+        )
+        assert fixture == {"active": "Testing", "overflowY": "clip", "visibleRows": 3}, (
+            f"three-row nested navigation fixture was not applied: {fixture}"
+        )
+        clipped_geometry = reference_panel_geometry(page)
+
+        geometry_failure = ""
+        try:
+            assert_rendered_health(page, "three-row nested navigation fixture", runtime_errors)
+        except AssertionError as error:
+            geometry_failure = str(error)
+        assert "'fullyClipped': True" in geometry_failure, (
+            f"fully clipped nested controls were not detected: {geometry_failure or 'no failure'}"
+        )
+
+        interaction_failure = ""
+        try:
+            assert_reference_panel_geometry(clipped_geometry, "three-row nested navigation fixture", "Testing")
+        except AssertionError as error:
+            interaction_failure = str(error)
+        assert "hid the active destination" in interaction_failure, (
+            f"clipped active destination was not rejected: {interaction_failure or 'no failure'}"
+        )
+
+        return {
+            "translated_parent_panels": translated_panel_result,
+            "three_row_list": {
+                "geometry": "affected fixture rejected",
+                "interaction": "affected fixture rejected",
+                "reference_panel": clipped_geometry,
+                "visible_rows": fixture["visibleRows"],
+            },
         }
     finally:
         context.close()
@@ -1116,7 +1261,7 @@ def main() -> None:
         args.transition_evidence.write_text(f"{json.dumps(evidence, indent=2)}\n", encoding="utf-8")
     if args.nested_navigation_evidence:
         evidence = {
-            "schema": "durable-workflow.python-docs.nested-navigation/v2",
+            "schema": "durable-workflow.python-docs.nested-navigation/v3",
             "outcome": "pass",
             "routes": [f"/reference/{route}/" for route, _ in NESTED_REFERENCE_ROUTES],
             "viewports": nested_results,
@@ -1131,6 +1276,8 @@ def main() -> None:
                 "browser-errors",
                 "available-drawer-height",
                 "distinct-navigation-actions",
+                "fully-clipped-control-rejection",
+                "three-row-list-rejection",
             ],
         }
         if args.source_revision:

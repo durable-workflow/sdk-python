@@ -92,6 +92,9 @@
     const releaseInactivePanelControls = () => {
       for (const element of panelInerted) element.inert = false;
       panelInerted = [];
+      for (const list of drawer.querySelectorAll(".dw-navigation__ancestor-list")) {
+        list.classList.remove("dw-navigation__ancestor-list");
+      }
     };
 
     const isolateActivePanel = () => {
@@ -99,6 +102,15 @@
       if (!modalOpen) return;
 
       const activePanel = activeNavigationPanel();
+      for (
+        let ancestor = activePanel.parentElement;
+        ancestor && ancestor !== drawer;
+        ancestor = ancestor.parentElement
+      ) {
+        if (ancestor.classList.contains("md-nav__list")) {
+          ancestor.classList.add("dw-navigation__ancestor-list");
+        }
+      }
       const inactivePanels = [...drawer.querySelectorAll("input.md-nav__toggle:not(:checked)")]
         .map((panelToggle) => panelToggle.parentElement?.querySelector(":scope > nav.md-nav"))
         .filter((panel) => panel instanceof HTMLElement);
