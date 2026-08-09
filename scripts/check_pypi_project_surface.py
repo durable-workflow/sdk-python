@@ -213,6 +213,11 @@ def _request_json(url: str) -> object:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-ref", required=True, help="Exact current prerelease source commit or tag")
+    parser.add_argument(
+        "--source-only",
+        action="store_true",
+        help="Validate source release metadata and the documented prerelease requirement without querying PyPI",
+    )
     parser.add_argument("--attempts", type=int, default=1, help="PyPI root-metadata propagation attempts")
     parser.add_argument("--interval-seconds", type=float, default=0.0, help="Delay between metadata attempts")
     args = parser.parse_args(argv)
@@ -223,6 +228,14 @@ def main(argv: list[str] | None = None) -> int:
         source = load_source_metadata(args.source_ref)
     except ReleaseMetadataError as error:
         raise ProjectSurfaceError(str(error)) from error
+    requirement = supported_prerelease_requirement(source)
+    if args.source_only:
+        print(
+            f"source metadata declares {source.name} {source.registry_version}; "
+            f"documented prerelease install selects {requirement}"
+        )
+        return 0
+
     project_json_url = f"https://pypi.org/pypi/{source.name}/json"
     last_error: BaseException | None = None
     legacy_version: str | None = None
@@ -241,7 +254,6 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     verify_pip_report(_pip_report(source.name, prerelease=False), source, source.registry_version)
-    requirement = supported_prerelease_requirement(source)
     verify_pip_report(_pip_report(requirement, prerelease=True), source, source.registry_version)
     legacy_requirement = f"{source.name}=={legacy_version}"
     verify_pip_report(_pip_report(legacy_requirement, prerelease=False), source, legacy_version)

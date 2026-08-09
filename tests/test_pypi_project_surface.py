@@ -162,6 +162,21 @@ def test_live_audit_uses_authoritative_json_without_requesting_project_html(
     ]
 
 
+def test_source_only_qualification_does_not_require_a_published_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = source_metadata()
+    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
+
+    def unexpected_public_request(*_: object, **__: object) -> object:
+        raise AssertionError("source-only qualification must not query public package state")
+
+    monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", unexpected_public_request)
+    monkeypatch.setattr("scripts.check_pypi_project_surface._pip_report", unexpected_public_request)
+
+    assert main(["--source-ref", "release-source", "--source-only"]) == 0
+
+
 def test_public_project_surface_qualification_is_recurring_and_release_blocking() -> None:
     workflow = yaml.load(
         (REPO_ROOT / ".github" / "workflows" / "pypi-project-surface.yml").read_text(encoding="utf-8"),
@@ -169,9 +184,23 @@ def test_public_project_surface_qualification_is_recurring_and_release_blocking(
     )
     assert workflow["permissions"] == {"contents": "read"}
     assert set(workflow["on"]) == {"push", "schedule", "workflow_dispatch"}
-    commands = "\n".join(step.get("run", "") for step in workflow["jobs"]["audit"]["steps"] if isinstance(step, dict))
+    steps = workflow["jobs"]["audit"]["steps"]
+    commands = "\n".join(step.get("run", "") for step in steps if isinstance(step, dict))
+    push_commands = "\n".join(
+        step.get("run", "")
+        for step in steps
+        if isinstance(step, dict) and step.get("if") == "github.event_name == 'push'"
+    )
+    public_commands = "\n".join(
+        step.get("run", "")
+        for step in steps
+        if isinstance(step, dict) and step.get("if") == "github.event_name != 'push'"
+    )
+    assert "pytest tests/test_pypi_project_surface.py tests/test_release_metadata.py -q" in push_commands
+    assert "python scripts/check_pypi_project_surface.py --source-ref HEAD --source-only" in push_commands
+    assert "--source-only" not in public_commands
     assert "git tag -l '2.0.0-rc.*' --sort=-version:refname" in commands
-    assert "python scripts/check_pypi_project_surface.py" in commands
+    assert "python scripts/check_pypi_project_surface.py" in public_commands
 
     publish = (REPO_ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
     exact_audit = publish.index("python scripts/check_release_metadata.py", publish.index("  publish:"))

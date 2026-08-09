@@ -5,8 +5,12 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/pypi-project-surface.yml'
+      - 'README.md'
+      - 'pyproject.toml'
       - 'scripts/check_pypi_project_surface.py'
+      - 'scripts/check_release_metadata.py'
       - 'tests/test_pypi_project_surface.py'
+      - 'tests/test_release_metadata.py'
   schedule:
     - cron: '17 7 * * 1'
   workflow_dispatch:
@@ -26,7 +30,17 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.12"
+      - name: Install local qualification dependencies
+        if: github.event_name == 'push'
+        run: pip install -e '.[dev]'
+      - name: Test the project-surface audit implementation
+        if: github.event_name == 'push'
+        run: pytest tests/test_pypi_project_surface.py tests/test_release_metadata.py -q
+      - name: Validate current source metadata without querying PyPI
+        if: github.event_name == 'push'
+        run: python scripts/check_pypi_project_surface.py --source-ref HEAD --source-only
       - name: Resolve the newest immutable Python release-candidate source
+        if: github.event_name != 'push'
         run: |
           set -euo pipefail
           source_ref="$(git tag -l '2.0.0-rc.*' --sort=-version:refname | head -n 1)"
@@ -36,6 +50,7 @@ jobs:
           fi
           printf 'source_ref=%s\n' "$source_ref" >> "$GITHUB_ENV"
       - name: Qualify authoritative root metadata and package resolution
+        if: github.event_name != 'push'
         run: >-
           python scripts/check_pypi_project_surface.py
           --source-ref "$source_ref"
