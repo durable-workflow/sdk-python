@@ -13,11 +13,12 @@ Python workers execute server-routed query tasks after the Server advertises the
 ## Install
 
 ```bash
-pip install --pre 'durable-workflow~=2.0.0rc0'
+pip install 'durable-workflow~=2.0.0rc0'
 ```
 
-The prerelease flag and compatible-release constraint select the newest
-published 2.0 prerelease without implying that stable 2.0 has shipped. The
+The compatible-release constraint selects the newest published 2.0 prerelease
+without allowing prereleases of unrelated dependencies or implying that stable
+2.0 has shipped. The
 [API reference](https://python.durable-workflow.com/) shows the exact supported
 SDK and Server versions.
 

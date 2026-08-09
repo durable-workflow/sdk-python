@@ -56,3 +56,10 @@ jobs:
           --source-ref "$source_ref"
           --attempts 3
           --interval-seconds 10
+          --evidence pypi-project-surface-evidence.json
+      - name: Upload project-surface evidence
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: pypi-project-surface-evidence
+          path: pypi-project-surface-evidence.json

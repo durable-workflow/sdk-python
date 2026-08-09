@@ -29,11 +29,15 @@ class ReleaseIdentity:
 
     @property
     def requirement(self) -> str:
-        return f"{self.package}=={self.version}"
+        return f"{self.package}~=2.0.0rc0"
+
+    @property
+    def exact_requirement(self) -> str:
+        return f"{self.package}=={self.registry_version}"
 
     @property
     def install_command(self) -> str:
-        return f"pip install {self.requirement}"
+        return f"pip install '{self.requirement}'"
 
 
 def normalize_registry_version(version: str) -> str:

@@ -18,6 +18,7 @@ from scripts.check_api_reference_install import (
     PublicRequirementUnavailable,
     install_public_requirement,
     rendered_install_command,
+    run_clean_install,
     validate_command,
     validate_rendered_site,
     validate_source_templates,
@@ -38,7 +39,8 @@ def test_rendered_first_install_command_is_discovered(tmp_path: Path) -> None:
     identity = load_release_identity(REPO_ROOT)
     (tmp_path / "index.html").write_text(
         '<main><h2 id="install">Install</h2><div class="highlight"><pre><code>'
-        f"pip<span> </span>install<span> </span>durable-workflow<span>==</span>{identity.version}"
+        "pip<span> </span>install<span> </span>"
+        "'durable-workflow<span>~=</span>2.0.0rc0'"
         '</code></pre></div><h2 id="versioning">Versioning</h2>'
         f"<p>SDK {identity.version}; durableworkflow/server:{identity.server_version}</p></main>",
         encoding="utf-8",
@@ -77,7 +79,7 @@ def test_manifest_change_alone_changes_rendered_release_tuple(tmp_path: Path) ->
     config = SimpleNamespace(config_file_path=str(tmp_path / "mkdocs.yml"))
     rendered = on_page_markdown(source, page, config, files=None)
 
-    assert f"pip install durable-workflow=={sdk_version}" in rendered
+    assert "pip install 'durable-workflow~=2.0.0rc0'" in rendered
     assert f"durableworkflow/server:{server_version}" in rendered
     assert current.version not in rendered
 
@@ -125,6 +127,7 @@ def test_delayed_public_pypi_release_is_retried_before_success(
     assert sleeps == [0.25, 0.25]
     for command, env in calls:
         assert command[-3:] == ["--index-url", PUBLIC_PYPI_INDEX, requirement]
+        assert "--pre" not in command
         assert env["PIP_INDEX_URL"] == PUBLIC_PYPI_INDEX
         assert env["PIP_CONFIG_FILE"]
         assert "PIP_EXTRA_INDEX_URL" not in env
@@ -154,6 +157,55 @@ def test_unavailable_public_pypi_release_fails_closed(
             attempts=2,
             retry_sleep=0,
         )
+
+
+def test_clean_install_qualifies_the_documented_range_before_the_exact_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = load_release_identity(REPO_ROOT)
+    calls: list[tuple[str, str | None]] = []
+
+    def run_requirement(
+        requirement: str,
+        *,
+        expected_version: str | None,
+        install_attempts: int,
+        install_retry_sleep: float,
+    ) -> None:
+        assert install_attempts == 1
+        assert install_retry_sleep == 0
+        calls.append((requirement, expected_version))
+
+    monkeypatch.setattr("scripts.check_api_reference_install._run_clean_requirement", run_requirement)
+
+    run_clean_install(identity.requirement, identity, install_attempts=1, install_retry_sleep=0)
+
+    assert calls == [
+        ("durable-workflow~=2.0.0rc0", None),
+        (f"durable-workflow=={identity.registry_version}", identity.registry_version),
+    ]
+
+
+def test_unpublished_exact_release_uses_the_existing_deferral_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = load_release_identity(REPO_ROOT)
+
+    def run_requirement(
+        requirement: str,
+        *,
+        expected_version: str | None,
+        install_attempts: int,
+        install_retry_sleep: float,
+    ) -> None:
+        del expected_version, install_attempts, install_retry_sleep
+        if requirement == identity.exact_requirement:
+            raise PublicRequirementUnavailable(1, ["pip", "install", requirement])
+
+    monkeypatch.setattr("scripts.check_api_reference_install._run_clean_requirement", run_requirement)
+
+    with pytest.raises(PublicRequirementUnavailable):
+        run_clean_install(identity.requirement, identity, install_attempts=1, install_retry_sleep=0)
 
 
 def test_public_release_evidence_derives_from_manifest(tmp_path: Path) -> None:

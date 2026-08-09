@@ -95,8 +95,12 @@ def validate_source_templates(repo_root: Path, identity: ReleaseIdentity) -> Non
     if re.search(r"\b[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta|rc)\.[0-9]+\b", reference, re.IGNORECASE):
         raise ValueError("docs/index.md must derive exact prerelease identities from pyproject.toml")
 
+    reference_command = markdown_install_command(repo_root / "docs" / "index.md")
+    if shlex.split(reference_command) != shlex.split(identity.install_command):
+        raise ValueError("docs/index.md first install command must select the supported 2.0 prerelease line")
+
     readme = repo_root / "README.md"
-    expected = ["pip", "install", "--pre", "durable-workflow~=2.0.0rc0"]
+    expected = ["pip", "install", "durable-workflow~=2.0.0rc0"]
     command = markdown_install_command(readme)
     if shlex.split(command) != expected:
         raise ValueError(f"README first install command must select the 2.0 prerelease line, got {command!r}")
@@ -139,7 +143,7 @@ PUBLIC_PYPI_INDEX = "https://pypi.org/simple"
 
 
 class PublicRequirementUnavailable(subprocess.CalledProcessError):
-    """The exact requirement could not be installed from the public channel."""
+    """A required package version could not be installed from the public channel."""
 
 
 def install_public_requirement(
@@ -150,7 +154,7 @@ def install_public_requirement(
     attempts: int,
     retry_sleep: float,
 ) -> None:
-    """Install an exact requirement from public PyPI, retrying propagation delays."""
+    """Install the supported prerelease requirement from public PyPI."""
     if attempts < 1:
         raise ValueError("Public PyPI install attempts must be at least 1")
     if retry_sleep < 0:
@@ -187,10 +191,10 @@ def install_public_requirement(
     raise PublicRequirementUnavailable(result.returncode, command)
 
 
-def run_clean_install(
+def _run_clean_requirement(
     requirement: str,
-    identity: ReleaseIdentity,
     *,
+    expected_version: str | None,
     install_attempts: int = 6,
     install_retry_sleep: float = 20,
 ) -> None:
@@ -212,20 +216,42 @@ import os
 
 import durable_workflow
 
-expected = os.environ["EXPECTED_DURABLE_WORKFLOW_VERSION"]
+expected = os.environ.get("EXPECTED_DURABLE_WORKFLOW_VERSION")
 installed = importlib.metadata.version("durable-workflow")
-if installed != expected:
+if expected and installed != expected:
     raise SystemExit(f"installed durable-workflow {installed}, expected {expected}")
-if durable_workflow.__version__ != expected:
-    raise SystemExit(f"imported durable-workflow {durable_workflow.__version__}, expected {expected}")
+if durable_workflow.__version__ != installed:
+    raise SystemExit(f"imported durable-workflow {durable_workflow.__version__}, installed {installed}")
 print(f"clean API-reference install imported durable-workflow {installed}")
 """
         env = {
             **os.environ,
-            "EXPECTED_DURABLE_WORKFLOW_VERSION": identity.registry_version,
+            "EXPECTED_DURABLE_WORKFLOW_VERSION": expected_version or "",
             "PYTHONPATH": "",
         }
         subprocess.run([str(python), "-c", check], cwd=clean_root, env=env, check=True)
+
+
+def run_clean_install(
+    requirement: str,
+    identity: ReleaseIdentity,
+    *,
+    install_attempts: int = 6,
+    install_retry_sleep: float = 20,
+) -> None:
+    """Exercise the documented range and independently require the exact release."""
+    _run_clean_requirement(
+        requirement,
+        expected_version=None,
+        install_attempts=install_attempts,
+        install_retry_sleep=install_retry_sleep,
+    )
+    _run_clean_requirement(
+        identity.exact_requirement,
+        expected_version=identity.registry_version,
+        install_attempts=install_attempts,
+        install_retry_sleep=install_retry_sleep,
+    )
 
 
 def verify_public_deployment(
@@ -289,7 +315,7 @@ def main() -> int:
     parser.add_argument(
         "--unavailable-exit-code",
         type=int,
-        help="Return this distinct code only when public PyPI cannot install the exact requirement.",
+        help="Return this distinct code only when public PyPI cannot install the documented or exact requirement.",
     )
     parser.add_argument(
         "--source-revision",
