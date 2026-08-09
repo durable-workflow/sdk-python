@@ -56,6 +56,8 @@ from .errors import (
     NonRetryableError,
     QueryFailed,
     ServerError,
+    UpdateRejected,
+    UpdateValidationFailed,
 )
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .interceptors import (
@@ -80,11 +82,13 @@ from .workflow import (
     commands_to_server_commands,
     query_state,
     replay,
+    validate_update,
 )
 
 log = logging.getLogger("durable_workflow.worker")
 
 QUERY_TASKS_CAPABILITY = "query_tasks"
+UPDATE_VALIDATION_TASKS_CAPABILITY = "update_validation_tasks"
 WORKFLOW_UPDATES_CAPABILITY = "workflow_updates"
 
 _TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
@@ -93,6 +97,14 @@ _QUERY_TASK_FINAL_REJECTION_REASONS = {
     "query_task_not_found",
     "query_task_not_leased",
     "query_task_timed_out",
+}
+_UPDATE_VALIDATION_FINAL_REJECTION_REASONS = {
+    "duplicate_update_validation_completion",
+    "stale_update_validation_completion",
+    "update_validation_lease_expired",
+    "update_validation_task_not_found",
+    "update_validation_task_not_leased",
+    "update_validator_worker_lost",
 }
 _WORKFLOW_TASK_COMPLETION_AMBIGUOUS_REJECTION_REASONS = {
     "lease_expired",
@@ -678,10 +690,9 @@ def _workflow_command_contract(cls: type) -> dict[str, Any]:
         registry = getattr(cls, registry_name, {}) or {}
         names = sorted(registry)
         contract[plural] = names
-        contract[f"{singular}_contracts"] = [
-            _command_handler_contract(cls, name, registry[name])
-            for name in names
-        ]
+        contract[f"{singular}_contracts"] = [_command_handler_contract(cls, name, registry[name]) for name in names]
+    validators = getattr(cls, "__workflow_update_validators__", {}) or {}
+    contract["update_validators"] = sorted(validators)
     return contract
 
 
@@ -808,6 +819,23 @@ def _server_supports_query_tasks(info: dict[str, Any]) -> bool:
     return isinstance(capabilities, dict) and capabilities.get("query_tasks") is True
 
 
+def _server_supports_update_validation_tasks(info: dict[str, Any]) -> bool:
+    worker_protocol = info.get("worker_protocol")
+    if not isinstance(worker_protocol, dict):
+        return False
+    capabilities = worker_protocol.get("server_capabilities")
+    if not isinstance(capabilities, dict) or capabilities.get("update_validation_tasks") is not True:
+        return False
+    semantics = capabilities.get("synchronous_update_validation")
+    return (
+        isinstance(semantics, dict)
+        and semantics.get("supported") is True
+        and semantics.get("acceptance_boundary") == "validator_approved"
+        and semantics.get("worker_capability") == UPDATE_VALIDATION_TASKS_CAPABILITY
+        and semantics.get("workflow_contract_field") == "update_validators"
+    )
+
+
 def _server_long_poll_timeout(info: dict[str, Any]) -> float | None:
     worker_protocol = info.get("worker_protocol")
     if not isinstance(worker_protocol, dict):
@@ -905,6 +933,7 @@ class Worker:
         self._registration_done = asyncio.Event()
         self._shutdown_task: asyncio.Task[None] | None = None
         self._query_tasks_supported = False
+        self._update_validation_tasks_supported = False
         self._query_thread_stop = threading.Event()
         self._query_thread: threading.Thread | None = None
         self._query_thread_loop: asyncio.AbstractEventLoop | None = None
@@ -1021,6 +1050,17 @@ class Worker:
 
         _validate_server_compatibility(info)
         self._query_tasks_supported = _server_supports_query_tasks(info)
+        has_update_validators = any(
+            contract["update_validators"] for contract in self.workflow_command_contracts.values()
+        )
+        server_supports_update_validation_tasks = _server_supports_update_validation_tasks(info)
+        self._update_validation_tasks_supported = has_update_validators and server_supports_update_validation_tasks
+        if has_update_validators and not server_supports_update_validation_tasks:
+            raise RuntimeError(
+                "Server compatibility error: this worker declares update validators, but the "
+                "server does not advertise synchronous pre-accept update validation. Refusing "
+                "registration so validated updates cannot be accepted without validator approval."
+            )
         server_long_poll_timeout = _server_long_poll_timeout(info)
         if server_long_poll_timeout is not None:
             self._poll_http_timeout = max(self._poll_http_timeout, server_long_poll_timeout + 5.0)
@@ -1034,10 +1074,9 @@ class Worker:
         capabilities: list[str] = []
         if self._query_tasks_supported:
             capabilities.append(QUERY_TASKS_CAPABILITY)
-        if any(
-            contract["updates"]
-            for contract in self.workflow_command_contracts.values()
-        ):
+        if has_update_validators:
+            capabilities.append(UPDATE_VALIDATION_TASKS_CAPABILITY)
+        if any(contract["updates"] for contract in self.workflow_command_contracts.values()):
             capabilities.append(WORKFLOW_UPDATES_CAPABILITY)
 
         ack = await self.client.register_worker(
@@ -2095,6 +2134,182 @@ class Worker:
         finally:
             self._record_task_metrics("query", outcome, time.perf_counter() - task_start)
 
+    async def _run_update_validation_task(self, task: dict[str, Any]) -> str:
+        task_id = _string_or_none(task.get("update_validation_task_id"))
+        attempt = task.get("update_validation_attempt", 1)
+        workflow_type = _string_or_none(task.get("workflow_type"))
+        update_name = _string_or_none(task.get("update_name"))
+        if task_id is None or not isinstance(attempt, int) or attempt < 1:
+            log.warning("received malformed update validation task: %r", task)
+            return "failed"
+
+        try:
+            if workflow_type is None or update_name is None:
+                raise UpdateValidationFailed("update validation task is missing workflow type or update name")
+            workflow_cls = self.workflows.get(workflow_type)
+            if workflow_cls is None:
+                raise UpdateValidationFailed(f"no workflow registered for type {workflow_type!r}")
+            codec = _validate_payload_codec(task.get("payload_codec"))
+            history = _query_history_events(
+                task.get("history_events", []),
+                task.get("history_export"),
+                default_codec=codec,
+            )
+            start_input = self._decode_list_payload(
+                task.get("workflow_arguments"),
+                codec=codec,
+                context="workflow update validation start input",
+            )
+            update_args = self._decode_list_payload(
+                task.get("update_arguments"),
+                codec=codec,
+                context="workflow update validation arguments",
+            )
+            result = validate_update(
+                workflow_cls,
+                history,
+                start_input,
+                update_name,
+                update_args,
+                workflow_id=task.get("workflow_id"),
+                run_id=task.get("run_id", ""),
+                payload_codec=codec,
+                external_storage=self.external_storage,
+                external_storage_cache=self.external_storage_cache,
+            )
+            if inspect.isawaitable(result):
+                result = await result
+            if result is False:
+                raise UpdateRejected(
+                    f"update validator {update_name!r} returned false",
+                    exception_type="ValueError",
+                )
+        except UpdateRejected as exc:
+            return await self._reject_update_validation_task(
+                task_id,
+                attempt,
+                str(exc) or "update validator rejected the request",
+                reason="update_validator_rejected",
+                failure_type=exc.exception_type or type(exc).__name__,
+                validation_errors=exc.validation_errors,
+                stack_trace=traceback.format_exc(),
+            )
+        except UpdateValidationFailed as exc:
+            return await self._reject_update_validation_task(
+                task_id,
+                attempt,
+                str(exc),
+                reason="update_validation_worker_failed",
+                failure_type=type(exc).__name__,
+                stack_trace=traceback.format_exc(),
+            )
+        except Exception as exc:
+            return await self._reject_update_validation_task(
+                task_id,
+                attempt,
+                str(exc) or "update validator rejected the request",
+                reason="update_validator_rejected",
+                failure_type=type(exc).__name__,
+                stack_trace=traceback.format_exc(),
+            )
+
+        try:
+            await self.client.approve_update_validation_task(
+                update_validation_task_id=task_id,
+                lease_owner=self.worker_id,
+                update_validation_attempt=attempt,
+            )
+        except ServerError as exc:
+            if exc.reason() in _UPDATE_VALIDATION_FINAL_REJECTION_REASONS:
+                log.info(
+                    "update validation task %s approval was fenced: %s",
+                    task_id,
+                    exc.reason(),
+                )
+                return "expired"
+            log.warning("failed to approve update validation task %s: %s", task_id, exc)
+            return "failed"
+        except Exception as exc:
+            log.warning("failed to approve update validation task %s: %s", task_id, exc)
+            return "failed"
+
+        return "approved"
+
+    async def _reject_update_validation_task(
+        self,
+        task_id: str,
+        attempt: int,
+        message: str,
+        *,
+        reason: str,
+        failure_type: str | None = None,
+        stack_trace: str | None = None,
+        validation_errors: dict[str, Any] | None = None,
+    ) -> str:
+        try:
+            await self.client.reject_update_validation_task(
+                update_validation_task_id=task_id,
+                lease_owner=self.worker_id,
+                update_validation_attempt=attempt,
+                message=message,
+                reason=reason,
+                failure_type=failure_type,
+                stack_trace=stack_trace,
+                validation_errors=validation_errors,
+            )
+        except ServerError as exc:
+            if exc.reason() in _UPDATE_VALIDATION_FINAL_REJECTION_REASONS:
+                log.info(
+                    "update validation task %s rejection was fenced: %s",
+                    task_id,
+                    exc.reason(),
+                )
+                return "expired"
+            log.warning("failed to reject update validation task %s: %s", task_id, exc)
+            return "failed"
+        except Exception as exc:
+            log.warning("failed to reject update validation task %s: %s", task_id, exc)
+            return "failed"
+
+        return "rejected" if reason == "update_validator_rejected" else "failed"
+
+    async def _poll_update_validation_tasks(self) -> None:
+        while not self._stop.is_set():
+            try:
+                poll_start = time.perf_counter()
+                task = await self.client.poll_update_validation_task(
+                    worker_id=self.worker_id,
+                    task_queue=self.task_queue,
+                    timeout=self._poll_http_timeout,
+                )
+            except Exception as exc:
+                if self._stop.is_set():
+                    return
+                self._record_poll_metrics("update_validation", "error", time.perf_counter() - poll_start)
+                log.warning("update validation poll error: %s", exc)
+                await asyncio.sleep(1.0)
+                continue
+            if task is None:
+                self._record_poll_metrics("update_validation", "empty", time.perf_counter() - poll_start)
+                if self._stop.is_set():
+                    return
+                await asyncio.sleep(0)
+                continue
+            self._record_poll_metrics("update_validation", "task", time.perf_counter() - poll_start)
+            if self._stop.is_set():
+                return
+            self._track(self._dispatch_update_validation_task(task))
+
+    async def _dispatch_update_validation_task(self, task: dict[str, Any]) -> None:
+        task_start = time.perf_counter()
+        outcome = "error"
+        try:
+            outcome = await self._run_update_validation_task(task)
+        except Exception:
+            log.exception("unhandled error in update validation task execution")
+        finally:
+            self._record_task_metrics("update_validation", outcome, time.perf_counter() - task_start)
+
     def _clone_client_for_query_tasks(self) -> Client:
         warning_config = self._payload_size_warning_config()
 
@@ -2108,9 +2323,7 @@ class Worker:
             retry_policy=self.client.retry_policy,
             metrics=self.metrics,
             payload_size_limit_bytes=(
-                warning_config.limit_bytes
-                if warning_config is not None
-                else serializer.DEFAULT_PAYLOAD_SIZE_BYTES
+                warning_config.limit_bytes if warning_config is not None else serializer.DEFAULT_PAYLOAD_SIZE_BYTES
             ),
             payload_size_warning_threshold_percent=(
                 warning_config.threshold_percent
@@ -2204,6 +2417,8 @@ class Worker:
                     self._start_query_task_thread()
                 else:
                     loops.append(asyncio.create_task(self._poll_query_tasks()))
+            if self._update_validation_tasks_supported:
+                loops.append(asyncio.create_task(self._poll_update_validation_tasks()))
             self._poller_tasks.update(loops)
 
             try:
@@ -2355,6 +2570,8 @@ class Worker:
                     self._start_query_task_thread()
                 else:
                     background_tasks.append(asyncio.create_task(self._poll_query_tasks()))
+            if self._update_validation_tasks_supported:
+                background_tasks.append(asyncio.create_task(self._poll_update_validation_tasks()))
             self._poller_tasks.update(background_tasks)
             run_until_loop = asyncio.create_task(
                 self._run_until_loop(

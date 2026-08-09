@@ -912,6 +912,18 @@ def _policy(document: Mapping[str, Any], path: str) -> Mapping[str, Any]:
         for index, raw_guard in enumerate(guards):
             guard = _object(raw_guard, f"{path}.categories.{name}.guards[{index}]")
             _string(guard.get("glob"), f"{path}.categories.{name}.guards[{index}].glob")
+            python_symbols = guard.get("python_symbols")
+            if python_symbols is not None:
+                _unique_strings(
+                    python_symbols,
+                    f"{path}.categories.{name}.guards[{index}].python_symbols",
+                )
+            ignored_python_symbols = guard.get("ignored_python_symbols")
+            if ignored_python_symbols is not None:
+                _unique_strings(
+                    ignored_python_symbols,
+                    f"{path}.categories.{name}.guards[{index}].ignored_python_symbols",
+                )
             patterns = guard.get("content_patterns")
             if patterns is not None:
                 for pattern in _unique_strings(
@@ -986,25 +998,56 @@ def _validate_policy_evolution(
             glob = _string(base_guard["glob"], "base guard.glob")
             candidate_guards = current_guards_by_glob.get(glob, [])
             base_patterns = base_guard.get("content_patterns")
+            base_python_symbols = base_guard.get("python_symbols")
+            base_ignored_python_symbols = base_guard.get("ignored_python_symbols")
             if base_patterns is None:
-                covered = any(guard.get("content_patterns") is None for guard in candidate_guards)
+                pattern_covered = [
+                    guard for guard in candidate_guards if guard.get("content_patterns") is None
+                ]
             else:
                 required_patterns = set(_unique_strings(base_patterns, "base guard.content_patterns"))
-                covered = any(guard.get("content_patterns") is None for guard in candidate_guards)
-                if not covered:
-                    candidate_patterns = {
-                        pattern
-                        for guard in candidate_guards
-                        for pattern in _unique_strings(
-                            guard.get("content_patterns"),
-                            "current guard.content_patterns",
+                pattern_covered = []
+                for guard in candidate_guards:
+                    candidate_patterns = guard.get("content_patterns")
+                    if candidate_patterns is None or required_patterns <= set(
+                        _unique_strings(candidate_patterns, "current guard.content_patterns")
+                    ):
+                        pattern_covered.append(guard)
+            covered = False
+            for guard in pattern_covered:
+                candidate_python_symbols = guard.get("python_symbols")
+                if base_python_symbols is not None and candidate_python_symbols is not None:
+                    required_python_symbols = set(
+                        _unique_strings(base_python_symbols, "base guard.python_symbols")
+                    )
+                    if not required_python_symbols <= set(
+                        _unique_strings(candidate_python_symbols, "current guard.python_symbols")
+                    ):
+                        continue
+                candidate_ignored_python_symbols = guard.get("ignored_python_symbols")
+                if (
+                    base_ignored_python_symbols is not None
+                    and candidate_ignored_python_symbols is not None
+                    and not set(
+                        _unique_strings(
+                            candidate_ignored_python_symbols,
+                            "current guard.ignored_python_symbols",
                         )
-                    }
-                    covered = required_patterns <= candidate_patterns
+                    )
+                    <= set(
+                        _unique_strings(
+                            base_ignored_python_symbols,
+                            "base guard.ignored_python_symbols",
+                        )
+                    )
+                ):
+                    continue
+                covered = True
+                break
             if not covered:
                 raise CorpusError(
                     f"{category_name} guard selector was removed or narrowed: glob={glob!r}; "
-                    "preserve its glob and content patterns when adding broader guards"
+                    "preserve its glob, content patterns, and Python symbol coverage when adding broader guards"
                 )
 
 
@@ -1126,7 +1169,10 @@ def _changed_paths(root: Path, base_ref: str) -> tuple[set[str], set[str]]:
     return changed | untracked, added | untracked
 
 
-def _smallest_changed_python_symbols(source: str, changed_lines: set[int]) -> list[str]:
+def _smallest_changed_python_symbols(
+    source: str,
+    changed_lines: set[int],
+) -> list[tuple[str, str]]:
     if not changed_lines:
         return []
     try:
@@ -1135,7 +1181,7 @@ def _smallest_changed_python_symbols(source: str, changed_lines: set[int]) -> li
         return []
 
     source_lines = source.splitlines()
-    spans: list[tuple[int, int]] = []
+    spans: list[tuple[int, int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
@@ -1145,21 +1191,25 @@ def _smallest_changed_python_symbols(source: str, changed_lines: set[int]) -> li
         start = min(
             [node.lineno, *(decorator.lineno for decorator in node.decorator_list)]
         )
-        spans.append((start, end))
+        spans.append((start, end, node.name))
 
-    selected: set[tuple[int, int]] = set()
+    selected: set[tuple[int, int, str]] = set()
     for line in changed_lines:
         containing = [span for span in spans if span[0] <= line <= span[1]]
         if containing:
             selected.add(min(containing, key=lambda span: span[1] - span[0]))
 
     return [
-        "\n".join(source_lines[start - 1 : end])
-        for start, end in sorted(selected)
+        (name, "\n".join(source_lines[start - 1 : end]))
+        for start, end, name in sorted(selected)
     ]
 
 
-def _changed_content(root: Path, base_ref: str, path: str) -> list[str]:
+def _changed_content(
+    root: Path,
+    base_ref: str,
+    path: str,
+) -> tuple[list[str], list[tuple[str, str]]]:
     diff = _run(
         [
             "git",
@@ -1203,19 +1253,22 @@ def _changed_content(root: Path, base_ref: str, path: str) -> list[str]:
             old_line += 1
             new_line += 1
 
+    changed_python_symbols: list[tuple[str, str]] = []
     if path.endswith(".py"):
         base_source = _run(["git", "show", f"{base_ref}:{path}"], root, check=False)
         if base_source:
-            changed.extend(_smallest_changed_python_symbols(base_source, old_lines))
+            for name, content in _smallest_changed_python_symbols(base_source, old_lines):
+                changed_python_symbols.append((name, content))
+                changed.append(content)
         current_path = root / path
         if current_path.is_file():
-            changed.extend(
-                _smallest_changed_python_symbols(
-                    current_path.read_text(encoding="utf-8", errors="replace"),
-                    new_lines,
-                )
-            )
-    return changed
+            for name, content in _smallest_changed_python_symbols(
+                current_path.read_text(encoding="utf-8", errors="replace"),
+                new_lines,
+            ):
+                changed_python_symbols.append((name, content))
+                changed.append(content)
+    return changed, changed_python_symbols
 
 
 def _guard_matches(
@@ -1229,15 +1282,49 @@ def _guard_matches(
     if not matching:
         return False
     patterns = guard.get("content_patterns")
-    if patterns is None:
+    python_symbols = guard.get("python_symbols")
+    ignored_python_symbols = set(
+        _unique_strings(guard["ignored_python_symbols"], "guard.ignored_python_symbols")
+    ) if guard.get("ignored_python_symbols") is not None else set()
+    if patterns is None and python_symbols is None and not ignored_python_symbols:
         return True
     untracked = set(_run(["git", "ls-files", "--others", "--exclude-standard"], root).splitlines())
     context_lines: list[str] = []
+    changed_python_symbols: set[str] = set()
     for path in matching:
         if path in untracked and (root / path).is_file():
-            context_lines.append((root / path).read_text(encoding="utf-8", errors="replace"))
+            content = (root / path).read_text(encoding="utf-8", errors="replace")
+            context_lines.append(content)
+            if path.endswith(".py"):
+                symbol_contexts = _smallest_changed_python_symbols(
+                    content,
+                    set(range(1, len(content.splitlines()) + 1)),
+                )
+                changed_python_symbols.update(name for name, _ in symbol_contexts)
+                if ignored_python_symbols:
+                    context_lines.pop()
+                    context_lines.extend(
+                        symbol_content
+                        for name, symbol_content in symbol_contexts
+                        if name not in ignored_python_symbols
+                    )
         else:
-            context_lines.extend(_changed_content(root, base_ref, path))
+            content, symbol_contexts = _changed_content(root, base_ref, path)
+            changed_python_symbols.update(name for name, _ in symbol_contexts)
+            if ignored_python_symbols and symbol_contexts:
+                context_lines.extend(
+                    symbol_content
+                    for name, symbol_content in symbol_contexts
+                    if name not in ignored_python_symbols
+                )
+            else:
+                context_lines.extend(content)
+    if python_symbols is not None and not changed_python_symbols.intersection(
+        _unique_strings(python_symbols, "guard.python_symbols")
+    ):
+        return False
+    if patterns is None:
+        return True
     changed_context = "\n".join(context_lines)
     return any(re.search(pattern, changed_context) for pattern in patterns)
 

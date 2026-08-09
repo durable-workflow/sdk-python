@@ -35,6 +35,7 @@ from durable_workflow.interceptors import (
 )
 from durable_workflow.nexus import NEXUS_OPERATION_RESULT_SCHEMA, NexusOperationResult
 from durable_workflow.worker import (
+    UPDATE_VALIDATION_TASKS_CAPABILITY,
     WORKFLOW_UPDATES_CAPABILITY,
     Worker,
     _query_history_with_export_signal_arguments,
@@ -115,6 +116,26 @@ class UpdateWorkflow:
     def run(self, ctx):  # type: ignore[no-untyped-def]
         yield ctx.schedule_activity("wait", [])
         return self.count
+
+
+@workflow.defn(name="validated-update-wf")
+class ValidatedUpdateWorkflow:
+    validator_calls = 0
+    handler_calls = 0
+
+    @workflow.update("approve")
+    def approve(self, approved: bool) -> bool:
+        type(self).handler_calls += 1
+        return approved
+
+    @approve.validator  # type: ignore[attr-defined]
+    def validate_approve(self, approved: bool) -> None:
+        type(self).validator_calls += 1
+        if not approved:
+            raise ValueError("approval required")
+
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        return "waiting"
 
 
 @workflow.defn(name="query-wf")
@@ -339,6 +360,7 @@ class TestWorkerRegistration:
             "signal_contracts": [],
             "updates": [],
             "update_contracts": [],
+            "update_validators": [],
         }
         assert "test-act" in call_kwargs["supported_activity_types"]
         assert call_kwargs["max_concurrent_workflow_tasks"] == 10
@@ -456,6 +478,7 @@ class TestWorkerRegistration:
                         ],
                     }
                 ],
+                "update_validators": [],
             }
         }
         assert mock_client.register_worker.await_args_list[0].kwargs["build_id"] == "release-a"
@@ -463,6 +486,93 @@ class TestWorkerRegistration:
             "query_tasks",
             WORKFLOW_UPDATES_CAPABILITY,
         ]
+
+    @pytest.mark.asyncio
+    async def test_validator_worker_requires_and_advertises_preaccept_capability(self, mock_client: AsyncMock) -> None:
+        @workflow.defn(name="validated-registration-wf")
+        class ValidatedWorkflow:
+            @workflow.update("approve")
+            def approve(self, approved: bool) -> bool:
+                return approved
+
+            @approve.validator  # type: ignore[attr-defined]
+            def validate_approve(self, approved: bool) -> None:
+                if not approved:
+                    raise ValueError("approval required")
+
+            def run(self, ctx):  # type: ignore[no-untyped-def]
+                yield ctx.wait_condition(lambda: False)
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[ValidatedWorkflow],
+            worker_id="w-validated-contract",
+        )
+
+        with pytest.raises(RuntimeError, match="synchronous pre-accept update validation"):
+            await worker._register()
+        mock_client.register_worker.assert_not_awaited()
+
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(
+                worker_protocol={
+                    "version": PROTOCOL_VERSION,
+                    "server_capabilities": {
+                        "query_tasks": True,
+                        "update_validation_tasks": True,
+                        "synchronous_update_validation": {
+                            "supported": True,
+                            "acceptance_boundary": "validator_approved",
+                            "worker_capability": UPDATE_VALIDATION_TASKS_CAPABILITY,
+                            "workflow_contract_field": "update_validators",
+                        },
+                    },
+                }
+            )
+        )
+        await worker._register()
+
+        registered = mock_client.register_worker.await_args.kwargs
+        assert registered["workflow_command_contracts"]["validated-registration-wf"]["update_validators"] == ["approve"]
+        assert registered["capabilities"] == [
+            "query_tasks",
+            UPDATE_VALIDATION_TASKS_CAPABILITY,
+            WORKFLOW_UPDATES_CAPABILITY,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_worker_without_validators_does_not_poll_validation_queue(self, mock_client: AsyncMock) -> None:
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(
+                worker_protocol={
+                    "version": PROTOCOL_VERSION,
+                    "server_capabilities": {
+                        "query_tasks": True,
+                        "update_validation_tasks": True,
+                        "synchronous_update_validation": {
+                            "supported": True,
+                            "acceptance_boundary": "validator_approved",
+                            "worker_capability": UPDATE_VALIDATION_TASKS_CAPABILITY,
+                            "workflow_contract_field": "update_validators",
+                        },
+                    },
+                }
+            )
+        )
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[UpdateWorkflow],
+            worker_id="w-without-validators",
+        )
+
+        await worker._register()
+
+        assert worker._update_validation_tasks_supported is False
+        assert UPDATE_VALIDATION_TASKS_CAPABILITY not in (
+            mock_client.register_worker.await_args.kwargs["capabilities"]
+        )
 
     @pytest.mark.asyncio
     async def test_register_keeps_http_timeout_above_server_long_poll(self, mock_client: AsyncMock) -> None:
@@ -2134,6 +2244,66 @@ class TestWorkflowTaskExecution:
         assert call_kwargs["query_task_attempt"] == 1
         assert call_kwargs["reason"] == "query_result_encode_failed"
         assert call_kwargs["failure_type"] == "TypeError"
+
+
+class TestUpdateValidationTaskExecution:
+    def task(self, approved: bool) -> dict[str, object]:
+        return {
+            "update_validation_task_id": "uv1",
+            "update_validation_attempt": 1,
+            "workflow_type": "validated-update-wf",
+            "update_name": "approve",
+            "history_events": [],
+            "workflow_arguments": serializer.envelope([], codec="json"),
+            "update_arguments": serializer.envelope([approved], codec="json"),
+            "payload_codec": "json",
+            "workflow_id": "wf1",
+            "run_id": "run1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_approval_runs_validator_without_handler(self, mock_client: AsyncMock) -> None:
+        ValidatedUpdateWorkflow.validator_calls = 0
+        ValidatedUpdateWorkflow.handler_calls = 0
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[ValidatedUpdateWorkflow],
+            worker_id="validator-worker",
+        )
+
+        outcome = await worker._run_update_validation_task(self.task(True))
+
+        assert outcome == "approved"
+        assert ValidatedUpdateWorkflow.validator_calls == 1
+        assert ValidatedUpdateWorkflow.handler_calls == 0
+        mock_client.approve_update_validation_task.assert_awaited_once_with(
+            update_validation_task_id="uv1",
+            lease_owner="validator-worker",
+            update_validation_attempt=1,
+        )
+        mock_client.reject_update_validation_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rejection_is_reported_with_typed_reason(self, mock_client: AsyncMock) -> None:
+        ValidatedUpdateWorkflow.validator_calls = 0
+        ValidatedUpdateWorkflow.handler_calls = 0
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[ValidatedUpdateWorkflow],
+            worker_id="validator-worker",
+        )
+
+        outcome = await worker._run_update_validation_task(self.task(False))
+
+        assert outcome == "rejected"
+        assert ValidatedUpdateWorkflow.validator_calls == 1
+        assert ValidatedUpdateWorkflow.handler_calls == 0
+        rejection = mock_client.reject_update_validation_task.await_args.kwargs
+        assert rejection["reason"] == "update_validator_rejected"
+        assert rejection["failure_type"] == "ValueError"
+        mock_client.approve_update_validation_task.assert_not_awaited()
 
 
 class TestActivityTaskExecution:

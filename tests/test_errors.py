@@ -14,6 +14,7 @@ from durable_workflow.errors import (
     SignalFailed,
     Unauthorized,
     UpdateRejected,
+    UpdateValidationFailed,
     WorkflowAlreadyStarted,
     WorkflowCancelled,
     WorkflowNotFound,
@@ -101,6 +102,44 @@ class TestRaiseForStatus:
         with pytest.raises(InvalidArgument) as exc_info:
             _raise_for_status(422, {"message": "bad", "errors": {"f": ["req"]}})
         assert exc_info.value.errors == {"f": ["req"]}
+
+    def test_422_update_validator_rejected_is_typed(self) -> None:
+        with pytest.raises(UpdateRejected) as exc_info:
+            _raise_for_status(
+                422,
+                {
+                    "reason": "update_validator_rejected",
+                    "message": "approval required",
+                    "validation_errors": {"approved": ["must be true"]},
+                },
+            )
+        assert exc_info.value.validation_errors == {"approved": ["must be true"]}
+
+    @pytest.mark.parametrize(
+        ("status", "reason", "retryable"),
+        [
+            (409, "update_validation_capability_unsupported", False),
+            (409, "update_validator_worker_unavailable", True),
+            (422, "update_validation_request_id_required", True),
+            (504, "update_validator_worker_lost", False),
+        ],
+    )
+    def test_update_validation_infrastructure_failures_are_typed(
+        self, status: int, reason: str, retryable: bool
+    ) -> None:
+        with pytest.raises(UpdateValidationFailed) as exc_info:
+            _raise_for_status(
+                status,
+                {
+                    "reason": reason,
+                    "message": "validation could not complete",
+                    "retryable": retryable,
+                },
+            )
+
+        assert exc_info.value.reason == reason
+        assert exc_info.value.status == status
+        assert exc_info.value.retryable is retryable
 
     def test_422_invalid_signal_arguments(self) -> None:
         body = {

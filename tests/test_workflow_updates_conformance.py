@@ -27,6 +27,13 @@ def test_workflow_updates_surface_probe_records_required_python_cells() -> None:
     assert scenario["local_product_source_checkouts_used"] is False
     assert set(UPDATE_CELLS).issubset(set(outputs["covered_cells"]))
     assert outputs["unsupported_cells"] == []
+    assert outputs["python_worker_update_handler"]["observations"]["validator_approved"] == {
+        "outcome": "approved",
+        "validator_calls": 1,
+        "handler_calls": 0,
+    }
+    assert outputs["python_worker_update_handler"]["observations"]["validator_rejected"]["outcome"] == "rejected"
+    assert outputs["python_worker_update_handler"]["observations"]["validator_rejected"]["handler_calls"] == 0
     assert outputs["python_worker_update_handler"]["observations"]["accepted"]["command_type"] == "complete_update"
     assert outputs["python_worker_update_handler"]["observations"]["failed"]["command_type"] == "fail_update"
     assert "info" in outputs["python_client_update_request"]["requests"]

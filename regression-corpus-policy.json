@@ -24,6 +24,10 @@
         },
         {
           "glob": "src/durable_workflow/worker.py",
+          "python_symbols": [
+            "_command_payload_codec",
+            "_validate_payload_codec"
+          ],
           "content_patterns": [
             "def _command_payload_codec\\(",
             "def _validate_payload_codec\\(",
@@ -49,6 +53,9 @@
         },
         {
           "glob": "src/durable_workflow/worker.py",
+          "ignored_python_symbols": [
+            "_run_update_validation_task"
+          ],
           "content_patterns": [
             "Replay",
             "replay",
@@ -57,6 +64,10 @@
         },
         {
           "glob": "src/durable_workflow/workflow.py",
+          "ignored_python_symbols": [
+            "apply_update",
+            "validate_update"
+          ],
           "content_patterns": [
             "Replay",
             "replay",

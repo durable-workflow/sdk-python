@@ -254,17 +254,16 @@ after that discovery succeeds. `Client.query_workflow()` checks the same
 manifest before sending a query and raises `RuntimeCapabilityUnsupported` or
 `RuntimeDiscoveryUnavailable` with remediation when the route cannot be used.
 
-Accepted updates are applied on Python workflow tasks by emitting
-`complete_update` or `fail_update` back to the Server. Python update validators
-currently run after the Server has durably accepted and routed the update, not
-synchronously before acceptance. Consequently, `wait_for="accepted"` confirms
-durable admission but does not prove validator approval;
-`wait_for="completed"` waits for the applied or failed terminal outcome.
-`Client.update_workflow()` discovers the Server's supported wait stages and
-raises the same typed unsupported or unavailable errors before requesting a
-stage the runtime cannot prove. Pre-accept validator execution remains outside
-the current Python/Server capability contract until Server discovery advertises
-it explicitly.
+Python workers advertise declared update validators and evaluate them on a
+dedicated synchronous validation task before the Server records an accepted
+update. Validation replays the authoritative workflow state without committing
+commands or invoking the update handler. A validator-bearing worker refuses to
+register unless Server discovery advertises the exact pre-accept validation
+contract, so `wait_for="accepted"` means the declared validator has approved the
+update. Rejections raise `UpdateRejected`; worker loss, timeout, incompatible
+workers, and unsupported capability paths raise `UpdateValidationFailed` with
+the Server's typed reason and retryability. `wait_for="completed"` additionally
+waits for the accepted update handler to reach its terminal outcome.
 
 Malformed signal and query payloads are reported as typed client errors with
 the server's documented reason and status preserved:

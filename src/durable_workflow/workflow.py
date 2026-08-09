@@ -145,8 +145,9 @@ def update(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         @approve.validator
         def validate_approve(self, approved: bool) -> None: ...
 
-    This release records receiver metadata only. The server-side Python update
-    execution transport is tracked separately.
+    The worker advertises validator metadata during registration and refuses
+    to register validator-bearing workflows against a server that cannot
+    enforce synchronous validation before acceptance.
     """
 
     def wrap(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -1973,27 +1974,6 @@ def apply_update(
             exception_type="UnknownUpdate",
         )
 
-    validator_registry: dict[str, str] = getattr(
-        workflow_cls,
-        "__workflow_update_validators__",
-        {},
-    ) or {}
-    validator_name = validator_registry.get(update_name)
-    if validator_name is not None:
-        validator = getattr(state.instance, validator_name, None)
-        if validator is None:
-            return FailUpdate(
-                update_id=update_id,
-                message=f"update validator {update_name!r} is not available",
-                exception_type="UnknownUpdateValidator",
-            )
-        try:
-            validation_result = validator(*args)
-            if validation_result is False:
-                raise ValueError(f"update validator {update_name!r} returned false")
-        except Exception as exc:
-            return _fail_update_from_exception(update_id, "update validator failed", exc)
-
     handler = getattr(state.instance, method_name, None)
     if handler is None:
         return FailUpdate(
@@ -2006,6 +1986,84 @@ def apply_update(
         return CompleteUpdate(update_id=update_id, result=handler(*args))
     except Exception as exc:
         return _fail_update_from_exception(update_id, "update handler failed", exc)
+
+
+def validate_update(
+    workflow_cls: type,
+    history_events: Iterable[dict[str, Any]],
+    start_input: list[Any],
+    update_name: str,
+    args: list[Any],
+    *,
+    workflow_id: str | None = None,
+    run_id: str = "",
+    payload_codec: str | None = None,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
+) -> Any:
+    """Replay state and invoke only the declared pre-accept update validator.
+
+    The replayed instance is discarded after validation. This helper does not
+    run the update handler and does not emit workflow commands, so the server
+    remains the sole authority that can cross the accepted-state boundary.
+    """
+    from .errors import InvalidArgument, UpdateRejected, UpdateValidationFailed
+
+    events = list(history_events)
+    try:
+        state = _replay_state(
+            workflow_cls,
+            events,
+            start_input,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            payload_codec=payload_codec,
+            external_storage=external_storage,
+            external_storage_cache=external_storage_cache,
+        )
+    except Exception as exc:
+        raise UpdateValidationFailed(
+            f"workflow replay failed before update validation: {str(exc) or type(exc).__name__}"
+        ) from exc
+
+    if state.outcome.commands and isinstance(state.outcome.commands[0], FailWorkflow):
+        failure = state.outcome.commands[0]
+        raise UpdateValidationFailed(f"workflow replay failed before update validation: {failure.message}")
+
+    update_registry: dict[str, str] = getattr(workflow_cls, "__workflow_updates__", {}) or {}
+    if update_name not in update_registry:
+        raise UpdateValidationFailed(f"unknown update {update_name!r}")
+
+    validator_registry: dict[str, str] = (
+        getattr(
+            workflow_cls,
+            "__workflow_update_validators__",
+            {},
+        )
+        or {}
+    )
+    validator_name = validator_registry.get(update_name)
+    if validator_name is None:
+        raise UpdateValidationFailed(f"update validator {update_name!r} is not declared")
+
+    validator = getattr(state.instance, validator_name, None)
+    if validator is None:
+        raise UpdateValidationFailed(f"update validator {update_name!r} is not available")
+
+    try:
+        result = validator(*list(args))
+        if result is False:
+            raise ValueError(f"update validator {update_name!r} returned false")
+        return result
+    except UpdateRejected:
+        raise
+    except Exception as exc:
+        errors = exc.errors if isinstance(exc, InvalidArgument) else None
+        raise UpdateRejected(
+            str(exc) or f"update validator {update_name!r} rejected the request",
+            exception_type=type(exc).__name__,
+            validation_errors=errors,
+        ) from exc
 
 
 def _accepted_update_payload(

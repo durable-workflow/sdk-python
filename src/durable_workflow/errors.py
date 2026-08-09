@@ -320,6 +320,38 @@ class NonDeterministicReplayError(DurableWorkflowError):
 class UpdateRejected(DurableWorkflowError):
     """A workflow update was rejected by the workflow's validator."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        exception_type: str | None = None,
+        validation_errors: dict[str, Any] | None = None,
+        body: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.exception_type = exception_type
+        self.validation_errors = validation_errors
+        self.body = body
+
+
+class UpdateValidationFailed(DurableWorkflowError):
+    """A worker could not safely evaluate an update validator."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str | None = None,
+        status: int | None = None,
+        retryable: bool = False,
+        body: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.status = status
+        self.retryable = retryable
+        self.body = body
+
 
 class ChildWorkflowFailed(DurableWorkflowError):
     """A child workflow finished in the ``failed`` state.
@@ -525,6 +557,30 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
             body=body,
         )
 
+    def update_validation_failed(default: str) -> UpdateValidationFailed:
+        retryable = body.get("retryable") is True if isinstance(body, dict) else False
+        return UpdateValidationFailed(
+            message or default,
+            reason=reason if isinstance(reason, str) else None,
+            status=status,
+            retryable=retryable,
+            body=body,
+        )
+
+    update_validation_failure_reasons = {
+        "update_validator_contract_missing",
+        "update_validation_request_id_required",
+        "update_validation_idempotency_conflict",
+        "update_validation_capability_unsupported",
+        "update_validator_worker_unavailable",
+        "update_validator_worker_incompatible",
+        "update_validator_worker_lost",
+        "update_validation_task_not_claimed",
+        "update_validation_execution_timeout",
+        "update_validation_worker_failed",
+        "stale_update_validation_completion",
+    }
+
     if status == 404:
         if reason == "unknown_signal":
             raise signal_failed("signal not found")
@@ -555,8 +611,10 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
             "query_workflow_state_unavailable",
         ):
             raise query_failed("query rejected")
-        if reason == "update_rejected":
-            raise UpdateRejected(message or "update rejected")
+        if reason in ("update_rejected", "update_validator_rejected"):
+            raise UpdateRejected(message or "update rejected", body=body)
+        if reason in update_validation_failure_reasons:
+            raise update_validation_failed("update validation failed")
         raise ServerError(status, body)
 
     if status == 504:
@@ -566,9 +624,20 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
             "query_task_not_claimed",
         ):
             raise query_failed("query worker timed out")
+        if reason in update_validation_failure_reasons:
+            raise update_validation_failed("update validation timed out")
         raise ServerError(status, body)
 
     if status == 422:
+        if reason == "update_validator_rejected":
+            errors = body.get("validation_errors") if isinstance(body, dict) else None
+            raise UpdateRejected(
+                message or "update rejected",
+                validation_errors=errors if isinstance(errors, dict) else None,
+                body=body,
+            )
+        if reason in update_validation_failure_reasons:
+            raise update_validation_failed("update validation failed")
         if reason == "invalid_signal_arguments":
             raise signal_failed("signal argument validation failed")
         if reason == "invalid_query_arguments":

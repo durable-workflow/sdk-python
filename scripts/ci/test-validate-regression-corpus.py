@@ -397,6 +397,11 @@ def _command_payload_codec(codec):
 
 
 class Worker:
+    async def validate_update(self, history, codec, approved):
+        codec = _validate_payload_codec(codec)
+        self.approved = approved
+        return history, codec
+
     async def stop(self):
         self.stopped = True
 """,
@@ -434,6 +439,18 @@ class Worker:
             _codec_worker_guard(),
         )
 
+    def _replay_guard_matches(self) -> bool:
+        return VALIDATOR._guard_matches(
+            self.root,
+            "HEAD",
+            {"src/durable_workflow/worker.py"},
+            {
+                "glob": "src/durable_workflow/worker.py",
+                "ignored_python_symbols": ["validate_update"],
+                "content_patterns": ["history"],
+            },
+        )
+
     def test_neutral_edit_inside_payload_codec_validator_is_related(self) -> None:
         source = self.root / "src/durable_workflow/worker.py"
         source.write_text(
@@ -457,6 +474,40 @@ class Worker:
         )
 
         self.assertFalse(self._guard_matches())
+
+    def test_edit_inside_worker_function_using_codec_helper_is_not_related(self) -> None:
+        source = self.root / "src/durable_workflow/worker.py"
+        source.write_text(
+            source.read_text(encoding="utf-8").replace(
+                "self.approved = approved",
+                "self.approved = bool(approved)",
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertFalse(self._guard_matches())
+
+    def test_ignored_update_symbol_does_not_count_as_replay_change(self) -> None:
+        source = self.root / "src/durable_workflow/worker.py"
+        source.write_text(
+            source.read_text(encoding="utf-8").replace(
+                "self.approved = approved",
+                "self.approved = bool(approved)",
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertFalse(self._replay_guard_matches())
+
+    def test_nonignored_history_symbol_still_counts_as_replay_change(self) -> None:
+        source = self.root / "src/durable_workflow/worker.py"
+        source.write_text(
+            source.read_text(encoding="utf-8")
+            + "\n\ndef replay_history(history):\n    return tuple(history)\n",
+            encoding="utf-8",
+        )
+
+        self.assertTrue(self._replay_guard_matches())
 
     def test_edit_inside_command_payload_codec_is_related(self) -> None:
         source = self.root / "src/durable_workflow/worker.py"

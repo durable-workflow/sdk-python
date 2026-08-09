@@ -8,11 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Python SDK advances to prerelease `2.0.0-rc.22`. PyPI displays the normalized
 PEP 440 identity `2.0.0rc22`. This SDK release is qualified with Server
-`2.0.0-rc.22`; SDK and Server share the synchronized prerelease identity.
+`2.0.0-rc.23` for synchronous pre-accept update validation.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
 
 ### Added
+- Declared update validators now run through durable, synchronous pre-accept
+  worker tasks. Capability discovery fails closed, validation replay does not
+  invoke the handler or commit workflow state, and typed failures preserve the
+  Server's retryability and fencing outcomes.
 - The optimized `fastavro` payload path now uses the fixed recursive
   `durable_workflow.protocol.Value` schema with explicit named branches and
   Avro single-object framing. Cross-language fixtures cover every branch,
@@ -202,16 +206,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
   in the cursor-advance semantics across pages.
 
 ### Notes
-- Production-readiness validation is in progress for the first
-  `1.0.0` release candidate. The 0.4.x line is feature-complete for
-  the documented Durable Workflow v2 surface and is being exercised
-  end-to-end by external-user walkthroughs against the published
-  Python SDK guide and the `examples/order_processing` Docker Compose
-  sample.
-- Remaining v2 follow-ups tracked for this line: server-routed Python
-  query execution and pre-accept update validator routing. These are
-  server-side capabilities; the SDK already records the receiver
-  metadata required to participate when the server advertises support.
+- Stable 2.0 remains gated on published-artifact qualification. Server-routed
+  Python queries and synchronous pre-accept update validation are implemented;
+  validator-bearing workers fail closed when discovery cannot prove that the
+  Server enforces the acceptance boundary.
 
 ## [0.4.18] — 2026-05-08
 

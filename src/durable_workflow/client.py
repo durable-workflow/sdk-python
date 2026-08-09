@@ -3017,12 +3017,16 @@ class Client:
         ``wait_for`` selects how long the server waits before returning —
         typically ``completed`` to block until the handler finishes, or
         ``accepted`` to return once the request is durably accepted and routed.
-        The current runtime does not advertise pre-accept validator execution,
-        so an ``accepted`` response does not establish validator approval.
+        When the workflow contract declares a validator, a capable Server does
+        not return that accepted state until synchronous validation succeeds.
+        Validator rejection and validation-routing failures remain typed and
+        do not silently fall back to post-accept handler failure.
 
         ``request_id`` lets the caller deduplicate retries. Raises
         :class:`~durable_workflow.errors.UpdateRejected` when the workflow's
-        validator rejects the update.
+        validator rejects the update, or
+        :class:`~durable_workflow.errors.UpdateValidationFailed` when the
+        declared validation boundary cannot be enforced.
         """
         await self._require_update_wait_stage(wait_for or "accepted")
         body: dict[str, Any] = {}
@@ -3037,8 +3041,7 @@ class Client:
             body["wait_for"] = wait_for
         if wait_timeout_seconds is not None:
             body["wait_timeout_seconds"] = wait_timeout_seconds
-        if request_id is not None:
-            body["request_id"] = request_id
+        body["request_id"] = request_id or f"sdk-python-update-{uuid.uuid4().hex}"
         return await self._request(
             "POST", f"/workflows/{workflow_id}/update/{update_name}", json=body, context=workflow_id
         )
@@ -3881,8 +3884,88 @@ class Client:
             "query_task_attempt": query_task_attempt,
             "failure": failure,
         }
+        return await self._request("POST", f"/worker/query-tasks/{query_task_id}/fail", worker=True, json=body)
+
+    async def poll_update_validation_task(
+        self,
+        *,
+        worker_id: str,
+        task_queue: str,
+        timeout: float = 35.0,
+    ) -> Any:
+        """Long-poll for a synchronous pre-accept update validation task."""
+        body: dict[str, Any] = {
+            "worker_id": worker_id,
+            "task_queue": task_queue,
+        }
+        timeout_seconds = _worker_poll_timeout_seconds(timeout)
+        if timeout_seconds is not None:
+            body["timeout_seconds"] = timeout_seconds
+        http_timeout = _worker_poll_http_timeout(timeout)
+
+        for _ in range(2):
+            try:
+                data = await self._request(
+                    "POST",
+                    "/worker/update-validation-tasks/poll",
+                    worker=True,
+                    json=body,
+                    timeout=http_timeout,
+                )
+            except httpx.TimeoutException:
+                continue
+
+            return (data or {}).get("task")
+
+        return None
+
+    async def approve_update_validation_task(
+        self,
+        *,
+        update_validation_task_id: str,
+        lease_owner: str,
+        update_validation_attempt: int,
+    ) -> Any:
+        """Approve one leased update validation task."""
         return await self._request(
-            "POST", f"/worker/query-tasks/{query_task_id}/fail", worker=True, json=body
+            "POST",
+            f"/worker/update-validation-tasks/{quote(update_validation_task_id, safe='')}/approve",
+            worker=True,
+            json={
+                "lease_owner": lease_owner,
+                "update_validation_attempt": update_validation_attempt,
+            },
+        )
+
+    async def reject_update_validation_task(
+        self,
+        *,
+        update_validation_task_id: str,
+        lease_owner: str,
+        update_validation_attempt: int,
+        message: str,
+        reason: str,
+        failure_type: str | None = None,
+        stack_trace: str | None = None,
+        validation_errors: dict[str, Any] | None = None,
+    ) -> Any:
+        """Return a typed validator rejection or validation execution failure."""
+        failure: dict[str, Any] = {"message": message, "reason": reason}
+        if failure_type is not None:
+            failure["type"] = failure_type
+        if stack_trace is not None:
+            failure["stack_trace"] = stack_trace
+        if validation_errors is not None:
+            failure["validation_errors"] = validation_errors
+        return await self._request(
+            "POST",
+            f"/worker/update-validation-tasks/{quote(update_validation_task_id, safe='')}/reject",
+            worker=True,
+            json={
+                "lease_owner": lease_owner,
+                "update_validation_attempt": update_validation_attempt,
+                "failure": failure,
+            },
         )
 
     async def poll_activity_task(

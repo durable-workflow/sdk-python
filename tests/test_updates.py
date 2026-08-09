@@ -5,7 +5,7 @@ import logging
 import pytest
 
 from durable_workflow import serializer, workflow
-from durable_workflow.errors import WorkflowPayloadDecodeError
+from durable_workflow.errors import UpdateRejected, WorkflowPayloadDecodeError
 from durable_workflow.workflow import (
     CompleteUpdate,
     FailUpdate,
@@ -13,6 +13,7 @@ from durable_workflow.workflow import (
     apply_update,
     query_state,
     replay,
+    validate_update,
 )
 
 
@@ -267,7 +268,17 @@ class TestUpdateApplicationReplay:
         assert command.exception_type == "UnknownUpdate"
         assert "unknown update" in command.message
 
-    def test_apply_update_fails_validator_rejections(self) -> None:
+    def test_validation_rejects_before_acceptance_and_apply_does_not_run_validator_twice(self) -> None:
+        with pytest.raises(UpdateRejected, match="amount must be non-negative"):
+            validate_update(
+                StatefulUpdateReceiver,
+                [],
+                [],
+                "increment",
+                [-1],
+                payload_codec="json",
+            )
+
         command = apply_update(
             StatefulUpdateReceiver,
             [_update_accepted_event("upd-4", "increment", [-1])],
@@ -276,10 +287,9 @@ class TestUpdateApplicationReplay:
             payload_codec="json",
         )
 
-        assert isinstance(command, FailUpdate)
+        assert isinstance(command, CompleteUpdate)
         assert command.update_id == "upd-4"
-        assert command.exception_type == "ValueError"
-        assert "amount must be non-negative" in command.message
+        assert command.result == {"count": -1}
 
     def test_apply_update_fails_handler_exceptions(self) -> None:
         command = apply_update(

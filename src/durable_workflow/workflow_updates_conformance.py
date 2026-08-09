@@ -25,7 +25,7 @@ import httpx
 from . import serializer, workflow
 from .client import Client
 from .errors import InvalidArgument, UpdateRejected
-from .workflow import CompleteUpdate, FailUpdate, WorkflowContext, apply_update
+from .workflow import CompleteUpdate, FailUpdate, WorkflowContext, apply_update, validate_update
 
 SCHEMA = "durable-workflow.v2.workflow-updates.python-sdk-sidecar"
 SCENARIO_ID = "python_client_worker_update_surface"
@@ -35,6 +35,8 @@ WORKFLOW_TYPE = "workflow-updates.python-sdk-probe"
 TASK_QUEUE = "workflow-updates-python-sdk"
 
 UPDATE_CELLS = (
+    "update_validator_approval_boundary",
+    "update_validator_rejection_boundary",
     "accepted_update_control_plane_and_history",
     "completed_update_result_round_trip",
     "failed_update_outcome",
@@ -50,6 +52,9 @@ UPDATE_CELLS = (
 class PythonUpdateSurfaceWorkflow:
     """Small update-capable workflow used by the package shard."""
 
+    validator_calls = 0
+    handler_calls = 0
+
     def __init__(self) -> None:
         self.done = False
         self.approved = False
@@ -58,6 +63,7 @@ class PythonUpdateSurfaceWorkflow:
 
     @workflow.update("accept")
     def accept(self, approved: bool, note: str = "") -> dict[str, Any]:
+        type(self).handler_calls += 1
         self.approved = approved
         event = {"approved": self.approved, "note": note}
         self.events.append({"update": "accept", **event})
@@ -65,6 +71,7 @@ class PythonUpdateSurfaceWorkflow:
 
     @accept.validator  # type: ignore[attr-defined, untyped-decorator]
     def validate_accept(self, approved: bool, note: str = "") -> None:
+        type(self).validator_calls += 1
         if not isinstance(approved, bool):
             raise ValueError("approved must be boolean")
         if note is not None and not isinstance(note, str):
@@ -232,6 +239,61 @@ def _command_summary(command: CompleteUpdate | FailUpdate) -> dict[str, Any]:
 
 
 def _run_worker_surface(recorder: ProbeRecorder) -> None:
+    PythonUpdateSurfaceWorkflow.validator_calls = 0
+    PythonUpdateSurfaceWorkflow.handler_calls = 0
+
+    validate_update(
+        PythonUpdateSurfaceWorkflow,
+        [],
+        [],
+        "accept",
+        [True, "worker-preaccept"],
+        workflow_id=WORKFLOW_ID,
+        run_id="run-worker",
+        payload_codec=serializer.AVRO_CODEC,
+    )
+    recorder.check(
+        PythonUpdateSurfaceWorkflow.validator_calls == 1,
+        "pre-accept validation must invoke the declared validator exactly once",
+    )
+    recorder.check(
+        PythonUpdateSurfaceWorkflow.handler_calls == 0,
+        "pre-accept validation must not invoke the update handler",
+    )
+    recorder.worker_observations["validator_approved"] = {
+        "outcome": "approved",
+        "validator_calls": PythonUpdateSurfaceWorkflow.validator_calls,
+        "handler_calls": PythonUpdateSurfaceWorkflow.handler_calls,
+    }
+    recorder.mark("update_validator_approval_boundary")
+
+    try:
+        validate_update(
+            PythonUpdateSurfaceWorkflow,
+            [],
+            [],
+            "accept",
+            ["not-a-bool"],
+            workflow_id=WORKFLOW_ID,
+            run_id="run-worker",
+            payload_codec=serializer.AVRO_CODEC,
+        )
+        recorder.check(False, "pre-accept validator refusal must raise UpdateRejected")
+    except UpdateRejected as exc:
+        recorder.check(
+            PythonUpdateSurfaceWorkflow.handler_calls == 0,
+            "pre-accept validator refusal must not invoke the update handler",
+        )
+        recorder.worker_observations["validator_rejected"] = {
+            "outcome": "rejected",
+            "exception_type": exc.exception_type,
+            "message": str(exc),
+            "validator_calls": PythonUpdateSurfaceWorkflow.validator_calls,
+            "handler_calls": PythonUpdateSurfaceWorkflow.handler_calls,
+        }
+        recorder.typed_error("update_validator_rejection_boundary", exc.__class__.__name__, str(exc))
+        recorder.mark("update_validator_rejection_boundary")
+
     complete = apply_update(
         PythonUpdateSurfaceWorkflow,
         [_accepted_event("upd-worker-complete", "accept", [True, "worker-complete"])],
@@ -248,6 +310,14 @@ def _run_worker_surface(recorder: ProbeRecorder) -> None:
         recorder.check(
             summary["decoded_result"] == {"approved": True, "note": "worker-complete"},
             "accepted update command must encode the handler result",
+        )
+        recorder.check(
+            PythonUpdateSurfaceWorkflow.validator_calls == 2,
+            "accepted handler execution must not rerun pre-accept validation",
+        )
+        recorder.check(
+            PythonUpdateSurfaceWorkflow.handler_calls == 1,
+            "accepted update handler must execute exactly once",
         )
         recorder.mark("completed_update_result_round_trip")
 
@@ -280,21 +350,6 @@ def _run_worker_surface(recorder: ProbeRecorder) -> None:
         recorder.worker_observations["unknown"] = _command_summary(unknown)
         recorder.typed_error("unknown_update_refusal", unknown.exception_type or "UnknownUpdate", unknown.message)
         recorder.mark("unknown_update_refusal")
-
-    invalid = apply_update(
-        PythonUpdateSurfaceWorkflow,
-        [_accepted_event("upd-worker-invalid", "accept", ["not-a-bool"])],
-        [],
-        "upd-worker-invalid",
-        workflow_id=WORKFLOW_ID,
-        run_id="run-worker",
-        payload_codec=serializer.AVRO_CODEC,
-    )
-    recorder.check(isinstance(invalid, FailUpdate), "validator refusal must emit fail_update")
-    if isinstance(invalid, FailUpdate):
-        recorder.worker_observations["invalid_input"] = _command_summary(invalid)
-        recorder.typed_error("invalid_input_refusal", invalid.exception_type or "ValueError", invalid.message)
-        recorder.mark("invalid_input_refusal")
 
     payload = {"nested": {"items": ["alpha", 3, True]}, "codec": "avro"}
     round_trip = apply_update(

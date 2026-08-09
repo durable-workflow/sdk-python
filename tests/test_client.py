@@ -2980,6 +2980,7 @@ class TestUpdateWorkflow:
             await client.update_workflow("wf-1", "my-update")
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert "input" not in body
+            assert body["request_id"].startswith("sdk-python-update-")
 
     @pytest.mark.asyncio
     async def test_update_with_request_id(self, client: Client) -> None:
@@ -3575,6 +3576,49 @@ class TestQueryTasks:
                 "reason": "rejected_unknown_query",
                 "type": "QueryFailed",
             }
+
+    @pytest.mark.asyncio
+    async def test_update_validation_worker_protocol_methods(self, client: Client) -> None:
+        responses = [
+            _mock_response(200, {"task": {"update_validation_task_id": "uv1"}}),
+            _mock_response(200, {"outcome": "approved"}),
+            _mock_response(200, {"outcome": "rejected"}),
+        ]
+        with patch.object(
+            client._http,
+            "request",
+            new_callable=AsyncMock,
+            side_effect=responses,
+        ) as mock:
+            task = await client.poll_update_validation_task(worker_id="w1", task_queue="q1", timeout=5.0)
+            await client.approve_update_validation_task(
+                update_validation_task_id="uv1",
+                lease_owner="w1",
+                update_validation_attempt=2,
+            )
+            await client.reject_update_validation_task(
+                update_validation_task_id="uv1",
+                lease_owner="w1",
+                update_validation_attempt=2,
+                message="approval required",
+                reason="update_validator_rejected",
+                failure_type="ValueError",
+                validation_errors={"approved": ["must be true"]},
+            )
+
+        assert task == {"update_validation_task_id": "uv1"}
+        assert mock.await_args_list[0].args[:2] == (
+            "POST",
+            "/api/worker/update-validation-tasks/poll",
+        )
+        assert mock.await_args_list[1].args[:2] == (
+            "POST",
+            "/api/worker/update-validation-tasks/uv1/approve",
+        )
+        rejection = mock.await_args_list[2].kwargs["json"]
+        assert rejection["update_validation_attempt"] == 2
+        assert rejection["failure"]["reason"] == "update_validator_rejected"
+        assert rejection["failure"]["validation_errors"] == {"approved": ["must be true"]}
 
 
 class TestGetClusterInfo:
