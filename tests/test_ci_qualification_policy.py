@@ -219,13 +219,14 @@ def test_focused_path_retains_docs_layout_visual_and_public_boundary_contracts()
 
     visual = load_workflow(DOCS_VISUAL_WORKFLOW)
     visual_commands = "\n".join(step.get("run", "") for step in visual["jobs"]["visual-evidence"]["steps"])
-    assert "1440x900 768x1024 390x844 640x360" in visual_commands
+    assert "1440x920 768x1024 390x844 640x360" in visual_commands
     assert "capture navigation-open" in visual_commands
-    assert "capture_nested navigation-open" in visual_commands
-    assert "reference/client/" in visual_commands
+    assert 'capture_nested "$route" "$position" navigation-open' in visual_commands
+    assert "reference/$route/" in visual_commands
+    assert "first:client middle:serializer final:testing" in visual_commands
     assert "nested-navigation-keyboard.json" in visual_commands
-    assert "--full-page" not in shell_function(visual_commands, "capture_nested")
-    assert 'captured.get("full_page") is not False' in visual_commands
+    assert "--full-page" in shell_function(visual_commands, "capture_nested")
+    assert 'captured.get("full_page") is not expected_full_page' in visual_commands
     assert "nested-navigation-qualification.json" in visual_commands
     assert 'geometry["unreachable_controls"]' in visual_commands
     assert "capture search-open" in visual_commands

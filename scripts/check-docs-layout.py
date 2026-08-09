@@ -17,8 +17,12 @@ from typing import Any
 
 from playwright.sync_api import Browser, Locator, Page, Response, Route, sync_playwright
 
-VIEWPORTS = ((1440, 900), (768, 1024), (390, 844), (640, 360))
-NESTED_REFERENCE_ROUTE = "reference/client/"
+VIEWPORTS = ((1440, 920), (768, 1024), (390, 844), (640, 360))
+NESTED_REFERENCE_ROUTES = (
+    ("client", "first"),
+    ("serializer", "middle"),
+    ("testing", "final"),
+)
 GITHUB_API_ENDPOINTS = (
     "https://api.github.com/repos/durable-workflow/sdk-python",
     "https://api.github.com/repos/durable-workflow/sdk-python/releases/latest",
@@ -182,6 +186,97 @@ def assert_rendered_health(
     if check_reachability:
         assert geometry["unreachable"] == [], f"{state} has unreachable visible controls: {geometry['unreachable']}"
     assert runtime_errors == [], f"{state} emitted browser or HTTP errors: {runtime_errors}"
+
+
+def assert_reference_panel_uses_drawer(
+    page: Page,
+    label: str,
+    expected_active: str,
+) -> dict[str, Any]:
+    geometry = page.evaluate(
+        """() => {
+            const drawer = document.querySelector('.md-sidebar--primary')
+            let activePanel = drawer.querySelector('.md-nav--primary')
+            for (const panelToggle of drawer.querySelectorAll('input.md-nav__toggle:checked')) {
+                const panel = panelToggle.parentElement?.querySelector(':scope > nav.md-nav')
+                if (panel instanceof HTMLElement && activePanel.contains(panel)) activePanel = panel
+            }
+            const active = activePanel.querySelector('.md-nav__link--active')
+            const list = active?.closest('.md-nav__list')
+            const backControl = activePanel.querySelector(':scope > .md-nav__title')
+            const backIcon = backControl?.querySelector('.md-nav__icon')
+            const closeControl = drawer.querySelector('.dw-navigation__close')
+            if (
+                !(active instanceof HTMLElement)
+                || !(list instanceof HTMLElement)
+                || !(backControl instanceof HTMLElement)
+                || !(backIcon instanceof HTMLElement)
+                || !(closeControl instanceof HTMLElement)
+            ) return null
+
+            const drawerBounds = drawer.getBoundingClientRect()
+            const listBounds = list.getBoundingClientRect()
+            const activeBounds = active.getBoundingClientRect()
+            const backIconBounds = backIcon.getBoundingClientRect()
+            const closeBounds = closeControl.getBoundingClientRect()
+            return {
+                actions: {
+                    back: {
+                        controls: backControl.getAttribute('for'),
+                        right: backIconBounds.right,
+                    },
+                    close: {
+                        action: closeControl.dataset.navigationAction,
+                        backgroundColor: getComputedStyle(closeControl).backgroundColor,
+                        left: closeBounds.left,
+                    },
+                },
+                active: {
+                    bottom: activeBounds.bottom,
+                    text: active.textContent.trim().replace(/\s+/g, ' '),
+                    top: activeBounds.top,
+                },
+                drawer: {
+                    bottom: drawerBounds.bottom,
+                    height: drawerBounds.height,
+                    left: drawerBounds.left,
+                    top: drawerBounds.top,
+                    width: drawerBounds.width,
+                },
+                list: {
+                    bottom: listBounds.bottom,
+                    clientHeight: list.clientHeight,
+                    overflowY: getComputedStyle(list).overflowY,
+                    scrollHeight: list.scrollHeight,
+                    scrollTop: list.scrollTop,
+                    top: listBounds.top,
+                },
+            }
+        }"""
+    )
+    assert geometry is not None, f"{label} did not render an active reference list"
+    active = geometry["active"]
+    actions = geometry["actions"]
+    drawer = geometry["drawer"]
+    reference_list = geometry["list"]
+    assert active["text"] == expected_active, f"{label} selected the wrong destination: {active}"
+    drawer_midpoint = drawer["left"] + drawer["width"] / 2
+    assert actions["back"]["controls"].startswith("__nav_"), f"{label} lost nested back navigation: {actions}"
+    assert actions["back"]["right"] < drawer_midpoint < actions["close"]["left"], (
+        f"{label} did not separate nested back and drawer close actions: {actions}"
+    )
+    assert actions["close"]["action"] == "close", f"{label} did not identify its close action: {actions}"
+    assert actions["close"]["backgroundColor"] != "rgba(0, 0, 0, 0)", (
+        f"{label} did not visually frame its close action: {actions}"
+    )
+    assert abs(reference_list["bottom"] - drawer["bottom"]) <= 1, (
+        f"{label} did not use the available drawer height: {geometry}"
+    )
+    assert reference_list["clientHeight"] >= 200, f"{label} retained a constrained list: {geometry}"
+    assert reference_list["overflowY"] == "auto", f"{label} lost its bounded overflow region: {geometry}"
+    assert active["top"] >= reference_list["top"] - 1, f"{label} hid the active destination above the list"
+    assert active["bottom"] <= reference_list["bottom"] + 1, f"{label} hid the active destination below the list"
+    return geometry
 
 
 def assert_background_is_inert(page: Page, label: str) -> None:
@@ -395,6 +490,12 @@ def assert_results_focus_wraps(page: Page, label: str) -> None:
 def assert_navigation_focus_wraps(page: Page, label: str) -> list[dict[str, str]]:
     drawer = page.locator(".md-sidebar--primary")
     close_control = drawer.locator(".dw-navigation__close")
+    assert close_control.get_attribute("data-navigation-action") == "close", (
+        f"{label} did not expose an explicit drawer close action"
+    )
+    assert close_control.get_attribute("aria-label") == "Close navigation", (
+        f"{label} did not preserve the drawer close control's accessible name"
+    )
     assert close_control.evaluate("(element) => element === document.activeElement"), (
         f"{label} did not move focus to the drawer close control"
     )
@@ -582,6 +683,8 @@ def exercise_navigation_breakpoint_transition(browser: Browser, url: str) -> Non
 def exercise_nested_navigation_viewport(
     browser: Browser,
     url: str,
+    route: str,
+    position: str,
     width: int,
     height: int,
 ) -> dict[str, Any]:
@@ -611,15 +714,17 @@ def exercise_nested_navigation_viewport(
         ),
     )
 
-    label = f"nested {width}x{height}"
+    label = f"nested {route} ({position}) {width}x{height}"
     result: dict[str, Any] = {
+        "position": position,
+        "route": f"/reference/{route}/",
         "viewport": {"width": width, "height": height},
         "states": {"default": {"pointer_unreachable": 0}},
     }
     try:
-        response = page.goto(f"{url}{NESTED_REFERENCE_ROUTE}", wait_until="networkidle")
+        response = page.goto(f"{url}reference/{route}/", wait_until="networkidle")
         assert response is not None and response.ok, f"{label} fixture returned a non-success response"
-        assert page.locator("h1#client").count() == 1, f"{label} did not load the client reference"
+        assert page.locator(f"h1#{route}").count() == 1, f"{label} did not load the requested reference"
         assert_rendered_health(page, f"closed navigation at {label}", runtime_errors)
 
         if width < 960:
@@ -631,6 +736,7 @@ def exercise_nested_navigation_viewport(
                 "document.querySelector('.md-sidebar--primary').getAttribute('aria-modal') === 'true'"
             )
             assert_navigation_background_is_inert(page, f"open navigation at {label}")
+            reference_panel = assert_reference_panel_uses_drawer(page, label, route.replace("_", " ").title())
             stops = assert_navigation_focus_wraps(page, f"open navigation at {label}")
             assert_rendered_health(page, f"open navigation at {label}", runtime_errors)
             assert navigation_drawer.locator("[inert]").count() >= 3, (
@@ -639,6 +745,7 @@ def exercise_nested_navigation_viewport(
             result["states"]["navigation-open"] = {
                 "active_keyboard_controls": stops,
                 "pointer_unreachable": 0,
+                "reference_panel": reference_panel,
             }
         return result
     finally:
@@ -658,7 +765,7 @@ def exercise_nested_navigation_regression(browser: Browser, url: str) -> dict[st
     page.on("pageerror", lambda error: runtime_errors.append(f"page: {error}"))
 
     try:
-        response = page.goto(f"{url}{NESTED_REFERENCE_ROUTE}", wait_until="networkidle")
+        response = page.goto(f"{url}reference/{NESTED_REFERENCE_ROUTES[0][0]}/", wait_until="networkidle")
         assert response is not None and response.ok, (
             "nested navigation regression fixture returned a non-success response"
         )
@@ -963,7 +1070,9 @@ def main() -> None:
                     exercise_viewport(browser, url, width, height)
             if not args.navigation_transition_only:
                 nested_results = [
-                    exercise_nested_navigation_viewport(browser, url, width, height) for width, height in VIEWPORTS
+                    exercise_nested_navigation_viewport(browser, url, route, position, width, height)
+                    for route, position in NESTED_REFERENCE_ROUTES
+                    for width, height in VIEWPORTS
                 ]
                 nested_regression = exercise_nested_navigation_regression(browser, url)
             if not args.nested_navigation_only:
@@ -1007,9 +1116,9 @@ def main() -> None:
         args.transition_evidence.write_text(f"{json.dumps(evidence, indent=2)}\n", encoding="utf-8")
     if args.nested_navigation_evidence:
         evidence = {
-            "schema": "durable-workflow.python-docs.nested-navigation/v1",
+            "schema": "durable-workflow.python-docs.nested-navigation/v2",
             "outcome": "pass",
-            "route": f"/{NESTED_REFERENCE_ROUTE}",
+            "routes": [f"/reference/{route}/" for route, _ in NESTED_REFERENCE_ROUTES],
             "viewports": nested_results,
             "regression": nested_regression,
             "verified": [
@@ -1017,8 +1126,11 @@ def main() -> None:
                 "pointer-reachability",
                 "keyboard-traversal",
                 "active-panel-isolation",
+                "active-destination-visibility",
                 "affected-fixture-rejection",
                 "browser-errors",
+                "available-drawer-height",
+                "distinct-navigation-actions",
             ],
         }
         if args.source_revision:

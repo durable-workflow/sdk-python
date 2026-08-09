@@ -22,11 +22,12 @@
     const closeControl = document.createElement("button");
     closeControl.className = "dw-navigation__close md-icon";
     closeControl.type = "button";
+    closeControl.dataset.navigationAction = "close";
     closeControl.setAttribute("aria-label", "Close navigation");
     closeControl.setAttribute("aria-controls", "__navigation");
     closeControl.innerHTML = [
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">',
-      '<path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/>',
+      '<path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>',
       "</svg>",
     ].join("");
     navigation.prepend(closeControl);
@@ -110,6 +111,13 @@
       }
     };
 
+    const revealActiveDestination = () => {
+      const activeDestination = activeNavigationPanel().querySelector(".md-nav__link--active");
+      if (activeDestination instanceof HTMLElement) {
+        activeDestination.scrollIntoView({ block: "center", inline: "nearest" });
+      }
+    };
+
     const isRendered = (element) => {
       if (!(element instanceof HTMLElement) || element.closest("[inert]") || element.tabIndex < 0) return false;
       const style = getComputedStyle(element);
@@ -166,6 +174,7 @@
         drawer.setAttribute("aria-label", "Navigation");
         isolateDrawer();
         isolateActivePanel();
+        revealActiveDestination();
         closeControl.focus({ preventScroll: true });
         return;
       }

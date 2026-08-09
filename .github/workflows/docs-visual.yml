@@ -159,33 +159,41 @@ jobs:
               --manifest visual-review/manifest.json "${capture_args[@]}" "$@"
           }
           capture_nested() {
-            local state=$1 width=$2 height=$3
-            shift 3
+            local route=$1 position=$2 state=$3 width=$4 height=$5
+            shift 5
+            local capture_args=()
+            if [ "$width" = 640 ] && [ "$height" = 360 ]; then
+              capture_args+=(--full-page)
+            fi
             node visual-controller/scripts/pipeline_visual_capture.mjs \
-              --url http://127.0.0.1:4173/reference/client/ \
-              --surface python-sdk-client-reference --state "$state" \
+              --url "http://127.0.0.1:4173/reference/$route/" \
+              --surface "python-sdk-$route-reference" --state "$state" \
               --width "$width" --height "$height" \
               --source-repository durable-workflow/sdk-python \
               --source-revision "$SOURCE_REVISION" \
-              --screenshot "visual-review/nested-${state}-${width}x${height}.png" \
-              --report "visual-review/nested-${state}-${width}x${height}.json" \
-              --manifest visual-review/manifest.json "$@"
+              --screenshot "visual-review/nested-${position}-${route}-${state}-${width}x${height}.png" \
+              --report "visual-review/nested-${position}-${route}-${state}-${width}x${height}.json" \
+              --manifest visual-review/manifest.json "${capture_args[@]}" "$@"
           }
-          for viewport in 1440x900 768x1024 390x844 640x360; do
+          for viewport in 1440x920 768x1024 390x844 640x360; do
             width=${viewport%x*}
             height=${viewport#*x}
             capture default "$width" "$height"
-            capture_nested default "$width" "$height"
             if [ "$NAVIGATION_REQUIRED" = true ] && [ "$width" -lt 960 ]; then
               capture navigation-open "$width" "$height" \
                 --state-scope responsive \
                 --click ".md-header__button[for='__drawer']"
             fi
-            if [ "$width" -lt 960 ]; then
-              capture_nested navigation-open "$width" "$height" \
-                --state-scope responsive \
-                --click ".md-header__button[for='__drawer']"
-            fi
+            for reference in first:client middle:serializer final:testing; do
+              position=${reference%%:*}
+              route=${reference#*:}
+              capture_nested "$route" "$position" default "$width" "$height"
+              if [ "$width" -lt 960 ]; then
+                capture_nested "$route" "$position" navigation-open "$width" "$height" \
+                  --state-scope responsive \
+                  --click ".md-header__button[for='__drawer']"
+              fi
+            done
             if [ "$SEARCH_REQUIRED" = true ]; then
               if [ "$width" -ge 960 ]; then
                 search_selector=.md-search__input
@@ -209,26 +217,40 @@ jobs:
               "repository": "durable-workflow/sdk-python",
               "revision": os.environ["SOURCE_REVISION"],
           }
-          if keyboard.get("outcome") != "pass" or keyboard.get("route") != "/reference/client/":
-              raise SystemExit("nested reference keyboard evidence did not qualify the required route")
+          expected_routes = {
+              "/reference/client/": {"position": "first", "surface": "python-sdk-client-reference"},
+              "/reference/serializer/": {"position": "middle", "surface": "python-sdk-serializer-reference"},
+              "/reference/testing/": {"position": "final", "surface": "python-sdk-testing-reference"},
+          }
+          if (
+              keyboard.get("schema") != "durable-workflow.python-docs.nested-navigation/v2"
+              or keyboard.get("outcome") != "pass"
+              or set(keyboard.get("routes", [])) != set(expected_routes)
+          ):
+              raise SystemExit("nested reference keyboard evidence did not qualify the required route positions")
           if keyboard.get("source") != expected_source:
               raise SystemExit("nested reference keyboard evidence is not bound to the captured source")
           keyboard_viewports = {
-              (entry["viewport"]["width"], entry["viewport"]["height"]): entry["states"]
+              (entry["route"], entry["viewport"]["width"], entry["viewport"]["height"]): entry
               for entry in keyboard.get("viewports", [])
           }
 
           reports = sorted(Path("visual-review").glob("nested-*-*x*.json"))
-          if len(reports) != 7:
+          if len(reports) != 21:
               raise SystemExit(f"nested reference evidence is incomplete: {[path.name for path in reports]}")
-          expected_states = {
-              (1440, 900, "default"),
+          viewport_states = (
+              (1440, 920, "default"),
               (768, 1024, "default"),
               (768, 1024, "navigation-open"),
               (390, 844, "default"),
               (390, 844, "navigation-open"),
               (640, 360, "default"),
               (640, 360, "navigation-open"),
+          )
+          expected_states = {
+              (route, width, height, state)
+              for route in expected_routes
+              for width, height, state in viewport_states
           }
           observed_states = set()
           qualified_states = []
@@ -237,14 +259,20 @@ jobs:
               state = captured.get("state")
               viewport = captured.get("viewport", {})
               viewport_key = (viewport.get("width"), viewport.get("height"))
+              page_route = urlsplit(captured.get("page_url", "")).path
+              route_contract = expected_routes.get(page_route)
+              expected_full_page = viewport_key == (640, 360)
               if (
-                  captured.get("surface") != "python-sdk-client-reference"
+                  route_contract is None
+                  or captured.get("surface") != route_contract["surface"]
                   or captured.get("source") != expected_source
-                  or urlsplit(captured.get("page_url", "")).path != "/reference/client/"
-                  or captured.get("full_page") is not False
+                  or captured.get("full_page") is not expected_full_page
               ):
                   raise SystemExit(f"{report.name} is not a faithful source-bound nested viewport capture")
-              keyboard_state = keyboard_viewports.get(viewport_key, {}).get(state)
+              keyboard_entry = keyboard_viewports.get((page_route, *viewport_key), {})
+              if keyboard_entry.get("position") != route_contract["position"]:
+                  raise SystemExit(f"{report.name} does not match its required route position")
+              keyboard_state = keyboard_entry.get("states", {}).get(state)
               if keyboard_state is None:
                   raise SystemExit(f"{report.name} has no matching keyboard state evidence")
               if keyboard_state.get("pointer_unreachable") != 0:
@@ -261,10 +289,12 @@ jobs:
                   active_keyboard_controls
               ):
                   raise SystemExit(f"{report.name} pointer and keyboard control sets do not match")
-              observed_states.add((*viewport_key, state))
+              observed_states.add((page_route, *viewport_key, state))
               qualified_states.append(
                   {
                       "capture_report": report.name,
+                      "position": route_contract["position"],
+                      "route": page_route,
                       "state": state,
                       "viewport": viewport,
                       "full_page": captured["full_page"],
@@ -276,10 +306,10 @@ jobs:
               raise SystemExit(f"nested reference state matrix does not match: {sorted(observed_states)}")
 
           qualification = {
-              "schema": "durable-workflow.python-docs.nested-navigation-qualification/v1",
+              "schema": "durable-workflow.python-docs.nested-navigation-qualification/v2",
               "outcome": "pass",
               "source": expected_source,
-              "route": "/reference/client/",
+              "routes": list(expected_routes),
               "states": qualified_states,
               "regression": keyboard.get("regression"),
           }

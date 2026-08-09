@@ -309,7 +309,7 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     assert visual["steps"][0]["with"]["ref"] == "${{ inputs.source_ref || github.sha }}"
     assert "candidate/scripts/ci/classify_docs_visual_changes.py" in commands
     assert "visual-controller/scripts/visual_evidence.py validate" in commands
-    assert "1440x900 768x1024 390x844 640x360" in commands
+    assert "1440x920 768x1024 390x844 640x360" in commands
     assert "capture default" in commands
     assert "capture navigation-open" in commands
     assert "capture search-open" in commands
@@ -320,16 +320,18 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     assert "visual-review/navigation-breakpoint-transition.json" in commands
     assert "--nested-navigation-only" in commands
     assert "visual-review/nested-navigation-keyboard.json" in commands
-    assert "http://127.0.0.1:4173/reference/client/" in commands
+    assert "http://127.0.0.1:4173/reference/$route/" in commands
+    assert "first:client middle:serializer final:testing" in commands
     assert "python-sdk-client-reference" in commands
-    assert "capture_nested default" in commands
-    assert "capture_nested navigation-open" in commands
+    assert "python-sdk-$route-reference" in commands
+    assert 'capture_nested "$route" "$position" default' in commands
+    assert 'capture_nested "$route" "$position" navigation-open' in commands
     assert "--full-page" in shell_function(commands, "capture")
-    assert "--full-page" not in shell_function(commands, "capture_nested")
+    assert "--full-page" in shell_function(commands, "capture_nested")
     assert '--source-revision "$SOURCE_REVISION"' in commands
     assert 'Path("visual-review").glob("nested-*-*x*.json")' in commands
     assert 'geometry["unreachable_controls"]' in commands
-    assert 'captured.get("full_page") is not False' in commands
+    assert 'captured.get("full_page") is not expected_full_page' in commands
     assert "nested-navigation-qualification.json" in commands
     assert "active_keyboard_controls" in commands
     assert "interactive_control_count" in commands
