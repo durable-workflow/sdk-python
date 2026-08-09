@@ -55,6 +55,9 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- The Python API reference now describes query decorators and query-state
+  replay as parts of the shipped server-routed worker query path while keeping
+  its Server capability negotiation requirements explicit.
 - Workflow and update-validation discovery now use one Server-multiplexed long
   poll per workflow reservation. A worker with one workflow slot can discover
   either task kind promptly without leasing excess replay work, increasing idle

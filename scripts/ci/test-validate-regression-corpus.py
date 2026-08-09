@@ -378,6 +378,32 @@ class CanonicalIdentityTest(unittest.TestCase):
             VALIDATOR._avro_golden_fixture(fixture, "golden.json")
 
 
+class PythonSemanticNeutralityTest(unittest.TestCase):
+    def test_module_class_and_function_docstrings_are_source_trivia(self) -> None:
+        base = '''\
+"""Base module documentation."""
+
+class Replayer:
+    """Base class documentation."""
+
+    async def replay(self, history):
+        """Base function documentation."""
+        return tuple(history)
+'''
+        current = '''\
+"""Current module documentation."""
+
+class Replayer:
+    """Current class documentation."""
+
+    async def replay(self, history):
+        """Current function documentation."""
+        return tuple(history)
+'''
+
+        self.assertTrue(VALIDATOR._python_change_is_semantically_neutral(base, current))
+
+
 class WorkerCodecGuardTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="regression-corpus-worker-guard-")
@@ -394,6 +420,12 @@ def _validate_payload_codec(codec):
 
 def _command_payload_codec(codec):
     return codec or "avro"
+
+
+def replay_history(history):
+    '''Replay durable history into a stable sequence.'''
+    mode = "replay-history"
+    return mode, tuple(history)
 
 
 class Worker:
@@ -499,11 +531,49 @@ class Worker:
 
         self.assertFalse(self._replay_guard_matches())
 
-    def test_nonignored_history_symbol_still_counts_as_replay_change(self) -> None:
+    def test_docstring_only_edit_inside_replay_symbol_is_neutral(self) -> None:
         source = self.root / "src/durable_workflow/worker.py"
         source.write_text(
-            source.read_text(encoding="utf-8")
-            + "\n\ndef replay_history(history):\n    return tuple(history)\n",
+            source.read_text(encoding="utf-8").replace(
+                "Replay durable history into a stable sequence.",
+                "Reconstruct durable history for a query.",
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertFalse(self._replay_guard_matches())
+
+    def test_logic_edit_inside_replay_symbol_remains_related(self) -> None:
+        source = self.root / "src/durable_workflow/worker.py"
+        source.write_text(
+            source.read_text(encoding="utf-8").replace(
+                "return mode, tuple(history)",
+                "return mode, list(history)",
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertTrue(self._replay_guard_matches())
+
+    def test_non_docstring_literal_edit_inside_replay_symbol_remains_related(self) -> None:
+        source = self.root / "src/durable_workflow/worker.py"
+        source.write_text(
+            source.read_text(encoding="utf-8").replace(
+                'mode = "replay-history"',
+                'mode = "strict-replay-history"',
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertTrue(self._replay_guard_matches())
+
+    def test_unparseable_python_change_remains_related(self) -> None:
+        source = self.root / "src/durable_workflow/worker.py"
+        source.write_text(
+            source.read_text(encoding="utf-8").replace(
+                'mode = "replay-history"',
+                'mode = "replay-history',
+            ),
             encoding="utf-8",
         )
 

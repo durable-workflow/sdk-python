@@ -1205,6 +1205,59 @@ def _smallest_changed_python_symbols(
     ]
 
 
+def _strip_python_docstrings(tree: ast.AST) -> None:
+    for node in ast.walk(tree):
+        if not isinstance(
+            node,
+            ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+        ):
+            continue
+        if (
+            node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        ):
+            del node.body[0]
+
+
+def _python_change_is_semantically_neutral(base_source: str, current_source: str) -> bool:
+    """Compare Python syntax while excluding actual docstrings and source trivia."""
+
+    try:
+        base_tree = ast.parse(base_source)
+        current_tree = ast.parse(current_source)
+    except SyntaxError:
+        return False
+
+    _strip_python_docstrings(base_tree)
+    _strip_python_docstrings(current_tree)
+    return ast.dump(base_tree, include_attributes=False) == ast.dump(
+        current_tree,
+        include_attributes=False,
+    )
+
+
+def _python_file_change_is_semantically_neutral(
+    root: Path,
+    base_ref: str,
+    path: str,
+) -> bool:
+    if not path.endswith(".py"):
+        return False
+    current_path = root / path
+    if not current_path.is_file():
+        return False
+    base_source = _run(["git", "show", f"{base_ref}:{path}"], root, check=False)
+    if not base_source:
+        return False
+    try:
+        current_source = current_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return _python_change_is_semantically_neutral(base_source, current_source)
+
+
 def _changed_content(
     root: Path,
     base_ref: str,
@@ -1279,6 +1332,7 @@ def _guard_matches(
 ) -> bool:
     guard = _object(raw_guard, "guard")
     matching = sorted(path for path in changed if _matches(path, _string(guard["glob"], "guard.glob")))
+    matching = [path for path in matching if not _python_file_change_is_semantically_neutral(root, base_ref, path)]
     if not matching:
         return False
     patterns = guard.get("content_patterns")

@@ -122,9 +122,14 @@ def query(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Mark a workflow method as a read-only query handler.
 
     Query methods are invoked against replayed workflow state. They must not
-    mutate ``self`` or perform I/O. The server-side worker query transport is
-    still implemented separately; this decorator records the Python receiver
-    metadata and is used by :func:`query_state`.
+    mutate ``self`` or perform I/O. The server-routed worker query path uses
+    this decorator's receiver metadata and :func:`query_state` to select and
+    invoke the handler after replaying durable history.
+
+    Workers advertise ``query_tasks`` only after Server discovery reports
+    ``worker_protocol.server_capabilities.query_tasks: true``. Clients check
+    the same capability before dispatch and raise a typed capability or
+    discovery error when the query path is unavailable.
     """
 
     def wrap(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -1850,9 +1855,13 @@ def query_state(
 ) -> Any:
     """Replay a workflow to current state and invoke a registered query.
 
-    This is the Python-side core that a future server-routed query task can
-    call after fetching durable history. Unknown query names and handler
-    exceptions are normalized to :class:`~durable_workflow.errors.QueryFailed`.
+    This is the replay and invocation core used by the current server-routed
+    worker query path after it fetches durable history. That path is negotiated
+    through ``worker_protocol.server_capabilities.query_tasks``: workers
+    advertise ``query_tasks`` only after discovery reports it as available,
+    and clients fail with typed capability or discovery errors when it is not.
+    Unknown query names and handler exceptions are normalized to
+    :class:`~durable_workflow.errors.QueryFailed`.
     """
     try:
         state = _replay_state(
