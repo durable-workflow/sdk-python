@@ -29,6 +29,7 @@ CLASSIFIER = REPO_ROOT / "scripts" / "ci" / "classify_pr_qualification.py"
 RUNTIME_JOBS = {
     "regression-corpus",
     "lint",
+    "avro-benchmark",
     "test",
     "package",
     "cli-parity",
@@ -187,6 +188,24 @@ def test_ci_schedules_runtime_matrix_only_for_complete_qualification() -> None:
     report = jobs["qualification-class-report"]
     assert report["name"] == "Qualification class — ${{ needs.qualification-class.outputs.classification }}"
     assert report["needs"] == "qualification-class"
+
+
+def test_absolute_avro_throughput_is_an_advisory_artifact_not_a_lint_budget() -> None:
+    workflow = load_workflow(CI_WORKFLOW)
+    jobs = workflow["jobs"]
+    lint_commands = "\n".join(step.get("run", "") for step in jobs["lint"]["steps"])
+    assert "benchmarks/avro_value.py --enforce" in lint_commands
+    assert "--enforce-absolute" not in lint_commands
+
+    benchmark = jobs["avro-benchmark"]
+    assert benchmark["name"] == "Avro Value absolute throughput (advisory)"
+    measure = next(step for step in benchmark["steps"] if "--enforce-absolute" in step.get("run", ""))
+    assert measure["continue-on-error"] == "true"
+    assert "--output avro-value-benchmark.json" in measure["run"]
+    upload = next(step for step in benchmark["steps"] if "actions/upload-artifact@" in step.get("uses", ""))
+    assert upload["if"] == "${{ always() && github.server_url == 'https://github.com' }}"
+    assert upload["with"]["path"] == "avro-value-benchmark.json"
+    assert upload["with"]["if-no-files-found"] == "error"
 
 
 def test_terminal_status_accepts_only_the_selected_qualification_shape() -> None:

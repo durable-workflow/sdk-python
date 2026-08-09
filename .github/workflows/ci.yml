@@ -97,8 +97,33 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: ruff check src/ tests/
       - run: mypy src/durable_workflow/
-      - name: Enforce optimized Avro Value regression budget
+      - name: Enforce load-calibrated Avro Value regression budget
         run: python benchmarks/avro_value.py --enforce
+
+  avro-benchmark:
+    name: Avro Value absolute throughput (advisory)
+    needs: qualification-class
+    if: ${{ needs.qualification-class.outputs.classification == 'complete' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Measure the bounded absolute throughput signal
+        continue-on-error: true
+        run: >-
+          python benchmarks/avro_value.py --enforce-absolute
+          --output avro-value-benchmark.json
+      - name: Publish the measured sample summary
+        if: ${{ always() && github.server_url == 'https://github.com' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: avro-value-benchmark-${{ github.sha }}
+          path: avro-value-benchmark.json
+          if-no-files-found: error
 
   test:
     needs: qualification-class
@@ -225,6 +250,7 @@ jobs:
       - qualification-class-report
       - regression-corpus
       - lint
+      - avro-benchmark
       - test
       - package
       - cli-parity
@@ -238,6 +264,7 @@ jobs:
           CLASSIFICATION_REPORT_RESULT: ${{ needs.qualification-class-report.result }}
           QUALIFICATION_CLASS: ${{ needs.qualification-class.outputs.classification }}
           LINT_RESULT: ${{ needs.lint.result }}
+          AVRO_BENCHMARK_RESULT: ${{ needs.avro-benchmark.result }}
           CORPUS_RESULT: ${{ needs.regression-corpus.result }}
           TEST_RESULT: ${{ needs.test.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
@@ -248,6 +275,7 @@ jobs:
           test "$CLASSIFICATION_REPORT_RESULT" = success
           if [ "$QUALIFICATION_CLASS" = focused-documentation ]; then
             test "$LINT_RESULT" = skipped
+            test "$AVRO_BENCHMARK_RESULT" = skipped
             test "$CORPUS_RESULT" = skipped
             test "$TEST_RESULT" = skipped
             test "$PACKAGE_RESULT" = skipped
@@ -256,6 +284,7 @@ jobs:
             echo "Focused documentation qualification selected; Docs PR checks and Public Boundary remain required."
           elif [ "$QUALIFICATION_CLASS" = complete ]; then
             test "$LINT_RESULT" = success
+            test "$AVRO_BENCHMARK_RESULT" = success
             test "$CORPUS_RESULT" = success
             test "$TEST_RESULT" = success
             test "$PACKAGE_RESULT" = success
