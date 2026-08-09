@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import html.parser
+import importlib
 import json
 import re
 import subprocess
@@ -21,10 +22,19 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import Any
 
-try:
-    import tomllib  # type: ignore[import-not-found]
-except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
-    import tomli as tomllib  # type: ignore[import-not-found]
+
+def _load_toml_parser() -> Any:
+    """Load the stdlib TOML parser or the declared Python 3.10 fallback."""
+
+    try:
+        return importlib.import_module("tomllib")
+    except ModuleNotFoundError as error:
+        if error.name != "tomllib":
+            raise
+        return importlib.import_module("tomli")
+
+
+tomllib = _load_toml_parser()
 
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 BETA_CLASSIFIER = "Development Status :: 4 - Beta"

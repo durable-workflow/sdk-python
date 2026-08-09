@@ -237,6 +237,15 @@ jobs:
           --attempts 30
           --interval-seconds 10
 
+      - name: Verify canonical PyPI project metadata and supported installs
+        env:
+          RELEASE_SOURCE_SHA: ${{ needs.build.outputs.release_commit }}
+        run: >-
+          python scripts/check_pypi_project_surface.py
+          --source-ref "$RELEASE_SOURCE_SHA"
+          --attempts 30
+          --interval-seconds 10
+
       - name: Create the source GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

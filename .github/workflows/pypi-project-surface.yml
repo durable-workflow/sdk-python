@@ -1,0 +1,43 @@
+name: PyPI project surface
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/pypi-project-surface.yml'
+      - 'scripts/check_pypi_project_surface.py'
+      - 'tests/test_pypi_project_surface.py'
+  schedule:
+    - cron: '17 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+      - name: Resolve the newest immutable Python release-candidate source
+        run: |
+          set -euo pipefail
+          source_ref="$(git tag -l '2.0.0-rc.*' --sort=-version:refname | head -n 1)"
+          if [ -z "$source_ref" ]; then
+            printf 'no Python release-candidate tag is available for public qualification\n' >&2
+            exit 1
+          fi
+          printf 'source_ref=%s\n' "$source_ref" >> "$GITHUB_ENV"
+      - name: Qualify authoritative root metadata and package resolution
+        run: >-
+          python scripts/check_pypi_project_surface.py
+          --source-ref "$source_ref"
+          --attempts 3
+          --interval-seconds 10

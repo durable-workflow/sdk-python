@@ -59,6 +59,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
   integrity surface. The rendered project-page audit remains visible evidence,
   but a client challenge or presentation mismatch no longer blocks creation of
   the matching source prerelease after immutable artifacts have been verified.
+- PyPI qualification now checks the authoritative package-root JSON against the
+  current 2.0 release candidate, verifies both unqualified and documented
+  prerelease resolution, and proves that yanked 0.x history remains available
+  to exact-version installs.
 - Package metadata now identifies the Python SDK as a release candidate in the
   Durable Workflow 2.0 train and describes the shipped worker-routed query
   path without overstating pre-accept update-validator support.

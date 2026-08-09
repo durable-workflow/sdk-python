@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from types import ModuleType
 
 import pytest
 from scripts import check_release_metadata
@@ -34,6 +35,25 @@ def pypi_json(source: SourceMetadata, **overrides: object) -> bytes:
     }
     info.update(overrides)
     return json.dumps({"info": info}).encode()
+
+
+def test_release_metadata_loader_uses_tomli_without_stdlib_tomllib(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fallback = ModuleType("tomli")
+    imports: list[str] = []
+
+    def import_module(name: str) -> ModuleType:
+        imports.append(name)
+        if name == "tomllib":
+            raise ModuleNotFoundError("No module named 'tomllib'", name="tomllib")
+        assert name == "tomli"
+        return fallback
+
+    monkeypatch.setattr(check_release_metadata.importlib, "import_module", import_module)
+
+    assert check_release_metadata._load_toml_parser() is fallback
+    assert imports == ["tomllib", "tomli"]
 
 
 def test_normal_project_page_is_retained_as_rendered_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
