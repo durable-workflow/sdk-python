@@ -75,6 +75,10 @@ jobs:
         working-directory: candidate
         run: pip install -e '.[docs]'
 
+      - name: Install browser for breakpoint transition checks
+        if: steps.classify.outputs.required == 'true' && steps.classify.outputs.navigation == 'true'
+        run: python -m playwright install --with-deps chromium
+
       - name: Install pinned visual capture runtime
         if: steps.classify.outputs.required == 'true'
         run: npm ci --prefix visual-controller
@@ -85,6 +89,14 @@ jobs:
         run: |
           mkdocs build --strict
           python scripts/check-docs-analytics.py site
+
+      - name: Verify responsive navigation breakpoint transition
+        if: steps.classify.outputs.required == 'true' && steps.classify.outputs.navigation == 'true'
+        run: |
+          mkdir -p visual-review
+          python candidate/scripts/check-docs-layout.py candidate/site \
+            --navigation-transition-only \
+            --transition-evidence visual-review/navigation-breakpoint-transition.json
 
       - name: Capture candidate interaction states
         if: steps.classify.outputs.required == 'true'

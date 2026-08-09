@@ -8,6 +8,7 @@
     const navigation = drawer?.querySelector(".md-nav--primary");
     const openControl = document.querySelector(".md-header__button[for='__drawer']");
     const backdrop = document.querySelector(".md-overlay[for='__drawer']");
+    const desktopLayout = window.matchMedia("screen and (min-width: 60em)");
 
     if (!(toggle instanceof HTMLInputElement) || !(drawer instanceof HTMLElement)) return;
     if (!navigation || !openControl || !backdrop) return;
@@ -77,14 +78,25 @@
       inerted = [];
     };
 
+    const isRendered = (element) => {
+      if (!(element instanceof HTMLElement) || element.closest("[inert]") || element.tabIndex < 0) return false;
+      const style = getComputedStyle(element);
+      const bounds = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden"
+        && bounds.width > 0 && bounds.height > 0;
+    };
+
+    const isReachablyRendered = (element) => {
+      if (!isRendered(element)) return false;
+      const bounds = element.getBoundingClientRect();
+      return bounds.right > 0 && bounds.bottom > 0 && bounds.left < innerWidth && bounds.top < innerHeight;
+    };
+
     const visibleTabStops = () => [
       ...drawer.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]"),
     ].filter((element) => {
-      if (!(element instanceof HTMLElement) || element.closest("[inert]") || element.tabIndex < 0) return false;
-      if (element.closest("details:not([open])") && !element.closest("summary")) return false;
-      const style = getComputedStyle(element);
-      const bounds = element.getBoundingClientRect();
-      return style.display !== "none" && style.visibility !== "hidden" && bounds.width > 0 && bounds.height > 0;
+      if (!isRendered(element)) return false;
+      return !element.closest("details:not([open])") || Boolean(element.closest("summary"));
     });
 
     const containTabFocus = (event) => {
@@ -106,7 +118,11 @@
     const restoreOpenerFocus = () => {
       const target = opener;
       opener = null;
-      if (target instanceof HTMLElement && target.isConnected) target.focus({ preventScroll: true });
+      if (target instanceof HTMLElement && target.isConnected && isReachablyRendered(target)) {
+        target.focus({ preventScroll: true });
+        return;
+      }
+      if (desktopLayout.matches) visibleTabStops()[0]?.focus({ preventScroll: true });
     };
 
     const applyState = () => {
@@ -130,6 +146,22 @@
       if (wasOpen) restoreOpenerFocus();
     };
 
+    const reconcileLayout = () => {
+      if (desktopLayout.matches && toggle.checked) {
+        setOpen(false);
+        return;
+      }
+
+      applyState();
+      if (
+        !desktopLayout.matches
+        && document.activeElement instanceof HTMLElement
+        && !isReachablyRendered(document.activeElement)
+      ) {
+        openControl.focus({ preventScroll: true });
+      }
+    };
+
     makeButton(openControl, "Open navigation");
     openControl.setAttribute("aria-haspopup", "dialog");
     backdrop.setAttribute("aria-label", "Close navigation");
@@ -143,7 +175,8 @@
       });
     });
     closeControl.addEventListener("click", () => setOpen(false));
-    toggle.addEventListener("change", applyState);
+    toggle.addEventListener("change", reconcileLayout);
+    desktopLayout.addEventListener("change", reconcileLayout);
 
     handleEarlyKeydown = (event) => {
       containTabFocus(event);
@@ -158,7 +191,7 @@
       if (modalOpen && !drawer.contains(event.target)) closeControl.focus({ preventScroll: true });
     });
 
-    applyState();
+    reconcileLayout();
   };
 
   if (document.readyState === "loading") {

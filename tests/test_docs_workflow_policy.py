@@ -270,6 +270,10 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     assert "capture navigation-open" in commands
     assert "capture search-open" in commands
     assert "capture search-populated" in commands
+    assert "python -m playwright install --with-deps chromium" in commands
+    assert "candidate/scripts/check-docs-layout.py candidate/site" in commands
+    assert "--navigation-transition-only" in commands
+    assert "visual-review/navigation-breakpoint-transition.json" in commands
     assert "?q=workflow" in commands
     assert '--click "$search_selector"' in commands
     assert "--click \".md-header__button[for='__drawer']\"" in commands

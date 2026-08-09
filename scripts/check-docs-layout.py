@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import threading
@@ -412,6 +413,109 @@ def assert_navigation_focus_wraps(page: Page, label: str) -> None:
     )
 
 
+def assert_control_is_keyboard_and_pointer_reachable(page: Page, selector: str, label: str) -> None:
+    control = page.locator(selector).first
+    assert control.count() == 1, f"{label} is missing"
+    control.scroll_into_view_if_needed()
+    assert control.is_visible(), f"{label} is not visible"
+    control.focus()
+    assert control.evaluate("(element) => element === document.activeElement"), f"{label} cannot receive focus"
+    assert control.evaluate(
+        """(element) => {
+            const bounds = element.getBoundingClientRect()
+            const hit = document.elementFromPoint(
+                bounds.left + bounds.width / 2,
+                bounds.top + bounds.height / 2,
+            )
+            return hit === element || element.contains(hit)
+                || Boolean(hit?.closest('label')?.control === element)
+        }"""
+    ), f"{label} cannot be reached by pointer"
+
+
+def exercise_navigation_breakpoint_transition(browser: Browser, url: str) -> None:
+    context = browser.new_context(viewport={"width": 390, "height": 844}, reduced_motion="reduce")
+    page = context.new_page()
+    runtime_errors: list[str] = []
+    page.on(
+        "console",
+        lambda message: (
+            runtime_errors.append(f"console {message.type}: {message.text}") if message.type == "error" else None
+        ),
+    )
+    page.on("pageerror", lambda error: runtime_errors.append(f"page: {error}"))
+    page.on("requestfailed", lambda request: runtime_errors.append(f"request: {request.url} {request.failure}"))
+    page.on(
+        "request",
+        lambda request: (
+            runtime_errors.append(f"external request: {request.url}")
+            if request.url.startswith(("http://", "https://")) and not request.url.startswith(url)
+            else None
+        ),
+    )
+    page.on(
+        "response",
+        lambda response: (
+            runtime_errors.append(f"http {response.status}: {response.url}") if response.status >= 400 else None
+        ),
+    )
+
+    try:
+        response = page.goto(f"{url}reference/client/", wait_until="networkidle")
+        assert response is not None and response.ok, "documentation transition fixture returned a non-success response"
+
+        navigation_opener = page.locator(".md-header__button[for='__drawer']")
+        navigation_drawer = page.locator(".md-sidebar--primary")
+        navigation_close = navigation_drawer.locator(".dw-navigation__close")
+        toggle = page.locator("#__drawer")
+
+        navigation_opener.click()
+        page.wait_for_function("document.querySelector('#__drawer').checked")
+        page.wait_for_function("document.querySelector('.md-sidebar--primary').getAttribute('aria-modal') === 'true'")
+        assert_navigation_background_is_inert(page, "navigation before desktop transition")
+        assert_navigation_focus_wraps(page, "navigation before desktop transition")
+
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.wait_for_function("!document.querySelector('#__drawer').checked", timeout=2_000)
+        assert not toggle.is_checked(), "desktop transition left the navigation toggle checked"
+        assert navigation_drawer.get_attribute("role") is None, "desktop transition left a hidden dialog"
+        assert navigation_drawer.get_attribute("aria-modal") is None, "desktop transition left modal semantics"
+        assert page.locator("[inert]").count() == 0, "desktop transition left unrelated regions inert"
+        assert navigation_close.evaluate("(element) => element !== document.activeElement"), (
+            "desktop transition left focus on the hidden drawer close control"
+        )
+
+        for selector, label in (
+            (".md-header .md-logo", "desktop header link"),
+            (".md-sidebar--primary a[href]:visible", "desktop primary navigation link"),
+            (".md-content a[href]:visible", "desktop documentation link"),
+            (".md-sidebar--secondary a[href]:visible", "desktop table-of-contents link"),
+            (".md-footer a[href]:visible", "desktop footer link"),
+        ):
+            assert_control_is_keyboard_and_pointer_reachable(page, selector, label)
+        assert_rendered_health(page, "navigation after desktop transition", runtime_errors)
+
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_timeout(100)
+        assert not toggle.is_checked(), "responsive re-entry restored a stale checked toggle"
+        assert navigation_drawer.get_attribute("role") is None, "responsive re-entry restored a stale dialog"
+        assert navigation_drawer.get_attribute("aria-modal") is None, "responsive re-entry restored modal semantics"
+        assert page.locator("[inert]").count() == 0, "responsive re-entry restored inert state"
+        assert navigation_opener.evaluate("(element) => element === document.activeElement"), (
+            "responsive re-entry left focus in the hidden navigation drawer"
+        )
+
+        navigation_opener.click()
+        page.wait_for_function("document.querySelector('#__drawer').checked")
+        assert_navigation_focus_wraps(page, "navigation after responsive re-entry")
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.wait_for_function("!document.querySelector('#__drawer').checked", timeout=2_000)
+        assert page.locator("[inert]").count() == 0, "repeated desktop transition left inert state"
+        assert_rendered_health(page, "repeated navigation desktop transition", runtime_errors)
+    finally:
+        context.close()
+
+
 def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> None:
     context = browser.new_context(viewport={"width": width, "height": height}, reduced_motion="reduce")
     github_api_requests: list[str] = []
@@ -625,6 +729,16 @@ def main() -> None:
         default=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE"),
         help="Use a system Chromium instead of Playwright's managed browser.",
     )
+    parser.add_argument(
+        "--navigation-transition-only",
+        action="store_true",
+        help="Exercise only the responsive navigation transition used by visual qualification.",
+    )
+    parser.add_argument(
+        "--transition-evidence",
+        type=Path,
+        help="Write a structured passing result after the breakpoint transition succeeds.",
+    )
     args = parser.parse_args()
     site = args.site.resolve()
     if not (site / "index.html").is_file():
@@ -636,15 +750,41 @@ def main() -> None:
             launch_options["executable_path"] = args.chromium_executable
         browser = playwright.chromium.launch(**launch_options)
         try:
-            for width, height in VIEWPORTS:
-                exercise_viewport(browser, url, width, height)
+            if not args.navigation_transition_only:
+                for width, height in VIEWPORTS:
+                    exercise_viewport(browser, url, width, height)
+            exercise_navigation_breakpoint_transition(browser, url)
         finally:
             browser.close()
 
-    print(
-        "Validated contained documentation search and navigation focus, close behavior, and rendered health "
-        "at desktop, intermediate, mobile, and compact-height viewports."
-    )
+    if args.navigation_transition_only:
+        print("Validated navigation state across the responsive-to-desktop breakpoint transition.")
+    else:
+        print(
+            "Validated contained documentation search and navigation focus, close behavior, and rendered health "
+            "at desktop, intermediate, mobile, compact-height, and responsive-to-desktop transitions."
+        )
+    if args.transition_evidence:
+        evidence = {
+            "schema": "durable-workflow.python-docs.navigation-transition/v1",
+            "outcome": "pass",
+            "viewports": {
+                "responsive": {"width": 390, "height": 844},
+                "desktop": {"width": 1440, "height": 900},
+            },
+            "verified": [
+                "toggle-state",
+                "dialog-semantics",
+                "focus",
+                "inert-cleanup",
+                "keyboard-reachability",
+                "pointer-reachability",
+                "overflow",
+                "browser-errors",
+                "responsive-reentry",
+            ],
+        }
+        args.transition_evidence.write_text(f"{json.dumps(evidence, indent=2)}\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
