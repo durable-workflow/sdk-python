@@ -3635,6 +3635,7 @@ class Client:
         build_id: str | None = None,
         history_page_size: int | None = None,
         poll_request_id: str | None = None,
+        task_kinds: Sequence[str] | None = None,
     ) -> dict[str, Any]:
         """Long-poll for the next workflow task on ``task_queue``.
 
@@ -3643,6 +3644,13 @@ class Client:
         endpoint — most applications use :class:`~durable_workflow.Worker`
         rather than calling this directly. ``timeout`` controls the server
         long-poll window; the HTTP request uses a small grace margin.
+
+        ``task_kinds`` opts into the Server's multiplexed workflow-work poll
+        contract. Validator-capable workers pass ``("workflow",
+        "update_validation")`` so one admission reservation and one long poll
+        can discover either kind without leasing more work than the worker can
+        execute. Servers advertise this additive request shape through
+        ``worker_protocol.server_capabilities.synchronous_update_validation``.
         """
         body: dict[str, Any] = {
             "worker_id": worker_id,
@@ -3656,6 +3664,18 @@ class Client:
             body["build_id"] = build_id
         if history_page_size is not None:
             body["history_page_size"] = history_page_size
+        if task_kinds is not None:
+            if isinstance(task_kinds, str):
+                raise ValueError("task_kinds must be a sequence of task-kind strings")
+            normalized_task_kinds = list(task_kinds)
+            if not normalized_task_kinds or any(
+                not isinstance(task_kind, str) or task_kind == ""
+                for task_kind in normalized_task_kinds
+            ):
+                raise ValueError("task_kinds must contain at least one non-empty string")
+            if len(set(normalized_task_kinds)) != len(normalized_task_kinds):
+                raise ValueError("task_kinds must not contain duplicates")
+            body["task_kinds"] = normalized_task_kinds
         http_timeout = _worker_poll_http_timeout(timeout)
 
         for _ in range(2):
@@ -3683,6 +3703,7 @@ class Client:
         build_id: str | None = None,
         history_page_size: int | None = None,
         poll_request_id: str | None = None,
+        task_kinds: Sequence[str] | None = None,
     ) -> Any:
         """Long-poll for the next workflow task on ``task_queue``.
 
@@ -3698,6 +3719,7 @@ class Client:
             build_id=build_id,
             history_page_size=history_page_size,
             poll_request_id=poll_request_id,
+            task_kinds=task_kinds,
         )
 
         return data.get("task")

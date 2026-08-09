@@ -2643,6 +2643,45 @@ class TestFailWorkflowTask:
         assert mock.await_args.kwargs["timeout"] == 8.0
 
     @pytest.mark.asyncio
+    async def test_poll_workflow_task_sends_multiplexed_task_kinds(self, client: Client) -> None:
+        response = {
+            "task": {
+                "task_kind": "update_validation",
+                "update_validation_task_id": "validation-1",
+            },
+            "poll_status": "leased",
+        }
+
+        with patch.object(client, "_request", new_callable=AsyncMock, return_value=response) as mock:
+            task = await client.poll_workflow_task(
+                worker_id="worker-v2",
+                task_queue="queue-1",
+                task_kinds=("workflow", "update_validation"),
+            )
+
+        assert task == response["task"]
+        assert mock.await_args.kwargs["json"]["task_kinds"] == [
+            "workflow",
+            "update_validation",
+        ]
+        assert mock.await_args.args[:2] == ("POST", "/worker/workflow-tasks/poll")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "task_kinds",
+        [(), ("workflow", "workflow"), ("workflow", ""), "workflow"],
+    )
+    async def test_poll_workflow_task_rejects_invalid_task_kinds(
+        self, client: Client, task_kinds: tuple[str, ...] | str
+    ) -> None:
+        with pytest.raises(ValueError, match="task_kinds"):
+            await client.poll_workflow_task(
+                worker_id="worker-v2",
+                task_queue="queue-1",
+                task_kinds=task_kinds,
+            )
+
+    @pytest.mark.asyncio
     async def test_poll_workflow_task_keeps_returning_none_for_no_compatible_status(self, client: Client) -> None:
         response = {
             "task": None,

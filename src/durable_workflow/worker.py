@@ -91,6 +91,9 @@ QUERY_TASKS_CAPABILITY = "query_tasks"
 UPDATE_VALIDATION_TASKS_CAPABILITY = "update_validation_tasks"
 WORKFLOW_UPDATES_CAPABILITY = "workflow_updates"
 
+_WORKFLOW_WORK_TASK_KINDS = ("workflow", "update_validation")
+_MULTIPLEXED_WORKFLOW_POLL_ENDPOINT = "/worker/workflow-tasks/poll"
+
 _TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
 _QUERY_TASK_FINAL_REJECTION_REASONS = {
     "lease_expired",
@@ -827,12 +830,21 @@ def _server_supports_update_validation_tasks(info: dict[str, Any]) -> bool:
     if not isinstance(capabilities, dict) or capabilities.get("update_validation_tasks") is not True:
         return False
     semantics = capabilities.get("synchronous_update_validation")
+    task_poll = semantics.get("task_poll") if isinstance(semantics, dict) else None
+    task_kinds = task_poll.get("task_kinds") if isinstance(task_poll, dict) else None
     return (
         isinstance(semantics, dict)
         and semantics.get("supported") is True
         and semantics.get("acceptance_boundary") == "validator_approved"
         and semantics.get("worker_capability") == UPDATE_VALIDATION_TASKS_CAPABILITY
         and semantics.get("workflow_contract_field") == "update_validators"
+        and isinstance(task_poll, dict)
+        and task_poll.get("strategy") == "multiplexed"
+        and task_poll.get("endpoint") == _MULTIPLEXED_WORKFLOW_POLL_ENDPOINT
+        and task_poll.get("request_field") == "task_kinds"
+        and task_poll.get("response_discriminator") == "task.task_kind"
+        and isinstance(task_kinds, list)
+        and all(task_kind in task_kinds for task_kind in _WORKFLOW_WORK_TASK_KINDS)
     )
 
 
@@ -940,7 +952,10 @@ class Worker:
         self._query_thread_task: asyncio.Task[None] | None = None
         # In-flight slot accounting feeds the periodic heartbeat so operators
         # see free-slot counts without the worker having to re-derive them at
-        # shutdown. Validator work shares the workflow counter and capacity.
+        # shutdown. A workflow reservation covers the multiplexed long poll,
+        # any resulting lease, and execution through completion. Validator
+        # work shares the same reservation counter and capacity.
+        self._workflow_reserved = 0
         self._workflow_inflight = 0
         self._activity_inflight = 0
         self._heartbeat_interval = float(heartbeat_interval)
@@ -1058,8 +1073,9 @@ class Worker:
         if has_update_validators and not server_supports_update_validation_tasks:
             raise RuntimeError(
                 "Server compatibility error: this worker declares update validators, but the "
-                "server does not advertise synchronous pre-accept update validation. Refusing "
-                "registration so validated updates cannot be accepted without validator approval."
+                "server does not advertise synchronous pre-accept update validation with atomic "
+                "multiplexed workflow/update-validation polling. Refusing registration so validated "
+                "updates cannot be accepted without validator approval or exceed worker capacity."
             )
         server_long_poll_timeout = _server_long_poll_timeout(info)
         if server_long_poll_timeout is not None:
@@ -1950,11 +1966,52 @@ class Worker:
         task.add_done_callback(self._in_flight.discard)
         return task
 
+    async def _reserve_workflow_capacity(self) -> None:
+        await self._wf_semaphore.acquire()
+        self._workflow_reserved += 1
+
+    def _release_workflow_capacity(self) -> None:
+        if self._workflow_reserved < 1:
+            raise RuntimeError("workflow capacity released without an active reservation")
+        self._workflow_reserved -= 1
+        self._wf_semaphore.release()
+
+    def _workflow_poll_task_kinds(self) -> tuple[str, ...] | None:
+        return _WORKFLOW_WORK_TASK_KINDS if self._update_validation_tasks_supported else None
+
+    def _polled_workflow_task_kind(self, task: dict[str, Any]) -> Literal["workflow", "update_validation"]:
+        task_kind = task.get("task_kind")
+        if task_kind is None and not self._update_validation_tasks_supported:
+            return "workflow"
+        if task_kind == "workflow":
+            return "workflow"
+        if task_kind == "update_validation":
+            return "update_validation"
+        raise RuntimeError(
+            "multiplexed workflow poll returned a task without a supported task.task_kind "
+            "discriminator"
+        )
+
+    def _admit_workflow_work(
+        self,
+        task: dict[str, Any],
+        task_kind: Literal["workflow", "update_validation"],
+    ) -> asyncio.Task[Any]:
+        if task_kind == "update_validation":
+            dispatched = self._track(self._dispatch_update_validation_task(task))
+        else:
+            dispatched = self._track(self._dispatch_workflow_task(task))
+
+        # The callback owns the reservation so cancellation releases capacity
+        # even when the dispatch coroutine is cancelled before it first runs.
+        dispatched.add_done_callback(lambda _: self._release_workflow_capacity())
+        return dispatched
+
     async def _poll_workflow_tasks(self) -> None:
         while not self._stop.is_set():
-            await self._wf_semaphore.acquire()
+            await self._reserve_workflow_capacity()
             if self._stop.is_set():
-                self._wf_semaphore.release()
+                self._release_workflow_capacity()
                 return
             try:
                 poll_start = time.perf_counter()
@@ -1963,9 +2020,13 @@ class Worker:
                     task_queue=self.task_queue,
                     timeout=self._poll_http_timeout,
                     build_id=self.build_id,
+                    task_kinds=self._workflow_poll_task_kinds(),
                 )
+            except asyncio.CancelledError:
+                self._release_workflow_capacity()
+                raise
             except Exception as e:
-                self._wf_semaphore.release()
+                self._release_workflow_capacity()
                 if self._stop.is_set():
                     return
                 self._record_poll_metrics("workflow", "error", time.perf_counter() - poll_start)
@@ -1973,21 +2034,29 @@ class Worker:
                 await asyncio.sleep(1.0)
                 continue
             if task is None:
-                self._wf_semaphore.release()
+                self._release_workflow_capacity()
                 self._record_poll_metrics("workflow", "empty", time.perf_counter() - poll_start)
                 if self._stop.is_set():
                     return
                 await asyncio.sleep(0)
                 continue
-            self._record_poll_metrics("workflow", "task", time.perf_counter() - poll_start)
             if self._stop.is_set():
-                self._wf_semaphore.release()
+                self._release_workflow_capacity()
                 return
-            self._track(self._dispatch_workflow_task(task))
+            try:
+                task_kind = self._polled_workflow_task_kind(task)
+            except Exception:
+                self._release_workflow_capacity()
+                raise
+            self._record_poll_metrics(task_kind, "task", time.perf_counter() - poll_start)
+            self._admit_workflow_work(task, task_kind)
 
-    async def _dispatch_workflow_task(self, task: dict[str, Any]) -> None:
+    async def _dispatch_workflow_task(
+        self, task: dict[str, Any]
+    ) -> list[dict[str, Any]] | None:
         task_start = time.perf_counter()
         outcome = "error"
+        commands: list[dict[str, Any]] | None = None
         self._workflow_inflight += 1
         try:
             commands = await self._run_workflow_task(task)
@@ -1999,7 +2068,7 @@ class Worker:
         finally:
             self._workflow_inflight = max(0, self._workflow_inflight - 1)
             self._record_task_metrics("workflow", outcome, time.perf_counter() - task_start)
-            self._wf_semaphore.release()
+        return commands
 
     async def _report_unhandled_workflow_task_error(
         self,
@@ -2273,67 +2342,19 @@ class Worker:
 
         return "rejected" if reason == "update_validator_rejected" else "failed"
 
-    async def _poll_update_validation_tasks(self) -> None:
-        while not self._stop.is_set():
-            # Validator execution reconstructs workflow state, so it shares the
-            # workflow-task pool instead of leasing work outside the worker's
-            # configured and heartbeat-visible capacity.
-            await self._wf_semaphore.acquire()
-            if self._stop.is_set():
-                self._wf_semaphore.release()
-                return
-            try:
-                poll_start = time.perf_counter()
-                task = await self.client.poll_update_validation_task(
-                    worker_id=self.worker_id,
-                    task_queue=self.task_queue,
-                    timeout=self._poll_http_timeout,
-                )
-            except asyncio.CancelledError:
-                self._wf_semaphore.release()
-                raise
-            except Exception as exc:
-                self._wf_semaphore.release()
-                if self._stop.is_set():
-                    return
-                self._record_poll_metrics("update_validation", "error", time.perf_counter() - poll_start)
-                log.warning("update validation poll error: %s", exc)
-                await asyncio.sleep(1.0)
-                continue
-            if task is None:
-                self._wf_semaphore.release()
-                self._record_poll_metrics("update_validation", "empty", time.perf_counter() - poll_start)
-                if self._stop.is_set():
-                    return
-                await asyncio.sleep(0)
-                continue
-            self._record_poll_metrics("update_validation", "task", time.perf_counter() - poll_start)
-            if self._stop.is_set():
-                self._wf_semaphore.release()
-                return
-            self._admit_update_validation_task(task)
-
     def _admit_update_validation_task(self, task: dict[str, Any]) -> asyncio.Task[Any]:
-        self._workflow_inflight += 1
-        dispatched = self._track(self._dispatch_update_validation_task(task))
-
-        def release_capacity(_: asyncio.Task[Any]) -> None:
-            self._workflow_inflight = max(0, self._workflow_inflight - 1)
-            self._wf_semaphore.release()
-
-        # A done callback owns the reservation so cancellation releases it
-        # even when the coroutine is cancelled before its first instruction.
-        dispatched.add_done_callback(release_capacity)
-        return dispatched
+        return self._admit_workflow_work(task, "update_validation")
 
     async def _dispatch_update_validation_task(self, task: dict[str, Any]) -> None:
         task_start = time.perf_counter()
         outcome = "error"
+        self._workflow_inflight += 1
         try:
             outcome = await self._run_update_validation_task(task)
         except Exception:
             log.exception("unhandled error in update validation task execution")
         finally:
+            self._workflow_inflight = max(0, self._workflow_inflight - 1)
             self._record_task_metrics("update_validation", outcome, time.perf_counter() - task_start)
 
     def _clone_client_for_query_tasks(self) -> Client:
@@ -2443,8 +2464,6 @@ class Worker:
                     self._start_query_task_thread()
                 else:
                     loops.append(asyncio.create_task(self._poll_query_tasks()))
-            if self._update_validation_tasks_supported:
-                loops.append(asyncio.create_task(self._poll_update_validation_tasks()))
             self._poller_tasks.update(loops)
 
             try:
@@ -2495,7 +2514,7 @@ class Worker:
     def _current_task_slots(self) -> dict[str, int]:
         return {
             "workflow_available": max(
-                0, self.max_concurrent_workflow_tasks - self._workflow_inflight
+                0, self.max_concurrent_workflow_tasks - self._workflow_reserved
             ),
             "activity_available": max(
                 0, self.max_concurrent_activity_tasks - self._activity_inflight
@@ -2596,8 +2615,6 @@ class Worker:
                     self._start_query_task_thread()
                 else:
                     background_tasks.append(asyncio.create_task(self._poll_query_tasks()))
-            if self._update_validation_tasks_supported:
-                background_tasks.append(asyncio.create_task(self._poll_update_validation_tasks()))
             self._poller_tasks.update(background_tasks)
             run_until_loop = asyncio.create_task(
                 self._run_until_loop(
@@ -2642,28 +2659,48 @@ class Worker:
                 )
 
             if next_task_kind == "workflow":
-                poll_start = time.perf_counter()
-                task = await self.client.poll_workflow_task(
-                    worker_id=self.worker_id,
-                    task_queue=self.task_queue,
-                    timeout=self._poll_http_timeout,
-                    build_id=self.build_id,
-                )
+                await self._reserve_workflow_capacity()
+                try:
+                    poll_start = time.perf_counter()
+                    task = await self.client.poll_workflow_task(
+                        worker_id=self.worker_id,
+                        task_queue=self.task_queue,
+                        timeout=self._poll_http_timeout,
+                        build_id=self.build_id,
+                        task_kinds=self._workflow_poll_task_kinds(),
+                    )
+                except BaseException:
+                    self._release_workflow_capacity()
+                    raise
                 if self._stop.is_set():
+                    self._release_workflow_capacity()
                     raise asyncio.CancelledError
-                self._record_poll_metrics(
-                    "workflow",
-                    "task" if task is not None else "empty",
-                    time.perf_counter() - poll_start,
-                )
                 if task is None:
+                    self._release_workflow_capacity()
+                    self._record_poll_metrics(
+                        "workflow",
+                        "empty",
+                        time.perf_counter() - poll_start,
+                    )
                     next_task_kind = "activity"
                     await asyncio.sleep(poll_interval)
                     continue
 
-                commands = await asyncio.shield(
-                    self._track(self._run_until_workflow_task(task))
+                try:
+                    workflow_task_kind = self._polled_workflow_task_kind(task)
+                except Exception:
+                    self._release_workflow_capacity()
+                    raise
+                self._record_poll_metrics(
+                    workflow_task_kind,
+                    "task",
+                    time.perf_counter() - poll_start,
                 )
+                dispatched = self._admit_workflow_work(task, workflow_task_kind)
+                commands = await asyncio.shield(dispatched)
+                if workflow_task_kind == "update_validation":
+                    next_task_kind = "workflow"
+                    continue
                 if commands and any(
                     command.get("type") == "schedule_activity" for command in commands
                 ):
@@ -2695,20 +2732,6 @@ class Worker:
             next_task_kind = "workflow"
 
         raise asyncio.CancelledError
-
-    async def _run_until_workflow_task(
-        self, task: dict[str, Any]
-    ) -> list[dict[str, Any]] | None:
-        task_start = time.perf_counter()
-        outcome = "error"
-        self._workflow_inflight += 1
-        try:
-            commands = await self._run_workflow_task(task)
-            outcome = "completed" if commands is not None else "failed"
-            return commands
-        finally:
-            self._workflow_inflight = max(0, self._workflow_inflight - 1)
-            self._record_task_metrics("workflow", outcome, time.perf_counter() - task_start)
 
     async def _run_until_activity_task(self, task: dict[str, Any]) -> None:
         task_start = time.perf_counter()

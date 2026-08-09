@@ -534,6 +534,34 @@ class TestWorkerRegistration:
                 }
             )
         )
+        with pytest.raises(RuntimeError, match="synchronous pre-accept update validation"):
+            await worker._register()
+        mock_client.register_worker.assert_not_awaited()
+
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(
+                worker_protocol={
+                    "version": PROTOCOL_VERSION,
+                    "server_capabilities": {
+                        "query_tasks": True,
+                        "update_validation_tasks": True,
+                        "synchronous_update_validation": {
+                            "supported": True,
+                            "acceptance_boundary": "validator_approved",
+                            "worker_capability": UPDATE_VALIDATION_TASKS_CAPABILITY,
+                            "workflow_contract_field": "update_validators",
+                            "task_poll": {
+                                "strategy": "multiplexed",
+                                "endpoint": "/worker/workflow-tasks/poll",
+                                "request_field": "task_kinds",
+                                "task_kinds": ["workflow", "update_validation"],
+                                "response_discriminator": "task.task_kind",
+                            },
+                        },
+                    },
+                }
+            )
+        )
         await worker._register()
 
         registered = mock_client.register_worker.await_args.kwargs
@@ -558,6 +586,13 @@ class TestWorkerRegistration:
                             "acceptance_boundary": "validator_approved",
                             "worker_capability": UPDATE_VALIDATION_TASKS_CAPABILITY,
                             "workflow_contract_field": "update_validators",
+                            "task_poll": {
+                                "strategy": "multiplexed",
+                                "endpoint": "/worker/workflow-tasks/poll",
+                                "request_field": "task_kinds",
+                                "task_kinds": ["workflow", "update_validation"],
+                                "response_discriminator": "task.task_kind",
+                            },
                         },
                     },
                 }
@@ -2252,6 +2287,7 @@ class TestWorkflowTaskExecution:
 class TestUpdateValidationTaskExecution:
     def task(self, approved: bool) -> dict[str, object]:
         return {
+            "task_kind": "update_validation",
             "update_validation_task_id": "uv1",
             "update_validation_attempt": 1,
             "workflow_type": "validated-update-wf",
@@ -2309,7 +2345,84 @@ class TestUpdateValidationTaskExecution:
         mock_client.approve_update_validation_task.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_polling_shares_workflow_capacity_and_waits_for_a_released_slot(self, mock_client: AsyncMock) -> None:
+    @pytest.mark.parametrize("task_kind", ["workflow", "update_validation"])
+    async def test_multiplexed_poll_promptly_dispatches_either_kind_with_one_slot(
+        self,
+        mock_client: AsyncMock,
+        task_kind: str,
+    ) -> None:
+        dispatch_started = asyncio.Event()
+        release_dispatch = asyncio.Event()
+        next_poll_started = asyncio.Event()
+
+        workflow_task: dict[str, object] = {
+            "task_kind": "workflow",
+            "task_id": "wf-task-1",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "json",
+        }
+        ready_task = workflow_task if task_kind == "workflow" else self.task(True)
+
+        async def poll_workflow_work(**_: object) -> dict[str, object] | None:
+            if mock_client.poll_workflow_task.await_count == 1:
+                return ready_task
+            next_poll_started.set()
+            await asyncio.Event().wait()
+            return None
+
+        async def run_work(_: dict[str, object]) -> object:
+            dispatch_started.set()
+            await release_dispatch.wait()
+            return [] if task_kind == "workflow" else "approved"
+
+        mock_client.poll_workflow_task.side_effect = poll_workflow_work
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[ValidatedUpdateWorkflow],
+            max_concurrent_workflow_tasks=1,
+        )
+        worker._update_validation_tasks_supported = True
+        if task_kind == "workflow":
+            worker._run_workflow_task = run_work  # type: ignore[method-assign]
+        else:
+            worker._run_update_validation_task = run_work  # type: ignore[method-assign]
+
+        poller = asyncio.create_task(worker._poll_workflow_tasks())
+        try:
+            await asyncio.wait_for(dispatch_started.wait(), timeout=1.0)
+
+            assert mock_client.poll_workflow_task.await_count == 1
+            assert mock_client.poll_workflow_task.await_args.kwargs["task_kinds"] == (
+                "workflow",
+                "update_validation",
+            )
+            assert mock_client.poll_update_validation_task.await_count == 0
+            assert worker._workflow_reserved == 1
+            assert worker._current_task_slots()["workflow_available"] == 0
+
+            release_dispatch.set()
+            await asyncio.wait_for(next_poll_started.wait(), timeout=1.0)
+        finally:
+            release_dispatch.set()
+            poller.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await poller
+            if worker._in_flight:
+                await asyncio.gather(*set(worker._in_flight), return_exceptions=True)
+
+        assert worker._workflow_reserved == 0
+        assert worker._workflow_inflight == 0
+        assert worker._wf_semaphore._value == 1
+        assert worker._current_task_slots()["workflow_available"] == 1
+
+    @pytest.mark.asyncio
+    async def test_validator_burst_cannot_lease_beyond_workflow_capacity(
+        self, mock_client: AsyncMock
+    ) -> None:
         started = [asyncio.Event() for _ in range(3)]
         releases = [asyncio.Event() for _ in range(3)]
         blocked_poll_started = asyncio.Event()
@@ -2338,6 +2451,7 @@ class TestUpdateValidationTaskExecution:
 
         validation_tasks = [
             {
+                "task_kind": "update_validation",
                 "update_validation_task_id": f"uv-{index}",
                 "update_validation_attempt": 1,
                 "workflow_type": "blocked-validation-wf",
@@ -2359,14 +2473,15 @@ class TestUpdateValidationTaskExecution:
             await asyncio.Event().wait()
             return None
 
-        mock_client.poll_update_validation_task.side_effect = poll_validation_task
+        mock_client.poll_workflow_task.side_effect = poll_validation_task
         worker = Worker(
             mock_client,
             task_queue="q1",
             workflows=[BlockedValidationWorkflow],
             max_concurrent_workflow_tasks=2,
         )
-        poller = asyncio.create_task(worker._poll_update_validation_tasks())
+        worker._update_validation_tasks_supported = True
+        poller = asyncio.create_task(worker._poll_workflow_tasks())
 
         try:
             await asyncio.wait_for(
@@ -2375,8 +2490,9 @@ class TestUpdateValidationTaskExecution:
             )
             await asyncio.sleep(0)
 
-            assert mock_client.poll_update_validation_task.await_count == 2
+            assert mock_client.poll_workflow_task.await_count == 2
             assert max_running == 2
+            assert worker._workflow_reserved == 2
             assert worker._current_task_slots()["workflow_available"] == 0
 
             worker._heartbeat_interval = 0.001
@@ -2398,8 +2514,9 @@ class TestUpdateValidationTaskExecution:
             releases[0].set()
             await asyncio.wait_for(started[2].wait(), timeout=1.0)
 
-            assert mock_client.poll_update_validation_task.await_count == 3
+            assert mock_client.poll_workflow_task.await_count == 3
             assert max_running == 2
+            assert worker._workflow_reserved == 2
             assert worker._current_task_slots()["workflow_available"] == 0
 
             releases[1].set()
@@ -2415,9 +2532,52 @@ class TestUpdateValidationTaskExecution:
                 await asyncio.gather(*set(worker._in_flight), return_exceptions=True)
 
         assert worker._workflow_inflight == 0
+        assert worker._workflow_reserved == 0
         assert worker._wf_semaphore._value == 2
         assert worker._current_task_slots()["workflow_available"] == 2
         assert mock_client.approve_update_validation_task.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_idle_multiplexed_poll_and_releases_reservation(
+        self, mock_client: AsyncMock
+    ) -> None:
+        poll_started = asyncio.Event()
+        poll_cancelled = asyncio.Event()
+
+        async def idle_poll(**_: object) -> None:
+            poll_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                poll_cancelled.set()
+
+        mock_client.poll_workflow_task.side_effect = idle_poll
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[ValidatedUpdateWorkflow],
+            max_concurrent_workflow_tasks=1,
+        )
+        worker._update_validation_tasks_supported = True
+        poller = asyncio.create_task(worker._poll_workflow_tasks())
+        worker._poller_tasks.add(poller)
+
+        await asyncio.wait_for(poll_started.wait(), timeout=1.0)
+
+        assert worker._workflow_reserved == 1
+        assert worker._workflow_inflight == 0
+        assert worker._current_task_slots()["workflow_available"] == 0
+        assert mock_client.poll_workflow_task.await_count == 1
+        assert mock_client.poll_update_validation_task.await_count == 0
+
+        await worker.stop()
+
+        assert poll_cancelled.is_set()
+        assert poller.cancelled()
+        assert worker._workflow_reserved == 0
+        assert worker._workflow_inflight == 0
+        assert worker._wf_semaphore._value == 1
+        assert worker._current_task_slots()["workflow_available"] == 1
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -2453,17 +2613,19 @@ class TestUpdateValidationTaskExecution:
             workflows=[ValidatedUpdateWorkflow],
             max_concurrent_workflow_tasks=1,
         )
-        await worker._wf_semaphore.acquire()
+        await worker._reserve_workflow_capacity()
         dispatched = worker._admit_update_validation_task(self.task(approved))
 
         await asyncio.wait_for(completion_started.wait(), timeout=1.0)
         assert worker._current_task_slots()["workflow_available"] == 0
+        assert worker._workflow_reserved == 1
         assert worker._wf_semaphore._value == 0
 
         release_completion.set()
         await dispatched
 
         assert worker._workflow_inflight == 0
+        assert worker._workflow_reserved == 0
         assert worker._wf_semaphore._value == 1
         assert worker._current_task_slots()["workflow_available"] == 1
 
@@ -2493,12 +2655,19 @@ class TestUpdateValidationTaskExecution:
                             "acceptance_boundary": "validator_approved",
                             "worker_capability": UPDATE_VALIDATION_TASKS_CAPABILITY,
                             "workflow_contract_field": "update_validators",
+                            "task_poll": {
+                                "strategy": "multiplexed",
+                                "endpoint": "/worker/workflow-tasks/poll",
+                                "request_field": "task_kinds",
+                                "task_kinds": ["workflow", "update_validation"],
+                                "response_discriminator": "task.task_kind",
+                            },
                         },
                     },
                 }
             )
         )
-        mock_client.poll_update_validation_task.side_effect = [self.task(True)]
+        mock_client.poll_workflow_task.side_effect = [self.task(True)]
         worker = Worker(
             mock_client,
             task_queue="q1",
@@ -2508,7 +2677,7 @@ class TestUpdateValidationTaskExecution:
         )
         worker._run_update_validation_task = blocked_validation  # type: ignore[method-assign]
         await worker._register()
-        poller = asyncio.create_task(worker._poll_update_validation_tasks())
+        poller = asyncio.create_task(worker._poll_workflow_tasks())
         worker._poller_tasks.add(poller)
 
         await asyncio.wait_for(validation_started.wait(), timeout=1.0)
@@ -2518,6 +2687,7 @@ class TestUpdateValidationTaskExecution:
 
         assert validation_cancelled.is_set()
         assert worker._workflow_inflight == 0
+        assert worker._workflow_reserved == 0
         assert worker._wf_semaphore._value == 1
         assert worker._current_task_slots()["workflow_available"] == 1
         assert worker._registered is False
@@ -2531,7 +2701,7 @@ class TestUpdateValidationTaskExecution:
             workflows=[ValidatedUpdateWorkflow],
             max_concurrent_workflow_tasks=1,
         )
-        await worker._wf_semaphore.acquire()
+        await worker._reserve_workflow_capacity()
 
         dispatched = worker._admit_update_validation_task(self.task(True))
         dispatched.cancel()
@@ -2540,6 +2710,7 @@ class TestUpdateValidationTaskExecution:
         await asyncio.sleep(0)
 
         assert worker._workflow_inflight == 0
+        assert worker._workflow_reserved == 0
         assert worker._wf_semaphore._value == 1
         assert worker._current_task_slots()["workflow_available"] == 1
         mock_client.approve_update_validation_task.assert_not_awaited()
