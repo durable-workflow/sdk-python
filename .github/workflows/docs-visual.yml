@@ -75,8 +75,8 @@ jobs:
         working-directory: candidate
         run: pip install -e '.[docs]'
 
-      - name: Install browser for breakpoint transition checks
-        if: steps.classify.outputs.required == 'true' && steps.classify.outputs.navigation == 'true'
+      - name: Install browser for navigation interaction checks
+        if: steps.classify.outputs.required == 'true'
         run: python -m playwright install --with-deps chromium
 
       - name: Install pinned visual capture runtime
@@ -97,6 +97,14 @@ jobs:
           python candidate/scripts/check-docs-layout.py candidate/site \
             --navigation-transition-only \
             --transition-evidence visual-review/navigation-breakpoint-transition.json
+
+      - name: Verify nested reference navigation reachability
+        if: steps.classify.outputs.required == 'true'
+        run: |
+          mkdir -p visual-review
+          python candidate/scripts/check-docs-layout.py candidate/site \
+            --nested-navigation-only \
+            --nested-navigation-evidence visual-review/nested-navigation-keyboard.json
 
       - name: Capture candidate interaction states
         if: steps.classify.outputs.required == 'true'
@@ -147,12 +155,35 @@ jobs:
               --report "visual-review/${state}-${width}x${height}.json" \
               --manifest visual-review/manifest.json "${capture_args[@]}" "$@"
           }
+          capture_nested() {
+            local state=$1 width=$2 height=$3
+            shift 3
+            local capture_args=()
+            if [ "$width" = 640 ] && [ "$height" = 360 ]; then
+              capture_args+=(--full-page)
+            fi
+            node visual-controller/scripts/pipeline_visual_capture.mjs \
+              --url http://127.0.0.1:4173/reference/client/ \
+              --surface python-sdk-client-reference --state "$state" \
+              --width "$width" --height "$height" \
+              --source-repository durable-workflow/sdk-python \
+              --source-revision "$SOURCE_REVISION" \
+              --screenshot "visual-review/nested-${state}-${width}x${height}.png" \
+              --report "visual-review/nested-${state}-${width}x${height}.json" \
+              --manifest visual-review/manifest.json "${capture_args[@]}" "$@"
+          }
           for viewport in 1440x900 768x1024 390x844 640x360; do
             width=${viewport%x*}
             height=${viewport#*x}
             capture default "$width" "$height"
+            capture_nested default "$width" "$height"
             if [ "$NAVIGATION_REQUIRED" = true ] && [ "$width" -lt 960 ]; then
               capture navigation-open "$width" "$height" \
+                --state-scope responsive \
+                --click ".md-header__button[for='__drawer']"
+            fi
+            if [ "$width" -lt 960 ]; then
+              capture_nested navigation-open "$width" "$height" \
                 --state-scope responsive \
                 --click ".md-header__button[for='__drawer']"
             fi
@@ -166,6 +197,20 @@ jobs:
               capture search-populated "$width" "$height"
             fi
           done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          reports = sorted(Path("visual-review").glob("nested-*-*x*.json"))
+          if len(reports) != 7:
+              raise SystemExit(f"nested reference evidence is incomplete: {[path.name for path in reports]}")
+          for report in reports:
+              geometry = json.loads(report.read_text(encoding="utf-8"))["geometry"]
+              if geometry["unreachable_controls"]:
+                  raise SystemExit(
+                      f"{report.name} has unreachable controls: {geometry['unreachable_controls']}"
+                  )
+          PY
 
       - name: Validate candidate evidence
         if: steps.classify.outputs.required == 'true'

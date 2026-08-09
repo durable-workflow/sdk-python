@@ -18,6 +18,7 @@ from typing import Any
 from playwright.sync_api import Browser, Locator, Page, Response, Route, sync_playwright
 
 VIEWPORTS = ((1440, 900), (768, 1024), (390, 844), (640, 360))
+NESTED_REFERENCE_ROUTE = "reference/client/"
 GITHUB_API_ENDPOINTS = (
     "https://api.github.com/repos/durable-workflow/sdk-python",
     "https://api.github.com/repos/durable-workflow/sdk-python/releases/latest",
@@ -391,26 +392,88 @@ def assert_results_focus_wraps(page: Page, label: str) -> None:
         )
 
 
-def assert_navigation_focus_wraps(page: Page, label: str) -> None:
+def assert_navigation_focus_wraps(page: Page, label: str) -> list[dict[str, str]]:
     drawer = page.locator(".md-sidebar--primary")
     close_control = drawer.locator(".dw-navigation__close")
     assert close_control.evaluate("(element) => element === document.activeElement"), (
         f"{label} did not move focus to the drawer close control"
     )
 
-    page.keyboard.press("Shift+Tab")
-    assert drawer.evaluate("(element) => element.contains(document.activeElement)"), (
-        f"{label} allowed reverse focus to leave navigation"
+    traversal = page.evaluate(
+        r"""() => {
+            const drawer = document.querySelector('.md-sidebar--primary')
+            const closeControl = drawer.querySelector('.dw-navigation__close')
+            let activePanel = drawer.querySelector('.md-nav--primary')
+            for (const panelToggle of drawer.querySelectorAll('input.md-nav__toggle:checked')) {
+                const panel = panelToggle.parentElement?.querySelector(':scope > nav.md-nav')
+                if (panel instanceof HTMLElement && activePanel.contains(panel)) activePanel = panel
+            }
+            const inactivePanels = [...drawer.querySelectorAll('input.md-nav__toggle:not(:checked)')]
+                .map((panelToggle) => panelToggle.parentElement?.querySelector(':scope > nav.md-nav'))
+                .filter((panel) => panel instanceof HTMLElement)
+            const controls = [...drawer.querySelectorAll(
+                'a[href], button, input, select, textarea, summary, [tabindex]'
+            )].filter((element) => {
+                if (element.closest('[inert]') || element.tabIndex < 0) return false
+                if (element.closest('details:not([open])') && !element.closest('summary')) return false
+                const style = getComputedStyle(element)
+                const bounds = element.getBoundingClientRect()
+                return style.display !== 'none' && style.visibility !== 'hidden'
+                    && bounds.width > 0 && bounds.height > 0
+            })
+            const outsideActivePanel = controls.filter(
+                (element) => element !== closeControl && (
+                    !activePanel.contains(element)
+                    || inactivePanels.some((panel) => panel.contains(element))
+                )
+            ).map((element) => ({
+                tag: element.tagName.toLowerCase(),
+                text: (element.value || element.textContent || element.getAttribute('aria-label') || '')
+                    .trim().replace(/\s+/g, ' ').slice(0, 80),
+            }))
+            controls.forEach((element, index) => {
+                element.dataset.navigationTabStop = String(index)
+            })
+            return {
+                outsideActivePanel,
+                stops: controls.map((element) => ({
+                    tag: element.tagName.toLowerCase(),
+                    text: (element.value || element.textContent || element.getAttribute('aria-label') || '')
+                        .trim().replace(/\s+/g, ' ').slice(0, 80),
+                })),
+            }
+        }"""
     )
-    page.keyboard.press("Tab")
-    assert close_control.evaluate("(element) => element === document.activeElement"), (
-        f"{label} did not wrap forward focus to the first drawer control"
+    stops = traversal["stops"]
+    assert stops, f"{label} has no active drawer controls"
+    assert traversal["outsideActivePanel"] == [], (
+        f"{label} left controls from an occluded or translated panel in the tab order: "
+        f"{traversal['outsideActivePanel']}"
     )
 
+    for index, stop in enumerate(stops):
+        page.locator(f'[data-navigation-tab-stop="{index}"]').focus()
+        page.keyboard.press("Tab")
+        focused = page.evaluate("document.activeElement?.dataset.navigationTabStop")
+        assert focused == str((index + 1) % len(stops)), (
+            f"{label} skipped the drawer control after {stop}: focused marker {focused}; controls: {stops}"
+        )
+
+    for index in reversed(range(len(stops))):
+        page.locator(f'[data-navigation-tab-stop="{index}"]').focus()
+        page.keyboard.press("Shift+Tab")
+        focused = page.evaluate("document.activeElement?.dataset.navigationTabStop")
+        assert focused == str((index - 1) % len(stops)), (
+            f"{label} skipped a reverse drawer control before {stops[index]}: "
+            f"focused marker {focused}; controls: {stops}"
+        )
+
+    close_control.focus()
     page.locator(".md-header .md-logo").focus()
     assert close_control.evaluate("(element) => element === document.activeElement"), (
         f"{label} allowed programmatic focus to leave navigation"
     )
+    return stops
 
 
 def assert_control_is_keyboard_and_pointer_reachable(page: Page, selector: str, label: str) -> None:
@@ -512,6 +575,125 @@ def exercise_navigation_breakpoint_transition(browser: Browser, url: str) -> Non
         page.wait_for_function("!document.querySelector('#__drawer').checked", timeout=2_000)
         assert page.locator("[inert]").count() == 0, "repeated desktop transition left inert state"
         assert_rendered_health(page, "repeated navigation desktop transition", runtime_errors)
+    finally:
+        context.close()
+
+
+def exercise_nested_navigation_viewport(
+    browser: Browser,
+    url: str,
+    width: int,
+    height: int,
+) -> dict[str, Any]:
+    context = browser.new_context(viewport={"width": width, "height": height}, reduced_motion="reduce")
+    page = context.new_page()
+    runtime_errors: list[str] = []
+    page.on(
+        "console",
+        lambda message: (
+            runtime_errors.append(f"console {message.type}: {message.text}") if message.type == "error" else None
+        ),
+    )
+    page.on("pageerror", lambda error: runtime_errors.append(f"page: {error}"))
+    page.on("requestfailed", lambda request: runtime_errors.append(f"request: {request.url} {request.failure}"))
+    page.on(
+        "request",
+        lambda request: (
+            runtime_errors.append(f"external request: {request.url}")
+            if request.url.startswith(("http://", "https://")) and not request.url.startswith(url)
+            else None
+        ),
+    )
+    page.on(
+        "response",
+        lambda response: (
+            runtime_errors.append(f"http {response.status}: {response.url}") if response.status >= 400 else None
+        ),
+    )
+
+    label = f"nested {width}x{height}"
+    result: dict[str, Any] = {
+        "viewport": {"width": width, "height": height},
+        "states": {"default": {"pointer_unreachable": 0}},
+    }
+    try:
+        response = page.goto(f"{url}{NESTED_REFERENCE_ROUTE}", wait_until="networkidle")
+        assert response is not None and response.ok, f"{label} fixture returned a non-success response"
+        assert page.locator("h1#client").count() == 1, f"{label} did not load the client reference"
+        assert_rendered_health(page, f"closed navigation at {label}", runtime_errors)
+
+        if width < 960:
+            navigation_opener = page.locator(".md-header__button[for='__drawer']")
+            navigation_drawer = page.locator(".md-sidebar--primary")
+            navigation_opener.click()
+            page.wait_for_function("document.querySelector('#__drawer').checked")
+            page.wait_for_function(
+                "document.querySelector('.md-sidebar--primary').getAttribute('aria-modal') === 'true'"
+            )
+            assert_navigation_background_is_inert(page, f"open navigation at {label}")
+            stops = assert_navigation_focus_wraps(page, f"open navigation at {label}")
+            assert_rendered_health(page, f"open navigation at {label}", runtime_errors)
+            assert navigation_drawer.locator("[inert]").count() >= 3, (
+                f"open navigation at {label} did not isolate translated parent-panel controls"
+            )
+            result["states"]["navigation-open"] = {
+                "active_keyboard_controls": stops,
+                "pointer_unreachable": 0,
+            }
+        return result
+    finally:
+        context.close()
+
+
+def exercise_nested_navigation_regression(browser: Browser, url: str) -> dict[str, str]:
+    context = browser.new_context(viewport={"width": 390, "height": 844}, reduced_motion="reduce")
+    page = context.new_page()
+    runtime_errors: list[str] = []
+    page.on(
+        "console",
+        lambda message: (
+            runtime_errors.append(f"console {message.type}: {message.text}") if message.type == "error" else None
+        ),
+    )
+    page.on("pageerror", lambda error: runtime_errors.append(f"page: {error}"))
+
+    try:
+        response = page.goto(f"{url}{NESTED_REFERENCE_ROUTE}", wait_until="networkidle")
+        assert response is not None and response.ok, (
+            "nested navigation regression fixture returned a non-success response"
+        )
+        page.locator(".md-header__button[for='__drawer']").click()
+        page.wait_for_function("document.querySelector('#__drawer').checked")
+        page.wait_for_function("document.querySelector('.md-sidebar--primary').getAttribute('aria-modal') === 'true'")
+        released = page.locator(".md-sidebar--primary [inert]").evaluate_all(
+            """elements => {
+                for (const element of elements) element.inert = false
+                return elements.length
+            }"""
+        )
+        assert released >= 3, "nested navigation regression fixture did not restore affected parent-panel controls"
+
+        pointer_failure = ""
+        try:
+            assert_rendered_health(page, "affected nested navigation pointer fixture", runtime_errors)
+        except AssertionError as error:
+            pointer_failure = str(error)
+        assert "unreachable visible controls" in pointer_failure, (
+            f"nested navigation pointer regression was not detected: {pointer_failure or 'no failure'}"
+        )
+
+        keyboard_failure = ""
+        try:
+            assert_navigation_focus_wraps(page, "affected nested navigation keyboard fixture")
+        except AssertionError as error:
+            keyboard_failure = str(error)
+        assert "occluded or translated panel" in keyboard_failure, (
+            f"nested navigation keyboard regression was not detected: {keyboard_failure or 'no failure'}"
+        )
+        return {
+            "pointer": "affected fixture rejected",
+            "keyboard": "affected fixture rejected",
+        }
     finally:
         context.close()
 
@@ -735,34 +917,64 @@ def main() -> None:
         help="Exercise only the responsive navigation transition used by visual qualification.",
     )
     parser.add_argument(
+        "--nested-navigation-only",
+        action="store_true",
+        help="Exercise only the nested reference navigation matrix used by visual qualification.",
+    )
+    parser.add_argument(
         "--transition-evidence",
         type=Path,
         help="Write a structured passing result after the breakpoint transition succeeds.",
     )
+    parser.add_argument(
+        "--nested-navigation-evidence",
+        type=Path,
+        help="Write structured pointer, keyboard, and regression evidence for the nested reference route.",
+    )
     args = parser.parse_args()
+    if args.navigation_transition_only and args.nested_navigation_only:
+        parser.error("--navigation-transition-only and --nested-navigation-only are mutually exclusive")
+    if args.transition_evidence and args.nested_navigation_only:
+        parser.error("--transition-evidence cannot be used with --nested-navigation-only")
+    if args.nested_navigation_evidence and args.navigation_transition_only:
+        parser.error("--nested-navigation-evidence cannot be used with --navigation-transition-only")
     site = args.site.resolve()
     if not (site / "index.html").is_file():
         raise SystemExit(f"built documentation not found at {site}")
 
+    nested_results: list[dict[str, Any]] = []
+    nested_regression: dict[str, str] = {}
     with serve(site) as url, sync_playwright() as playwright:
         launch_options = {"headless": True}
         if args.chromium_executable:
             launch_options["executable_path"] = args.chromium_executable
         browser = playwright.chromium.launch(**launch_options)
         try:
-            if not args.navigation_transition_only:
+            if not args.navigation_transition_only and not args.nested_navigation_only:
                 for width, height in VIEWPORTS:
                     exercise_viewport(browser, url, width, height)
-            exercise_navigation_breakpoint_transition(browser, url)
+            if not args.navigation_transition_only:
+                nested_results = [
+                    exercise_nested_navigation_viewport(browser, url, width, height) for width, height in VIEWPORTS
+                ]
+                nested_regression = exercise_nested_navigation_regression(browser, url)
+            if not args.nested_navigation_only:
+                exercise_navigation_breakpoint_transition(browser, url)
         finally:
             browser.close()
 
     if args.navigation_transition_only:
         print("Validated navigation state across the responsive-to-desktop breakpoint transition.")
+    elif args.nested_navigation_only:
+        print(
+            "Validated nested reference navigation pointer and keyboard reachability at desktop, intermediate, "
+            "mobile, and compact-height viewports."
+        )
     else:
         print(
             "Validated contained documentation search and navigation focus, close behavior, and rendered health "
-            "at desktop, intermediate, mobile, compact-height, and responsive-to-desktop transitions."
+            "on root and nested reference routes at desktop, intermediate, mobile, compact-height, and "
+            "responsive-to-desktop transitions."
         )
     if args.transition_evidence:
         evidence = {
@@ -785,6 +997,23 @@ def main() -> None:
             ],
         }
         args.transition_evidence.write_text(f"{json.dumps(evidence, indent=2)}\n", encoding="utf-8")
+    if args.nested_navigation_evidence:
+        evidence = {
+            "schema": "durable-workflow.python-docs.nested-navigation/v1",
+            "outcome": "pass",
+            "route": f"/{NESTED_REFERENCE_ROUTE}",
+            "viewports": nested_results,
+            "regression": nested_regression,
+            "verified": [
+                "explicit-route",
+                "pointer-reachability",
+                "keyboard-traversal",
+                "active-panel-isolation",
+                "affected-fixture-rejection",
+                "browser-errors",
+            ],
+        }
+        args.nested_navigation_evidence.write_text(f"{json.dumps(evidence, indent=2)}\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

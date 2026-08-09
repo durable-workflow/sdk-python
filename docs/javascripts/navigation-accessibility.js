@@ -15,6 +15,7 @@
 
     let opener = null;
     let inerted = [];
+    let panelInerted = [];
     let modalOpen = false;
 
     drawer.id = "__navigation";
@@ -78,6 +79,37 @@
       inerted = [];
     };
 
+    const activeNavigationPanel = () => {
+      let activePanel = navigation;
+      for (const panelToggle of drawer.querySelectorAll("input.md-nav__toggle:checked")) {
+        const panel = panelToggle.parentElement?.querySelector(":scope > nav.md-nav");
+        if (panel instanceof HTMLElement && activePanel.contains(panel)) activePanel = panel;
+      }
+      return activePanel;
+    };
+
+    const releaseInactivePanelControls = () => {
+      for (const element of panelInerted) element.inert = false;
+      panelInerted = [];
+    };
+
+    const isolateActivePanel = () => {
+      releaseInactivePanelControls();
+      if (!modalOpen) return;
+
+      const activePanel = activeNavigationPanel();
+      const inactivePanels = [...drawer.querySelectorAll("input.md-nav__toggle:not(:checked)")]
+        .map((panelToggle) => panelToggle.parentElement?.querySelector(":scope > nav.md-nav"))
+        .filter((panel) => panel instanceof HTMLElement);
+      for (const element of drawer.querySelectorAll("a[href], button, summary, [tabindex]")) {
+        const inActivePanel = activePanel.contains(element)
+          && !inactivePanels.some((panel) => panel.contains(element));
+        if (element === closeControl || inActivePanel || element.closest("[inert]")) continue;
+        element.inert = true;
+        panelInerted.push(element);
+      }
+    };
+
     const isRendered = (element) => {
       if (!(element instanceof HTMLElement) || element.closest("[inert]") || element.tabIndex < 0) return false;
       const style = getComputedStyle(element);
@@ -133,6 +165,7 @@
         drawer.setAttribute("aria-modal", "true");
         drawer.setAttribute("aria-label", "Navigation");
         isolateDrawer();
+        isolateActivePanel();
         closeControl.focus({ preventScroll: true });
         return;
       }
@@ -142,6 +175,7 @@
       drawer.removeAttribute("role");
       drawer.removeAttribute("aria-modal");
       drawer.removeAttribute("aria-label");
+      releaseInactivePanelControls();
       releaseDrawer();
       if (wasOpen) restoreOpenerFocus();
     };
@@ -176,6 +210,7 @@
     });
     closeControl.addEventListener("click", () => setOpen(false));
     toggle.addEventListener("change", reconcileLayout);
+    drawer.addEventListener("change", isolateActivePanel);
     desktopLayout.addEventListener("change", reconcileLayout);
 
     handleEarlyKeydown = (event) => {

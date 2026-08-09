@@ -312,6 +312,14 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     assert "candidate/scripts/check-docs-layout.py candidate/site" in commands
     assert "--navigation-transition-only" in commands
     assert "visual-review/navigation-breakpoint-transition.json" in commands
+    assert "--nested-navigation-only" in commands
+    assert "visual-review/nested-navigation-keyboard.json" in commands
+    assert "http://127.0.0.1:4173/reference/client/" in commands
+    assert "python-sdk-client-reference" in commands
+    assert "capture_nested default" in commands
+    assert "capture_nested navigation-open" in commands
+    assert 'Path("visual-review").glob("nested-*-*x*.json")' in commands
+    assert 'geometry["unreachable_controls"]' in commands
     assert "?q=workflow" in commands
     assert '--click "$search_selector"' in commands
     assert "--click \".md-header__button[for='__drawer']\"" in commands

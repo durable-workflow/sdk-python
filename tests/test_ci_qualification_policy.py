@@ -214,6 +214,10 @@ def test_focused_path_retains_docs_layout_visual_and_public_boundary_contracts()
     visual_commands = "\n".join(step.get("run", "") for step in visual["jobs"]["visual-evidence"]["steps"])
     assert "1440x900 768x1024 390x844 640x360" in visual_commands
     assert "capture navigation-open" in visual_commands
+    assert "capture_nested navigation-open" in visual_commands
+    assert "reference/client/" in visual_commands
+    assert "nested-navigation-keyboard.json" in visual_commands
+    assert 'geometry["unreachable_controls"]' in visual_commands
     assert "capture search-open" in visual_commands
     assert "capture search-populated" in visual_commands
 
