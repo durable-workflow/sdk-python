@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -39,6 +40,12 @@ def load_workflow(path: Path) -> dict[str, Any]:
     document = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     assert isinstance(document, dict)
     return document
+
+
+def shell_function(commands: str, name: str) -> str:
+    match = re.search(rf"(?ms)^\s*{re.escape(name)}\(\) \{{(?P<body>.*?)^\s*\}}", commands)
+    assert match is not None, f"workflow is missing the {name} shell function"
+    return match.group("body")
 
 
 @pytest.mark.parametrize(
@@ -217,6 +224,9 @@ def test_focused_path_retains_docs_layout_visual_and_public_boundary_contracts()
     assert "capture_nested navigation-open" in visual_commands
     assert "reference/client/" in visual_commands
     assert "nested-navigation-keyboard.json" in visual_commands
+    assert "--full-page" not in shell_function(visual_commands, "capture_nested")
+    assert 'captured.get("full_page") is not False' in visual_commands
+    assert "nested-navigation-qualification.json" in visual_commands
     assert 'geometry["unreachable_controls"]' in visual_commands
     assert "capture search-open" in visual_commands
     assert "capture search-populated" in visual_commands

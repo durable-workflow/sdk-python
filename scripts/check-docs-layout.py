@@ -931,6 +931,10 @@ def main() -> None:
         type=Path,
         help="Write structured pointer, keyboard, and regression evidence for the nested reference route.",
     )
+    parser.add_argument(
+        "--source-revision",
+        help="Bind nested navigation evidence to the captured 40-character source revision.",
+    )
     args = parser.parse_args()
     if args.navigation_transition_only and args.nested_navigation_only:
         parser.error("--navigation-transition-only and --nested-navigation-only are mutually exclusive")
@@ -938,6 +942,10 @@ def main() -> None:
         parser.error("--transition-evidence cannot be used with --nested-navigation-only")
     if args.nested_navigation_evidence and args.navigation_transition_only:
         parser.error("--nested-navigation-evidence cannot be used with --navigation-transition-only")
+    if args.source_revision and (
+        args.nested_navigation_evidence is None or re.fullmatch(r"[0-9a-f]{40}", args.source_revision) is None
+    ):
+        parser.error("--source-revision requires nested navigation evidence and a 40-character revision")
     site = args.site.resolve()
     if not (site / "index.html").is_file():
         raise SystemExit(f"built documentation not found at {site}")
@@ -1013,6 +1021,11 @@ def main() -> None:
                 "browser-errors",
             ],
         }
+        if args.source_revision:
+            evidence["source"] = {
+                "repository": "durable-workflow/sdk-python",
+                "revision": args.source_revision,
+            }
         args.nested_navigation_evidence.write_text(f"{json.dumps(evidence, indent=2)}\n", encoding="utf-8")
 
 

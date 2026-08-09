@@ -100,11 +100,14 @@ jobs:
 
       - name: Verify nested reference navigation reachability
         if: steps.classify.outputs.required == 'true'
+        env:
+          SOURCE_REVISION: ${{ steps.classify.outputs.source_revision }}
         run: |
           mkdir -p visual-review
           python candidate/scripts/check-docs-layout.py candidate/site \
             --nested-navigation-only \
-            --nested-navigation-evidence visual-review/nested-navigation-keyboard.json
+            --nested-navigation-evidence visual-review/nested-navigation-keyboard.json \
+            --source-revision "$SOURCE_REVISION"
 
       - name: Capture candidate interaction states
         if: steps.classify.outputs.required == 'true'
@@ -158,10 +161,6 @@ jobs:
           capture_nested() {
             local state=$1 width=$2 height=$3
             shift 3
-            local capture_args=()
-            if [ "$width" = 640 ] && [ "$height" = 360 ]; then
-              capture_args+=(--full-page)
-            fi
             node visual-controller/scripts/pipeline_visual_capture.mjs \
               --url http://127.0.0.1:4173/reference/client/ \
               --surface python-sdk-client-reference --state "$state" \
@@ -170,7 +169,7 @@ jobs:
               --source-revision "$SOURCE_REVISION" \
               --screenshot "visual-review/nested-${state}-${width}x${height}.png" \
               --report "visual-review/nested-${state}-${width}x${height}.json" \
-              --manifest visual-review/manifest.json "${capture_args[@]}" "$@"
+              --manifest visual-review/manifest.json "$@"
           }
           for viewport in 1440x900 768x1024 390x844 640x360; do
             width=${viewport%x*}
@@ -199,17 +198,95 @@ jobs:
           done
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
+          from urllib.parse import urlsplit
+
+          evidence_root = Path("visual-review")
+          keyboard_path = evidence_root / "nested-navigation-keyboard.json"
+          keyboard = json.loads(keyboard_path.read_text(encoding="utf-8"))
+          expected_source = {
+              "repository": "durable-workflow/sdk-python",
+              "revision": os.environ["SOURCE_REVISION"],
+          }
+          if keyboard.get("outcome") != "pass" or keyboard.get("route") != "/reference/client/":
+              raise SystemExit("nested reference keyboard evidence did not qualify the required route")
+          if keyboard.get("source") != expected_source:
+              raise SystemExit("nested reference keyboard evidence is not bound to the captured source")
+          keyboard_viewports = {
+              (entry["viewport"]["width"], entry["viewport"]["height"]): entry["states"]
+              for entry in keyboard.get("viewports", [])
+          }
 
           reports = sorted(Path("visual-review").glob("nested-*-*x*.json"))
           if len(reports) != 7:
               raise SystemExit(f"nested reference evidence is incomplete: {[path.name for path in reports]}")
+          expected_states = {
+              (1440, 900, "default"),
+              (768, 1024, "default"),
+              (768, 1024, "navigation-open"),
+              (390, 844, "default"),
+              (390, 844, "navigation-open"),
+              (640, 360, "default"),
+              (640, 360, "navigation-open"),
+          }
+          observed_states = set()
+          qualified_states = []
           for report in reports:
-              geometry = json.loads(report.read_text(encoding="utf-8"))["geometry"]
+              captured = json.loads(report.read_text(encoding="utf-8"))
+              state = captured.get("state")
+              viewport = captured.get("viewport", {})
+              viewport_key = (viewport.get("width"), viewport.get("height"))
+              if (
+                  captured.get("surface") != "python-sdk-client-reference"
+                  or captured.get("source") != expected_source
+                  or urlsplit(captured.get("page_url", "")).path != "/reference/client/"
+                  or captured.get("full_page") is not False
+              ):
+                  raise SystemExit(f"{report.name} is not a faithful source-bound nested viewport capture")
+              keyboard_state = keyboard_viewports.get(viewport_key, {}).get(state)
+              if keyboard_state is None:
+                  raise SystemExit(f"{report.name} has no matching keyboard state evidence")
+              if keyboard_state.get("pointer_unreachable") != 0:
+                  raise SystemExit(f"{report.name} keyboard fixture reported unreachable pointer controls")
+              active_keyboard_controls = keyboard_state.get("active_keyboard_controls")
+              if state == "navigation-open" and not active_keyboard_controls:
+                  raise SystemExit(f"{report.name} has no active drawer keyboard traversal evidence")
+              geometry = captured["geometry"]
               if geometry["unreachable_controls"]:
                   raise SystemExit(
                       f"{report.name} has unreachable controls: {geometry['unreachable_controls']}"
                   )
+              if state == "navigation-open" and geometry.get("interactive_control_count") != len(
+                  active_keyboard_controls
+              ):
+                  raise SystemExit(f"{report.name} pointer and keyboard control sets do not match")
+              observed_states.add((*viewport_key, state))
+              qualified_states.append(
+                  {
+                      "capture_report": report.name,
+                      "state": state,
+                      "viewport": viewport,
+                      "full_page": captured["full_page"],
+                      "pointer_unreachable_controls": geometry["unreachable_controls"],
+                      "active_keyboard_controls": active_keyboard_controls or [],
+                  }
+              )
+          if observed_states != expected_states:
+              raise SystemExit(f"nested reference state matrix does not match: {sorted(observed_states)}")
+
+          qualification = {
+              "schema": "durable-workflow.python-docs.nested-navigation-qualification/v1",
+              "outcome": "pass",
+              "source": expected_source,
+              "route": "/reference/client/",
+              "states": qualified_states,
+              "regression": keyboard.get("regression"),
+          }
+          (evidence_root / "nested-navigation-qualification.json").write_text(
+              f"{json.dumps(qualification, indent=2)}\n",
+              encoding="utf-8",
+          )
           PY
 
       - name: Validate candidate evidence

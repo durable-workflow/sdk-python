@@ -67,6 +67,12 @@ def run_commands(job: dict[str, Any]) -> str:
     return "\n".join(str(step["run"]) for step in steps if isinstance(step, dict) and "run" in step)
 
 
+def shell_function(commands: str, name: str) -> str:
+    match = re.search(rf"(?ms)^\s*{re.escape(name)}\(\) \{{(?P<body>.*?)^\s*\}}", commands)
+    assert match is not None, f"workflow is missing the {name} shell function"
+    return match.group("body")
+
+
 def assert_actions_are_pinned(references: list[str]) -> None:
     for reference in references:
         assert re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", reference), f"action is not commit-pinned: {reference}"
@@ -318,8 +324,15 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     assert "python-sdk-client-reference" in commands
     assert "capture_nested default" in commands
     assert "capture_nested navigation-open" in commands
+    assert "--full-page" in shell_function(commands, "capture")
+    assert "--full-page" not in shell_function(commands, "capture_nested")
+    assert '--source-revision "$SOURCE_REVISION"' in commands
     assert 'Path("visual-review").glob("nested-*-*x*.json")' in commands
     assert 'geometry["unreachable_controls"]' in commands
+    assert 'captured.get("full_page") is not False' in commands
+    assert "nested-navigation-qualification.json" in commands
+    assert "active_keyboard_controls" in commands
+    assert "interactive_control_count" in commands
     assert "?q=workflow" in commands
     assert '--click "$search_selector"' in commands
     assert "--click \".md-header__button[for='__drawer']\"" in commands
