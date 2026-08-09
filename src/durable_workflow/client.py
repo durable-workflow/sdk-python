@@ -35,6 +35,8 @@ import httpx
 
 from . import serializer
 from .errors import (
+    RuntimeCapabilityUnsupported,
+    RuntimeDiscoveryUnavailable,
     ServerError,
     WorkflowCancelled,
     WorkflowFailed,
@@ -50,6 +52,10 @@ PROTOCOL_VERSION = "1.1"
 CONTROL_PLANE_VERSION = "2"
 CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA = "durable-workflow.v2.control-plane-request.contract"
 CONTROL_PLANE_REQUEST_CONTRACT_VERSION = 1
+_QUERY_TASKS_DISCOVERY_PATH = "worker_protocol.server_capabilities.query_tasks"
+_UPDATE_WAIT_STAGES_DISCOVERY_PATH = (
+    "control_plane.request_contract.operations.update.fields.wait_for.canonical_values"
+)
 
 
 def _default_sdk_version() -> str:
@@ -1300,6 +1306,8 @@ class Client:
             else ExternalPayloadCache()
         )
         self._http = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
+        self._cluster_info: dict[str, Any] | None = None
+        self._cluster_info_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
         """Close the underlying ``httpx`` connection pool.
@@ -1613,7 +1621,129 @@ class Client:
                 200,
                 {"reason": "invalid_cluster_info", "message": f"expected JSON object, got {type(result).__name__}"},
             )
+        self._cluster_info = result
         return result
+
+    async def _runtime_discovery(
+        self,
+        *,
+        operation: str,
+        required_path: str,
+    ) -> dict[str, Any]:
+        if self._cluster_info is not None:
+            return self._cluster_info
+
+        async with self._cluster_info_lock:
+            if self._cluster_info is not None:
+                return self._cluster_info
+            try:
+                return await self.get_cluster_info()
+            except Exception as error:
+                raise RuntimeDiscoveryUnavailable(
+                    operation,
+                    required_path,
+                    (
+                        f"{operation} requires runtime discovery from GET /api/cluster/info, "
+                        f"but discovery failed: {error}. Check discovery authorization and "
+                        "Server availability before retrying."
+                    ),
+                    cause=error,
+                ) from error
+
+    async def _require_query_support(self) -> None:
+        info = await self._runtime_discovery(
+            operation="Client.query_workflow",
+            required_path=_QUERY_TASKS_DISCOVERY_PATH,
+        )
+        worker_protocol = info.get("worker_protocol")
+        capabilities = (
+            worker_protocol.get("server_capabilities")
+            if isinstance(worker_protocol, dict)
+            else None
+        )
+        query_tasks = (
+            capabilities.get("query_tasks")
+            if isinstance(capabilities, dict)
+            else None
+        )
+        if query_tasks is False:
+            raise RuntimeCapabilityUnsupported(
+                "Client.query_workflow",
+                _QUERY_TASKS_DISCOVERY_PATH,
+                (
+                    "Client.query_workflow is unsupported by this runtime because "
+                    f"{_QUERY_TASKS_DISCOVERY_PATH} is false. Upgrade Server or use "
+                    "a runtime that advertises worker-routed query tasks."
+                ),
+            )
+        if query_tasks is not True:
+            raise RuntimeDiscoveryUnavailable(
+                "Client.query_workflow",
+                _QUERY_TASKS_DISCOVERY_PATH,
+                (
+                    "Client.query_workflow is unavailable because GET /api/cluster/info "
+                    f"did not advertise {_QUERY_TASKS_DISCOVERY_PATH}=true. Check Server "
+                    "compatibility and discovery authorization before retrying."
+                ),
+            )
+
+    async def _require_update_wait_stage(self, wait_for: str) -> None:
+        info = await self._runtime_discovery(
+            operation="Client.update_workflow",
+            required_path=_UPDATE_WAIT_STAGES_DISCOVERY_PATH,
+        )
+        control_plane = info.get("control_plane")
+        request_contract = (
+            control_plane.get("request_contract")
+            if isinstance(control_plane, dict)
+            else None
+        )
+        operations = (
+            request_contract.get("operations")
+            if isinstance(request_contract, dict)
+            else None
+        )
+        update = operations.get("update") if isinstance(operations, dict) else None
+        fields = update.get("fields") if isinstance(update, dict) else None
+        wait_for_contract = (
+            fields.get("wait_for") if isinstance(fields, dict) else None
+        )
+        raw_stages = (
+            wait_for_contract.get("canonical_values")
+            if isinstance(wait_for_contract, dict)
+            else None
+        )
+        if (
+            not isinstance(raw_stages, list)
+            or not raw_stages
+            or not all(
+                isinstance(stage, str) and stage
+                for stage in raw_stages
+            )
+        ):
+            raise RuntimeDiscoveryUnavailable(
+                "Client.update_workflow",
+                _UPDATE_WAIT_STAGES_DISCOVERY_PATH,
+                (
+                    "Client.update_workflow is unavailable because GET /api/cluster/info "
+                    "did not publish its supported update wait stages. Check Server "
+                    "compatibility and discovery authorization before retrying."
+                ),
+            )
+
+        supported_stages = tuple(raw_stages)
+        if wait_for not in supported_stages:
+            supported = ", ".join(repr(stage) for stage in supported_stages)
+            raise RuntimeCapabilityUnsupported(
+                "Client.update_workflow",
+                f"update.wait_for={wait_for}",
+                (
+                    f"Client.update_workflow wait stage {wait_for!r} is unsupported by "
+                    f"this runtime. Discovered stages: {supported}. Select a discovered "
+                    "stage or upgrade Server."
+                ),
+                supported_values=supported_stages,
+            )
 
     def get_workflow_handle(
         self, workflow_id: str, *, run_id: str | None = None, workflow_type: str = ""
@@ -2821,6 +2951,7 @@ class Client:
         result. Raises :class:`~durable_workflow.errors.QueryFailed` if the
         query was rejected or the handler errored.
         """
+        await self._require_query_support()
         body: dict[str, Any] = {}
         if args:
             body["input"] = self._payload_envelope(
@@ -2885,12 +3016,15 @@ class Client:
         the handler may mutate durable workflow state and return a value.
         ``wait_for`` selects how long the server waits before returning —
         typically ``completed`` to block until the handler finishes, or
-        ``accepted`` to return once the validator has approved it.
+        ``accepted`` to return once the request is durably accepted and routed.
+        The current runtime does not advertise pre-accept validator execution,
+        so an ``accepted`` response does not establish validator approval.
 
         ``request_id`` lets the caller deduplicate retries. Raises
         :class:`~durable_workflow.errors.UpdateRejected` when the workflow's
         validator rejects the update.
         """
+        await self._require_update_wait_stage(wait_for or "accepted")
         body: dict[str, Any] = {}
         if args:
             body["input"] = self._payload_envelope(
@@ -3419,12 +3553,21 @@ class Client:
         the worker deregistration envelope, including recovered workflow-task
         count.
         """
-        data = await self._request(
-            "DELETE",
-            f"/worker/registrations/{quote(worker_id, safe='')}",
-            worker=True,
-            context=worker_id,
-        )
+        try:
+            data = await self._request(
+                "DELETE",
+                f"/worker/registrations/{quote(worker_id, safe='')}",
+                worker=True,
+                context=worker_id,
+            )
+        except ServerError as error:
+            if error.status == 404 and error.reason() == "worker_not_found":
+                return {
+                    "worker_id": worker_id,
+                    "outcome": "already_deregistered",
+                    "recovered_workflow_task_count": 0,
+                }
+            raise
         if not isinstance(data, dict):
             raise ServerError(
                 200,

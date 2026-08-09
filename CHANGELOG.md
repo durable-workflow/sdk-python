@@ -6,8 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.20`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc20`. This SDK release is qualified with Server
+The Python SDK advances to prerelease `2.0.0-rc.21`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc21`. This SDK release is qualified with Server
 `2.0.0-rc.19`; SDK and Server prerelease sequence numbers advance independently.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
@@ -51,6 +51,15 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Package metadata now identifies the Python SDK as a release candidate in the
+  Durable Workflow 2.0 train and describes the shipped worker-routed query
+  path without overstating pre-accept update-validator support.
+- Query calls and update wait stages now fail before dispatch with typed,
+  actionable errors when Server discovery is missing, unavailable, or
+  explicitly lacks the requested capability.
+- Worker deregistration treats an already-absent registration as an idempotent
+  success, allowing cleanup-first published-artifact conformance runs to
+  continue without hiding authorization or other deregistration failures.
 - API-reference deployment now installs its exact rendered command from public
   PyPI before handing a candidate to GitHub Pages. Package publication invokes
   the same fail-safe deployment after the release is installable, while a

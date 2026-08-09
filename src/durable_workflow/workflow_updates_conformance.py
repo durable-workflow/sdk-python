@@ -348,6 +348,27 @@ async def run_surface_probe() -> ProbeRecorder:
         body = _request_body(request)
         path = request.url.path
 
+        if request.method == "GET" and path == "/api/cluster/info":
+            return _response(
+                request,
+                200,
+                {
+                    "control_plane": {
+                        "request_contract": {
+                            "operations": {
+                                "update": {
+                                    "fields": {
+                                        "wait_for": {
+                                            "canonical_values": ["accepted", "completed"],
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            )
+
         if request.method == "POST" and path == f"/api/workflows/{WORKFLOW_ID}/update/accept":
             if body.get("request_id") == "duplicate-key":
                 return _response(request, 200, duplicate_response)

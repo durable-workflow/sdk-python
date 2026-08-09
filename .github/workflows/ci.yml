@@ -145,6 +145,8 @@ jobs:
             "${arguments[@]}"
           python scripts/ci/test-component-release-recovery.py ConsumerContractIdentityRegressionTest
       - run: python -m build
+      - name: Compare built release metadata with the exact source commit
+        run: python scripts/check_release_metadata.py --source-ref "$(git rev-parse HEAD)" --dist dist
       - run: twine check dist/*
       - run: python scripts/smoke-built-package.py
 

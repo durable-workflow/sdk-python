@@ -29,6 +29,7 @@ def test_workflow_updates_surface_probe_records_required_python_cells() -> None:
     assert outputs["unsupported_cells"] == []
     assert outputs["python_worker_update_handler"]["observations"]["accepted"]["command_type"] == "complete_update"
     assert outputs["python_worker_update_handler"]["observations"]["failed"]["command_type"] == "fail_update"
+    assert "info" in outputs["python_client_update_request"]["requests"]
     assert "accepted-key" in outputs["python_client_update_request"]["requests"]
     assert "duplicate-key" in outputs["python_client_update_request"]["requests"]
     assert any(error["cell"] == "unknown_update_refusal" for error in outputs["typed_errors"])

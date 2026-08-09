@@ -8,6 +8,8 @@ from durable_workflow.errors import (
     InvalidArgument,
     NamespaceNotFound,
     QueryFailed,
+    RuntimeCapabilityUnsupported,
+    RuntimeDiscoveryUnavailable,
     ServerError,
     SignalFailed,
     Unauthorized,
@@ -140,6 +142,38 @@ class TestServerErrorReason:
     def test_reason_from_str(self) -> None:
         e = ServerError(500, "plain text")
         assert e.reason() is None
+
+
+class TestRuntimeCapabilityErrors:
+    def test_discovery_error_retains_actionable_context(self) -> None:
+        cause = ServerError(503, {"reason": "unavailable"})
+        error = RuntimeDiscoveryUnavailable(
+            "Client.query_workflow",
+            "worker_protocol.server_capabilities.query_tasks",
+            "check discovery authorization",
+            cause=cause,
+        )
+
+        assert isinstance(error, DurableWorkflowError)
+        assert error.operation == "Client.query_workflow"
+        assert (
+            error.required_path
+            == "worker_protocol.server_capabilities.query_tasks"
+        )
+        assert error.cause is cause
+
+    def test_unsupported_error_retains_discovered_values(self) -> None:
+        error = RuntimeCapabilityUnsupported(
+            "Client.update_workflow",
+            "update.wait_for=validated",
+            "select a discovered stage",
+            supported_values=("accepted", "completed"),
+        )
+
+        assert isinstance(error, DurableWorkflowError)
+        assert error.operation == "Client.update_workflow"
+        assert error.capability == "update.wait_for=validated"
+        assert error.supported_values == ("accepted", "completed")
 
 
 class TestCancellationContract:

@@ -2,11 +2,13 @@
 
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
-Status: **Beta** — this is the Python SDK prerelease in the Durable Workflow
-2.0 line. Core features include workflows, activities,
+Status: **Release candidate** — this is the Python SDK release candidate in the
+Durable Workflow 2.0 train. Core features include workflows, activities,
 schedules, signals, timers, child workflows, continue-as-new, side effects,
 version markers, worker-applied accepted updates, replay verification, the
 in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
+
+Python workers execute server-routed query tasks after the Server advertises the query-tasks capability through cluster discovery.
 
 ## Install
 
@@ -242,12 +244,27 @@ class ApprovalWorkflow:
             raise ValueError("approved must be boolean")
 ```
 
-The Python SDK records query and update receiver metadata on workflow classes,
-exposes a query-state replay helper, and applies accepted updates on Python
-workflow tasks by emitting `complete_update` or `fail_update` back to the
-server. Query routing and synchronous pre-accept update validator execution are
-still server-side follow-ups; use those paths only with deployments that
-advertise support for the target workflow type.
+The Python SDK records query and update receiver metadata on workflow classes.
+Python workers poll server-routed query tasks, replay workflow state, execute
+the declared query handler, and complete or fail each task back to the Server.
+The Server must advertise
+`worker_protocol.server_capabilities.query_tasks: true` from
+`GET /api/cluster/info`; workers advertise `query_tasks` at registration only
+after that discovery succeeds. `Client.query_workflow()` checks the same
+manifest before sending a query and raises `RuntimeCapabilityUnsupported` or
+`RuntimeDiscoveryUnavailable` with remediation when the route cannot be used.
+
+Accepted updates are applied on Python workflow tasks by emitting
+`complete_update` or `fail_update` back to the Server. Python update validators
+currently run after the Server has durably accepted and routed the update, not
+synchronously before acceptance. Consequently, `wait_for="accepted"` confirms
+durable admission but does not prove validator approval;
+`wait_for="completed"` waits for the applied or failed terminal outcome.
+`Client.update_workflow()` discovers the Server's supported wait stages and
+raises the same typed unsupported or unavailable errors before requesting a
+stage the runtime cannot prove. Pre-accept validator execution remains outside
+the current Python/Server capability contract until Server discovery advertises
+it explicitly.
 
 Malformed signal and query payloads are reported as typed client errors with
 the server's documented reason and status preserved:

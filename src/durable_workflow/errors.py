@@ -25,6 +25,45 @@ class DurableWorkflowError(Exception):
     """Base class for every exception raised by the SDK."""
 
 
+class RuntimeDiscoveryUnavailable(DurableWorkflowError):
+    """Runtime discovery could not prove that an operation is available.
+
+    ``operation`` names the requested SDK operation and ``required_path`` is
+    the field the SDK expected from ``GET /api/cluster/info``. ``cause`` is
+    retained when discovery itself failed.
+    """
+
+    def __init__(
+        self,
+        operation: str,
+        required_path: str,
+        message: str,
+        *,
+        cause: BaseException | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.operation = operation
+        self.required_path = required_path
+        self.cause = cause
+
+
+class RuntimeCapabilityUnsupported(DurableWorkflowError):
+    """The discovered runtime explicitly does not support an operation."""
+
+    def __init__(
+        self,
+        operation: str,
+        capability: str,
+        message: str,
+        *,
+        supported_values: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.operation = operation
+        self.capability = capability
+        self.supported_values = supported_values
+
+
 class ServerError(DurableWorkflowError):
     """A server response was an error that does not map to a typed subclass.
 

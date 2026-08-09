@@ -24,6 +24,8 @@ from durable_workflow.errors import (
     InvalidArgument,
     NexusOperationFailed,
     QueryFailed,
+    RuntimeCapabilityUnsupported,
+    RuntimeDiscoveryUnavailable,
     ServerError,
     SignalFailed,
     Unauthorized,
@@ -43,9 +45,30 @@ def _mock_response(status: int = 200, json_data: dict | None = None, text: str =
     )
 
 
+def _supported_runtime_info() -> dict[str, object]:
+    return {
+        "control_plane": {
+            "request_contract": {
+                "operations": {
+                    "update": {
+                        "fields": {
+                            "wait_for": {"canonical_values": ["accepted", "completed"]},
+                        },
+                    },
+                },
+            },
+        },
+        "worker_protocol": {
+            "server_capabilities": {"query_tasks": True},
+        },
+    }
+
+
 @pytest.fixture
 def client() -> Client:
-    return Client("http://localhost:8080", token="test-token", namespace="ns1")
+    result = Client("http://localhost:8080", token="test-token", namespace="ns1")
+    result._cluster_info = _supported_runtime_info()
+    return result
 
 
 class TestClientBaseUrl:
@@ -1060,6 +1083,75 @@ class TestWorkflowMaintenanceCommands:
 
 
 class TestQueryWorkflow:
+    @pytest.mark.asyncio
+    async def test_discovers_query_task_support_before_first_query(self) -> None:
+        client = Client("http://localhost:8080", token="test-token")
+        responses = [
+            _mock_response(200, _supported_runtime_info()),
+            _mock_response(200, {"result": "active"}),
+        ]
+        with patch.object(
+            client._http,
+            "request",
+            new_callable=AsyncMock,
+            side_effect=responses,
+        ) as request:
+            result = await client.query_workflow("wf-1", "status")
+
+        assert result == {"result": "active"}
+        assert request.await_args_list[0].args[:2] == ("GET", "/api/cluster/info")
+        assert request.await_args_list[1].args[:2] == (
+            "POST",
+            "/api/workflows/wf-1/query/status",
+        )
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_explicitly_unsupported_query_tasks_raise_typed_error(self) -> None:
+        client = Client("http://localhost:8080", token="test-token")
+        info = {
+            "worker_protocol": {
+                "server_capabilities": {"query_tasks": False},
+            },
+        }
+
+        with (
+            patch.object(
+                client._http,
+                "request",
+                new_callable=AsyncMock,
+                return_value=_mock_response(200, info),
+            ),
+            pytest.raises(RuntimeCapabilityUnsupported) as exc_info,
+        ):
+            await client.query_workflow("wf-1", "status")
+
+        assert exc_info.value.operation == "Client.query_workflow"
+        assert (
+            exc_info.value.capability
+            == "worker_protocol.server_capabilities.query_tasks"
+        )
+        assert "Upgrade Server" in str(exc_info.value)
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_undiscoverable_query_support_raises_typed_error(self) -> None:
+        client = Client("http://localhost:8080", token="test-token")
+        with (
+            patch.object(
+                client._http,
+                "request",
+                new_callable=AsyncMock,
+                return_value=_mock_response(200, {"version": "2.0.0"}),
+            ),
+            pytest.raises(RuntimeDiscoveryUnavailable) as exc_info,
+        ):
+            await client.query_workflow("wf-1", "status")
+
+        assert exc_info.value.operation == "Client.query_workflow"
+        assert "discovery authorization" in str(exc_info.value)
+        await client.aclose()
+
     @pytest.mark.asyncio
     async def test_query(self, client: Client) -> None:
         resp = _mock_response(200, {"result": "active"})
@@ -2812,6 +2904,51 @@ class TestHeartbeatActivityTask:
 
 class TestUpdateWorkflow:
     @pytest.mark.asyncio
+    async def test_unsupported_wait_stage_raises_typed_error_before_update(self) -> None:
+        client = Client("http://localhost:8080", token="test-token")
+        with (
+            patch.object(
+                client._http,
+                "request",
+                new_callable=AsyncMock,
+                return_value=_mock_response(200, _supported_runtime_info()),
+            ) as request,
+            pytest.raises(RuntimeCapabilityUnsupported) as exc_info,
+        ):
+            await client.update_workflow(
+                "wf-1",
+                "my-update",
+                wait_for="validated",
+            )
+
+        assert exc_info.value.operation == "Client.update_workflow"
+        assert exc_info.value.supported_values == ("accepted", "completed")
+        assert request.await_count == 1
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_missing_update_wait_discovery_raises_typed_error(self) -> None:
+        client = Client("http://localhost:8080", token="test-token")
+        with (
+            patch.object(
+                client._http,
+                "request",
+                new_callable=AsyncMock,
+                return_value=_mock_response(200, {"control_plane": {}}),
+            ),
+            pytest.raises(RuntimeDiscoveryUnavailable) as exc_info,
+        ):
+            await client.update_workflow(
+                "wf-1",
+                "my-update",
+                wait_for="completed",
+            )
+
+        assert exc_info.value.operation == "Client.update_workflow"
+        assert "supported update wait stages" in str(exc_info.value)
+        await client.aclose()
+
+    @pytest.mark.asyncio
     async def test_update(self, client: Client) -> None:
         resp = _mock_response(200, {"outcome": "completed", "result": "updated"})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
@@ -3218,6 +3355,32 @@ class TestRegisterWorker:
 
         assert exc_info.value.status == 403
         assert exc_info.value.reason() == "worker_registration_forbidden"
+
+    @pytest.mark.asyncio
+    async def test_deregister_registration_treats_absent_worker_as_already_removed(
+        self, client: Client
+    ) -> None:
+        resp = _mock_response(
+            404,
+            {
+                "reason": "worker_not_found",
+                "message": "worker is already absent",
+            },
+        )
+
+        with patch.object(
+            client._http,
+            "request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            result = await client.deregister_worker_registration("worker-1")
+
+        assert result == {
+            "worker_id": "worker-1",
+            "outcome": "already_deregistered",
+            "recovered_workflow_task_count": 0,
+        }
 
 
 class TestWorkers:

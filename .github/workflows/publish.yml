@@ -119,6 +119,11 @@ jobs:
       - name: Build package
         run: python -m build
 
+      - name: Compare built release metadata with the exact source commit
+        env:
+          RELEASE_SOURCE_SHA: ${{ steps.release_source.outputs.commit }}
+        run: python scripts/check_release_metadata.py --source-ref "$RELEASE_SOURCE_SHA" --dist dist
+
       - name: Check package
         run: twine check dist/*
 
@@ -220,6 +225,17 @@ jobs:
           password: ${{ secrets.PYPI_TOKEN }}
           print-hash: true
           skip-existing: true
+
+      - name: Verify exact PyPI JSON and project-page metadata
+        env:
+          RELEASE_SOURCE_SHA: ${{ needs.build.outputs.release_commit }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_tag }}
+        run: >-
+          python scripts/check_release_metadata.py
+          --source-ref "$RELEASE_SOURCE_SHA"
+          --pypi-version "$RELEASE_VERSION"
+          --attempts 30
+          --interval-seconds 10
 
       - name: Create the source GitHub Release
         env:

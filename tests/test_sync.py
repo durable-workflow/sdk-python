@@ -245,6 +245,9 @@ class TestSyncClientTerminate:
 class TestSyncClientQuery:
     def test_query(self) -> None:
         client = Client("http://localhost:8080")
+        client._async._cluster_info = {
+            "worker_protocol": {"server_capabilities": {"query_tasks": True}},
+        }
         resp = _mock_response(200, {"result": "active"})
         with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
             result = client.query_workflow("wf-1", "status")
@@ -559,6 +562,21 @@ class TestSyncClientMaintenance:
 class TestSyncClientUpdate:
     def test_update(self) -> None:
         client = Client("http://localhost:8080")
+        client._async._cluster_info = {
+            "control_plane": {
+                "request_contract": {
+                    "operations": {
+                        "update": {
+                            "fields": {
+                                "wait_for": {
+                                    "canonical_values": ["accepted", "completed"],
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }
         resp = _mock_response(200, {"outcome": "completed", "result": "updated"})
         with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
             result = client.update_workflow("wf-1", "my-update", args=["data"], wait_for="completed")
@@ -730,6 +748,21 @@ class TestSyncStandaloneActivities:
 class TestSyncHandleUpdate:
     def test_handle_update(self) -> None:
         client = Client("http://localhost:8080")
+        client._async._cluster_info = {
+            "control_plane": {
+                "request_contract": {
+                    "operations": {
+                        "update": {
+                            "fields": {
+                                "wait_for": {
+                                    "canonical_values": ["accepted", "completed"],
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }
         resp_start = _mock_response(200, {"workflow_id": "wf-1", "run_id": "r1", "workflow_type": "g"})
         resp_update = _mock_response(200, {"outcome": "completed"})
         mock = patch.object(
