@@ -6,9 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.21`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc21`. This SDK release is qualified with Server
-`2.0.0-rc.19`; SDK and Server prerelease sequence numbers advance independently.
+The Python SDK advances to prerelease `2.0.0-rc.22`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc22`. This SDK release is qualified with Server
+`2.0.0-rc.22`; SDK and Server share the synchronized prerelease identity.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
 
@@ -51,6 +51,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Package publication now treats exact-version PyPI JSON as the authoritative
+  integrity surface. The rendered project-page audit remains visible evidence,
+  but a client challenge or presentation mismatch no longer blocks creation of
+  the matching source prerelease after immutable artifacts have been verified.
 - Package metadata now identifies the Python SDK as a release candidate in the
   Durable Workflow 2.0 train and describes the shipped worker-routed query
   path without overstating pre-accept update-validator support.

@@ -8,6 +8,7 @@ import html.parser
 import json
 import re
 import subprocess
+import sys
 import tarfile
 import time
 import urllib.error
@@ -20,7 +21,10 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import Any
 
-import tomllib
+try:
+    import tomllib  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 BETA_CLASSIFIER = "Development Status :: 4 - Beta"
@@ -39,6 +43,14 @@ class SourceMetadata:
     summary: str
     classifiers: tuple[str, ...]
     readme: str
+
+
+@dataclass(frozen=True)
+class ProjectPageAudit:
+    """Advisory evidence from PyPI's rendered presentation surface."""
+
+    outcome: str
+    detail: str
 
 
 def _git(*args: str) -> bytes:
@@ -251,15 +263,48 @@ def _request_bytes(url: str, accept: str) -> bytes:
     with urllib.request.urlopen(request, timeout=30) as response:
         if response.status != 200:
             raise ReleaseMetadataError(f"{url} returned HTTP {response.status}")
-        return response.read()
+        content: bytes = response.read()
+        return content
 
 
-def verify_pypi(source: SourceMetadata, requested_version: str) -> None:
+def _audit_pypi_project_page(source: SourceMetadata) -> ProjectPageAudit:
+    page_url = f"https://pypi.org/project/{source.name}/{source.registry_version}/"
+    try:
+        page = _request_bytes(page_url, "text/html").decode("utf-8")
+        marker = _plain_readme_marker(source.readme)
+    except (ReleaseMetadataError, UnicodeDecodeError, urllib.error.URLError) as error:
+        return ProjectPageAudit("unavailable", f"rendered project page could not be audited: {error}")
+
+    parser = _VisibleTextParser()
+    parser.feed(page)
+    visible_page = " ".join(" ".join(parser.parts).split())
+    normalized_page = visible_page.casefold()
+    challenge_markers = (
+        "client challenge",
+        "checking your browser",
+        "javascript is disabled",
+        "verify that you're not a robot",
+        "verify that you’re not a robot",
+    )
+    observed_challenge_markers = [marker for marker in challenge_markers if marker in normalized_page]
+    if "client challenge" in observed_challenge_markers or len(observed_challenge_markers) >= 2:
+        return ProjectPageAudit(
+            "challenged",
+            "rendered project page returned a client challenge; exact PyPI JSON remains authoritative",
+        )
+    if source.registry_version not in visible_page or marker not in visible_page:
+        return ProjectPageAudit(
+            "mismatch",
+            "rendered project page does not show the expected version and README marker",
+        )
+    return ProjectPageAudit("match", "rendered project page shows the expected version and README marker")
+
+
+def verify_pypi(source: SourceMetadata, requested_version: str) -> ProjectPageAudit:
     if requested_version not in {source.version, source.registry_version}:
         raise ReleaseMetadataError("requested PyPI version differs from the source commit")
 
     json_url = f"https://pypi.org/pypi/{source.name}/{source.registry_version}/json"
-    page_url = f"https://pypi.org/project/{source.name}/{source.registry_version}/"
     try:
         payload = json.loads(_request_bytes(json_url, "application/json"))
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
@@ -280,13 +325,7 @@ def verify_pypi(source: SourceMetadata, requested_version: str) -> None:
         if info.get(field) != value:
             raise ReleaseMetadataError(f"exact PyPI JSON field {field} differs from the source commit")
 
-    page = _request_bytes(page_url, "text/html").decode("utf-8")
-    parser = _VisibleTextParser()
-    parser.feed(page)
-    visible_page = " ".join(" ".join(parser.parts).split())
-    marker = _plain_readme_marker(source.readme)
-    if source.registry_version not in visible_page or marker not in visible_page:
-        raise ReleaseMetadataError("exact PyPI project page does not render the source version and README metadata")
+    return _audit_pypi_project_page(source)
 
 
 def main() -> int:
@@ -311,8 +350,12 @@ def main() -> int:
     last_error: BaseException | None = None
     for attempt in range(1, args.attempts + 1):
         try:
-            verify_pypi(source, args.pypi_version)
-            print(f"PyPI JSON and project page match {source.name} {source.registry_version} at {source.commit}")
+            page_audit = verify_pypi(source, args.pypi_version)
+            print(f"exact PyPI JSON matches {source.name} {source.registry_version} at {source.commit}")
+            if page_audit.outcome == "match":
+                print(page_audit.detail)
+            else:
+                print(f"::warning title=PyPI rendered-page audit::{page_audit.detail}", file=sys.stderr)
             return 0
         except (ReleaseMetadataError, urllib.error.URLError) as error:
             last_error = error
