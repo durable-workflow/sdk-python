@@ -2,6 +2,15 @@
 
 API reference for [`durable-workflow`](https://pypi.org/project/durable-workflow/), the Python SDK for the Durable Workflow server. For conceptual documentation, tutorials, and the overall architecture, see the [main docs site](https://durable-workflow.com/docs/2.0/polyglot/python).
 
+<aside class="dw-cloud-promotion" aria-labelledby="dw-cloud-promotion-title" data-promotion-source="sdk-python-reference">
+  <div>
+    <p class="dw-cloud-promotion__eyebrow">Managed Python runtime · limited cohort</p>
+    <h2 id="dw-cloud-promotion-title">Durable Workflow Cloud launch cohort</h2>
+    <p>Run Python clients and workers against a managed namespace while Durable Workflow operates the orchestration runtime.</p>
+  </div>
+  <a class="dw-cloud-promotion__action" data-promotion-action="early-access" href="https://cloud.durable-workflow.com/early-access#source=sdk-python-reference">Request early access</a>
+</aside>
+
 ## Install
 
 ```bash

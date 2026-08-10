@@ -1061,6 +1061,14 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
             "externalPreconnects": [],
         }, f"documentation runtime boundary is invalid at {label}: {runtime_boundary}"
 
+        promotion = page.locator('[data-promotion-source="sdk-python-reference"]')
+        assert promotion.count() == 1, f"Cloud promotion is missing at {label}"
+        assert promotion.is_visible(), f"Cloud promotion is hidden at {label}"
+        action = promotion.locator('[data-promotion-action="early-access"]')
+        assert action.get_attribute("href") == (
+            "https://cloud.durable-workflow.com/early-access#source=sdk-python-reference"
+        )
+
         opener_selector = ".md-header__button[for='__search']" if width < 960 else ".md-search__input"
         opener = page.locator(opener_selector)
         opener.click()

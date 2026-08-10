@@ -13,9 +13,12 @@ args = parser.parse_args()
 
 build_directory = args.build_directory
 runtime = Path("docs/javascripts/analytics.js").read_text(encoding="utf-8")
+styles = Path("docs/stylesheets/layout.css").read_text(encoding="utf-8")
 
 if (build_directory / "javascripts/analytics.js").read_text(encoding="utf-8") != runtime:
     raise SystemExit("Rendered MkDocs analytics runtime is stale")
+if not re.search(r"\.dw-cloud-promotion__eyebrow\s*\{[^}]*letter-spacing:\s*0;", styles, re.DOTALL):
+    raise SystemExit("Promotion eyebrow letter spacing must remain zero")
 
 for required in (
     "https://static.cloudflareinsights.com/beacon.min.js",
@@ -68,6 +71,21 @@ for html_file in html_files:
         raise SystemExit(f"{html_file} still loads retired analytics UI styles")
     if html_forbidden.search(html):
         raise SystemExit(f"{html_file} contains retired Google analytics or consent state")
+
+home = (build_directory / "index.html").read_text(encoding="utf-8")
+if home.count('data-promotion-source="sdk-python-reference"') != 1:
+    raise SystemExit("Python reference home must render one bounded Cloud promotion")
+if 'href="https://cloud.durable-workflow.com/early-access#source=sdk-python-reference"' not in home:
+    raise SystemExit("Python reference promotion must resolve to the public early-access form")
+
+for promotion_boundary in (
+    "PROMOTION_SOURCE = 'sdk-python-reference'",
+    "credentials: 'omit'",
+    "referrerPolicy: 'no-referrer'",
+    "JSON.stringify({source: PROMOTION_SOURCE, event})",
+):
+    if promotion_boundary not in runtime:
+        raise SystemExit(f"Promotion analytics is missing its bounded contract: {promotion_boundary}")
 
 instrumentation = " with the canonical site token" if args.require_token else ""
 print(f"Validated cookie-free Cloudflare Web Analytics{instrumentation} in {len(html_files)} rendered pages.")
