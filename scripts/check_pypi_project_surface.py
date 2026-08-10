@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify authoritative PyPI project-root metadata and package resolution.
+"""Qualify authoritative PyPI release metadata and package resolution.
 
 This audit deliberately uses the PyPI JSON API and pip. Rendered project-page
 HTML is a separate, non-authoritative presentation surface and is not fetched
@@ -43,13 +43,14 @@ class ProjectSurfaceError(RuntimeError):
 class ProjectSurfaceEvidence:
     """Public registry evidence produced by a successful project-surface audit."""
 
-    project_json_url: str
     exact_version_json_url: str
-    selected_version: str
-    documented_requirement: str
-    documented_install_version: str
-    yanked_versions: tuple[str, ...]
-    historical_exact_probe: str
+    release_channel: str
+    exact_install_version: str
+    documented_requirement: str | None
+    documented_install_version: str | None
+    project_json_url: str | None
+    default_install_version: str | None
+    historical_versions: tuple[str, ...]
 
 
 def _normalized_name(value: object) -> str:
@@ -67,6 +68,16 @@ def _legacy_version_key(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
 
 
+def release_channel(source: SourceMetadata) -> str:
+    """Classify the only release identities this audit is allowed to qualify."""
+
+    if re.fullmatch(r"2\.0\.0rc[1-9][0-9]*", source.registry_version):
+        return "prerelease"
+    if source.registry_version == "2.0.0":
+        return "stable"
+    raise ProjectSurfaceError(f"unsupported PyPI release identity: {source.registry_version}")
+
+
 def _verify_info(info: object, source: SourceMetadata, surface: str) -> None:
     if not isinstance(info, dict):
         raise ProjectSurfaceError(f"{surface} lacks info metadata")
@@ -81,7 +92,7 @@ def _verify_info(info: object, source: SourceMetadata, surface: str) -> None:
     }
     for field, value in expected.items():
         if info.get(field) != value:
-            raise ProjectSurfaceError(f"{surface} field {field} differs from current prerelease metadata")
+            raise ProjectSurfaceError(f"{surface} field {field} differs from current release metadata")
 
 
 def _non_yanked_release_urls(files: object, version: str, surface: str) -> frozenset[str]:
@@ -91,7 +102,7 @@ def _non_yanked_release_urls(files: object, version: str, surface: str) -> froze
     if not urls:
         raise ProjectSurfaceError(f"{surface} does not expose file URLs for {version}")
     if any(item.get("yanked") is not False for item in files):
-        raise ProjectSurfaceError(f"current prerelease {version} must remain installable and non-yanked")
+        raise ProjectSurfaceError(f"current release {version} must remain installable and non-yanked")
     return urls
 
 
@@ -108,12 +119,15 @@ def verify_exact_version_json(payload: object, source: SourceMetadata) -> frozen
     )
 
 
-def verify_project_json(
+def verify_stable_project_json(
     payload: object,
     source: SourceMetadata,
     exact_version_urls: frozenset[str] | None = None,
 ) -> tuple[str, ...]:
-    """Verify project-root JSON and return retained legacy stable versions."""
+    """Verify the strict project-root contract for an authorized stable release."""
+
+    if release_channel(source) != "stable":
+        raise ProjectSurfaceError("PyPI project-root selection is release-blocking only for stable 2.0")
 
     if not isinstance(payload, dict):
         raise ProjectSurfaceError("PyPI project-root JSON must be an object")
@@ -136,7 +150,7 @@ def verify_project_json(
         "PyPI project-root selected release",
     )
     if selected_urls != current_urls:
-        raise ProjectSurfaceError("PyPI project root selected-release files differ from the current prerelease")
+        raise ProjectSurfaceError("PyPI project root selected-release files differ from the current stable release")
     if exact_version_urls is not None and selected_urls != exact_version_urls:
         raise ProjectSurfaceError("PyPI project-root files differ from the exact-version JSON surface")
 
@@ -146,25 +160,10 @@ def verify_project_json(
     )
     if not legacy_versions:
         raise ProjectSurfaceError("PyPI project-root JSON no longer retains historical stable 0.x releases")
-    retirement_required: list[str] = []
-    retirement_reason_required: list[str] = []
     for version in legacy_versions:
         files = _release_files(releases, version)
-        if any(file.get("yanked") is not True for file in files):
-            retirement_required.append(version)
-        elif any(not isinstance(file.get("yanked_reason"), str) or not file["yanked_reason"].strip() for file in files):
-            retirement_reason_required.append(version)
-
-    failures: list[str] = []
-    if retirement_required:
-        failures.append(
-            "yank these historical stable releases in PyPI release management with a retirement reason: "
-            + ", ".join(retirement_required)
-        )
-    if retirement_reason_required:
-        failures.append("add a PyPI yank reason for: " + ", ".join(retirement_reason_required))
-    if failures:
-        raise ProjectSurfaceError("; ".join(failures))
+        if any(file.get("yanked") is not False for file in files):
+            raise ProjectSurfaceError(f"historical release {version} must remain retained and non-yanked")
 
     return tuple(legacy_versions)
 
@@ -204,25 +203,26 @@ def verify_pip_report(report: object, source: SourceMetadata, expected_version: 
     if selected is None:
         raise ProjectSurfaceError(f"pip did not select {source.name}")
     version = selected["metadata"].get("version")
-    if version != expected_version:
+    if not isinstance(version, str) or version != expected_version:
         raise ProjectSurfaceError(f"pip selected {version or '<missing>'}; expected {expected_version}")
     return version
 
 
 def write_evidence(path: Path, source: SourceMetadata, evidence: ProjectSurfaceEvidence) -> None:
     payload = {
-        "schema": "durable-workflow.python-pypi-project-surface.v1",
+        "schema": "durable-workflow.python-pypi-project-surface.v2",
         "source_commit": source.commit,
         "package": source.name,
         "public_urls": {
             "project_json": evidence.project_json_url,
             "exact_version_json": evidence.exact_version_json_url,
         },
-        "selected_version": evidence.selected_version,
+        "release_channel": evidence.release_channel,
+        "exact_install_version": evidence.exact_install_version,
+        "default_install_version": evidence.default_install_version,
         "documented_requirement": evidence.documented_requirement,
         "documented_install_version": evidence.documented_install_version,
-        "yanked_versions": list(evidence.yanked_versions),
-        "historical_exact_probe": evidence.historical_exact_probe,
+        "historical_versions": list(evidence.historical_versions),
     }
     path.write_text(f"{json.dumps(payload, indent=2, sort_keys=True)}\n", encoding="utf-8")
 
@@ -279,13 +279,13 @@ def _request_json(url: str) -> object:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-ref", required=True, help="Exact current prerelease source commit or tag")
+    parser.add_argument("--source-ref", required=True, help="Exact current release source commit or tag")
     parser.add_argument(
         "--source-only",
         action="store_true",
-        help="Validate source release metadata and the documented prerelease requirement without querying PyPI",
+        help="Validate source release metadata and its channel policy without querying PyPI",
     )
-    parser.add_argument("--attempts", type=int, default=1, help="PyPI root-metadata propagation attempts")
+    parser.add_argument("--attempts", type=int, default=1, help="PyPI metadata propagation attempts")
     parser.add_argument("--interval-seconds", type=float, default=0.0, help="Delay between metadata attempts")
     parser.add_argument("--evidence", type=Path, help="Write successful public audit evidence as JSON")
     args = parser.parse_args(argv)
@@ -296,65 +296,100 @@ def main(argv: list[str] | None = None) -> int:
         source = load_source_metadata(args.source_ref)
     except ReleaseMetadataError as error:
         raise ProjectSurfaceError(str(error)) from error
-    requirement = supported_prerelease_requirement(source)
+    channel = release_channel(source)
+    requirement = supported_prerelease_requirement(source) if channel == "prerelease" else None
     if args.source_only:
-        print(
-            f"source metadata declares {source.name} {source.registry_version}; "
-            f"documented prerelease install selects {requirement}"
-        )
+        detail = f"; documented prerelease install selects {requirement}" if requirement is not None else ""
+        print(f"source metadata declares {source.name} {source.registry_version} ({channel}){detail}")
         return 0
 
-    project_json_url = f"https://pypi.org/pypi/{source.name}/json"
     exact_version_json_url = f"https://pypi.org/pypi/{source.name}/{source.registry_version}/json"
-    last_error: BaseException | None = None
-    legacy_versions: tuple[str, ...] | None = None
+    last_error: urllib.error.URLError | None = None
+    exact_version_urls: frozenset[str] | None = None
     for attempt in range(1, args.attempts + 1):
         try:
-            project_payload = _request_json(project_json_url)
             exact_version_payload = _request_json(exact_version_json_url)
             exact_version_urls = verify_exact_version_json(exact_version_payload, source)
-            legacy_versions = verify_project_json(project_payload, source, exact_version_urls)
             break
-        except (ProjectSurfaceError, urllib.error.URLError) as error:
+        except urllib.error.URLError as error:
             last_error = error
             if attempt < args.attempts:
                 time.sleep(args.interval_seconds)
-    if legacy_versions is None:
+    if exact_version_urls is None:
         assert last_error is not None
         raise ProjectSurfaceError(
-            f"PyPI project and exact-version metadata did not converge after {args.attempts} attempt(s): {last_error}"
+            f"PyPI exact-version metadata did not become available after {args.attempts} attempt(s): {last_error}"
         )
 
-    default_install_version = verify_pip_report(
-        _pip_report(source.name, prerelease=False),
+    exact_requirement = f"{source.name}=={source.registry_version}"
+    exact_install_version = verify_pip_report(
+        _pip_report(exact_requirement, prerelease=False),
         source,
         source.registry_version,
     )
-    documented_install_version = verify_pip_report(
-        _pip_report(requirement, prerelease=False),
-        source,
-        source.registry_version,
-    )
-    legacy_version = legacy_versions[-1]
-    legacy_requirement = f"{source.name}=={legacy_version}"
-    verify_pip_report(_pip_report(legacy_requirement, prerelease=False), source, legacy_version)
+
+    project_json_url: str | None = None
+    default_install_version: str | None = None
+    documented_install_version: str | None = None
+    historical_versions: tuple[str, ...] = ()
+    if channel == "prerelease":
+        assert requirement is not None
+        documented_install_version = verify_pip_report(
+            _pip_report(requirement, prerelease=False),
+            source,
+            source.registry_version,
+        )
+    else:
+        project_json_url = f"https://pypi.org/pypi/{source.name}/json"
+        project_last_error: BaseException | None = None
+        for attempt in range(1, args.attempts + 1):
+            try:
+                historical_versions = verify_stable_project_json(
+                    _request_json(project_json_url),
+                    source,
+                    exact_version_urls,
+                )
+                break
+            except (ProjectSurfaceError, urllib.error.URLError) as error:
+                project_last_error = error
+                if attempt < args.attempts:
+                    time.sleep(args.interval_seconds)
+        if not historical_versions:
+            assert project_last_error is not None
+            raise ProjectSurfaceError(
+                f"PyPI stable project-root metadata did not converge after {args.attempts} attempt(s): "
+                f"{project_last_error}"
+            )
+        default_install_version = verify_pip_report(
+            _pip_report(source.name, prerelease=False),
+            source,
+            source.registry_version,
+        )
+
     evidence = ProjectSurfaceEvidence(
-        project_json_url=project_json_url,
         exact_version_json_url=exact_version_json_url,
-        selected_version=default_install_version,
+        release_channel=channel,
+        exact_install_version=exact_install_version,
         documented_requirement=requirement,
         documented_install_version=documented_install_version,
-        yanked_versions=legacy_versions,
-        historical_exact_probe=legacy_version,
+        project_json_url=project_json_url,
+        default_install_version=default_install_version,
+        historical_versions=historical_versions,
     )
     if args.evidence is not None:
         write_evidence(args.evidence, source, evidence)
-    print(
-        f"PyPI project root, exact-version JSON, default install, and supported prerelease install select "
-        f"{source.name} {source.registry_version}; yanked historical releases: {', '.join(legacy_versions)}; "
-        f"exact historical install {legacy_requirement} remains resolvable; "
-        f"public metadata: {project_json_url}, {exact_version_json_url}"
-    )
+    if channel == "prerelease":
+        print(
+            f"PyPI exact-version JSON, exact install, and documented prerelease install select "
+            f"{source.name} {source.registry_version}; project-root/default selection is deferred until stable; "
+            f"public metadata: {exact_version_json_url}"
+        )
+    else:
+        print(
+            f"PyPI exact-version and project-root JSON, exact install, and default install select "
+            f"{source.name} {source.registry_version}; retained historical releases: "
+            f"{', '.join(historical_versions)}; public metadata: {project_json_url}, {exact_version_json_url}"
+        )
     return 0
 
 

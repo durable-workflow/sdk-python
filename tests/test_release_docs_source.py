@@ -5,7 +5,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = REPO_ROOT / "scripts" / "ci" / "validate-release-docs-source.py"
-VERSION = "2.0.0-rc.24"
+VERSION = "2.0.0-rc.25"
 
 
 def git(repo: Path, *arguments: str) -> str:
@@ -117,7 +117,7 @@ def test_mismatched_parent_identity_fails_closed(tmp_path: Path) -> None:
 def test_mismatched_public_version_identity_fails_closed(tmp_path: Path) -> None:
     repo, source, parent = release_repo(tmp_path)
 
-    result = run_validator(repo, source=source, parent=parent, version="2.0.0-rc.25")
+    result = run_validator(repo, source=source, parent=parent, version="2.0.0-rc.26")
 
     assert result.returncode == 1
     assert "does not match project.version" in result.stderr

@@ -13,8 +13,8 @@ def source_metadata() -> SourceMetadata:
     return SourceMetadata(
         commit="a" * 40,
         name="durable-workflow",
-        version="2.0.0-rc.24",
-        registry_version="2.0.0rc24",
+        version="2.0.0-rc.25",
+        registry_version="2.0.0rc25",
         summary="Release candidate Python SDK for the Durable Workflow 2.0 train",
         classifiers=("Programming Language :: Python :: 3",),
         readme=(
@@ -54,6 +54,37 @@ def test_release_metadata_loader_uses_tomli_without_stdlib_tomllib(
 
     assert check_release_metadata._load_toml_parser() is fallback
     assert imports == ["tomllib", "tomli"]
+
+
+def test_release_metadata_loader_accepts_the_authorized_stable_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "b" * 40
+    pyproject = b"""
+[project]
+name = "durable-workflow"
+version = "2.0.0"
+description = "Python SDK for Durable Workflow 2.0"
+readme = "README.md"
+classifiers = ["Programming Language :: Python :: 3"]
+
+[tool.durable-workflow]
+product-train = "2.0.0"
+registry-version = "2.0.0"
+"""
+    readme = b"# Durable Workflow\n"
+
+    def git(*arguments: str) -> bytes:
+        if arguments[0] == "rev-parse":
+            return f"{commit}\n".encode()
+        assert arguments[0] == "show"
+        return pyproject if arguments[1].endswith(":pyproject.toml") else readme
+
+    monkeypatch.setattr(check_release_metadata, "_git", git)
+
+    source = check_release_metadata.load_source_metadata("2.0.0")
+    assert source.version == "2.0.0"
+    assert source.registry_version == "2.0.0"
 
 
 def test_normal_project_page_is_retained_as_rendered_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,3 +151,40 @@ def test_exact_json_metadata_mismatch_remains_release_blocking(monkeypatch: pyte
 
     with pytest.raises(ReleaseMetadataError, match="exact PyPI JSON field version"):
         check_release_metadata.verify_pypi(source, source.version)
+
+
+def test_exact_json_metadata_mismatch_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = source_metadata()
+    attempts: list[str] = []
+    sleeps: list[float] = []
+
+    def verify(_source: SourceMetadata, _version: str) -> check_release_metadata.ProjectPageAudit:
+        attempts.append("verify")
+        raise ReleaseMetadataError("exact PyPI JSON field summary differs from the source commit")
+
+    monkeypatch.setattr(check_release_metadata, "load_source_metadata", lambda _: source)
+    monkeypatch.setattr(check_release_metadata, "verify_pypi", verify)
+    monkeypatch.setattr(check_release_metadata.time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_release_metadata.py",
+            "--source-ref",
+            source.commit,
+            "--pypi-version",
+            source.version,
+            "--attempts",
+            "30",
+            "--interval-seconds",
+            "10",
+        ],
+    )
+
+    with pytest.raises(ReleaseMetadataError, match="exact PyPI JSON field summary differs"):
+        check_release_metadata.main()
+
+    assert attempts == ["verify"]
+    assert sleeps == []

@@ -181,7 +181,7 @@ def test_clean_install_qualifies_the_documented_range_before_the_exact_release(
     run_clean_install(identity.requirement, identity, install_attempts=1, install_retry_sleep=0)
 
     assert calls == [
-        ("durable-workflow~=2.0.0rc0", None),
+        ("durable-workflow~=2.0.0rc0", identity.registry_version),
         (f"durable-workflow=={identity.registry_version}", identity.registry_version),
     ]
 

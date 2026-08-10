@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -8,27 +9,30 @@ import yaml
 from scripts.check_pypi_project_surface import (
     ProjectSurfaceError,
     main,
+    release_channel,
     supported_prerelease_requirement,
     verify_exact_version_json,
     verify_pip_report,
-    verify_project_json,
+    verify_stable_project_json,
 )
 from scripts.check_release_metadata import SourceMetadata
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def source_metadata() -> SourceMetadata:
+def source_metadata(*, stable: bool = False) -> SourceMetadata:
+    version = "2.0.0" if stable else "2.0.0-rc.25"
+    registry_version = "2.0.0" if stable else "2.0.0rc25"
     return SourceMetadata(
         commit="a" * 40,
         name="durable-workflow",
-        version="2.0.0-rc.24",
-        registry_version="2.0.0rc24",
-        summary="Release candidate Python SDK for the Durable Workflow 2.0 train",
+        version=version,
+        registry_version=registry_version,
+        summary="Python SDK for the Durable Workflow 2.0 train",
         classifiers=("Programming Language :: Python :: 3",),
         readme=(
             "# Durable Workflow\n\n"
-            "Current release-candidate metadata and the pre-accept update-validator boundary.\n\n"
+            "Build replay-safe Python workflows.\n\n"
             "## Install\n\n"
             "```bash\n"
             "pip install 'durable-workflow~=2.0.0rc0'\n"
@@ -37,202 +41,241 @@ def source_metadata() -> SourceMetadata:
     )
 
 
-def release_file(version: str, *, yanked: bool) -> dict[str, object]:
+def release_file(version: str, *, yanked: bool = False) -> dict[str, object]:
     return {
         "filename": f"durable_workflow-{version}-py3-none-any.whl",
         "url": f"https://files.pythonhosted.org/{version}.whl",
         "yanked": yanked,
-        "yanked_reason": "The supported line is the 2.0 release-candidate train" if yanked else None,
+        "yanked_reason": "Withdrawn for an independent release defect" if yanked else None,
     }
 
 
-def project_payload() -> dict[str, Any]:
-    source = source_metadata()
-    current = release_file(source.registry_version, yanked=False)
+def source_info(source: SourceMetadata) -> dict[str, object]:
     return {
-        "info": {
-            "name": source.name,
-            "version": source.registry_version,
-            "summary": source.summary,
-            "classifiers": list(source.classifiers),
-            "description": source.readme,
-            "description_content_type": "text/markdown",
-        },
+        "name": source.name,
+        "version": source.registry_version,
+        "summary": source.summary,
+        "classifiers": list(source.classifiers),
+        "description": source.readme,
+        "description_content_type": "text/markdown",
+    }
+
+
+def exact_version_payload(source: SourceMetadata | None = None) -> dict[str, Any]:
+    source = source or source_metadata()
+    return {
+        "info": source_info(source),
+        "urls": [release_file(source.registry_version)],
+    }
+
+
+def stable_project_payload() -> dict[str, Any]:
+    source = source_metadata(stable=True)
+    current = release_file(source.registry_version)
+    return {
+        "info": source_info(source),
         "releases": {
-            "0.4.105": [release_file("0.4.105", yanked=True)],
-            "0.4.106": [release_file("0.4.106", yanked=True)],
+            "0.4.105": [release_file("0.4.105")],
+            "0.4.106": [release_file("0.4.106")],
             source.registry_version: [current],
         },
         "urls": [current],
     }
 
 
-def exact_version_payload() -> dict[str, Any]:
-    payload = project_payload()
-    return {"info": payload["info"], "urls": payload["urls"]}
-
-
 def pip_report(version: str) -> dict[str, object]:
     return {"install": [{"metadata": {"name": "durable_workflow", "version": version}}]}
 
 
-def test_project_root_matches_current_prerelease_and_preserves_yanked_history() -> None:
-    exact_urls = verify_exact_version_json(exact_version_payload(), source_metadata())
+def test_release_channel_distinguishes_prerelease_and_stable() -> None:
+    assert release_channel(source_metadata()) == "prerelease"
+    assert release_channel(source_metadata(stable=True)) == "stable"
 
-    assert verify_project_json(project_payload(), source_metadata(), exact_urls) == ("0.4.105", "0.4.106")
+
+def test_prerelease_with_existing_final_skips_project_root_and_bare_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = source_metadata()
+    requested_urls: list[str] = []
+    requirements: list[tuple[str, bool]] = []
+    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
+
+    def request_json(url: str) -> object:
+        requested_urls.append(url)
+        assert url.endswith(f"/{source.registry_version}/json")
+        return exact_version_payload(source)
+
+    def resolve(requirement: str, *, prerelease: bool) -> object:
+        requirements.append((requirement, prerelease))
+        if requirement == source.name:
+            raise AssertionError("a prerelease audit must not perform a bare install")
+        return pip_report(source.registry_version)
+
+    monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", request_json)
+    monkeypatch.setattr("scripts.check_pypi_project_surface._pip_report", resolve)
+
+    assert main(["--source-ref", "release-source", "--attempts", "30"]) == 0
+    assert requested_urls == [f"https://pypi.org/pypi/{source.name}/{source.registry_version}/json"]
+    assert requirements == [
+        (f"{source.name}=={source.registry_version}", False),
+        ("durable-workflow~=2.0.0rc0", False),
+    ]
 
 
-def test_exact_version_json_must_match_current_source_metadata() -> None:
-    payload = exact_version_payload()
-    payload["info"]["summary"] = "Obsolete beta metadata"
+def test_exact_version_metadata_mismatch_fails_without_retrying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = source_metadata()
+    payload = exact_version_payload(source)
+    payload["info"]["summary"] = "metadata from a different build"
+    requested_urls: list[str] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
+    monkeypatch.setattr(
+        "scripts.check_pypi_project_surface._request_json",
+        lambda url: requested_urls.append(url) or payload,
+    )
+    monkeypatch.setattr("scripts.check_pypi_project_surface.time.sleep", sleeps.append)
 
     with pytest.raises(ProjectSurfaceError, match="exact-version JSON field summary differs"):
-        verify_exact_version_json(payload, source_metadata())
+        main(["--source-ref", "release-source", "--attempts", "30", "--interval-seconds", "10"])
+
+    assert len(requested_urls) == 1
+    assert sleeps == []
 
 
-def test_project_root_files_must_match_exact_version_json() -> None:
-    exact = exact_version_payload()
-    exact["urls"] = [release_file("2.0.0rc24-repacked", yanked=False)]
-
-    with pytest.raises(ProjectSurfaceError, match="differ from the exact-version JSON"):
-        verify_project_json(
-            project_payload(),
-            source_metadata(),
-            verify_exact_version_json(exact, source_metadata()),
-        )
-
-
-def test_obsolete_default_project_metadata_is_rejected() -> None:
-    payload = project_payload()
-    payload["info"]["version"] = "0.4.106"
-
-    with pytest.raises(ProjectSurfaceError, match="field version differs"):
-        verify_project_json(payload, source_metadata())
-
-
-def test_current_version_with_obsolete_description_is_rejected() -> None:
-    payload = project_payload()
-    payload["info"]["description"] = "Beta SDK headed toward 1.0; Python query routing is unfinished."
-
-    with pytest.raises(ProjectSurfaceError, match="field description differs"):
-        verify_project_json(payload, source_metadata())
-
-
-def test_root_selected_files_must_belong_to_the_current_prerelease() -> None:
-    payload = project_payload()
-    payload["urls"] = [release_file("0.4.106", yanked=False)]
-
-    with pytest.raises(ProjectSurfaceError, match="selected-release files differ"):
-        verify_project_json(payload, source_metadata())
-
-
-def test_non_yanked_legacy_release_cannot_override_the_prerelease_surface() -> None:
-    payload = project_payload()
-    payload["releases"]["0.4.106"][0]["yanked"] = False
-
-    with pytest.raises(ProjectSurfaceError, match="yank these historical stable releases.*0.4.106"):
-        verify_project_json(payload, source_metadata())
-
-
-def test_legacy_release_retirement_requires_a_public_reason() -> None:
-    payload = project_payload()
-    payload["releases"]["0.4.106"][0]["yanked_reason"] = None
-
-    with pytest.raises(ProjectSurfaceError, match="add a PyPI yank reason for: 0.4.106"):
-        verify_project_json(payload, source_metadata())
-
-
-def test_retirement_must_retain_legacy_release_files() -> None:
-    payload = project_payload()
-    payload["releases"]["0.4.106"] = []
-
-    with pytest.raises(ProjectSurfaceError, match="does not retain files for 0.4.106"):
-        verify_project_json(payload, source_metadata())
-
-
-def test_default_and_explicit_supported_installs_resolve_exact_current_rc() -> None:
+def test_documented_prerelease_range_must_select_exact_current_rc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     source = source_metadata()
+    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
+    monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", lambda _: exact_version_payload(source))
 
+    def resolve(requirement: str, *, prerelease: bool) -> object:
+        del prerelease
+        version = source.registry_version if "==" in requirement else "2.0.0rc23"
+        return pip_report(version)
+
+    monkeypatch.setattr("scripts.check_pypi_project_surface._pip_report", resolve)
+
+    with pytest.raises(ProjectSurfaceError, match="pip selected 2.0.0rc23; expected 2.0.0rc25"):
+        main(["--source-ref", "release-source"])
+
+
+def test_stable_project_root_mismatch_remains_release_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = source_metadata(stable=True)
+    root = stable_project_payload()
+    root["info"]["version"] = "0.4.106"
+    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
+    monkeypatch.setattr(
+        "scripts.check_pypi_project_surface._request_json",
+        lambda url: exact_version_payload(source) if url.endswith(f"/{source.registry_version}/json") else root,
+    )
+    monkeypatch.setattr("scripts.check_pypi_project_surface._pip_report", lambda *_args, **_kwargs: pip_report("2.0.0"))
+
+    with pytest.raises(ProjectSurfaceError, match="stable project-root metadata did not converge.*field version"):
+        main(["--source-ref", "release-source"])
+
+
+def test_stable_audit_requires_root_and_bare_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = source_metadata(stable=True)
+    requested_urls: list[str] = []
+    requirements: list[str] = []
+    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
+
+    def request_json(url: str) -> object:
+        requested_urls.append(url)
+        if url.endswith(f"/{source.registry_version}/json"):
+            return exact_version_payload(source)
+        return stable_project_payload()
+
+    def resolve(requirement: str, *, prerelease: bool) -> object:
+        assert prerelease is False
+        requirements.append(requirement)
+        return pip_report(source.registry_version)
+
+    monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", request_json)
+    monkeypatch.setattr("scripts.check_pypi_project_surface._pip_report", resolve)
+    evidence_path = tmp_path / "evidence.json"
+
+    assert main(["--source-ref", "release-source", "--evidence", str(evidence_path)]) == 0
+    assert requested_urls == [
+        f"https://pypi.org/pypi/{source.name}/{source.registry_version}/json",
+        f"https://pypi.org/pypi/{source.name}/json",
+    ]
+    assert requirements == [f"{source.name}=={source.registry_version}", source.name]
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["release_channel"] == "stable"
+    assert evidence["default_install_version"] == source.registry_version
+    assert evidence["historical_versions"] == ["0.4.105", "0.4.106"]
+
+
+def test_stable_root_preserves_non_yanked_historical_files() -> None:
+    source = source_metadata(stable=True)
+    exact_urls = verify_exact_version_json(exact_version_payload(source), source)
+
+    assert verify_stable_project_json(stable_project_payload(), source, exact_urls) == ("0.4.105", "0.4.106")
+
+    payload = stable_project_payload()
+    payload["releases"]["0.4.106"][0]["yanked"] = True
+    with pytest.raises(ProjectSurfaceError, match="historical release 0.4.106 must remain retained and non-yanked"):
+        verify_stable_project_json(payload, source, exact_urls)
+
+
+def test_prerelease_evidence_records_deferred_default_surface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = source_metadata()
+    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
+    monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", lambda _: exact_version_payload(source))
+    monkeypatch.setattr(
+        "scripts.check_pypi_project_surface._pip_report",
+        lambda _requirement, *, prerelease: pip_report(source.registry_version),
+    )
+    evidence_path = tmp_path / "evidence.json"
+
+    assert main(["--source-ref", "release-source", "--evidence", str(evidence_path)]) == 0
+    assert json.loads(evidence_path.read_text(encoding="utf-8")) == {
+        "schema": "durable-workflow.python-pypi-project-surface.v2",
+        "source_commit": source.commit,
+        "package": source.name,
+        "public_urls": {
+            "project_json": None,
+            "exact_version_json": f"https://pypi.org/pypi/{source.name}/{source.registry_version}/json",
+        },
+        "release_channel": "prerelease",
+        "exact_install_version": source.registry_version,
+        "default_install_version": None,
+        "documented_requirement": "durable-workflow~=2.0.0rc0",
+        "documented_install_version": source.registry_version,
+        "historical_versions": [],
+    }
+
+
+def test_documented_requirement_is_machine_checked() -> None:
+    source = source_metadata()
     assert supported_prerelease_requirement(source) == "durable-workflow~=2.0.0rc0"
+
+    changed = SourceMetadata(**{**source.__dict__, "readme": source.readme.replace("rc0", "rc23")})
+    with pytest.raises(ProjectSurfaceError, match="supported 2.0 prerelease line"):
+        supported_prerelease_requirement(changed)
+
+
+def test_pip_report_must_select_expected_version() -> None:
+    source = source_metadata()
     verify_pip_report(pip_report(source.registry_version), source, source.registry_version)
 
     with pytest.raises(ProjectSurfaceError, match="pip selected 0.4.106"):
         verify_pip_report(pip_report("0.4.106"), source, source.registry_version)
 
 
-def test_live_audit_uses_authoritative_json_without_requesting_project_html(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = source_metadata()
-    requested_urls: list[str] = []
-    requirements: list[tuple[str, bool]] = []
-
-    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
-
-    def request_json(url: str) -> object:
-        requested_urls.append(url)
-        if url.endswith(f"/{source.registry_version}/json"):
-            return exact_version_payload()
-        return project_payload()
-
-    def resolve(requirement: str, *, prerelease: bool) -> object:
-        requirements.append((requirement, prerelease))
-        version = "0.4.106" if requirement.endswith("==0.4.106") else source.registry_version
-        return pip_report(version)
-
-    monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", request_json)
-    monkeypatch.setattr("scripts.check_pypi_project_surface._pip_report", resolve)
-
-    assert main(["--source-ref", "release-source"]) == 0
-    assert requested_urls == [
-        "https://pypi.org/pypi/durable-workflow/json",
-        "https://pypi.org/pypi/durable-workflow/2.0.0rc24/json",
-    ]
-    assert requirements == [
-        ("durable-workflow", False),
-        ("durable-workflow~=2.0.0rc0", False),
-        ("durable-workflow==0.4.106", False),
-    ]
-
-
-def test_successful_audit_writes_machine_readable_public_evidence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = source_metadata()
-    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
-    monkeypatch.setattr(
-        "scripts.check_pypi_project_surface._request_json",
-        lambda url: exact_version_payload() if url.endswith(f"/{source.registry_version}/json") else project_payload(),
-    )
-    monkeypatch.setattr(
-        "scripts.check_pypi_project_surface._pip_report",
-        lambda requirement, *, prerelease: pip_report(
-            "0.4.106" if requirement.endswith("==0.4.106") else source.registry_version
-        ),
-    )
-    evidence_path = tmp_path / "evidence.json"
-
-    assert main(["--source-ref", "release-source", "--evidence", str(evidence_path)]) == 0
-
-    evidence = yaml.safe_load(evidence_path.read_text(encoding="utf-8"))
-    assert evidence == {
-        "schema": "durable-workflow.python-pypi-project-surface.v1",
-        "source_commit": source.commit,
-        "package": source.name,
-        "public_urls": {
-            "project_json": "https://pypi.org/pypi/durable-workflow/json",
-            "exact_version_json": "https://pypi.org/pypi/durable-workflow/2.0.0rc24/json",
-        },
-        "selected_version": source.registry_version,
-        "documented_requirement": "durable-workflow~=2.0.0rc0",
-        "documented_install_version": source.registry_version,
-        "yanked_versions": ["0.4.105", "0.4.106"],
-        "historical_exact_probe": "0.4.106",
-    }
-
-
-def test_source_only_qualification_does_not_require_a_published_release(
+def test_source_only_qualification_does_not_require_public_package_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = source_metadata()
@@ -272,15 +315,9 @@ def test_public_project_surface_qualification_is_recurring_and_release_blocking(
     assert "git tag -l '2.0.0-rc.*' --sort=-version:refname" in commands
     assert "python scripts/check_pypi_project_surface.py" in public_commands
     assert "--evidence pypi-project-surface-evidence.json" in public_commands
-    assert any(
-        step.get("uses") == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-        and step.get("with", {}).get("path") == "pypi-project-surface-evidence.json"
-        for step in steps
-        if isinstance(step, dict)
-    )
 
     publish = (REPO_ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
     exact_audit = publish.index("python scripts/check_release_metadata.py", publish.index("  publish:"))
-    root_audit = publish.index("python scripts/check_pypi_project_surface.py", exact_audit)
-    github_release = publish.index('gh release create "$RELEASE_TAG"', root_audit)
-    assert exact_audit < root_audit < github_release
+    surface_audit = publish.index("python scripts/check_pypi_project_surface.py", exact_audit)
+    github_release = publish.index('gh release create "$RELEASE_TAG"', surface_audit)
+    assert exact_audit < surface_audit < github_release

@@ -242,7 +242,7 @@ def run_clean_install(
     """Exercise the documented range and independently require the exact release."""
     _run_clean_requirement(
         requirement,
-        expected_version=None,
+        expected_version=identity.registry_version,
         install_attempts=install_attempts,
         install_retry_sleep=install_retry_sleep,
     )
@@ -359,7 +359,7 @@ def main() -> int:
         except PublicRequirementUnavailable:
             if args.unavailable_exit_code is None:
                 raise
-            return args.unavailable_exit_code
+            return int(args.unavailable_exit_code)
     if args.verify_deployed_url:
         if not args.source_revision:
             parser.error("--verify-deployed-url requires --source-revision")

@@ -97,8 +97,8 @@ def load_source_metadata(source_ref: str) -> SourceMetadata:
     registry_version = tool.get("registry-version")
     product_train = tool.get("product-train")
     classifiers = project.get("classifiers")
-    if not isinstance(version, str) or not re.fullmatch(r"2\.0\.0-rc\.[1-9][0-9]*", version):
-        raise ReleaseMetadataError("source version is not an exact Durable Workflow 2.0 release candidate")
+    if not isinstance(version, str) or not re.fullmatch(r"2\.0\.0(?:-rc\.[1-9][0-9]*)?", version):
+        raise ReleaseMetadataError("source version is not an exact supported Durable Workflow 2.0 release")
     if product_train != version:
         raise ReleaseMetadataError("product-train does not match project.version")
     if registry_version != version.replace("-rc.", "rc"):
@@ -108,7 +108,7 @@ def load_source_metadata(source_ref: str) -> SourceMetadata:
     if not isinstance(classifiers, list) or not all(isinstance(item, str) for item in classifiers):
         raise ReleaseMetadataError("project.classifiers must be a string list")
     if BETA_CLASSIFIER in classifiers:
-        raise ReleaseMetadataError("release-candidate metadata must not carry the Beta classifier")
+        raise ReleaseMetadataError("2.0 release metadata must not carry the Beta classifier")
 
     name = project.get("name")
     summary = project.get("description")
@@ -357,7 +357,7 @@ def main() -> int:
     if args.attempts < 1 or args.interval_seconds < 0:
         raise ReleaseMetadataError("attempts must be positive and interval-seconds must be non-negative")
 
-    last_error: BaseException | None = None
+    last_error: urllib.error.URLError | None = None
     for attempt in range(1, args.attempts + 1):
         try:
             page_audit = verify_pypi(source, args.pypi_version)
@@ -367,7 +367,7 @@ def main() -> int:
             else:
                 print(f"::warning title=PyPI rendered-page audit::{page_audit.detail}", file=sys.stderr)
             return 0
-        except (ReleaseMetadataError, urllib.error.URLError) as error:
+        except urllib.error.URLError as error:
             last_error = error
             if attempt < args.attempts:
                 time.sleep(args.interval_seconds)
