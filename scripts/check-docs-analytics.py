@@ -81,7 +81,7 @@ if 'href="https://cloud.durable-workflow.com/early-access#source=sdk-python-refe
 for promotion_boundary in (
     "PROMOTION_SOURCE = 'sdk-python-reference'",
     "credentials: 'omit'",
-    "referrerPolicy: 'no-referrer'",
+    "referrerPolicy: 'origin'",
     "JSON.stringify({source: PROMOTION_SOURCE, event})",
 ):
     if promotion_boundary not in runtime:

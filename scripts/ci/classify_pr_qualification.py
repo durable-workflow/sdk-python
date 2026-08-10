@@ -27,6 +27,7 @@ DOCS_ONLY_FILES = frozenset(
         "scripts/check-docs-analytics.py",
         "scripts/check-docs-layout.py",
         "scripts/mkdocs_hooks.py",
+        "scripts/qualify-docs-promotion.py",
     }
 )
 

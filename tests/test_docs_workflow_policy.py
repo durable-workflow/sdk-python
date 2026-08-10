@@ -26,6 +26,7 @@ DOCS_PATHS = [
     "scripts/check-docs-analytics.py",
     "scripts/check-docs-layout.py",
     "scripts/mkdocs_hooks.py",
+    "scripts/qualify-docs-promotion.py",
     ".github/workflows/docs.yml",
     ".github/workflows/docs-pr.yml",
     ".github/workflows/docs-visual.yml",
@@ -163,7 +164,13 @@ def test_pages_deployment_requires_main_context_and_an_exact_release_tuple() -> 
     assert all(value["required"] == "true" for value in dispatch_inputs.values())
     assert all(value["type"] == "string" for value in dispatch_inputs.values())
     assert workflow["permissions"] == {"contents": "read"}
-    assert set(workflow["jobs"]) == {"audit-release", "build", "deploy", "visual-evidence"}
+    assert set(workflow["jobs"]) == {
+        "audit-release",
+        "build",
+        "deploy",
+        "qualify-promotion",
+        "visual-evidence",
+    }
 
     build = workflow["jobs"]["build"]
     assert "permissions" not in build
@@ -250,6 +257,22 @@ def test_pages_deployment_requires_main_context_and_an_exact_release_tuple() -> 
     deploy_references = action_references(deploy)
     assert deploy_references == [DEPLOY_PAGES_ACTION]
     assert_actions_are_pinned(deploy_references)
+
+    promotion = workflow["jobs"]["qualify-promotion"]
+    assert promotion["needs"] == ["build", "deploy"]
+    assert promotion["if"] == "${{ needs.deploy.result == 'success' }}"
+    assert promotion["permissions"] == {"contents": "read"}
+    promotion_references = action_references(promotion)
+    assert promotion_references == [CHECKOUT_ACTION, SETUP_PYTHON_ACTION]
+    assert_actions_are_pinned(promotion_references)
+    assert promotion["steps"][0]["with"] == {
+        "persist-credentials": "false",
+        "ref": "${{ needs.build.outputs.source_revision }}",
+    }
+    promotion_commands = run_commands(promotion)
+    assert "pip install -e '.[docs]'" in promotion_commands
+    assert "python -m playwright install --with-deps chromium" in promotion_commands
+    assert "python scripts/qualify-docs-promotion.py" in promotion_commands
 
     audit = workflow["jobs"]["audit-release"]
     assert audit["needs"] == ["build", "deploy"]

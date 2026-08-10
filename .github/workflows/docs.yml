@@ -23,6 +23,7 @@ on:
       - 'scripts/check-docs-analytics.py'
       - 'scripts/check-docs-layout.py'
       - 'scripts/mkdocs_hooks.py'
+      - 'scripts/qualify-docs-promotion.py'
       - '.github/workflows/docs.yml'
       - '.github/workflows/docs-pr.yml'
       - '.github/workflows/docs-visual.yml'
@@ -258,6 +259,30 @@ jobs:
             printf -- '- Source revision: `%s`\n' "$DEPLOYED_REVISION"
             printf -- '- Public URL: %s\n' "$DEPLOYMENT_URL"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  qualify-promotion:
+    needs: [build, deploy]
+    if: ${{ needs.deploy.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.source_revision }}
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install browser qualification dependencies
+        run: |
+          pip install -e '.[docs]'
+          python -m playwright install --with-deps chromium
+
+      - name: Qualify deployed promotion transport
+        run: python scripts/qualify-docs-promotion.py
 
   audit-release:
     needs: [build, deploy]

@@ -17,6 +17,7 @@ on:
       - 'scripts/check-docs-analytics.py'
       - 'scripts/check-docs-layout.py'
       - 'scripts/mkdocs_hooks.py'
+      - 'scripts/qualify-docs-promotion.py'
       - '.github/workflows/docs.yml'
       - '.github/workflows/docs-pr.yml'
       - '.github/workflows/docs-visual.yml'

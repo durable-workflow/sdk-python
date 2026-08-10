@@ -66,6 +66,7 @@ def shell_function(commands: str, name: str) -> str:
         "scripts/check-docs-analytics.py",
         "scripts/check-docs-layout.py",
         "scripts/mkdocs_hooks.py",
+        "scripts/qualify-docs-promotion.py",
     ],
 )
 def test_documentation_surfaces_receive_focused_qualification(path: str) -> None:

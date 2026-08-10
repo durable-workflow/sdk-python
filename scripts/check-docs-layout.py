@@ -7,13 +7,17 @@ import argparse
 import json
 import os
 import re
+import ssl
+import subprocess
+import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from playwright.sync_api import Browser, Locator, Page, Response, Route, sync_playwright
 
@@ -30,6 +34,9 @@ GITHUB_API_ENDPOINTS = (
 GITHUB_API_ENDPOINT = re.compile(
     r"^https://api\.github\.com/repos/durable-workflow/sdk-python(?:/releases/latest)?(?:\?.*)?$"
 )
+PUBLIC_DOCS_HOSTNAME = "python.durable-workflow.com"
+PROMOTION_EVENT_URL = "https://cloud.durable-workflow.com/early-access/promotion-events"
+PROMOTION_SOURCE = "sdk-python-reference"
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
@@ -50,6 +57,96 @@ def serve(directory: Path) -> Iterator[str]:
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+@contextmanager
+def serve_promotion_receiver(docs_origin: str) -> Iterator[tuple[str, list[dict[str, Any]]]]:
+    requests: list[dict[str, Any]] = []
+
+    class PromotionReceiver(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self) -> None:
+            headers = {key.lower(): value for key, value in self.headers.items()}
+            try:
+                length = int(headers.get("content-length", "0"))
+                payload = json.loads(self.rfile.read(length))
+            except (ValueError, json.JSONDecodeError):
+                payload = None
+
+            status = 204
+            if headers.get("origin") != docs_origin:
+                status = 403
+            elif (
+                not isinstance(payload, dict)
+                or set(payload) != {"source", "event"}
+                or payload.get("source") != PROMOTION_SOURCE
+                or payload.get("event") not in {"impression", "click"}
+            ):
+                status = 422
+            elif not headers.get("content-type", "").startswith("text/plain"):
+                status = 415
+
+            requests.append(
+                {
+                    "body": payload,
+                    "credentials": {key: headers[key] for key in ("authorization", "cookie") if key in headers},
+                    "method": self.command,
+                    "origin": headers.get("origin"),
+                    "referer": headers.get("referer"),
+                    "status": status,
+                }
+            )
+            self.send_response(status)
+            self.send_header("Access-Control-Allow-Origin", docs_origin)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Vary", "Origin")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    with tempfile.TemporaryDirectory() as directory:
+        temporary_directory = Path(directory)
+        certificate = temporary_directory / "certificate.pem"
+        private_key = temporary_directory / "private-key.pem"
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-days",
+                "1",
+                "-subj",
+                "/CN=127.0.0.1",
+                "-addext",
+                "subjectAltName=IP:127.0.0.1",
+                "-keyout",
+                str(private_key),
+                "-out",
+                str(certificate),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), PromotionReceiver)
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls.load_cert_chain(certificate, private_key)
+        server.socket = tls.wrap_socket(server.socket, server_side=True)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = server.server_address
+            yield f"https://{host}:{port}/early-access/promotion-events", requests
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
 
 
 def assert_control_within_viewport(page: Page, locator: Locator, label: str) -> None:
@@ -1163,6 +1260,70 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
         context.close()
 
 
+def exercise_promotion_contract(browser: Browser, loopback_url: str) -> None:
+    """Exercise the deployed-host fetch shape against a strict receiver contract."""
+    port = urlparse(loopback_url).port
+    assert port is not None
+    docs_origin = f"http://{PUBLIC_DOCS_HOSTNAME}:{port}"
+    with serve_promotion_receiver(docs_origin) as (receiver_url, requests):
+        context = browser.new_context(
+            viewport={"width": 1440, "height": 900},
+            reduced_motion="reduce",
+            ignore_https_errors=True,
+        )
+        failures: list[str] = []
+        context.route(PROMOTION_EVENT_URL, lambda route: route.continue_(url=receiver_url))
+        page = context.new_page()
+        page.on(
+            "console",
+            lambda message: failures.append(f"console {message.type}: {message.text}")
+            if message.type == "error"
+            else None,
+        )
+        page.on("pageerror", lambda error: failures.append(f"page: {error}"))
+        page.on(
+            "response",
+            lambda response: failures.append(f"http {response.status}: {response.url}")
+            if response.status >= 400
+            else None,
+        )
+
+        try:
+            response = page.goto(f"{docs_origin}/", wait_until="networkidle")
+            assert response is not None and response.ok, "deployed-host promotion fixture did not render"
+            expected_impression = {
+                "body": {"source": PROMOTION_SOURCE, "event": "impression"},
+                "credentials": {},
+                "method": "POST",
+                "origin": docs_origin,
+                "referer": f"{docs_origin}/",
+                "status": 204,
+            }
+            assert requests == [expected_impression], (
+                f"deployed-host promotion did not send one bounded impression: {requests}"
+            )
+
+            action = page.locator('[data-promotion-action="early-access"]')
+            assert action.get_attribute("href") == (
+                "https://cloud.durable-workflow.com/early-access#source=sdk-python-reference"
+            )
+            action.evaluate("element => element.addEventListener('click', event => event.preventDefault())")
+            action.click()
+            page.wait_for_timeout(100)
+
+            expected_click = {
+                **expected_impression,
+                "body": {"source": PROMOTION_SOURCE, "event": "click"},
+            }
+            assert requests == [expected_impression, expected_click], (
+                f"deployed-host promotion did not send one bounded click: {requests}"
+            )
+            assert failures == [], f"deployed-host promotion emitted browser or receiver errors: {failures}"
+            assert context.cookies() == [], "promotion browser contract created or received cookies"
+        finally:
+            context.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("site", type=Path)
@@ -1216,9 +1377,14 @@ def main() -> None:
         launch_options = {"headless": True}
         if args.chromium_executable:
             launch_options["executable_path"] = args.chromium_executable
+        launch_options["args"] = [
+            f"--host-resolver-rules=MAP {PUBLIC_DOCS_HOSTNAME} 127.0.0.1",
+            "--no-proxy-server",
+        ]
         browser = playwright.chromium.launch(**launch_options)
         try:
             if not args.navigation_transition_only and not args.nested_navigation_only:
+                exercise_promotion_contract(browser, url)
                 for width, height in VIEWPORTS:
                     exercise_viewport(browser, url, width, height)
             if not args.navigation_transition_only:
