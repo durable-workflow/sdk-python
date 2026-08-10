@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -148,18 +149,186 @@ def test_documented_prerelease_range_must_select_exact_current_rc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = source_metadata()
+    requirements: list[str] = []
+    sleeps: list[float] = []
     monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
     monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", lambda _: exact_version_payload(source))
 
     def resolve(requirement: str, *, prerelease: bool) -> object:
         del prerelease
+        requirements.append(requirement)
         version = source.registry_version if "==" in requirement else "2.0.0rc23"
         return pip_report(version)
 
     monkeypatch.setattr("scripts.check_pypi_project_surface._pip_report", resolve)
+    monkeypatch.setattr("scripts.check_pypi_project_surface.time.sleep", sleeps.append)
 
     with pytest.raises(ProjectSurfaceError, match="pip selected 2.0.0rc23; expected 2.0.0rc25"):
-        main(["--source-ref", "release-source"])
+        main(["--source-ref", "release-source", "--attempts", "30", "--interval-seconds", "10"])
+
+    assert requirements == [
+        f"{source.name}=={source.registry_version}",
+        "durable-workflow~=2.0.0rc0",
+    ]
+    assert sleeps == []
+
+
+def test_prerelease_pip_probes_retry_simple_api_lag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = source_metadata()
+    pip_attempts: dict[str, int] = {}
+    sleeps: list[float] = []
+    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
+    monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", lambda _: exact_version_payload(source))
+    monkeypatch.setattr("scripts.check_pypi_project_surface.time.sleep", sleeps.append)
+
+    def run_pip(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        assert "--no-cache-dir" in command
+        requirement = command[-1]
+        pip_attempts[requirement] = pip_attempts.get(requirement, 0) + 1
+        if "==" in requirement and pip_attempts[requirement] == 1:
+            detail = (
+                f"ERROR: Could not find a version that satisfies the requirement {requirement} "
+                "(from versions: 0.4.106, 2.0.0rc24)\n"
+                f"ERROR: No matching distribution found for {requirement}\n"
+            )
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr=detail)
+
+        version = source.registry_version
+        if "~=" in requirement and pip_attempts[requirement] == 1:
+            version = "2.0.0rc24"
+        report_path = Path(command[command.index("--report") + 1])
+        report_path.write_text(json.dumps(pip_report(version)), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("scripts.check_pypi_project_surface.subprocess.run", run_pip)
+    evidence_path = tmp_path / "evidence.json"
+
+    assert (
+        main(
+            [
+                "--source-ref",
+                "release-source",
+                "--attempts",
+                "3",
+                "--interval-seconds",
+                "4",
+                "--evidence",
+                str(evidence_path),
+            ]
+        )
+        == 0
+    )
+    assert pip_attempts == {
+        f"{source.name}=={source.registry_version}": 2,
+        "durable-workflow~=2.0.0rc0": 2,
+    }
+    assert sleeps == [4.0, 4.0]
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["exact_install_version"] == source.registry_version
+    assert evidence["documented_install_version"] == source.registry_version
+
+
+def test_malformed_pip_report_fails_without_retrying(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = source_metadata()
+    requirements: list[str] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
+    monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", lambda _: exact_version_payload(source))
+    monkeypatch.setattr(
+        "scripts.check_pypi_project_surface._pip_report",
+        lambda requirement, *, prerelease: requirements.append(requirement) or {"install": "invalid"},
+    )
+    monkeypatch.setattr("scripts.check_pypi_project_surface.time.sleep", sleeps.append)
+
+    with pytest.raises(ProjectSurfaceError, match="pip resolution report is invalid"):
+        main(["--source-ref", "release-source", "--attempts", "30", "--interval-seconds", "10"])
+
+    assert requirements == [f"{source.name}=={source.registry_version}"]
+    assert sleeps == []
+
+
+def test_exact_pip_semantic_mismatch_fails_without_retrying(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = source_metadata()
+    requirements: list[str] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
+    monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", lambda _: exact_version_payload(source))
+    monkeypatch.setattr(
+        "scripts.check_pypi_project_surface._pip_report",
+        lambda requirement, *, prerelease: requirements.append(requirement) or pip_report("2.0.0rc24"),
+    )
+    monkeypatch.setattr("scripts.check_pypi_project_surface.time.sleep", sleeps.append)
+
+    with pytest.raises(ProjectSurfaceError, match="pip selected 2.0.0rc24; expected 2.0.0rc25"):
+        main(["--source-ref", "release-source", "--attempts", "30", "--interval-seconds", "10"])
+
+    assert requirements == [f"{source.name}=={source.registry_version}"]
+    assert sleeps == []
+
+
+def test_exact_pip_visibility_lag_exhausts_configured_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = source_metadata()
+    pip_attempts = 0
+    sleeps: list[float] = []
+    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
+    monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", lambda _: exact_version_payload(source))
+    monkeypatch.setattr("scripts.check_pypi_project_surface.time.sleep", sleeps.append)
+
+    def run_pip(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        nonlocal pip_attempts
+        pip_attempts += 1
+        requirement = command[-1]
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr=(
+                f"ERROR: Could not find a version that satisfies the requirement {requirement} "
+                "(from versions: 0.4.106, 2.0.0rc24)\n"
+                f"ERROR: No matching distribution found for {requirement}\n"
+            ),
+        )
+
+    monkeypatch.setattr("scripts.check_pypi_project_surface.subprocess.run", run_pip)
+
+    with pytest.raises(ProjectSurfaceError, match="Simple API did not converge.*after 3 attempt"):
+        main(["--source-ref", "release-source", "--attempts", "3", "--interval-seconds", "2"])
+
+    assert pip_attempts == 3
+    assert sleeps == [2.0, 2.0]
+
+
+def test_pip_package_metadata_error_fails_without_retrying(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = source_metadata()
+    pip_attempts = 0
+    sleeps: list[float] = []
+    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
+    monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", lambda _: exact_version_payload(source))
+    monkeypatch.setattr("scripts.check_pypi_project_surface.time.sleep", sleeps.append)
+
+    def run_pip(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        nonlocal pip_attempts
+        pip_attempts += 1
+        requirement = command[-1]
+        detail = (
+            "WARNING: Requested durable-workflow has inconsistent name: expected 'durable-workflow', "
+            "but metadata has 'another-package'\n"
+            f"ERROR: Could not find a version that satisfies the requirement {requirement} "
+            "(from versions: 0.4.106, 2.0.0rc24)\n"
+            f"ERROR: No matching distribution found for {requirement}\n"
+        )
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr=detail)
+
+    monkeypatch.setattr("scripts.check_pypi_project_surface.subprocess.run", run_pip)
+
+    with pytest.raises(ProjectSurfaceError, match="has inconsistent name"):
+        main(["--source-ref", "release-source", "--attempts", "30", "--interval-seconds", "10"])
+
+    assert pip_attempts == 1
+    assert sleeps == []
 
 
 def test_stable_project_root_mismatch_remains_release_blocking(

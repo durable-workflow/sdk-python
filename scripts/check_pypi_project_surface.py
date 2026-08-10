@@ -39,6 +39,10 @@ class ProjectSurfaceError(RuntimeError):
     """The canonical PyPI project surface differs from release authority."""
 
 
+class _SimpleApiVisibilityLag(ProjectSurfaceError):
+    """pip's Simple API view does not expose a requested release yet."""
+
+
 @dataclass(frozen=True)
 class ProjectSurfaceEvidence:
     """Public registry evidence produced by a successful project-surface audit."""
@@ -187,7 +191,7 @@ def supported_prerelease_requirement(source: SourceMetadata) -> str:
     return requirement
 
 
-def verify_pip_report(report: object, source: SourceMetadata, expected_version: str) -> str:
+def _selected_pip_version(report: object, source: SourceMetadata) -> str:
     if not isinstance(report, dict) or not isinstance(report.get("install"), list):
         raise ProjectSurfaceError("pip resolution report is invalid")
     selected = next(
@@ -203,9 +207,62 @@ def verify_pip_report(report: object, source: SourceMetadata, expected_version: 
     if selected is None:
         raise ProjectSurfaceError(f"pip did not select {source.name}")
     version = selected["metadata"].get("version")
-    if not isinstance(version, str) or version != expected_version:
-        raise ProjectSurfaceError(f"pip selected {version or '<missing>'}; expected {expected_version}")
+    if not isinstance(version, str) or not version:
+        raise ProjectSurfaceError("pip resolution report is invalid")
     return version
+
+
+def verify_pip_report(report: object, source: SourceMetadata, expected_version: str) -> str:
+    version = _selected_pip_version(report, source)
+    if version != expected_version:
+        raise ProjectSurfaceError(f"pip selected {version}; expected {expected_version}")
+    return version
+
+
+def _is_previous_prerelease(version: str, expected_version: str) -> bool:
+    pattern = re.compile(r"(?P<release>[0-9]+(?:\.[0-9]+){2})rc(?P<number>[1-9][0-9]*)")
+    selected = pattern.fullmatch(version)
+    expected = pattern.fullmatch(expected_version)
+    return (
+        selected is not None
+        and expected is not None
+        and selected.group("release") == expected.group("release")
+        and int(selected.group("number")) + 1 == int(expected.group("number"))
+    )
+
+
+def _resolve_pip_with_convergence(
+    requirement: str,
+    source: SourceMetadata,
+    *,
+    attempts: int,
+    interval_seconds: float,
+    retry_previous_prerelease: bool = False,
+) -> str:
+    last_lag: ProjectSurfaceError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            report = _pip_report(requirement, prerelease=False)
+        except _SimpleApiVisibilityLag as error:
+            last_lag = error
+        else:
+            version = _selected_pip_version(report, source)
+            if version == source.registry_version:
+                return version
+            mismatch = ProjectSurfaceError(f"pip selected {version}; expected {source.registry_version}")
+            if not retry_previous_prerelease or not _is_previous_prerelease(
+                version,
+                source.registry_version,
+            ):
+                raise mismatch
+            last_lag = mismatch
+        if attempt < attempts:
+            time.sleep(interval_seconds)
+
+    assert last_lag is not None
+    raise ProjectSurfaceError(
+        f"PyPI Simple API did not converge for {requirement} after {attempts} attempt(s): {last_lag}"
+    )
 
 
 def write_evidence(path: Path, source: SourceMetadata, evidence: ProjectSurfaceEvidence) -> None:
@@ -227,6 +284,26 @@ def write_evidence(path: Path, source: SourceMetadata, evidence: ProjectSurfaceE
     path.write_text(f"{json.dumps(payload, indent=2, sort_keys=True)}\n", encoding="utf-8")
 
 
+def _exact_requirement_missing_from_simple_api(requirement: str, detail: str) -> bool:
+    exact = re.fullmatch(r"[^<>=!~\s]+==(?P<version>[^\s]+)", requirement)
+    available = re.search(r"\(from versions: (?P<versions>[^)]*)\)", detail)
+    if exact is None or available is None or "No matching distribution found for" not in detail:
+        return False
+    lowered = detail.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            "has inconsistent name",
+            "hashes are required",
+            "requires a different python",
+            "requires-python",
+        )
+    ):
+        return False
+    versions = {version.strip() for version in available.group("versions").split(",")}
+    return exact.group("version") not in versions
+
+
 def _pip_report(requirement: str, *, prerelease: bool) -> object:
     with tempfile.TemporaryDirectory(prefix="dw-pypi-project-surface-") as temporary:
         report_path = Path(temporary) / "pip-report.json"
@@ -239,6 +316,7 @@ def _pip_report(requirement: str, *, prerelease: bool) -> object:
             "--dry-run",
             "--ignore-installed",
             "--no-deps",
+            "--no-cache-dir",
             "--index-url",
             PUBLIC_PYPI_INDEX,
         ]
@@ -256,6 +334,8 @@ def _pip_report(requirement: str, *, prerelease: bool) -> object:
         result = subprocess.run(command, check=False, capture_output=True, text=True, env=environment)
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip()
+            if _exact_requirement_missing_from_simple_api(requirement, detail):
+                raise _SimpleApiVisibilityLag(f"pip could not resolve {requirement}: {detail}")
             raise ProjectSurfaceError(f"pip could not resolve {requirement}: {detail}")
         try:
             return json.loads(report_path.read_text(encoding="utf-8"))
@@ -322,10 +402,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     exact_requirement = f"{source.name}=={source.registry_version}"
-    exact_install_version = verify_pip_report(
-        _pip_report(exact_requirement, prerelease=False),
+    exact_install_version = _resolve_pip_with_convergence(
+        exact_requirement,
         source,
-        source.registry_version,
+        attempts=args.attempts,
+        interval_seconds=args.interval_seconds,
     )
 
     project_json_url: str | None = None
@@ -334,10 +415,12 @@ def main(argv: list[str] | None = None) -> int:
     historical_versions: tuple[str, ...] = ()
     if channel == "prerelease":
         assert requirement is not None
-        documented_install_version = verify_pip_report(
-            _pip_report(requirement, prerelease=False),
+        documented_install_version = _resolve_pip_with_convergence(
+            requirement,
             source,
-            source.registry_version,
+            attempts=args.attempts,
+            interval_seconds=args.interval_seconds,
+            retry_previous_prerelease=True,
         )
     else:
         project_json_url = f"https://pypi.org/pypi/{source.name}/json"
