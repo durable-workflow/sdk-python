@@ -159,7 +159,7 @@ def test_unavailable_public_pypi_release_fails_closed(
         )
 
 
-def test_clean_install_qualifies_the_documented_range_before_the_exact_release(
+def test_clean_install_probes_the_exact_release_before_the_documented_range(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     identity = load_release_identity(REPO_ROOT)
@@ -181,15 +181,16 @@ def test_clean_install_qualifies_the_documented_range_before_the_exact_release(
     run_clean_install(identity.requirement, identity, install_attempts=1, install_retry_sleep=0)
 
     assert calls == [
-        ("durable-workflow~=2.0.0rc0", identity.registry_version),
         (f"durable-workflow=={identity.registry_version}", identity.registry_version),
+        ("durable-workflow~=2.0.0rc0", identity.registry_version),
     ]
 
 
-def test_unpublished_exact_release_uses_the_existing_deferral_signal(
+def test_public_rc24_does_not_mask_an_unpublished_exact_rc25(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     identity = load_release_identity(REPO_ROOT)
+    calls: list[str] = []
 
     def run_requirement(
         requirement: str,
@@ -199,13 +200,54 @@ def test_unpublished_exact_release_uses_the_existing_deferral_signal(
         install_retry_sleep: float,
     ) -> None:
         del expected_version, install_attempts, install_retry_sleep
+        calls.append(requirement)
         if requirement == identity.exact_requirement:
             raise PublicRequirementUnavailable(1, ["pip", "install", requirement])
+        raise subprocess.CalledProcessError(
+            1,
+            ["python", "-c", "installed durable-workflow 2.0.0rc24, expected 2.0.0rc25"],
+        )
 
     monkeypatch.setattr("scripts.check_api_reference_install._run_clean_requirement", run_requirement)
 
     with pytest.raises(PublicRequirementUnavailable):
         run_clean_install(identity.requirement, identity, install_attempts=1, install_retry_sleep=0)
+
+    assert identity.registry_version == "2.0.0rc25"
+    assert calls == [identity.exact_requirement]
+
+
+def test_stale_documented_range_is_a_hard_failure_after_exact_rc25_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = load_release_identity(REPO_ROOT)
+    calls: list[str] = []
+    stale_range = subprocess.CalledProcessError(
+        1,
+        ["python", "-c", "installed durable-workflow 2.0.0rc24, expected 2.0.0rc25"],
+    )
+
+    def run_requirement(
+        requirement: str,
+        *,
+        expected_version: str | None,
+        install_attempts: int,
+        install_retry_sleep: float,
+    ) -> None:
+        assert expected_version == identity.registry_version
+        assert install_attempts == 1
+        assert install_retry_sleep == 0
+        calls.append(requirement)
+        if requirement == identity.requirement:
+            raise stale_range
+
+    monkeypatch.setattr("scripts.check_api_reference_install._run_clean_requirement", run_requirement)
+
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        run_clean_install(identity.requirement, identity, install_attempts=1, install_retry_sleep=0)
+
+    assert failure.value is stale_range
+    assert calls == [identity.exact_requirement, identity.requirement]
 
 
 def test_public_release_evidence_derives_from_manifest(tmp_path: Path) -> None:

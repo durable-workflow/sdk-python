@@ -239,15 +239,15 @@ def run_clean_install(
     install_attempts: int = 6,
     install_retry_sleep: float = 20,
 ) -> None:
-    """Exercise the documented range and independently require the exact release."""
+    """Require the exact release before exercising the documented range."""
     _run_clean_requirement(
-        requirement,
+        identity.exact_requirement,
         expected_version=identity.registry_version,
         install_attempts=install_attempts,
         install_retry_sleep=install_retry_sleep,
     )
     _run_clean_requirement(
-        identity.exact_requirement,
+        requirement,
         expected_version=identity.registry_version,
         install_attempts=install_attempts,
         install_retry_sleep=install_retry_sleep,
