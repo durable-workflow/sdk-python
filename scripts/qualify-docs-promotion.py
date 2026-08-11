@@ -80,12 +80,13 @@ def qualify_viewport(browser: Browser, name: str, width: int, height: int) -> No
     )
 
     try:
+        action = page.locator('[data-promotion-action="early-access"]')
         with page.expect_response(lambda response: is_event(response, "impression"), timeout=30_000) as pending:
             document = page.goto(DOCS_URL, wait_until="domcontentloaded", timeout=30_000)
+            action.scroll_into_view_if_needed()
         assert document is not None and document.ok, f"deployed docs returned HTTP {document.status} at {name}"
         assert_event_response(pending.value, "impression")
 
-        action = page.locator('[data-promotion-action="early-access"]')
         action.wait_for(state="visible")
         assert action.get_attribute("href") == DESTINATION_URL, "promotion destination changed"
         with (
@@ -96,17 +97,22 @@ def qualify_viewport(browser: Browser, name: str, width: int, height: int) -> No
         assert_event_response(click_pending.value, "click")
 
         destination = navigation.value
-        assert destination is not None and destination.ok, (
+        assert destination is not None and destination.status == 200, (
             f"public early-access destination returned HTTP {destination.status if destination else 'none'} at {name}"
         )
         resolved = urlparse(page.url)
         expected = urlparse(DESTINATION_URL)
-        assert (resolved.scheme, resolved.netloc, resolved.path, resolved.fragment) == (
+        assert (resolved.scheme, resolved.netloc, resolved.path) == (
             expected.scheme,
             expected.netloc,
             expected.path,
-            expected.fragment,
         ), f"promotion resolved to an unexpected destination at {name}: {page.url}"
+        assert page.locator("[data-promotion-source-input]").input_value() == PROMOTION_SOURCE, (
+            f"promotion source was not retained by the early-access form at {name}"
+        )
+        assert page.locator('input[name="intent"][value="cohort"]').is_checked(), (
+            f"promotion did not select the launch cohort at {name}"
+        )
 
         page.wait_for_timeout(250)
         observed = [event_payload(request) for request in promotion_requests]
