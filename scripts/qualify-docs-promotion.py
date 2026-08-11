@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from playwright.sync_api import Browser, Request, Response, sync_playwright  # noqa: E402
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError  # noqa: E402
 from scripts.api_reference_release import load_release_identity  # noqa: E402
 from scripts.check_api_reference_install import verify_public_deployment  # noqa: E402
 
@@ -29,6 +30,7 @@ DESTINATION_URL = "https://cloud.durable-workflow.com/early-access#source=sdk-py
 PROMOTION_EVENT_URL = "https://cloud.durable-workflow.com/early-access/promotion-events"
 PROMOTION_SOURCE = "sdk-python-reference"
 QUALIFICATION_EVENT = "qualification"
+VIEWPORT_ATTEMPTS = 3
 VIEWPORTS = (
     ("desktop", 1440, 900),
     ("intermediate", 768, 1024),
@@ -104,7 +106,7 @@ def assert_event_response(response: Response, event: str) -> None:
     assert "no-store" in response.headers.get("cache-control", ""), f"{event} promotion response was cacheable"
 
 
-def qualify_viewport(browser: Browser, name: str, width: int, height: int) -> None:
+def qualify_viewport_once(browser: Browser, name: str, width: int, height: int) -> None:
     context = browser.new_context(viewport={"width": width, "height": height}, reduced_motion="reduce")
     page = context.new_page()
     errors: list[str] = []
@@ -179,6 +181,21 @@ def qualify_viewport(browser: Browser, name: str, width: int, height: int) -> No
         context.close()
 
 
+def qualify_viewport(browser: Browser, name: str, width: int, height: int) -> None:
+    """Qualify one viewport, retrying only transient browser transport timeouts."""
+    timeouts: list[str] = []
+    for attempt in range(1, VIEWPORT_ATTEMPTS + 1):
+        try:
+            qualify_viewport_once(browser, name, width, height)
+            return
+        except PlaywrightTimeoutError as error:
+            timeouts.append(f"attempt {attempt}: {error}")
+
+    raise AssertionError(
+        f"promotion qualification timed out at {name} after {VIEWPORT_ATTEMPTS} attempts: " + "; ".join(timeouts)
+    )
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -228,9 +245,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             browser.close()
 
     print(
-        f"Confirmed deployed revision {args.source_revision}, two non-aggregating qualification requests, "
-        "the source-attributed impression/click initiation and destination behavior, and no browser errors at "
-        "desktop, intermediate, mobile, and short-height viewports."
+        f"Confirmed deployed revision {args.source_revision}, two successful non-aggregating qualification "
+        "requests per viewport with bounded transport retries, the source-attributed impression/click initiation "
+        "and destination behavior, and no browser errors at desktop, intermediate, mobile, and short-height "
+        "viewports."
     )
     return 0
 

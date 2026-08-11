@@ -112,6 +112,46 @@ def test_live_revision_is_verified_before_any_browser_request(
     ]
 
 
+def test_live_viewport_retries_transient_transport_timeout(
+    qualifier: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[tuple[object, str, int, int]] = []
+    browser = object()
+
+    def qualify_once(observed_browser: object, name: str, width: int, height: int) -> None:
+        attempts.append((observed_browser, name, width, height))
+        if len(attempts) == 1:
+            raise qualifier.PlaywrightTimeoutError("receiver response was temporarily unavailable")
+
+    monkeypatch.setattr(qualifier, "qualify_viewport_once", qualify_once)
+
+    qualifier.qualify_viewport(browser, "mobile", 390, 844)
+
+    assert attempts == [
+        (browser, "mobile", 390, 844),
+        (browser, "mobile", 390, 844),
+    ]
+
+
+def test_live_viewport_fails_after_bounded_transport_timeouts(
+    qualifier: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[int] = []
+
+    def time_out(*_args: object) -> None:
+        attempts.append(len(attempts) + 1)
+        raise qualifier.PlaywrightTimeoutError("receiver response was unavailable")
+
+    monkeypatch.setattr(qualifier, "qualify_viewport_once", time_out)
+
+    with pytest.raises(AssertionError, match="timed out at desktop after 3 attempts"):
+        qualifier.qualify_viewport(object(), "desktop", 1440, 900)
+
+    assert attempts == [1, 2, 3]
+
+
 def test_live_receiver_contract_accepts_only_bounded_qualification_payload(qualifier: ModuleType) -> None:
     request = SimpleNamespace(
         method="POST",
