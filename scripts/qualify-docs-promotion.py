@@ -6,22 +6,63 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from playwright.sync_api import Browser, Request, Response, sync_playwright
+# Direct file execution adds ``scripts/`` rather than the repository root to
+# sys.path. The deployment workflow uses this entrypoint, so make its local
+# package imports resolvable before importing the qualifier dependencies.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from playwright.sync_api import Browser, Request, Response, sync_playwright  # noqa: E402
+from scripts.api_reference_release import load_release_identity  # noqa: E402
+from scripts.check_api_reference_install import verify_public_deployment  # noqa: E402
 
 DOCS_URL = "https://python.durable-workflow.com/"
+RELEASE_AUDIT_URL = f"{DOCS_URL}release-audit.json"
 DESTINATION_URL = "https://cloud.durable-workflow.com/early-access#source=sdk-python-reference"
 PROMOTION_EVENT_URL = "https://cloud.durable-workflow.com/early-access/promotion-events"
 PROMOTION_SOURCE = "sdk-python-reference"
+QUALIFICATION_EVENT = "qualification"
 VIEWPORTS = (
     ("desktop", 1440, 900),
     ("intermediate", 768, 1024),
     ("mobile", 390, 844),
     ("short-height", 640, 360),
 )
+
+QUALIFICATION_REWRITE_SCRIPT = f"""
+(() => {{
+  const eventUrl = {json.dumps(PROMOTION_EVENT_URL)};
+  const source = {json.dumps(PROMOTION_SOURCE)};
+  const qualificationEvent = {json.dumps(QUALIFICATION_EVENT)};
+  const nativeFetch = window.fetch.bind(window);
+
+  window.fetch = function (input, init) {{
+    const requestUrl = typeof input === 'string' ? input : input.url;
+    if (requestUrl !== eventUrl) return nativeFetch(input, init);
+
+    const options = init || {{}};
+    let initiatedPayload = null;
+    try {{
+      initiatedPayload = JSON.parse(options.body);
+    }} catch (_error) {{
+      // The qualification fails on the recorded initiation shape below.
+    }}
+    window.recordPromotionQualificationInitiation(initiatedPayload);
+
+    return nativeFetch(input, {{
+      ...options,
+      body: JSON.stringify({{source, event: qualificationEvent}}),
+    }});
+  }};
+}})();
+"""
 
 
 def event_payload(request: Request) -> dict[str, Any] | None:
@@ -68,6 +109,13 @@ def qualify_viewport(browser: Browser, name: str, width: int, height: int) -> No
     page = context.new_page()
     errors: list[str] = []
     promotion_requests: list[Request] = []
+    initiated_events: list[object] = []
+
+    def record_initiated_event(payload: object) -> None:
+        initiated_events.append(payload)
+
+    page.expose_function("recordPromotionQualificationInitiation", record_initiated_event)
+    page.add_init_script(QUALIFICATION_REWRITE_SCRIPT)
 
     page.on(
         "console",
@@ -81,20 +129,22 @@ def qualify_viewport(browser: Browser, name: str, width: int, height: int) -> No
 
     try:
         action = page.locator('[data-promotion-action="early-access"]')
-        with page.expect_response(lambda response: is_event(response, "impression"), timeout=30_000) as pending:
+        with page.expect_response(lambda response: is_event(response, QUALIFICATION_EVENT), timeout=30_000) as pending:
             document = page.goto(DOCS_URL, wait_until="domcontentloaded", timeout=30_000)
             action.scroll_into_view_if_needed()
         assert document is not None and document.ok, f"deployed docs returned HTTP {document.status} at {name}"
-        assert_event_response(pending.value, "impression")
+        assert_event_response(pending.value, QUALIFICATION_EVENT)
 
         action.wait_for(state="visible")
         assert action.get_attribute("href") == DESTINATION_URL, "promotion destination changed"
         with (
-            page.expect_response(lambda response: is_event(response, "click"), timeout=30_000) as click_pending,
+            page.expect_response(
+                lambda response: is_event(response, QUALIFICATION_EVENT), timeout=30_000
+            ) as click_pending,
             page.expect_navigation(wait_until="domcontentloaded", timeout=30_000) as navigation,
         ):
             action.click()
-        assert_event_response(click_pending.value, "click")
+        assert_event_response(click_pending.value, QUALIFICATION_EVENT)
 
         destination = navigation.value
         assert destination is not None and destination.status == 200, (
@@ -115,11 +165,15 @@ def qualify_viewport(browser: Browser, name: str, width: int, height: int) -> No
         )
 
         page.wait_for_timeout(250)
-        observed = [event_payload(request) for request in promotion_requests]
-        assert observed == [
+        assert initiated_events == [
             {"source": PROMOTION_SOURCE, "event": "impression"},
             {"source": PROMOTION_SOURCE, "event": "click"},
-        ], f"promotion emitted duplicate or unbounded events at {name}: {observed}"
+        ], f"deployed promotion initiated unexpected events at {name}: {initiated_events}"
+        observed = [event_payload(request) for request in promotion_requests]
+        assert observed == [
+            {"source": PROMOTION_SOURCE, "event": QUALIFICATION_EVENT},
+            {"source": PROMOTION_SOURCE, "event": QUALIFICATION_EVENT},
+        ], f"promotion qualification emitted duplicate or unbounded events at {name}: {observed}"
         assert errors == [], f"promotion emitted browser errors at {name}: {errors}"
     finally:
         context.close()
@@ -132,11 +186,36 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE"),
         help="Use a system Chromium instead of Playwright's managed browser.",
     )
+    parser.add_argument(
+        "--source-revision",
+        required=True,
+        help="Exact deployed source revision required before live qualification begins.",
+    )
+    parser.add_argument(
+        "--release-audit-attempts",
+        type=int,
+        default=12,
+        help="Number of attempts allowed while the live release record converges.",
+    )
+    parser.add_argument(
+        "--release-audit-retry-sleep",
+        type=float,
+        default=10,
+        help="Seconds between live release-record attempts.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    verify_public_deployment(
+        RELEASE_AUDIT_URL,
+        load_release_identity(REPO_ROOT),
+        args.source_revision,
+        attempts=args.release_audit_attempts,
+        retry_sleep=args.release_audit_retry_sleep,
+    )
+
     with sync_playwright() as playwright:
         launch_options = {"headless": True}
         if args.chromium_executable:
@@ -149,8 +228,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             browser.close()
 
     print(
-        "Confirmed one successful source-attributed impression and click, a healthy early-access destination, "
-        "and no browser errors at desktop, intermediate, mobile, and short-height viewports."
+        f"Confirmed deployed revision {args.source_revision}, two non-aggregating qualification requests, "
+        "the source-attributed impression/click initiation and destination behavior, and no browser errors at "
+        "desktop, intermediate, mobile, and short-height viewports."
     )
     return 0
 

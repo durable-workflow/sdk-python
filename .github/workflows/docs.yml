@@ -282,7 +282,9 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Qualify deployed promotion transport
-        run: python scripts/qualify-docs-promotion.py
+        run: >-
+          python scripts/qualify-docs-promotion.py
+          --source-revision "${{ needs.build.outputs.source_revision }}"
 
   audit-release:
     needs: [build, deploy]

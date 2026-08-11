@@ -11,6 +11,7 @@ WORKFLOW_ROOT = REPO_ROOT / ".github" / "workflows"
 DOCS_CHECKS = WORKFLOW_ROOT / "docs-pr.yml"
 DOCS_DEPLOYMENT = WORKFLOW_ROOT / "docs.yml"
 DOCS_VISUAL = WORKFLOW_ROOT / "docs-visual.yml"
+PROMOTION_QUALIFIER = REPO_ROOT / "scripts" / "qualify-docs-promotion.py"
 
 DOCS_PATHS = [
     "src/**",
@@ -272,7 +273,16 @@ def test_pages_deployment_requires_main_context_and_an_exact_release_tuple() -> 
     promotion_commands = run_commands(promotion)
     assert "pip install -e '.[docs]'" in promotion_commands
     assert "python -m playwright install --with-deps chromium" in promotion_commands
-    assert "python scripts/qualify-docs-promotion.py" in promotion_commands
+    assert (
+        'python scripts/qualify-docs-promotion.py --source-revision "${{ needs.build.outputs.source_revision }}"'
+        in " ".join(promotion_commands.split())
+    )
+    qualifier_source = PROMOTION_QUALIFIER.read_text(encoding="utf-8")
+    assert 'RELEASE_AUDIT_URL = f"{DOCS_URL}release-audit.json"' in qualifier_source
+    assert 'QUALIFICATION_EVENT = "qualification"' in qualifier_source
+    assert "verify_public_deployment(" in qualifier_source
+    assert "body: JSON.stringify({{source, event: qualificationEvent}})" in qualifier_source
+    assert "is_event(response, QUALIFICATION_EVENT)" in qualifier_source
 
     audit = workflow["jobs"]["audit-release"]
     assert audit["needs"] == ["build", "deploy"]

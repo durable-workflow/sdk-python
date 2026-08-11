@@ -1274,19 +1274,19 @@ def exercise_promotion_contract(browser: Browser, loopback_url: str) -> None:
         failures: list[str] = []
         context.route(PROMOTION_EVENT_URL, lambda route: route.continue_(url=receiver_url))
         page = context.new_page()
-        page.on(
-            "console",
-            lambda message: failures.append(f"console {message.type}: {message.text}")
-            if message.type == "error"
-            else None,
-        )
+
+        def record_console_error(message: Any) -> None:
+            if message.type == "error":
+                failures.append(f"console {message.type}: {message.text}")
+
+        page.on("console", record_console_error)
         page.on("pageerror", lambda error: failures.append(f"page: {error}"))
-        page.on(
-            "response",
-            lambda response: failures.append(f"http {response.status}: {response.url}")
-            if response.status >= 400
-            else None,
-        )
+
+        def record_http_failure(response: Response) -> None:
+            if response.status >= 400:
+                failures.append(f"http {response.status}: {response.url}")
+
+        page.on("response", record_http_failure)
 
         try:
             response = page.goto(f"{docs_origin}/", wait_until="networkidle")
@@ -1320,6 +1320,35 @@ def exercise_promotion_contract(browser: Browser, loopback_url: str) -> None:
             )
             assert failures == [], f"deployed-host promotion emitted browser or receiver errors: {failures}"
             assert context.cookies() == [], "promotion browser contract created or received cookies"
+
+            page.remove_listener("response", record_http_failure)
+            page.remove_listener("console", record_console_error)
+            rejected_statuses = page.evaluate(
+                """async ({url, source}) => {
+                    const invalidPayloads = [
+                        {source: `${source}-unbounded`, event: 'impression'},
+                        {source, event: 'unbounded'},
+                        {source, event: 'click', visitor: 'stable-id'},
+                    ]
+                    return Promise.all(invalidPayloads.map(async body => {
+                        const response = await fetch(url, {
+                            method: 'POST',
+                            mode: 'cors',
+                            credentials: 'omit',
+                            referrerPolicy: 'origin',
+                            headers: {'Content-Type': 'text/plain'},
+                            body: JSON.stringify(body),
+                        })
+                        return response.status
+                    }))
+                }""",
+                {"url": PROMOTION_EVENT_URL, "source": PROMOTION_SOURCE},
+            )
+            assert rejected_statuses == [422, 422, 422], (
+                f"strict promotion receiver accepted an unbounded source, event, or payload: {rejected_statuses}"
+            )
+            assert [request["status"] for request in requests[-3:]] == [422, 422, 422]
+            assert failures == [], f"promotion validation emitted console or page errors: {failures}"
         finally:
             context.close()
 
