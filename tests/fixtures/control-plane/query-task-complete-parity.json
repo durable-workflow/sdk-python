@@ -11,10 +11,6 @@
       "result": {
         "status": "ready",
         "open_items": 3
-      },
-      "result_envelope": {
-        "codec": "json",
-        "blob": "{\"status\":\"ready\",\"open_items\":3}"
       }
     }
   },
@@ -40,6 +36,18 @@
   },
   "sdk_python": {
     "method": "complete_query_task",
+    "request_body": {
+      "lease_owner": "polyglot-worker-231",
+      "query_task_attempt": 1,
+      "result": {
+        "status": "ready",
+        "open_items": 3
+      },
+      "result_envelope": {
+        "codec": "avro",
+        "blob": "wwHioz3/VYAiNw4EDHN0YXR1cwoKcmVhZHkUb3Blbl9pdGVtcwQGAA=="
+      }
+    },
     "kwargs": {
       "query_task_id": "query-task-231",
       "lease_owner": "polyglot-worker-231",
@@ -48,7 +56,7 @@
         "status": "ready",
         "open_items": 3
       },
-      "codec": "json",
+      "codec": "avro",
       "workflow_id": "order-231",
       "run_id": "run-231",
       "query_name": "current_status"

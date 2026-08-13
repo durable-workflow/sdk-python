@@ -3,10 +3,8 @@
 Every payload on the wire carries a ``payload_codec`` tag alongside its opaque
 blob.
 
-Supported codecs:
+Supported codec:
 
-- ``"json"`` — the blob is a UTF-8 JSON document. Supported for decoding
-  existing data only, not used for new workflows.
 - ``"avro"`` — the blob is standard Avro single-object encoding for the fixed
   recursive ``durable_workflow.protocol.Value`` schema (see
   :mod:`durable_workflow._avro`). It is the default for new v2 workflows and
@@ -39,9 +37,8 @@ from .external_storage import (
     store_external_payload,
 )
 
-JSON_CODEC = "json"
 AVRO_CODEC = "avro"
-SUPPORTED_CODECS = (JSON_CODEC, AVRO_CODEC)
+SUPPORTED_CODECS = (AVRO_CODEC,)
 DEFAULT_PAYLOAD_SIZE_BYTES = 2_097_152
 DEFAULT_WARNING_THRESHOLD_PERCENT = 80
 
@@ -205,14 +202,10 @@ def encode(
     :class:`~durable_workflow.errors.AvroNotInstalledError` when the Avro
     runtime dependency is missing from a broken or partial installation.
     """
-    if codec == JSON_CODEC:
-        blob = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
-    elif codec == AVRO_CODEC:
+    if codec == AVRO_CODEC:
         blob = _avro.encode(value)
     else:
-        raise ValueError(
-            f"Unsupported payload codec {codec!r}; this SDK supports {SUPPORTED_CODECS!r}."
-        )
+        raise _unsupported_payload_codec(codec)
     warn_if_payload_near_limit(
         blob,
         codec=codec,
@@ -237,17 +230,10 @@ def encode_many(
     call sites.
     """
     contexts = _warning_contexts_for_values(values, warning_context)
-    if codec == JSON_CODEC:
-        blobs = [
-            json.dumps(value, separators=(",", ":"), ensure_ascii=False)
-            for value in values
-        ]
-    elif codec == AVRO_CODEC:
+    if codec == AVRO_CODEC:
         blobs = _avro.encode_many(list(values))
     else:
-        raise ValueError(
-            f"Unsupported payload codec {codec!r}; this SDK supports {SUPPORTED_CODECS!r}."
-        )
+        raise _unsupported_payload_codec(codec)
 
     for index, blob in enumerate(blobs):
         warn_if_payload_near_limit(
@@ -380,7 +366,7 @@ def warn_if_json_payload_near_limit(
     blob = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
     warn_if_payload_near_limit(
         blob,
-        codec=JSON_CODEC,
+        codec="http-json",
         size_warning=size_warning,
         warning_context=warning_context,
     )
@@ -469,8 +455,8 @@ def decode_envelope(
 
     When *value* is an envelope, its inner ``codec`` takes precedence over
     the *codec* argument.  When *value* is a raw blob, *codec* selects the
-    decoder (defaulting to JSON).  External payload references require an
-    *external_storage* driver and verify size/hash before decode.
+    decoder. Untagged raw durable payload blobs are rejected. External payload
+    references require an *external_storage* driver and verify size/hash before decode.
     """
     if isinstance(value, dict) and "codec" in value and "blob" in value:
         return decode(value["blob"], codec=value["codec"])
@@ -479,6 +465,8 @@ def decode_envelope(
             raise ValueError("external payload reference requires an external storage driver")
         reference = ExternalPayloadReference.from_dict(value["external_storage"])
         envelope_codec = value.get("codec")
+        if envelope_codec is not None and envelope_codec != AVRO_CODEC:
+            raise _unsupported_payload_codec(envelope_codec)
         if envelope_codec is not None and envelope_codec != reference.codec:
             raise ValueError("external payload reference codec does not match envelope codec")
         blob = fetch_external_payload(external_storage, reference, cache=external_storage_cache).decode("utf-8")
@@ -535,9 +523,6 @@ def decode_envelopes(
 
 def decode_many(blobs: Sequence[str | None], codec: str | None = None) -> list[Any]:
     """Decode several payload blobs with one codec visit when possible."""
-    if codec is None or codec == JSON_CODEC:
-        return [decode(blob, codec=codec) for blob in blobs]
-
     if codec == AVRO_CODEC:
         decoded: list[Any] = [None] * len(blobs)
         avro_jobs: list[tuple[int, str]] = []
@@ -552,11 +537,7 @@ def decode_many(blobs: Sequence[str | None], codec: str | None = None) -> list[A
             decoded[index] = value
         return decoded
 
-    raise ValueError(
-        f"Cannot decode payload with codec {codec!r}: this SDK supports "
-        f"{SUPPORTED_CODECS!r}. Ensure the workflow was started with a "
-        f"compatible codec or an explicit {{'codec': '<codec>', 'blob': '...'}} envelope."
-    )
+    raise _unsupported_payload_codec(codec)
 
 
 def decode(blob: str | None, codec: str | None = None) -> Any:
@@ -569,19 +550,17 @@ def decode(blob: str | None, codec: str | None = None) -> Any:
     if blob is None:
         return None
 
-    if codec is None or codec == JSON_CODEC:
-        if blob == "":
-            return None
-        try:
-            return json.loads(blob)
-        except (json.JSONDecodeError, TypeError) as exc:
-            raise ValueError(f"Payload is not valid JSON: {exc}") from exc
-
     if codec == AVRO_CODEC:
         return _avro.decode(blob)
 
-    raise ValueError(
-        f"Cannot decode payload with codec {codec!r}: this SDK supports "
-        f"{SUPPORTED_CODECS!r}. Ensure the workflow was started with a "
-        f"compatible codec or an explicit {{'codec': '<codec>', 'blob': '...'}} envelope."
+    raise _unsupported_payload_codec(codec)
+
+
+def _unsupported_payload_codec(codec: object) -> ValueError:
+    rendered = "missing" if codec is None else repr(codec)
+    return ValueError(
+        "unsupported_payload_codec: workflow payload codec "
+        f"{rendered} is not supported by Durable Workflow 2.0; use codec='avro' "
+        "with the fixed Avro Value schema and single-object framing. JSON remains "
+        "the HTTP document transport, not a workflow payload codec."
     )

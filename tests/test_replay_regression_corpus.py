@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from durable_workflow import Replayer, serializer
+from durable_workflow.errors import WorkflowPayloadDecodeError
 from tests.test_golden_history_replay import (
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
@@ -47,7 +48,7 @@ def _decode_envelopes(value: Any) -> Any:
 def _command_document(command: Any) -> dict[str, Any]:
     document = command.to_server_command(
         "regression-corpus",
-        payload_codec=serializer.JSON_CODEC,
+        payload_codec=serializer.AVRO_CODEC,
         size_warning=None,
     )
     normalized = _decode_envelopes(document)
@@ -90,6 +91,7 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     )
     start_input = workflow.get("input", [])
     assert isinstance(start_input, list)
+    payload_codec = workflow.get("payload_codec")
 
     history = fixture.get("history", [])
     assert isinstance(history, list)
@@ -100,6 +102,7 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
         history,
         start_input,
         workflow_type=workflow_type,
+        payload_codec=("json" if payload_codec is None else payload_codec),
     )
     commands = [_command_document(command) for command in outcome.commands]
 
@@ -131,6 +134,14 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
     fixture = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(fixture, dict)
 
+    workflow = fixture.get("workflow")
+    assert isinstance(workflow, dict)
+    if workflow.get("payload_codec") != serializer.AVRO_CODEC:
+        with pytest.raises(WorkflowPayloadDecodeError, match="unsupported_payload_codec"):
+            _execute_fixture(fixture)
+
+        return
+
     _execute_fixture(fixture)
 
 
@@ -145,11 +156,12 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
             "workflow": {
                 "type": "golden.single-activity",
                 "input": ["Ada"],
+                "payload_codec": serializer.AVRO_CODEC,
             },
             "history": [
                 {
                     "event_type": "ActivityCompleted",
-                    "payload": {"result": '"hello Ada"'},
+                    "payload": {"result": serializer.encode("hello Ada", codec=serializer.AVRO_CODEC)},
                 }
             ],
             "expected": {"command_sequence": [{"type": "complete_workflow", "result": "hello Ada"}]},
@@ -162,6 +174,7 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
             "workflow": {
                 "type": "golden.single-activity",
                 "input": ["Ada"],
+                "payload_codec": serializer.AVRO_CODEC,
             },
             "command_sequence": [
                 {
@@ -190,6 +203,7 @@ def test_impossible_event_and_command_fixture_is_rejected() -> None:
         "workflow": {
             "type": "golden.single-activity",
             "input": ["Ada"],
+            "payload_codec": serializer.AVRO_CODEC,
         },
         "history": [
             {

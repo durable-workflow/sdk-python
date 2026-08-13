@@ -43,7 +43,26 @@ def execute_fixture(fixture: dict[str, Any], codec: Any) -> None:
     )
     _require("python" in fixture["bindings"], "fixture must name the python binding")
     protocol = fixture["protocol"]
-    _require(protocol["codec"] == "avro", "fixture codec must be avro")
+    if protocol["codec"] == "json":
+        from durable_workflow import serializer
+
+        wire = base64.b64decode(fixture["framing"]["wire_base64"], validate=True).decode("utf-8")
+        try:
+            serializer.decode_envelope({"codec": "json", "blob": wire})
+        except ValueError as caught:
+            _require(
+                fixture["failure_policy"]
+                == {
+                    "operation": "decode_reject",
+                    "error": "unsupported_payload_codec",
+                },
+                "JSON fixture must declare the stable decode rejection",
+            )
+            _require("unsupported_payload_codec" in str(caught), "JSON rejection is not actionable")
+            return
+        raise AssertionError("json-tagged workflow payload did not fail closed")
+
+    _require(protocol["codec"] == "avro", "fixture codec must be avro or a JSON rejection")
     _require(
         protocol["version"] == AVRO_PROTOCOL_VERSION,
         "fixture protocol.version must be the canonical version supported by "

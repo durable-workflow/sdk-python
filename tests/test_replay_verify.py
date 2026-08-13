@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from durable_workflow import workflow
+from durable_workflow import serializer, workflow
 from durable_workflow.replay_verify import (
     FIXTURE_SCHEMA,
     PROMOTION_BLOCK_AND_INVESTIGATE,
@@ -39,6 +39,10 @@ from durable_workflow.replay_verify import (
     main as replay_verify_main,
 )
 from durable_workflow.workflow import WorkflowContext
+
+
+def _avro(value: object) -> dict[str, str]:
+    return serializer.envelope(value, codec=serializer.AVRO_CODEC)
 
 
 @workflow.defn(name="replay-verify.greet")
@@ -75,7 +79,7 @@ class WaitDivergenceWorkflow:
 
 def test_verify_replay_reports_clean_replay_with_expectation_match() -> None:
     history = [
-        {"event_type": "ActivityCompleted", "payload": {"result": "\"hello Ada\""}},
+        {"event_type": "ActivityCompleted", "payload": {"result": _avro("hello Ada")}},
     ]
 
     report = verify_replay(
@@ -100,7 +104,7 @@ def test_verify_replay_refuses_different_command_shape_with_actionable_diagnosti
             "payload": {
                 "sequence": 1,
                 "activity_type": "greet",
-                "result": "\"hello Ada\"",
+                "result": _avro("hello Ada"),
             },
         }
     ]
@@ -184,7 +188,7 @@ def test_verify_replay_refuses_same_shape_activity_name_drift() -> None:
             "payload": {
                 "sequence": 1,
                 "activity_type": "greet",
-                "result": "\"hello Ada\"",
+                "result": _avro("hello Ada"),
             },
         }
     ]
@@ -279,7 +283,7 @@ def test_verify_replay_refuses_activity_replacing_open_wait() -> None:
 
 def test_verify_replay_surfaces_expectation_mismatch_as_drift() -> None:
     history = [
-        {"event_type": "ActivityCompleted", "payload": {"result": "\"hello Ada\""}},
+        {"event_type": "ActivityCompleted", "payload": {"result": _avro("hello Ada")}},
     ]
 
     report = verify_replay(
@@ -323,7 +327,7 @@ def test_verify_golden_history_replays_clean_fixture(tmp_path: Path) -> None:
                 "history": [
                     {
                         "event_type": "ActivityCompleted",
-                        "payload": {"result": "\"hello Ada\""},
+                        "payload": {"result": _avro("hello Ada")},
                     }
                 ],
                 "expected": {
@@ -376,7 +380,7 @@ def test_verify_golden_history_flags_missing_required_family(tmp_path: Path) -> 
                 "history": [
                     {
                         "event_type": "ActivityCompleted",
-                        "payload": {"result": "\"hello Ada\""},
+                        "payload": {"result": _avro("hello Ada")},
                     }
                 ],
                 "expected": {
@@ -417,7 +421,7 @@ def test_verify_golden_history_drift_blocks_promotion(tmp_path: Path) -> None:
                 "history": [
                     {
                         "event_type": "ActivityCompleted",
-                        "payload": {"result": "\"hello Ada\""},
+                        "payload": {"result": _avro("hello Ada")},
                     }
                 ],
                 "expected": {
@@ -481,7 +485,7 @@ def test_cli_writes_json_report(tmp_path: Path) -> None:
                 "history": [
                     {
                         "event_type": "ActivityCompleted",
-                        "payload": {"result": "\"hello Ada\""},
+                        "payload": {"result": _avro("hello Ada")},
                     }
                 ],
                 "expected": {"command_type": "CompleteWorkflow", "result": "hello Ada"},
@@ -527,7 +531,7 @@ def test_cli_returns_failure_for_drifted_replay(tmp_path: Path) -> None:
                 "history": [
                     {
                         "event_type": "ActivityCompleted",
-                        "payload": {"result": "\"hello Ada\""},
+                        "payload": {"result": _avro("hello Ada")},
                     }
                 ],
                 "expected": {"command_type": "CompleteWorkflow", "result": "different"},
@@ -603,7 +607,7 @@ def test_golden_history_report_to_dict_includes_promotion_decision(tmp_path: Pat
                 "history": [
                     {
                         "event_type": "ActivityCompleted",
-                        "payload": {"result": "\"hello Ada\""},
+                        "payload": {"result": _avro("hello Ada")},
                     }
                 ],
                 "expected": {"command_type": "CompleteWorkflow", "result": "hello Ada"},
@@ -639,7 +643,7 @@ def test_golden_history_drift_yields_block_until_compatible(tmp_path: Path) -> N
                 "history": [
                     {
                         "event_type": "ActivityCompleted",
-                        "payload": {"result": "\"hello Ada\""},
+                        "payload": {"result": _avro("hello Ada")},
                     }
                 ],
                 "expected": {"command_type": "CompleteWorkflow", "result": "different"},
@@ -774,7 +778,7 @@ def _history_export_bundle() -> dict[str, Any]:
             "last_history_sequence": 1,
         },
         "payloads": {
-            "codec": "json",
+            "codec": "avro",
             "arguments": {"available": False, "data": None},
             "output": {"available": False, "data": None},
         },

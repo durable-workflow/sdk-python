@@ -176,7 +176,7 @@ class InvocableActivityHandler:
             codec = raw_args.get("codec")
             if isinstance(codec, str):
                 return codec
-        return serializer.JSON_CODEC
+        return serializer.AVRO_CODEC
 
     def _expired_deadline_failure(
         self,
@@ -435,7 +435,7 @@ def _lambda_event_body(event: Mapping[str, Any]) -> bytes | str | Mapping[str, A
     body = event.get("body")
     if isinstance(body, str) and event.get("isBase64Encoded") is True:
         return base64.b64decode(body)
-    if isinstance(body, (bytes, str, Mapping)):
+    if isinstance(body, bytes | str | Mapping):
         return cast(bytes | str | Mapping[str, Any], body)
     raise ValueError("Lambda event body must contain the invocable request JSON")
 

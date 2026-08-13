@@ -698,7 +698,7 @@ def _history(scenario: str, *, complete: bool = True) -> list[dict[str, Any]]:
                 "sequence": 1,
                 "activity_type": "python-replay.greet",
                 "result": _payload("Hello, Ada!"),
-                "payload_codec": serializer.JSON_CODEC,
+                "payload_codec": serializer.AVRO_CODEC,
             }),
         ]
 
@@ -713,7 +713,7 @@ def _history(scenario: str, *, complete: bool = True) -> list[dict[str, Any]]:
                 "sequence": 1,
                 "signal_name": "name-provided",
                 "arguments": _payload(["Grace"]),
-                "payload_codec": serializer.JSON_CODEC,
+                "payload_codec": serializer.AVRO_CODEC,
             }),
             _event(3, "ConditionWaitSatisfied", {
                 "sequence": 1,
@@ -726,7 +726,7 @@ def _history(scenario: str, *, complete: bool = True) -> list[dict[str, Any]]:
                     "sequence": 2,
                     "activity_type": "python-replay.greet",
                     "result": _payload("Hello, Grace!"),
-                    "payload_codec": serializer.JSON_CODEC,
+                    "payload_codec": serializer.AVRO_CODEC,
                 })
             )
         return events
@@ -742,7 +742,7 @@ def _history(scenario: str, *, complete: bool = True) -> list[dict[str, Any]]:
                 "sequence": 1,
                 "update_name": "approve",
                 "arguments": _payload([True]),
-                "payload_codec": serializer.JSON_CODEC,
+                "payload_codec": serializer.AVRO_CODEC,
             }),
             _event(3, "ConditionWaitSatisfied", {
                 "sequence": 1,
@@ -763,7 +763,7 @@ def _history(scenario: str, *, complete: bool = True) -> list[dict[str, Any]]:
                 "sequence": 2,
                 "activity_type": "python-replay.versioned-v3",
                 "result": _payload("v3_result"),
-                "payload_codec": serializer.JSON_CODEC,
+                "payload_codec": serializer.AVRO_CODEC,
             }),
         ]
 
@@ -773,7 +773,7 @@ def _history(scenario: str, *, complete: bool = True) -> list[dict[str, Any]]:
                 "sequence": 1,
                 "activity_type": "python-replay.reserve-inventory",
                 "result": _payload("inventory-id-456"),
-                "payload_codec": serializer.JSON_CODEC,
+                "payload_codec": serializer.AVRO_CODEC,
             }),
             _event(2, "ChildRunFailed", {
                 "sequence": 2,
@@ -785,7 +785,7 @@ def _history(scenario: str, *, complete: bool = True) -> list[dict[str, Any]]:
                 "sequence": 3,
                 "activity_type": "python-replay.release-inventory",
                 "result": _payload("cancelled-inventory-id-456"),
-                "payload_codec": serializer.JSON_CODEC,
+                "payload_codec": serializer.AVRO_CODEC,
             }),
         ]
 
@@ -811,7 +811,7 @@ def _history_bundle(scenario: str) -> dict[str, Any]:
         _event(1, "WorkflowStarted", {
             "workflow_type": "python-replay-conformance",
             "arguments": _payload([scenario]),
-            "payload_codec": serializer.JSON_CODEC,
+            "payload_codec": serializer.AVRO_CODEC,
         }),
     ]
     for event in _history(scenario):
@@ -838,7 +838,7 @@ def _history_bundle(scenario: str) -> dict[str, Any]:
             "closed_at": "2026-05-21T00:01:00.000000Z",
         },
         "payloads": {
-            "codec": serializer.JSON_CODEC,
+            "codec": serializer.AVRO_CODEC,
             "arguments": {
                 "available": True,
                 "data": _payload([scenario]),
@@ -950,7 +950,7 @@ def _history_event_types(events: Sequence[Mapping[str, Any]]) -> list[str]:
 
 
 def _payload(value: Any) -> str:
-    return serializer.encode(value, codec=serializer.JSON_CODEC, size_warning=None)
+    return serializer.encode(value, codec=serializer.AVRO_CODEC, size_warning=None)
 
 
 def _timestamp() -> str:

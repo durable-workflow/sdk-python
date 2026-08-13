@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from durable_workflow import workflow
+from durable_workflow import serializer, workflow
 from durable_workflow.errors import WorkflowFailed
 from durable_workflow.testing import (
     WorkflowEnvironment,
@@ -354,11 +354,11 @@ class TestReplayHistory:
             [
                 {
                     "event_type": "ActivityCompleted",
-                    "payload": {"result": {"codec": "json", "blob": '"recorded"'}},
+                    "payload": {"result": serializer.envelope("recorded")},
                 }
             ],
             ["world"],
-            payload_codec="json",
+            payload_codec="avro",
         )
 
         assert len(outcome.commands) == 1
@@ -372,7 +372,7 @@ class TestReplayHistory:
                 [
                     {
                         "event_type": "ActivityCompleted",
-                        "payload": {"result": {"codec": "json", "blob": '"from-file"'}},
+                        "payload": {"result": serializer.envelope("from-file")},
                     }
                 ]
             )
@@ -382,7 +382,7 @@ class TestReplayHistory:
             SimpleGreeter,
             history_path,
             ["world"],
-            payload_codec="json",
+            payload_codec="avro",
         )
 
         assert isinstance(outcome.commands[0], CompleteWorkflow)
@@ -396,7 +396,7 @@ class TestReplayHistory:
                     "events": [
                         {
                             "event_type": "ActivityCompleted",
-                            "payload": {"result": {"codec": "json", "blob": '"wrapped"'}},
+                            "payload": {"result": serializer.envelope("wrapped")},
                         }
                     ]
                 }
@@ -407,7 +407,7 @@ class TestReplayHistory:
             SimpleGreeter,
             history_path,
             ["world"],
-            payload_codec="json",
+            payload_codec="avro",
         )
 
         assert isinstance(outcome.commands[0], CompleteWorkflow)

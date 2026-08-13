@@ -1,0 +1,31 @@
+{
+  "fixture_schema": "durable-workflow.golden-history.v1",
+  "source": {
+    "runtime": "sdk-python",
+    "package": "durable-workflow",
+    "version": "2.0.0-rc.30",
+    "worker_protocol_version": "1.1",
+    "control_plane_version": "2",
+    "payload_codec": "avro"
+  },
+  "cases": [
+    {
+      "name": "single_activity_completion",
+      "family": "activity",
+      "workflow_type": "golden.single-activity",
+      "start_input": ["Ada"],
+      "history": [
+        {
+          "event_type": "ActivityCompleted",
+          "payload": {
+            "result": "wwHioz3/VYAiNwoSaGVsbG8gQWRh"
+          }
+        }
+      ],
+      "expected": {
+        "command_type": "CompleteWorkflow",
+        "result": "hello Ada"
+      }
+    }
+  ]
+}

@@ -12,6 +12,19 @@ from typing import Any, Protocol
 from urllib.parse import quote, unquote, urlparse
 
 EXTERNAL_PAYLOAD_REFERENCE_SCHEMA = "durable-workflow.v2.external-payload-reference.v1"
+PUBLIC_PAYLOAD_CODEC = "avro"
+
+
+def _require_public_payload_codec(codec: object) -> str:
+    if codec != PUBLIC_PAYLOAD_CODEC:
+        rendered = codec if isinstance(codec, str) and codec else "<missing>"
+        raise ValueError(
+            f'unsupported_payload_codec: workflow payload codec "{rendered}" is not supported by '
+            'Durable Workflow 2.0; use codec="avro" with the fixed Avro Value schema and '
+            "single-object framing. JSON remains the HTTP document transport, not a workflow "
+            "payload codec."
+        )
+    return PUBLIC_PAYLOAD_CODEC
 
 
 class ExternalPayloadIntegrityError(ValueError):
@@ -87,6 +100,9 @@ class ExternalPayloadReference:
     expires_at: str | None = None
     schema: str = EXTERNAL_PAYLOAD_REFERENCE_SCHEMA
 
+    def __post_init__(self) -> None:
+        _require_public_payload_codec(self.codec)
+
     def to_dict(self) -> dict[str, str | int]:
         data: dict[str, str | int] = {
             "schema": self.schema,
@@ -123,8 +139,7 @@ class ExternalPayloadReference:
             raise ValueError("external payload reference sha256 must be a hex digest") from exc
         if not isinstance(size_bytes, int) or size_bytes < 0:
             raise ValueError("external payload reference size_bytes must be a non-negative integer")
-        if not isinstance(codec, str) or not codec:
-            raise ValueError("external payload reference codec must be a non-empty string")
+        codec = _require_public_payload_codec(codec)
         if expires_at is not None:
             if not isinstance(expires_at, str) or not expires_at:
                 raise ValueError("external payload reference expires_at must be a non-empty RFC3339 string")
@@ -439,6 +454,7 @@ def store_external_payload(
     expires_at: str | None = None,
 ) -> ExternalPayloadReference:
     """Store encoded payload bytes and return their reference envelope."""
+    codec = _require_public_payload_codec(codec)
     if expires_at is not None:
         _validate_rfc3339(expires_at)
     sha256 = hashlib.sha256(data).hexdigest()
@@ -459,6 +475,7 @@ def fetch_external_payload(
     cache: ExternalPayloadCache | None = None,
 ) -> bytes:
     """Fetch payload bytes and verify size/hash before replay or decode."""
+    _require_public_payload_codec(reference.codec)
     if cache is not None:
         cached = cache.get(reference)
         if cached is not None:

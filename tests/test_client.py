@@ -470,7 +470,7 @@ class TestStartWorkflow:
         search_payload = next(payload for payload in payloads if payload["kind"] == "search_attributes")
         assert search_payload["workflow_id"] == "wf-1"
         assert search_payload["task_queue"] == "q1"
-        assert search_payload["codec"] == "json"
+        assert search_payload["codec"] == "http-json"
         await client.aclose()
 
     @pytest.mark.asyncio
@@ -594,6 +594,8 @@ class TestDescribeWorkflow:
 
     @pytest.mark.asyncio
     async def test_envelope_fields(self, client: Client) -> None:
+        input_envelope = serializer.envelope(["Ada"], codec="avro")
+        output_envelope = serializer.envelope({"greeting": "Hello, Ada!"}, codec="avro")
         resp = _mock_response(200, {
             "workflow_id": "wf-1",
             "run_id": "run-1",
@@ -601,25 +603,27 @@ class TestDescribeWorkflow:
             "status": "completed",
             "input": ["Ada"],
             "output": {"greeting": "Hello, Ada!"},
-            "input_envelope": {"codec": "json", "blob": '["Ada"]'},
-            "output_envelope": {"codec": "json", "blob": '{"greeting":"Hello, Ada!"}'},
-            "payload_codec": "json",
+            "input_envelope": input_envelope,
+            "output_envelope": output_envelope,
+            "payload_codec": "avro",
         })
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp):
             desc = await client.describe_workflow("wf-1")
             assert desc.input == ["Ada"]
             assert desc.output == {"greeting": "Hello, Ada!"}
-            assert desc.payload_codec == "json"
+            assert desc.payload_codec == "avro"
 
     @pytest.mark.asyncio
     async def test_envelope_fields_decode_in_one_batch(self, client: Client) -> None:
+        input_envelope = serializer.envelope(["Ada"], codec="avro")
+        output_envelope = serializer.envelope({"greeting": "Hello, Ada!"}, codec="avro")
         resp = _mock_response(200, {
             "workflow_id": "wf-1",
             "run_id": "run-1",
             "workflow_type": "greeter",
             "status": "completed",
-            "input_envelope": {"codec": "json", "blob": '["Ada"]'},
-            "output_envelope": {"codec": "json", "blob": '{"greeting":"Hello, Ada!"}'},
+            "input_envelope": input_envelope,
+            "output_envelope": output_envelope,
         })
 
         with (
@@ -634,8 +638,8 @@ class TestDescribeWorkflow:
 
         decode_envelopes.assert_called_once_with(
             [
-                {"codec": "json", "blob": '["Ada"]'},
-                {"codec": "json", "blob": '{"greeting":"Hello, Ada!"}'},
+                input_envelope,
+                output_envelope,
             ],
             external_storage=client.external_storage,
             external_storage_cache=client.external_storage_cache,
@@ -2919,12 +2923,12 @@ class TestFailActivityTask:
                 lease_owner="w1",
                 message="activity error",
                 details={"retry_after": 30},
-                codec=serializer.JSON_CODEC,
+                codec=serializer.AVRO_CODEC,
             )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             envelope = body["failure"]["details"]
 
-            assert envelope["codec"] == serializer.JSON_CODEC
+            assert envelope["codec"] == serializer.AVRO_CODEC
             assert serializer.decode_envelope(envelope) == {"retry_after": 30}
 
 
@@ -3522,7 +3526,7 @@ class TestQueryTasks:
         assert result == fixture["response_body"]
         assert result["outcome"] == fixture["semantic_body"]["outcome"]
         assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
-        assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
+        assert mock.call_args.kwargs["json"] == fixture["sdk_python"]["request_body"]
 
     @pytest.mark.asyncio
     async def test_fail_query_task_matches_polyglot_fixture(self, client: Client) -> None:
@@ -3578,7 +3582,7 @@ class TestQueryTasks:
         assert first_body["poll_request_id"] == second_body["poll_request_id"]
 
     @pytest.mark.asyncio
-    async def test_complete_query_task_sends_result_and_envelope(self, client: Client) -> None:
+    async def test_complete_query_task_sends_avro_result_envelope(self, client: Client) -> None:
         resp = _mock_response(200, {"outcome": "completed"})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
             result = await client.complete_query_task(
@@ -3586,7 +3590,7 @@ class TestQueryTasks:
                 lease_owner="w1",
                 query_task_attempt=2,
                 result={"ok": True},
-                codec="json",
+                codec="avro",
             )
 
             assert result["outcome"] == "completed"
@@ -3594,7 +3598,19 @@ class TestQueryTasks:
             assert body["lease_owner"] == "w1"
             assert body["query_task_attempt"] == 2
             assert body["result"] == {"ok": True}
-            assert body["result_envelope"] == {"codec": "json", "blob": '{"ok":true}'}
+            assert body["result_envelope"]["codec"] == "avro"
+            assert serializer.decode_envelope(body["result_envelope"]) == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_complete_query_task_rejects_json_payload_codec(self, client: Client) -> None:
+        with pytest.raises(ValueError, match="unsupported_payload_codec.*HTTP document transport"):
+            await client.complete_query_task(
+                query_task_id="qt-json",
+                lease_owner="w1",
+                query_task_attempt=1,
+                result={"stale": True},
+                codec="json",
+            )
 
     @pytest.mark.asyncio
     async def test_fail_query_task_sends_failure_reason(self, client: Client) -> None:

@@ -89,14 +89,14 @@ def test_external_storage_envelope_offloads_large_payload(tmp_path: Path) -> Non
         {"message": "x" * 64},
         external_storage=storage,
         threshold_bytes=10,
-        codec="json",
+        codec="avro",
     )
 
-    assert env["codec"] == "json"
+    assert env["codec"] == "avro"
     assert "blob" not in env
     reference = env["external_storage"]
     assert reference["schema"] == EXTERNAL_PAYLOAD_REFERENCE_SCHEMA
-    assert reference["codec"] == "json"
+    assert reference["codec"] == "avro"
     assert reference["size_bytes"] > 10
     assert serializer.decode_envelope(env, external_storage=storage) == {"message": "x" * 64}
 
@@ -114,12 +114,12 @@ async def test_client_payload_envelope_uses_configured_external_storage(tmp_path
         env = client._payload_envelope(
             {"message": "x" * 64},
             kind="workflow_input",
-            codec="json",
+            codec="avro",
         )
     finally:
         await client.aclose()
 
-    assert env["codec"] == "json"
+    assert env["codec"] == "avro"
     assert "blob" not in env
     assert env["external_storage"]["schema"] == EXTERNAL_PAYLOAD_REFERENCE_SCHEMA
     assert serializer.decode_envelope(env, external_storage=storage) == {"message": "x" * 64}
@@ -132,7 +132,7 @@ async def test_client_decodes_external_activity_result(tmp_path: Path) -> None:
         {"message": "x" * 64},
         external_storage=storage,
         threshold_bytes=1,
-        codec="json",
+        codec="avro",
     )
     client = Client("http://durable-workflow.test", external_storage=storage)
 
@@ -140,7 +140,7 @@ async def test_client_decodes_external_activity_result(tmp_path: Path) -> None:
         return {
             "activity_id": "activity-1",
             "workflow_type": "dw.standalone_activity",
-            "payload_codec": "json",
+            "payload_codec": "avro",
             "result": result,
         }
 
@@ -160,13 +160,13 @@ def test_replayer_fetches_external_start_and_activity_payloads(tmp_path: Path) -
         ["seed"],
         external_storage=storage,
         threshold_bytes=1,
-        codec="json",
+        codec="avro",
     )
     activity_result = serializer.external_storage_envelope(
         {"message": "x" * 64},
         external_storage=storage,
         threshold_bytes=1,
-        codec="json",
+        codec="avro",
     )
 
     first = Replayer(workflows=[ExternalStorageReplayWorkflow]).replay(
@@ -222,13 +222,13 @@ async def test_worker_query_task_replay_fetches_external_history_payload(tmp_pat
         [message],
         external_storage=storage,
         threshold_bytes=1,
-        codec="json",
+        codec="avro",
     )
     query_args = serializer.external_storage_envelope(
         ["!"],
         external_storage=storage,
         threshold_bytes=1,
-        codec="json",
+        codec="avro",
     )
 
     outcome = await worker._run_query_task(
@@ -246,9 +246,9 @@ async def test_worker_query_task_replay_fetches_external_history_payload(tmp_pat
                     },
                 },
             ],
-            "workflow_arguments": serializer.envelope([], codec="json"),
+            "workflow_arguments": serializer.envelope([], codec="avro"),
             "query_arguments": query_args,
-            "payload_codec": "json",
+            "payload_codec": "avro",
         }
     )
 
@@ -270,8 +270,8 @@ async def test_worker_workflow_commands_use_client_external_storage_threshold(tm
             "workflow_type": "external-storage-complete",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
     )
 
@@ -307,8 +307,8 @@ async def test_worker_activity_result_uses_worker_external_storage_threshold(tmp
                 "task_id": "activity-external-result",
                 "activity_attempt_id": "attempt-1",
                 "activity_type": "external_storage_activity_result",
-                "arguments": serializer.envelope([], codec="json"),
-                "payload_codec": "json",
+                "arguments": serializer.envelope([], codec="avro"),
+                "payload_codec": "avro",
             }
         )
     finally:
@@ -323,7 +323,7 @@ async def test_worker_activity_result_uses_worker_external_storage_threshold(tmp
 
 
 @pytest.mark.asyncio
-async def test_worker_query_result_uses_worker_external_storage_threshold(tmp_path: Path) -> None:
+async def test_worker_query_result_uses_avro_external_storage_threshold(tmp_path: Path) -> None:
     storage = LocalFilesystemExternalStorage(tmp_path)
     client = Client("http://durable-workflow.test")
     requests: list[dict[str, object]] = []
@@ -354,13 +354,13 @@ async def test_worker_query_result_uses_worker_external_storage_threshold(tmp_pa
                         "event_type": "SignalReceived",
                         "payload": {
                             "signal_name": "set_message",
-                            "value": serializer.envelope([message], codec="json"),
+                            "value": serializer.envelope([message], codec="avro"),
                         },
                     },
                 ],
-                "workflow_arguments": serializer.envelope([], codec="json"),
-                "query_arguments": serializer.envelope(["!"], codec="json"),
-                "payload_codec": "json",
+                "workflow_arguments": serializer.envelope([], codec="avro"),
+                "query_arguments": serializer.envelope(["!"], codec="avro"),
+                "payload_codec": "avro",
             }
         )
     finally:
@@ -370,6 +370,7 @@ async def test_worker_query_result_uses_worker_external_storage_threshold(tmp_pa
     assert requests[0]["result"] == f"{message}!"
     result_envelope = requests[0]["result_envelope"]
     assert isinstance(result_envelope, dict)
+    assert result_envelope["codec"] == "avro"
     assert "external_storage" in result_envelope
     assert "blob" not in result_envelope
     assert serializer.decode_envelope(result_envelope, external_storage=storage) == f"{message}!"
@@ -389,7 +390,7 @@ def test_workflow_command_serialization_offloads_configured_payloads(tmp_path: P
             RecordSideEffect({"side_effect": large}),
         ],
         "q1",
-        payload_codec="json",
+        payload_codec="avro",
         size_warning=None,
         external_storage=storage,
         external_storage_threshold_bytes=1,
@@ -412,7 +413,7 @@ def test_workflow_command_serialization_offloads_configured_payloads(tmp_path: P
 
     direct_update = CompleteUpdate("update-2", {"direct": large}).to_server_command(
         "q1",
-        payload_codec="json",
+        payload_codec="avro",
         size_warning=None,
         external_storage=storage,
         external_storage_threshold_bytes=1,
@@ -427,10 +428,10 @@ def test_external_storage_envelope_keeps_small_payload_inline(tmp_path: Path) ->
         {"ok": True},
         external_storage=storage,
         threshold_bytes=100,
-        codec="json",
+        codec="avro",
     )
 
-    assert env == {"codec": "json", "blob": '{"ok":true}'}
+    assert env == {"codec": "avro", "blob": serializer.encode({"ok": True}, codec="avro")}
     assert serializer.decode_envelope(env, external_storage=storage) == {"ok": True}
 
 
@@ -440,7 +441,7 @@ def test_decode_envelope_requires_driver_for_external_reference(tmp_path: Path) 
         "large",
         external_storage=storage,
         threshold_bytes=1,
-        codec="json",
+        codec="avro",
     )
 
     with pytest.raises(ValueError, match="external storage driver"):
@@ -453,11 +454,11 @@ def test_decode_envelope_rejects_codec_mismatch(tmp_path: Path) -> None:
         "large",
         external_storage=storage,
         threshold_bytes=1,
-        codec="json",
+        codec="avro",
     )
-    env["codec"] = "avro"
+    env["codec"] = "json"
 
-    with pytest.raises(ValueError, match="codec"):
+    with pytest.raises(ValueError, match="unsupported_payload_codec"):
         serializer.decode_envelope(env, external_storage=storage)
 
 
@@ -467,12 +468,12 @@ def test_decode_envelopes_resolves_external_references_in_order(tmp_path: Path) 
         "large",
         external_storage=storage,
         threshold_bytes=1,
-        codec="json",
+        codec="avro",
     )
 
     assert serializer.decode_envelopes(
         [
-            {"codec": "json", "blob": '"inline"'},
+            serializer.envelope("inline", codec="avro"),
             large,
             None,
         ],
@@ -482,7 +483,7 @@ def test_decode_envelopes_resolves_external_references_in_order(tmp_path: Path) 
 
 def test_fetch_external_payload_rejects_mutated_bytes(tmp_path: Path) -> None:
     storage = LocalFilesystemExternalStorage(tmp_path)
-    reference = store_external_payload(storage, b'{"safe":true}', codec="json")
+    reference = store_external_payload(storage, b'{"safe":true}', codec="avro")
     path = Path(reference.uri.removeprefix("file://"))
     path.write_bytes(b'{"safe":false}')
 
@@ -490,10 +491,28 @@ def test_fetch_external_payload_rejects_mutated_bytes(tmp_path: Path) -> None:
         fetch_external_payload(storage, reference)
 
 
+def test_external_payload_references_reject_json_codec(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+
+    with pytest.raises(ValueError, match="unsupported_payload_codec.*HTTP document transport"):
+        store_external_payload(storage, b'{"stale":true}', codec="json")
+
+    with pytest.raises(ValueError, match="unsupported_payload_codec.*HTTP document transport"):
+        ExternalPayloadReference.from_dict(
+            {
+                "schema": EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
+                "uri": "file:///tmp/stale",
+                "sha256": hashlib.sha256(b'{"stale":true}').hexdigest(),
+                "size_bytes": 14,
+                "codec": "json",
+            }
+        )
+
+
 def test_fetch_external_payload_cache_reuses_verified_bytes(tmp_path: Path) -> None:
     storage = LocalFilesystemExternalStorage(tmp_path)
     cache = ExternalPayloadCache(max_entries=2, max_bytes=1024)
-    reference = store_external_payload(storage, b'{"stable":true}', codec="json")
+    reference = store_external_payload(storage, b'{"stable":true}', codec="avro")
     path = Path(reference.uri.removeprefix("file://"))
 
     assert fetch_external_payload(storage, reference, cache=cache) == b'{"stable":true}'
@@ -506,7 +525,7 @@ def test_fetch_external_payload_cache_reuses_verified_bytes(tmp_path: Path) -> N
 def test_delete_external_payload_removes_blob_and_cache_entry(tmp_path: Path) -> None:
     storage = LocalFilesystemExternalStorage(tmp_path)
     cache = ExternalPayloadCache(max_entries=2, max_bytes=1024)
-    reference = store_external_payload(storage, b'{"retained":false}', codec="json")
+    reference = store_external_payload(storage, b'{"retained":false}', codec="avro")
     path = Path(reference.uri.removeprefix("file://"))
 
     assert fetch_external_payload(storage, reference, cache=cache) == b'{"retained":false}'
@@ -520,7 +539,7 @@ def test_delete_external_payload_removes_blob_and_cache_entry(tmp_path: Path) ->
 
 def test_delete_external_payload_is_idempotent_for_local_retention_cleanup(tmp_path: Path) -> None:
     storage = LocalFilesystemExternalStorage(tmp_path)
-    reference = store_external_payload(storage, b"old-history", codec="json")
+    reference = store_external_payload(storage, b"old-history", codec="avro")
 
     delete_external_payload(storage, reference)
     delete_external_payload(storage, reference)
@@ -529,7 +548,7 @@ def test_delete_external_payload_is_idempotent_for_local_retention_cleanup(tmp_p
 def test_fetch_external_payload_does_not_cache_failed_integrity_check(tmp_path: Path) -> None:
     storage = LocalFilesystemExternalStorage(tmp_path)
     cache = ExternalPayloadCache(max_entries=2, max_bytes=1024)
-    reference = store_external_payload(storage, b'{"safe":true}', codec="json")
+    reference = store_external_payload(storage, b'{"safe":true}', codec="avro")
     path = Path(reference.uri.removeprefix("file://"))
     path.write_bytes(b'{"safe":false}')
 
@@ -546,7 +565,7 @@ def test_decode_envelopes_can_share_external_payload_cache(tmp_path: Path) -> No
         {"message": "x" * 64},
         external_storage=storage,
         threshold_bytes=10,
-        codec="json",
+        codec="avro",
     )
     path = Path(env["external_storage"]["uri"].removeprefix("file://"))
 
@@ -565,8 +584,8 @@ def test_decode_envelopes_can_share_external_payload_cache(tmp_path: Path) -> No
 def test_external_payload_cache_is_bounded_by_entries_and_bytes(tmp_path: Path) -> None:
     storage = LocalFilesystemExternalStorage(tmp_path)
     cache = ExternalPayloadCache(max_entries=1, max_bytes=20)
-    first = store_external_payload(storage, b"first", codec="json")
-    second = store_external_payload(storage, b"second", codec="json")
+    first = store_external_payload(storage, b"first", codec="avro")
+    second = store_external_payload(storage, b"second", codec="avro")
 
     fetch_external_payload(storage, first, cache=cache)
     fetch_external_payload(storage, second, cache=cache)
@@ -574,7 +593,7 @@ def test_external_payload_cache_is_bounded_by_entries_and_bytes(tmp_path: Path) 
     assert cache.get(first) is None
     assert cache.get(second) == b"second"
 
-    too_large = store_external_payload(storage, b"x" * 21, codec="json")
+    too_large = store_external_payload(storage, b"x" * 21, codec="avro")
     fetch_external_payload(storage, too_large, cache=cache)
 
     assert cache.get(too_large) is None
@@ -642,7 +661,7 @@ def test_store_external_payload_round_trips_optional_expiry(tmp_path: Path) -> N
     reference = store_external_payload(
         storage,
         b'{"large":true}',
-        codec="json",
+        codec="avro",
         expires_at="2026-04-23T12:00:00+00:00",
     )
 
@@ -687,9 +706,9 @@ def test_s3_external_storage_round_trips_and_deletes_payload() -> None:
     client = FakeS3Client()
     storage = S3ExternalStorage(client, bucket="payloads", prefix="tenant-a/history")
 
-    reference = store_external_payload(storage, b'{"large":true}', codec="json")
+    reference = store_external_payload(storage, b'{"large":true}', codec="avro")
 
-    assert reference.uri.startswith("s3://payloads/tenant-a/history/json/")
+    assert reference.uri.startswith("s3://payloads/tenant-a/history/avro/")
     assert fetch_external_payload(storage, reference) == b'{"large":true}'
     storage.delete(reference.uri)
 
@@ -745,9 +764,9 @@ def test_gcs_external_storage_round_trips_and_deletes_payload() -> None:
     client = FakeGCSClient()
     storage = GCSExternalStorage(client, bucket="payloads", prefix="tenant-a")
 
-    reference = store_external_payload(storage, b'{"cloud":"gcs"}', codec="json")
+    reference = store_external_payload(storage, b'{"cloud":"gcs"}', codec="avro")
 
-    assert reference.uri.startswith("gs://payloads/tenant-a/json/")
+    assert reference.uri.startswith("gs://payloads/tenant-a/avro/")
     assert fetch_external_payload(storage, reference) == b'{"cloud":"gcs"}'
     storage.delete(reference.uri)
 
@@ -789,9 +808,9 @@ def test_azure_external_storage_round_trips_and_deletes_payload() -> None:
     client = FakeAzureContainerClient()
     storage = AzureBlobExternalStorage(client, container="payloads", prefix="tenant-a")
 
-    reference = store_external_payload(storage, b'{"cloud":"azure"}', codec="json")
+    reference = store_external_payload(storage, b'{"cloud":"azure"}', codec="avro")
 
-    assert reference.uri.startswith("azure-blob://payloads/tenant-a/json/")
+    assert reference.uri.startswith("azure-blob://payloads/tenant-a/avro/")
     assert fetch_external_payload(storage, reference) == b'{"cloud":"azure"}'
     storage.delete(reference.uri)
 
@@ -823,9 +842,9 @@ def test_external_storage_policy_builds_s3_driver_from_server_namespace_policy()
     assert isinstance(storage, S3ExternalStorage)
     assert policy.threshold_bytes == 2_097_152
 
-    reference = store_external_payload(storage, b'{"from":"server-policy"}', codec="json")
+    reference = store_external_payload(storage, b'{"from":"server-policy"}', codec="avro")
 
-    assert reference.uri.startswith("s3://dw-payloads/billing/json/")
+    assert reference.uri.startswith("s3://dw-payloads/billing/avro/")
     assert fetch_external_payload(storage, reference) == b'{"from":"server-policy"}'
 
 
@@ -845,9 +864,9 @@ def test_external_storage_policy_builds_gcs_driver_from_cloud_reference() -> Non
 
     storage = external_storage_driver_from_policy(policy, gcs_client=client)
 
-    reference = store_external_payload(storage, b'{"from":"cloud-policy"}', codec="json")
+    reference = store_external_payload(storage, b'{"from":"cloud-policy"}', codec="avro")
 
-    assert reference.uri.startswith("gs://workflow-payloads/prod/json/")
+    assert reference.uri.startswith("gs://workflow-payloads/prod/avro/")
     assert fetch_external_payload(storage, reference) == b'{"from":"cloud-policy"}'
 
 
@@ -861,7 +880,7 @@ def test_external_storage_policy_builds_local_driver_from_file_uri(tmp_path: Pat
         }
     )
 
-    reference = store_external_payload(storage, b"local-policy", codec="json")
+    reference = store_external_payload(storage, b"local-policy", codec="avro")
 
     assert fetch_external_payload(storage, reference) == b"local-policy"
 
@@ -877,9 +896,9 @@ def test_external_storage_policy_builds_azure_driver_from_container_config() -> 
         azure_container_client=client,
     )
 
-    reference = store_external_payload(storage, b'{"from":"azure-policy"}', codec="json")
+    reference = store_external_payload(storage, b'{"from":"azure-policy"}', codec="avro")
 
-    assert reference.uri.startswith("azure-blob://payloads/tenant-a/json/")
+    assert reference.uri.startswith("azure-blob://payloads/tenant-a/avro/")
     assert fetch_external_payload(storage, reference) == b'{"from":"azure-policy"}'
 
 

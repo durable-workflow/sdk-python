@@ -118,8 +118,8 @@ def _signal_received_event(name: str, args: list[object]) -> dict[str, object]:
         "event_type": "SignalReceived",
         "payload": {
             "signal_name": name,
-            "value": serializer.encode(args, codec="json"),
-            "payload_codec": "json",
+            "value": serializer.encode(args, codec="avro"),
+            "payload_codec": "avro",
         },
     }
 
@@ -135,8 +135,8 @@ def _activity_completed_event(result: object) -> dict[str, object]:
     return {
         "event_type": "ActivityCompleted",
         "payload": {
-            "result": serializer.encode(result, codec="json"),
-            "payload_codec": "json",
+            "result": serializer.encode(result, codec="avro"),
+            "payload_codec": "avro",
         },
     }
 
@@ -151,8 +151,8 @@ def _update_accepted_event(
         "payload": {
             "update_id": update_id,
             "update_name": name,
-            "arguments": serializer.encode(args, codec="json"),
-            "payload_codec": "json",
+            "arguments": serializer.encode(args, codec="avro"),
+            "payload_codec": "avro",
         },
     }
 
@@ -167,8 +167,8 @@ def _update_applied_event(
         "payload": {
             "update_id": update_id,
             "update_name": name,
-            "arguments": serializer.encode(args, codec="json"),
-            "payload_codec": "json",
+            "arguments": serializer.encode(args, codec="avro"),
+            "payload_codec": "avro",
         },
     }
 
@@ -204,7 +204,7 @@ class TestUpdateApplicationReplay:
             history,
             [],
             "messages",
-            payload_codec="json",
+            payload_codec="avro",
         ) == ["started", "after-start"]
 
     def test_replay_applies_committed_update_events_to_workflow_state(self) -> None:
@@ -218,7 +218,7 @@ class TestUpdateApplicationReplay:
             history,
             [],
             "count",
-            payload_codec="json",
+            payload_codec="avro",
         ) == 7
 
     def test_query_state_applies_update_after_final_activity_result(self) -> None:
@@ -233,7 +233,7 @@ class TestUpdateApplicationReplay:
             history,
             [],
             "count",
-            payload_codec="json",
+            payload_codec="avro",
         ) == 6
 
     def test_apply_update_completes_accepted_update_with_handler_result(self) -> None:
@@ -247,7 +247,7 @@ class TestUpdateApplicationReplay:
             history,
             [],
             "upd-2",
-            payload_codec="json",
+            payload_codec="avro",
         )
 
         assert isinstance(command, CompleteUpdate)
@@ -260,7 +260,7 @@ class TestUpdateApplicationReplay:
             [_update_accepted_event("upd-3", "missing", [])],
             [],
             "upd-3",
-            payload_codec="json",
+            payload_codec="avro",
         )
 
         assert isinstance(command, FailUpdate)
@@ -276,7 +276,7 @@ class TestUpdateApplicationReplay:
                 [],
                 "increment",
                 [-1],
-                payload_codec="json",
+                payload_codec="avro",
             )
 
         command = apply_update(
@@ -284,7 +284,7 @@ class TestUpdateApplicationReplay:
             [_update_accepted_event("upd-4", "increment", [-1])],
             [],
             "upd-4",
-            payload_codec="json",
+            payload_codec="avro",
         )
 
         assert isinstance(command, CompleteUpdate)
@@ -297,7 +297,7 @@ class TestUpdateApplicationReplay:
             [_update_accepted_event("upd-5", "explode", [])],
             [],
             "upd-5",
-            payload_codec="json",
+            payload_codec="avro",
         )
 
         assert isinstance(command, FailUpdate)
@@ -316,7 +316,7 @@ class TestUpdateApplicationReplay:
                     "update_id": "upd-bad",
                     "update_name": "increment",
                     "arguments": "{not valid json",
-                    "payload_codec": "json",
+                    "payload_codec": "avro",
                 },
             },
         ]
@@ -325,7 +325,7 @@ class TestUpdateApplicationReplay:
             caplog.at_level(logging.ERROR, logger="durable_workflow.workflow.replay"),
             pytest.raises(WorkflowPayloadDecodeError) as exc_info,
         ):
-            replay(StatefulUpdateReceiver, history, [], workflow_id="wf-2", run_id="run-2", payload_codec="json")
+            replay(StatefulUpdateReceiver, history, [], workflow_id="wf-2", run_id="run-2", payload_codec="avro")
 
         err = exc_info.value
         assert err.workflow_id == "wf-2"
@@ -333,7 +333,7 @@ class TestUpdateApplicationReplay:
         assert err.event_id == "evt-8"
         assert err.receiver_kind == "update"
         assert err.receiver_name == "increment"
-        assert err.codec == "json"
+        assert err.codec == "avro"
         assert err.payload_head == "{not valid json"
         assert err.exception_type == "ValueError"
 
@@ -343,7 +343,7 @@ class TestUpdateApplicationReplay:
         assert payload["run_id"] == "run-2"
         assert payload["event_id"] == "evt-8"
         assert payload["update_name"] == "increment"
-        assert payload["codec"] == "json"
+        assert payload["codec"] == "avro"
         assert payload["payload_head"] == "{not valid json"
         assert payload["exception_type"] == "ValueError"
 
@@ -358,7 +358,7 @@ class TestUpdateApplicationReplay:
                         "update_id": "upd-bad",
                         "update_name": "increment",
                         "arguments": "{not valid json",
-                        "payload_codec": "json",
+                        "payload_codec": "avro",
                     },
                 },
             ],
@@ -366,7 +366,7 @@ class TestUpdateApplicationReplay:
             "upd-bad",
             workflow_id="wf-3",
             run_id="run-3",
-            payload_codec="json",
+            payload_codec="avro",
         )
 
         assert isinstance(command, FailUpdate)

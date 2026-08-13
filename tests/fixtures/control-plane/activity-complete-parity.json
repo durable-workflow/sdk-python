@@ -48,7 +48,7 @@
         "items_processed": 3,
         "checkpoint": "inventory-page-7"
       },
-      "codec": "json",
+      "codec": "avro",
       "activity_name": "inventory.sync-page"
     },
     "expected_body": {
@@ -57,7 +57,7 @@
     },
     "payload_envelope": {
       "field": "result",
-      "codec": "json",
+      "codec": "avro",
       "decoded": {
         "items_processed": 3,
         "checkpoint": "inventory-page-7"

@@ -89,63 +89,69 @@ class SerializerPydanticStyle:
 
 class TestEncode:
     def test_list(self) -> None:
-        assert serializer.encode(["a", 1, True], codec="json") == '["a",1,true]'
+        blob = serializer.encode(["a", 1, True])
+        assert serializer.decode(blob, codec="avro") == ["a", 1, True]
 
     def test_dict(self) -> None:
-        assert serializer.encode({"k": "v"}, codec="json") == '{"k":"v"}'
+        blob = serializer.encode({"k": "v"})
+        assert serializer.decode(blob, codec="avro") == {"k": "v"}
 
     def test_none(self) -> None:
-        assert serializer.encode(None, codec="json") == "null"
+        blob = serializer.encode(None)
+        assert serializer.decode(blob, codec="avro") is None
+
+    def test_json_codec_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
+            serializer.encode({"stale": True}, codec="json")
 
 
 class TestDecode:
     def test_roundtrip_list(self) -> None:
-        assert serializer.decode(serializer.encode(["a", 1, True], codec="json")) == ["a", 1, True]
+        assert serializer.decode(serializer.encode(["a", 1, True]), codec="avro") == ["a", 1, True]
 
     def test_none_blob(self) -> None:
         assert serializer.decode(None) is None
 
-    def test_empty_string(self) -> None:
-        assert serializer.decode("") is None
+    def test_untagged_raw_blob_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
+            serializer.decode('{"x":1}')
 
-    def test_valid_json(self) -> None:
-        assert serializer.decode('{"x":1}') == {"x": 1}
-
-    def test_json_codec_explicit(self) -> None:
-        assert serializer.decode('"hello"', codec="json") == "hello"
+    def test_json_tagged_blob_is_rejected_with_transport_distinction(self) -> None:
+        with pytest.raises(ValueError, match="HTTP document transport"):
+            serializer.decode('{"x":1}', codec="json")
 
     def test_non_json_codec_raises(self) -> None:
-        with pytest.raises(ValueError, match="Cannot decode payload with codec"):
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
             serializer.decode("blob", codec="workflow-serializer-y")
-
-    def test_invalid_json_raises(self) -> None:
-        with pytest.raises(ValueError, match="not valid JSON"):
-            serializer.decode("not-json")
-
-    def test_invalid_json_with_json_codec_raises(self) -> None:
-        with pytest.raises(ValueError, match="not valid JSON"):
-            serializer.decode("not-json", codec="json")
 
 
 class TestDecodeEnvelope:
     def test_unwraps_codec_blob_dict(self) -> None:
-        assert serializer.decode_envelope({"codec": "json", "blob": '["a",1]'}) == ["a", 1]
+        envelope = serializer.envelope(["a", 1])
+        assert serializer.decode_envelope(envelope) == ["a", 1]
 
-    def test_falls_back_to_raw_string(self) -> None:
-        assert serializer.decode_envelope('["a",1]') == ["a", 1]
+    def test_rejects_untagged_raw_string(self) -> None:
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
+            serializer.decode_envelope('["a",1]')
 
-    def test_falls_back_with_codec(self) -> None:
-        assert serializer.decode_envelope('"hello"', codec="json") == "hello"
+    def test_raw_blob_requires_explicit_avro_codec(self) -> None:
+        blob = serializer.encode("hello")
+        assert serializer.decode_envelope(blob, codec="avro") == "hello"
+
+    def test_rejects_json_tagged_envelope(self) -> None:
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
+            serializer.decode_envelope({"codec": "json", "blob": '{"stale":true}'})
 
     def test_rejects_unknown_envelope_codec(self) -> None:
-        with pytest.raises(ValueError, match="Cannot decode payload with codec"):
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
             serializer.decode_envelope({"codec": "workflow-serializer-y", "blob": "data"})
 
     def test_none_passthrough(self) -> None:
         assert serializer.decode_envelope(None) is None
 
-    def test_empty_string_passthrough(self) -> None:
-        assert serializer.decode_envelope("") is None
+    def test_empty_string_without_codec_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
+            serializer.decode_envelope("")
 
 
 class TestEnvelope:
@@ -162,15 +168,13 @@ class TestEnvelope:
 
 class TestBatchEncoding:
     def test_encode_many_preserves_order(self) -> None:
-        blobs = serializer.encode_many([["a"], ["b"]], codec="json")
-        assert blobs == ['["a"]', '["b"]']
+        blobs = serializer.encode_many([["a"], ["b"]], codec="avro")
+        assert serializer.decode_many(blobs, codec="avro") == [["a"], ["b"]]
 
     def test_envelope_many_wraps_each_value(self) -> None:
-        envelopes = serializer.envelope_many([["a"], ["b"]], codec="json")
-        assert envelopes == [
-            {"codec": "json", "blob": '["a"]'},
-            {"codec": "json", "blob": '["b"]'},
-        ]
+        envelopes = serializer.envelope_many([["a"], ["b"]], codec="avro")
+        assert [envelope["codec"] for envelope in envelopes] == ["avro", "avro"]
+        assert serializer.decode_envelopes(envelopes) == [["a"], ["b"]]
 
     def test_encode_many_accepts_per_payload_warning_context(
         self, caplog: pytest.LogCaptureFixture
@@ -184,7 +188,7 @@ class TestBatchEncoding:
         with caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"):
             serializer.encode_many(
                 ["abcdef", "ghijkl"],
-                codec="json",
+                codec="avro",
                 size_warning=config,
                 warning_context=contexts,
             )
@@ -198,7 +202,7 @@ class TestBatchEncoding:
         with pytest.raises(ValueError, match="context count"):
             serializer.encode_many(
                 ["a", "b"],
-                codec="json",
+                codec="avro",
                 warning_context=[serializer.PayloadSizeWarningContext(kind="payload")],
             )
 
@@ -249,12 +253,9 @@ class TestBatchEncoding:
 
 
 class TestBatchDecoding:
-    def test_decode_many_preserves_json_order_and_none_passthrough(self) -> None:
-        assert serializer.decode_many(['"a"', None, '{"b":2}'], codec="json") == [
-            "a",
-            None,
-            {"b": 2},
-        ]
+    def test_decode_many_preserves_avro_order_and_none_passthrough(self) -> None:
+        blobs = serializer.encode_many(["a", {"b": 2}], codec="avro")
+        assert serializer.decode_many([blobs[0], None, blobs[1]], codec="avro") == ["a", None, {"b": 2}]
 
     def test_decode_many_routes_avro_through_codec_batch_hook(
         self, monkeypatch: pytest.MonkeyPatch
@@ -274,9 +275,7 @@ class TestBatchDecoding:
         ]
         assert calls == [["blob-a", "", "blob-b"]]
 
-    def test_decode_envelopes_groups_by_codec_and_preserves_order(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_decode_envelopes_batches_avro_and_preserves_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             serializer._avro,
             "decode_many",
@@ -285,14 +284,12 @@ class TestBatchDecoding:
 
         assert serializer.decode_envelopes(
             [
-                {"codec": "json", "blob": '"json-a"'},
                 {"codec": "avro", "blob": "a"},
                 None,
                 {"codec": "avro", "blob": "b"},
-                '"json-b"',
             ],
-            codec="json",
-        ) == ["json-a", "avro:a", None, "avro:b", "json-b"]
+            codec="avro",
+        ) == ["avro:a", None, "avro:b"]
 
     def test_decode_many_propagates_first_codec_error(self) -> None:
         good = serializer.encode({"ok": True}, codec="avro")
@@ -374,7 +371,7 @@ class TestPayloadSizeWarning:
         with caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"):
             serializer.encode(
                 "abcdef",
-                codec="json",
+                codec="avro",
                 size_warning=config,
                 warning_context=context,
             )
@@ -385,7 +382,7 @@ class TestPayloadSizeWarning:
         assert payload["workflow_id"] == "wf-1"
         assert payload["signal_name"] == "approve"
         assert payload["namespace"] == "ns1"
-        assert payload["codec"] == "json"
+        assert payload["codec"] == "avro"
         assert payload["payload_size"] >= 5
         assert payload["threshold_bytes"] == 5
         assert payload["limit_bytes"] == 10
@@ -394,13 +391,13 @@ class TestPayloadSizeWarning:
         config = serializer.PayloadSizeWarningConfig(limit_bytes=100, threshold_percent=90)
 
         with caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"):
-            serializer.encode("small", codec="json", size_warning=config)
+            serializer.encode("small", codec="avro", size_warning=config)
 
         assert caplog.records == []
 
     def test_encode_warning_can_be_disabled(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"):
-            serializer.encode("abcdef", codec="json", size_warning=None)
+            serializer.encode("abcdef", codec="avro", size_warning=None)
 
         assert caplog.records == []
 
@@ -532,10 +529,10 @@ class TestAvroCodec:
         env = serializer.envelope({"x": 1}, codec="avro")
         assert serializer.decode_envelope(env) == {"x": 1}
 
-    def test_decode_envelope_preserves_json_over_codec_arg(self) -> None:
+    def test_decode_envelope_preserves_inner_codec_over_codec_arg(self) -> None:
         # Envelope codec wins even when caller passes a different `codec`.
         env = serializer.envelope([9, 10], codec="avro")
-        assert serializer.decode_envelope(env, codec="json") == [9, 10]
+        assert serializer.decode_envelope(env, codec="avro") == [9, 10]
 
     def test_prerelease_prefix_rejected(self) -> None:
         import base64

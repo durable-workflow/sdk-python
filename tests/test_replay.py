@@ -40,6 +40,10 @@ from tests.integration.polyglot_fixtures import (
 )
 
 
+def _avro(value: object) -> dict[str, str]:
+    return serializer.envelope(value, codec=serializer.AVRO_CODEC)
+
+
 @workflow.defn(name="simple-return")
 class SimpleReturn:
     def run(self, ctx: WorkflowContext) -> str:
@@ -227,8 +231,8 @@ def _nexus_side_effect_event(payload: dict, *, sequence: int = 1) -> dict:
         "event_type": "SideEffectRecorded",
         "payload": {
             "sequence": sequence,
-            "payload_codec": "json",
-            "result": serializer.encode(payload, codec="json"),
+            "payload_codec": "avro",
+            "result": serializer.encode(payload, codec="avro"),
         },
     }
 
@@ -239,8 +243,8 @@ def _activity_completed_event(sequence: int, activity_type: str) -> dict:
         "payload": {
             "sequence": sequence,
             "activity_type": activity_type,
-            "payload_codec": "json",
-            "result": serializer.encode({"activity": activity_type}, codec="json"),
+            "payload_codec": "avro",
+            "result": serializer.encode({"activity": activity_type}, codec="avro"),
         },
     }
 
@@ -320,7 +324,7 @@ class TestNexusServiceCalls:
             [],
             workflow_id="wf-caller",
             run_id="run-caller",
-            payload_codec="json",
+            payload_codec="avro",
         )
 
         assert len(outcome.commands) == 1
@@ -365,7 +369,7 @@ class TestNexusServiceCalls:
             [],
             workflow_id="wf-caller",
             run_id="run-caller",
-            payload_codec="json",
+            payload_codec="avro",
         )
 
         assert len(outcome.commands) == 1
@@ -396,7 +400,7 @@ class TestPublicReplayer:
                     "event_type": "WorkflowStarted",
                     "payload": {
                         "workflow_type": "one-activity",
-                        "input": serializer.envelope(["Ada"], codec="json"),
+                        "input": serializer.envelope(["Ada"], codec="avro"),
                     },
                 },
             ],
@@ -442,7 +446,7 @@ class TestOneActivity:
         assert exc_info.value.recorded_event_types == ["TimerScheduled"]
 
     def test_completed_activity_triggers_completion(self) -> None:
-        history = [{"event_type": "ActivityCompleted", "payload": {"result": '"hello, world"'}}]
+        history = [{"event_type": "ActivityCompleted", "payload": {"result": _avro("hello, world")}}]
         outcome = replay(OneActivity, history, ["world"])
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -512,7 +516,7 @@ class TestOneActivity:
                     "message": "card declined",
                 },
             },
-            {"event_type": "ActivityCompleted", "payload": {"result": '"released"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("released")}},
         ]
 
         outcome = replay(ActivityFailedSaga, history, ["order-1"])
@@ -624,9 +628,9 @@ class TestOneActivity:
     def test_server_command_uses_payload_codec(self) -> None:
         outcome = replay(OneActivity, [], ["world"])
         cmd = outcome.commands[0]
-        server_cmd = cmd.to_server_command("default-queue", payload_codec="json")
-        assert server_cmd["arguments"]["codec"] == "json"
-        assert serializer.decode(server_cmd["arguments"]["blob"], codec="json") == ["world"]
+        server_cmd = cmd.to_server_command("default-queue", payload_codec="avro")
+        assert server_cmd["arguments"]["codec"] == "avro"
+        assert serializer.decode(server_cmd["arguments"]["blob"], codec="avro") == ["world"]
 
     def test_server_command_accepts_payload_warning_context(self, caplog) -> None:
         cmd = ScheduleActivity(activity_type="charge-card", arguments=["x" * 20], queue="payments")
@@ -641,7 +645,7 @@ class TestOneActivity:
         with caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"):
             cmd.to_server_command(
                 "default-queue",
-                payload_codec="json",
+                payload_codec="avro",
                 size_warning=config,
                 warning_context=context,
             )
@@ -752,7 +756,7 @@ class TestReverseCompensationSaga:
             _activity_completed_event(5, "refund_card"),
         ]
 
-        outcome = replay(ReverseCompensationSaga, history, [payload], payload_codec="json")
+        outcome = replay(ReverseCompensationSaga, history, [payload], payload_codec="avro")
 
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -772,7 +776,7 @@ class TestReverseCompensationSaga:
             _activity_completed_event(7, "cancel_flight"),
         ]
 
-        outcome = replay(ReverseCompensationSaga, history, [payload], payload_codec="json")
+        outcome = replay(ReverseCompensationSaga, history, [payload], payload_codec="avro")
 
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -799,7 +803,7 @@ class TestTwoActivities:
         assert outcome.commands[0].activity_type == "step1"
 
     def test_one_completed_schedules_next(self) -> None:
-        history = [{"event_type": "ActivityCompleted", "payload": {"result": '"val1"'}}]
+        history = [{"event_type": "ActivityCompleted", "payload": {"result": _avro("val1")}}]
         outcome = replay(TwoActivities, history, [])
         assert len(outcome.commands) == 1
         assert isinstance(outcome.commands[0], ScheduleActivity)
@@ -808,8 +812,8 @@ class TestTwoActivities:
 
     def test_both_completed(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "payload": {"result": '"val1"'}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"val2"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("val1")}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("val2")}},
         ]
         outcome = replay(TwoActivities, history, [])
         assert len(outcome.commands) == 1
@@ -835,7 +839,7 @@ class TestTimerWorkflow:
     def test_timer_and_activity_completed(self) -> None:
         history = [
             {"event_type": "TimerFired", "payload": {}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"hi"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("hi")}},
         ]
         outcome = replay(TimerWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -851,7 +855,7 @@ class TestTimerWorkflow:
 
 class TestFailingWorkflow:
     def test_exception_produces_fail_command(self) -> None:
-        history = [{"event_type": "ActivityCompleted", "payload": {"result": '"ok"'}}]
+        history = [{"event_type": "ActivityCompleted", "payload": {"result": _avro("ok")}}]
         outcome = replay(FailingWorkflow, history, [])
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -879,7 +883,7 @@ class TestFailingWorkflow:
         assert cmd.exception_class == "builtins.StopIteration"
 
     def test_fail_server_command_shape(self) -> None:
-        history = [{"event_type": "ActivityCompleted", "payload": {"result": '"ok"'}}]
+        history = [{"event_type": "ActivityCompleted", "payload": {"result": _avro("ok")}}]
         outcome = replay(FailingWorkflow, history, [])
         server_cmd = outcome.commands[0].to_server_command("q")
         assert server_cmd["type"] == "fail_workflow"
@@ -941,9 +945,9 @@ class TestCompleteWorkflowCommand:
 
     def test_server_command_uses_payload_codec(self) -> None:
         cmd = CompleteWorkflow(result={"key": "val"})
-        server_cmd = cmd.to_server_command("q", payload_codec="json")
-        assert server_cmd["result"]["codec"] == "json"
-        assert serializer.decode(server_cmd["result"]["blob"], codec="json") == {"key": "val"}
+        server_cmd = cmd.to_server_command("q", payload_codec="avro")
+        assert server_cmd["result"]["codec"] == "avro"
+        assert serializer.decode(server_cmd["result"]["blob"], codec="avro") == {"key": "val"}
 
 
 @workflow.defn(name="continue-as-new-wf")
@@ -993,7 +997,7 @@ class TestContinueAsNew:
         assert outcome.commands[0].result == "done"
 
     def test_generator_return_continue(self) -> None:
-        history = [{"event_type": "ActivityCompleted", "payload": {"result": '"ok"'}}]
+        history = [{"event_type": "ActivityCompleted", "payload": {"result": _avro("ok")}}]
         outcome = replay(ContinueAsNewYieldWorkflow, history, [5])
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -1025,7 +1029,7 @@ class TestSideEffect:
         assert outcome.commands[1].arguments == [42]
 
     def test_replayed_side_effect_skips_fn(self) -> None:
-        history = [{"event_type": "SideEffectRecorded", "payload": {"result": "99"}}]
+        history = [{"event_type": "SideEffectRecorded", "payload": {"result": _avro(99)}}]
         outcome = replay(SideEffectWorkflow, history, [])
         assert len(outcome.commands) == 1
         cmd = outcome.commands[0]
@@ -1034,8 +1038,8 @@ class TestSideEffect:
 
     def test_full_replay(self) -> None:
         history = [
-            {"event_type": "SideEffectRecorded", "payload": {"result": "42"}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"final"'}},
+            {"event_type": "SideEffectRecorded", "payload": {"result": _avro(42)}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("final")}},
         ]
         outcome = replay(SideEffectWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -1050,8 +1054,8 @@ class TestSideEffect:
 
     def test_server_command_uses_payload_codec(self) -> None:
         cmd = RecordSideEffect(result={"key": "val"})
-        sc = cmd.to_server_command("q", payload_codec="json")
-        assert serializer.decode(sc["result"], codec="json") == {"key": "val"}
+        sc = cmd.to_server_command("q", payload_codec="avro")
+        assert serializer.decode(sc["result"], codec="avro") == {"key": "val"}
 
 
 class TestWorkflowContext:
@@ -1345,9 +1349,8 @@ class TestChildWorkflow:
     @pytest.mark.parametrize(
         "payload",
         [
-            {"output": '"sub-result"'},
-            {"output": serializer.envelope("sub-result", codec="json")},
-            {"result": '"sub-result"'},
+            {"output": _avro("sub-result")},
+            {"result": _avro("sub-result")},
         ],
     )
     def test_child_completed(self, payload: dict[str, object]) -> None:
@@ -1501,7 +1504,7 @@ class TestChildWorkflow:
     def test_child_failed_then_fallback_completes(self) -> None:
         history = [
             {"event_type": "ChildRunFailed", "payload": {"message": "child failed"}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"ok"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("ok")}},
         ]
         outcome = replay(ChildWorkflowFailedFallbackWf, history, [])
         assert len(outcome.commands) == 1
@@ -1670,7 +1673,7 @@ class TestVersionMarker:
     def test_full_replay(self) -> None:
         history = [
             {"event_type": "VersionMarkerRecorded", "payload": {"version": 2}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"done"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("done")}},
         ]
         outcome = replay(VersionWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -1759,7 +1762,7 @@ class TestSearchAttributeUpsert:
     def test_with_upsert_in_history(self) -> None:
         history = [
             {"event_type": "SearchAttributesUpserted", "payload": {}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"result"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("result")}},
         ]
         outcome = replay(SearchAttrWorkflow, history, [])
         assert len(outcome.commands) == 2
@@ -1835,8 +1838,8 @@ class TestFanOut:
 
     def test_all_completed(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "payload": {"result": '"val-a"'}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"val-b"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("val-a")}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("val-b")}},
         ]
         outcome = replay(FanOutWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -1879,8 +1882,8 @@ class TestFanOut:
 
     def test_fan_out_then_sequential(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "payload": {"result": '"r1"'}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"r2"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("r1")}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("r2")}},
         ]
         outcome = replay(FanOutThenSequentialWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -1890,9 +1893,9 @@ class TestFanOut:
 
     def test_fan_out_then_sequential_full(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "payload": {"result": '"r1"'}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"r2"'}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"combined"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("r1")}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("r2")}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("combined")}},
         ]
         outcome = replay(FanOutThenSequentialWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -1901,7 +1904,7 @@ class TestFanOut:
 
     def test_fan_out_activity_failure_throws(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "payload": {"result": '"ok"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("ok")}},
             {
                 "event_type": "ActivityFailed",
                 "payload": {
@@ -1962,7 +1965,7 @@ class FanOutChildFailUnhandledWorkflow:
 class TestFanOutChildFailure:
     def test_batch_child_failure_throws(self) -> None:
         history = [
-            {"event_type": "ChildRunCompleted", "payload": {"result": '"ok"'}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": _avro("ok")}},
             {"event_type": "ChildRunFailed", "payload": {"message": "child crashed"}},
         ]
         outcome = replay(FanOutChildFailWorkflow, history, [])
@@ -1974,7 +1977,7 @@ class TestFanOutChildFailure:
     def test_batch_child_failure_first_position(self) -> None:
         history = [
             {"event_type": "ChildRunFailed", "payload": {"message": "first failed"}},
-            {"event_type": "ChildRunCompleted", "payload": {"result": '"ok"'}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": _avro("ok")}},
         ]
         outcome = replay(FanOutChildFailWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -1984,7 +1987,7 @@ class TestFanOutChildFailure:
 
     def test_batch_child_failure_fallback_yields(self) -> None:
         history = [
-            {"event_type": "ChildRunCompleted", "payload": {"result": '"ok"'}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": _avro("ok")}},
             {"event_type": "ChildRunFailed", "payload": {"message": "oops"}},
         ]
         outcome = replay(FanOutChildFailFallbackWorkflow, history, [])
@@ -1994,9 +1997,9 @@ class TestFanOutChildFailure:
 
     def test_batch_child_failure_fallback_completes(self) -> None:
         history = [
-            {"event_type": "ChildRunCompleted", "payload": {"result": '"ok"'}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": _avro("ok")}},
             {"event_type": "ChildRunFailed", "payload": {"message": "oops"}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"recovered"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("recovered")}},
         ]
         outcome = replay(FanOutChildFailFallbackWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -2006,7 +2009,7 @@ class TestFanOutChildFailure:
 
     def test_batch_child_failure_unhandled_produces_fail(self) -> None:
         history = [
-            {"event_type": "ChildRunCompleted", "payload": {"result": '"ok"'}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": _avro("ok")}},
             {"event_type": "ChildRunFailed", "payload": {"message": "child crashed"}},
         ]
         outcome = replay(FanOutChildFailUnhandledWorkflow, history, [])
@@ -2017,8 +2020,8 @@ class TestFanOutChildFailure:
 
     def test_batch_all_succeed_no_throw(self) -> None:
         history = [
-            {"event_type": "ChildRunCompleted", "payload": {"result": '"r1"'}},
-            {"event_type": "ChildRunCompleted", "payload": {"result": '"r2"'}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": _avro("r1")}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": _avro("r2")}},
         ]
         outcome = replay(FanOutChildFailWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -2050,8 +2053,8 @@ class TestNontrivialWorkflow:
 
     def test_after_fan_out_starts_timer(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "payload": {"result": '"a"'}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"b"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("a")}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("b")}},
         ]
         outcome = replay(NontrivialWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -2059,8 +2062,8 @@ class TestNontrivialWorkflow:
 
     def test_after_timer_starts_child(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "payload": {"result": '"a"'}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"b"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("a")}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("b")}},
             {"event_type": "TimerFired", "payload": {}},
         ]
         outcome = replay(NontrivialWorkflow, history, [])
@@ -2072,10 +2075,10 @@ class TestNontrivialWorkflow:
 
     def test_after_child_schedules_finalize(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "payload": {"result": '"a"'}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"b"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("a")}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("b")}},
             {"event_type": "TimerFired", "payload": {}},
-            {"event_type": "ChildRunCompleted", "payload": {"result": '"processed"'}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": _avro("processed")}},
         ]
         outcome = replay(NontrivialWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -2086,11 +2089,11 @@ class TestNontrivialWorkflow:
 
     def test_full_replay_completes(self) -> None:
         history = [
-            {"event_type": "ActivityCompleted", "payload": {"result": '"a"'}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"b"'}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("a")}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("b")}},
             {"event_type": "TimerFired", "payload": {}},
-            {"event_type": "ChildRunCompleted", "payload": {"result": '"processed"'}},
-            {"event_type": "ActivityCompleted", "payload": {"result": '"done"'}},
+            {"event_type": "ChildRunCompleted", "payload": {"result": _avro("processed")}},
+            {"event_type": "ActivityCompleted", "payload": {"result": _avro("done")}},
         ]
         outcome = replay(NontrivialWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -2126,7 +2129,7 @@ class TestCanonicalEventTypeOnly:
     # these tests loudly instead of passing by tolerance.
 
     def test_snake_case_activity_completed_is_ignored(self) -> None:
-        history = [{"event_type": "activity_completed", "payload": {"result": '"hello"'}}]
+        history = [{"event_type": "activity_completed", "payload": {"result": _avro("hello")}}]
         outcome = replay(OneActivity, history, ["world"])
         # Snake_case is not recognized, so the replayer behaves as if the
         # activity has not yet completed and re-schedules it.

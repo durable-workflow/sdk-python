@@ -55,7 +55,7 @@ def test_checked_in_benchmark_wire_and_sizes_match_hard_contract() -> None:
             "raw": len(json_bytes),
             "http_envelope": len(
                 avro_value.json.dumps(
-                    {"codec": "json", "blob": json_bytes.decode()},
+                    {"codec": "avro", "blob": json_bytes.decode()},
                     separators=(",", ":"),
                 ).encode()
             ),

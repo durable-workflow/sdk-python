@@ -373,7 +373,7 @@ class TestReplayWaitCondition:
         history = [
             {
                 "event_type": "ActivityCompleted",
-                "payload": {"result": '"loaded"'},
+                "payload": {"result": serializer.envelope("loaded")},
             },
             {
                 "event_type": "ConditionWaitOpened",
@@ -1005,7 +1005,7 @@ class TestReplayWaitCondition:
         history = [
             {
                 "event_type": "ActivityCompleted",
-                "payload": {"result": '"loaded"'},
+                "payload": {"result": serializer.envelope("loaded")},
             },
             {
                 "event_type": "ConditionWaitOpened",

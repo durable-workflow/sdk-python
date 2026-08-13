@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from durable_workflow import activity
+from durable_workflow import activity, serializer
 from durable_workflow.client import Client
 from durable_workflow.errors import WorkflowNotFound
 from durable_workflow.metrics import (
@@ -130,8 +130,8 @@ async def test_worker_records_activity_task_metrics() -> None:
         "task_id": "at1",
         "activity_attempt_id": "aa1",
         "activity_type": "metrics-act",
-        "arguments": '["value"]',
-        "payload_codec": "json",
+        "arguments": serializer.encode(["value"], codec=serializer.AVRO_CODEC),
+        "payload_codec": "avro",
     }
 
     await worker._act_semaphore.acquire()

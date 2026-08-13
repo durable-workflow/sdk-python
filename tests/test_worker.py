@@ -980,8 +980,8 @@ class TestWorkflowTaskExecution:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
         await worker._run_workflow_task(task)
         mock_client.complete_workflow_task.assert_called_once()
@@ -990,8 +990,8 @@ class TestWorkflowTaskExecution:
         assert len(commands) == 1
         assert commands[0]["type"] == "schedule_activity"
         assert commands[0]["activity_type"] == "test-act"
-        assert commands[0]["arguments"]["codec"] == "json"
-        assert serializer.decode(commands[0]["arguments"]["blob"], codec="json") == ["hello"]
+        assert commands[0]["arguments"]["codec"] == "avro"
+        assert serializer.decode(commands[0]["arguments"]["blob"], codec="avro") == ["hello"]
 
     @pytest.mark.asyncio
     async def test_workflow_task_ambiguous_completion_error_preserves_commands(
@@ -1004,8 +1004,8 @@ class TestWorkflowTaskExecution:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 2,
             "history_events": [],
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
 
         result = await worker._run_workflow_task(task)
@@ -1029,8 +1029,8 @@ class TestWorkflowTaskExecution:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 2,
             "history_events": [],
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
 
         result = await worker._run_workflow_task(task)
@@ -1051,8 +1051,8 @@ class TestWorkflowTaskExecution:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 2,
             "history_events": [],
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
 
         result = await worker._run_workflow_task(task)
@@ -1088,8 +1088,8 @@ class TestWorkflowTaskExecution:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 2,
             "history_events": [],
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
 
         result = await worker._run_workflow_task(task)
@@ -1116,8 +1116,8 @@ class TestWorkflowTaskExecution:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 2,
             "history_events": [],
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
 
         result = await worker._run_workflow_task(task)
@@ -1143,8 +1143,8 @@ class TestWorkflowTaskExecution:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": '["this payload is intentionally large"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["this payload is intentionally large"], codec="avro"),
+            "payload_codec": "avro",
         }
 
         with caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"):
@@ -1170,8 +1170,8 @@ class TestWorkflowTaskExecution:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": '["this payload is intentionally large"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["this payload is intentionally large"], codec="avro"),
+            "payload_codec": "avro",
         }
 
         with caplog.at_level(logging.WARNING, logger="durable_workflow.serializer"):
@@ -1199,8 +1199,8 @@ class TestWorkflowTaskExecution:
             "workflow_type": "fanout-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         await worker._run_workflow_task(task)
@@ -1217,17 +1217,23 @@ class TestWorkflowTaskExecution:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 1,
             "history_events": [
-                {"event_type": "ActivityCompleted", "payload": {"result": '"done"'}},
+                {
+                    "event_type": "ActivityCompleted",
+                    "payload": {
+                        "payload_codec": "avro",
+                        "result": serializer.envelope("done", codec="avro"),
+                    },
+                },
             ],
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
         await worker._run_workflow_task(task)
         mock_client.complete_workflow_task.assert_called_once()
         commands = mock_client.complete_workflow_task.call_args.kwargs["commands"]
         assert commands[0]["type"] == "complete_workflow"
-        assert commands[0]["result"]["codec"] == "json"
-        assert serializer.decode(commands[0]["result"]["blob"], codec="json") == "done"
+        assert commands[0]["result"]["codec"] == "avro"
+        assert serializer.decode(commands[0]["result"]["blob"], codec="avro") == "done"
 
     @pytest.mark.asyncio
     async def test_workflow_nexus_service_call_records_side_effect_and_resumes(
@@ -1265,8 +1271,8 @@ class TestWorkflowTaskExecution:
             "workflow_type": "nexus-worker-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         await worker._run_workflow_task(task)
@@ -1283,7 +1289,7 @@ class TestWorkflowTaskExecution:
         mock_client.complete_workflow_task.assert_called_once()
         commands = mock_client.complete_workflow_task.call_args.kwargs["commands"]
         assert [command["type"] for command in commands] == ["record_side_effect", "complete_workflow"]
-        recorded = serializer.decode(commands[0]["result"], codec="json")
+        recorded = serializer.decode(commands[0]["result"], codec="avro")
         assert recorded["schema"] == NEXUS_OPERATION_RESULT_SCHEMA
         assert recorded["caller_workflow_instance_id"] == "wf-caller"
         assert recorded["caller_workflow_run_id"] == "run-caller"
@@ -1295,7 +1301,7 @@ class TestWorkflowTaskExecution:
         assert recorded["service_call_id"] == "svc-call-1"
         assert recorded["artifact_tuple"]["sdk-python"] == "0.4.95"
         assert recorded["published_artifact_worker_execution"] is True
-        assert serializer.decode(commands[1]["result"]["blob"], codec="json") == {
+        assert serializer.decode(commands[1]["result"]["blob"], codec="avro") == {
             "service_call_id": "svc-call-1",
         }
 
@@ -1315,13 +1321,13 @@ class TestWorkflowTaskExecution:
                     "payload": {
                         "sequence": 1,
                         "activity_type": "external.marker",
-                        "payload_codec": "json",
-                        "result": serializer.envelope(marker, codec="json"),
+                        "payload_codec": "avro",
+                        "result": serializer.envelope(marker, codec="avro"),
                     },
                 },
             ],
-            "arguments": serializer.encode([{"name": "Grace"}], codec="json"),
-            "payload_codec": "json",
+            "arguments": serializer.encode([{"name": "Grace"}], codec="avro"),
+            "payload_codec": "avro",
         }
 
         await worker._run_workflow_task(task)
@@ -1336,8 +1342,8 @@ class TestWorkflowTaskExecution:
                 "arguments": commands[0]["arguments"],
             }
         ]
-        assert commands[0]["arguments"]["codec"] == "json"
-        assert serializer.decode(commands[0]["arguments"]["blob"], codec="json") == [marker]
+        assert commands[0]["arguments"]["codec"] == "avro"
+        assert serializer.decode(commands[0]["arguments"]["blob"], codec="avro") == [marker]
 
     @pytest.mark.asyncio
     async def test_cross_queue_workflow_completes_after_second_activity(
@@ -1356,8 +1362,8 @@ class TestWorkflowTaskExecution:
                     "payload": {
                         "sequence": 1,
                         "activity_type": "external.marker",
-                        "payload_codec": "json",
-                        "result": serializer.envelope(marker, codec="json"),
+                        "payload_codec": "avro",
+                        "result": serializer.envelope(marker, codec="avro"),
                     },
                 },
                 {
@@ -1365,13 +1371,13 @@ class TestWorkflowTaskExecution:
                     "payload": {
                         "sequence": 2,
                         "activity_type": "external.describe",
-                        "payload_codec": "json",
-                        "result": serializer.envelope(description, codec="json"),
+                        "payload_codec": "avro",
+                        "result": serializer.envelope(description, codec="avro"),
                     },
                 },
             ],
-            "arguments": serializer.encode([{"name": "Grace"}], codec="json"),
-            "payload_codec": "json",
+            "arguments": serializer.encode([{"name": "Grace"}], codec="avro"),
+            "payload_codec": "avro",
         }
 
         await worker._run_workflow_task(task)
@@ -1379,8 +1385,8 @@ class TestWorkflowTaskExecution:
         mock_client.complete_workflow_task.assert_called_once()
         commands = mock_client.complete_workflow_task.call_args.kwargs["commands"]
         assert commands[0]["type"] == "complete_workflow"
-        assert commands[0]["result"]["codec"] == "json"
-        assert serializer.decode(commands[0]["result"]["blob"], codec="json") == {
+        assert commands[0]["result"]["codec"] == "avro"
+        assert serializer.decode(commands[0]["result"]["blob"], codec="avro") == {
             "marker": marker,
             "description": description,
         }
@@ -1401,8 +1407,8 @@ class TestWorkflowTaskExecution:
             "workflow_type": "unserializable-result-wf",
             "workflow_task_attempt": 4,
             "history_events": [],
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         await worker._dispatch_workflow_task(task)
@@ -1415,7 +1421,7 @@ class TestWorkflowTaskExecution:
         assert call_kwargs["lease_owner"] == worker.worker_id
         assert call_kwargs["failure_type"] == "TypeError"
         assert "unhandled workflow task execution error" in call_kwargs["message"]
-        assert "Object of type object" in call_kwargs["message"]
+        assert "unsupported_value_type" in call_kwargs["message"]
 
     @pytest.mark.asyncio
     async def test_unknown_workflow_type_fails_task(self, mock_client: AsyncMock) -> None:
@@ -1461,13 +1467,13 @@ class TestWorkflowTaskExecution:
                     "payload": {
                         "update_id": "upd-worker-1",
                         "update_name": "increment",
-                        "arguments": serializer.encode([6], codec="json"),
-                        "payload_codec": "json",
+                        "arguments": serializer.encode([6], codec="avro"),
+                        "payload_codec": "avro",
                     },
                 },
             ],
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         await worker._run_workflow_task(task)
@@ -1479,8 +1485,8 @@ class TestWorkflowTaskExecution:
                 "type": "complete_update",
                 "update_id": "upd-worker-1",
                 "result": {
-                    "codec": "json",
-                    "blob": '{"count":6}',
+                    "codec": "avro",
+                    "blob": serializer.encode({"count": 6}, codec="avro"),
                 },
             },
         ]
@@ -1504,13 +1510,13 @@ class TestWorkflowTaskExecution:
                     "payload": {
                         "update_id": "upd-worker-1",
                         "update_name": "increment",
-                        "arguments": serializer.encode([6], codec="json"),
-                        "payload_codec": "json",
+                        "arguments": serializer.encode([6], codec="avro"),
+                        "payload_codec": "avro",
                     },
                 },
             ],
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         result = await worker._run_workflow_task(task)
@@ -1541,13 +1547,13 @@ class TestWorkflowTaskExecution:
                     "payload": {
                         "update_id": "upd-worker-1",
                         "update_name": "increment",
-                        "arguments": serializer.encode([6], codec="json"),
-                        "payload_codec": "json",
+                        "arguments": serializer.encode([6], codec="avro"),
+                        "payload_codec": "avro",
                     },
                 },
             ],
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         result = await worker._run_workflow_task(task)
@@ -1570,25 +1576,25 @@ class TestWorkflowTaskExecution:
             },
         ]
         export = {
-            "payloads": {"codec": "json"},
+            "payloads": {"codec": "avro"},
             "signals": [
                 {
                     "id": "sig-finish",
                     "command_id": "cmd-finish",
                     "name": "finish",
                     "workflow_sequence": 2,
-                    "payload_codec": "json",
-                    "arguments": serializer.encode([], codec="json"),
+                    "payload_codec": "avro",
+                    "arguments": serializer.encode([], codec="avro"),
                 },
             ],
         }
 
-        enriched = _query_history_with_export_signal_arguments(history, export, default_codec="json")
+        enriched = _query_history_with_export_signal_arguments(history, export, default_codec="avro")
 
         assert isinstance(enriched, list)
         payload = enriched[0]["payload"]
         assert payload["workflow_sequence"] == 2
-        assert payload["arguments"]["codec"] == "json"
+        assert payload["arguments"]["codec"] == "avro"
 
     @pytest.mark.asyncio
     async def test_query_task_executes_registered_query(self, mock_client: AsyncMock) -> None:
@@ -1599,9 +1605,9 @@ class TestWorkflowTaskExecution:
             "workflow_type": "query-wf",
             "query_name": "status",
             "history_events": [],
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -1612,7 +1618,7 @@ class TestWorkflowTaskExecution:
             lease_owner=worker.worker_id,
             query_task_attempt=1,
             result={"status": "ready"},
-            codec="json",
+            codec="avro",
             workflow_id=None,
             run_id=None,
             query_name="status",
@@ -1624,7 +1630,7 @@ class TestWorkflowTaskExecution:
         self, mock_client: AsyncMock
     ) -> None:
         worker = Worker(mock_client, task_queue="q1", workflows=[CounterQueryWorkflow], activities=[])
-        signal_arguments = serializer.encode([3], codec="json")
+        signal_arguments = serializer.encode([3], codec="avro")
         task = {
             "query_task_id": "qt-signal-export",
             "query_task_attempt": 1,
@@ -1644,20 +1650,20 @@ class TestWorkflowTaskExecution:
                 },
             ],
             "history_export": {
-                "payloads": {"codec": "json"},
+                "payloads": {"codec": "avro"},
                 "signals": [
                     {
                         "id": "sig-increment",
                         "command_id": "cmd-increment",
                         "name": "increment",
-                        "payload_codec": "json",
+                        "payload_codec": "avro",
                         "arguments": signal_arguments,
                     },
                 ],
             },
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -1668,7 +1674,7 @@ class TestWorkflowTaskExecution:
             lease_owner=worker.worker_id,
             query_task_attempt=1,
             result=3,
-            codec="json",
+            codec="avro",
             workflow_id="wf-counter",
             run_id="run-counter",
             query_name="current",
@@ -1680,7 +1686,7 @@ class TestWorkflowTaskExecution:
         self, mock_client: AsyncMock
     ) -> None:
         worker = Worker(mock_client, task_queue="q1", workflows=[ActivityQueryWorkflow], activities=[])
-        activity_result = serializer.envelope("loaded", codec="json")
+        activity_result = serializer.envelope("loaded", codec="avro")
         task = {
             "query_task_id": "qt-export-history",
             "query_task_attempt": 1,
@@ -1690,22 +1696,22 @@ class TestWorkflowTaskExecution:
             "query_name": "state",
             "history_events": [],
             "history_export": {
-                "payloads": {"codec": "json"},
+                "payloads": {"codec": "avro"},
                 "history_events": [
                     {
                         "type": "ActivityCompleted",
                         "payload": {
                             "sequence": 1,
                             "activity_type": "load",
-                            "payload_codec": "json",
+                            "payload_codec": "avro",
                             "result": activity_result,
                         },
                     }
                 ],
             },
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -1716,7 +1722,7 @@ class TestWorkflowTaskExecution:
             lease_owner=worker.worker_id,
             query_task_attempt=1,
             result={"activity_result": "loaded"},
-            codec="json",
+            codec="avro",
             workflow_id="wf-export-history",
             run_id="run-export-history",
             query_name="state",
@@ -1728,8 +1734,8 @@ class TestWorkflowTaskExecution:
         self, mock_client: AsyncMock
     ) -> None:
         worker = Worker(mock_client, task_queue="q1", workflows=[CounterQueryWorkflow], activities=[])
-        first_signal_arguments = serializer.encode([3], codec="json")
-        second_signal_arguments = serializer.encode([5], codec="json")
+        first_signal_arguments = serializer.encode([3], codec="avro")
+        second_signal_arguments = serializer.encode([5], codec="avro")
         task = {
             "query_task_id": "qt-repeated-wait-signals",
             "query_task_attempt": 1,
@@ -1772,27 +1778,27 @@ class TestWorkflowTaskExecution:
                 },
             ],
             "history_export": {
-                "payloads": {"codec": "json"},
+                "payloads": {"codec": "avro"},
                 "signals": [
                     {
                         "id": "sig-increment-3",
                         "command_id": "cmd-increment-3",
                         "name": "increment",
-                        "payload_codec": "json",
+                        "payload_codec": "avro",
                         "arguments": first_signal_arguments,
                     },
                     {
                         "id": "sig-increment-5",
                         "command_id": "cmd-increment-5",
                         "name": "increment",
-                        "payload_codec": "json",
+                        "payload_codec": "avro",
                         "arguments": second_signal_arguments,
                     },
                 ],
             },
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -1803,7 +1809,7 @@ class TestWorkflowTaskExecution:
             lease_owner=worker.worker_id,
             query_task_attempt=1,
             result=8,
-            codec="json",
+            codec="avro",
             workflow_id="wf-counter",
             run_id="run-counter",
             query_name="current",
@@ -1815,8 +1821,8 @@ class TestWorkflowTaskExecution:
         self, mock_client: AsyncMock
     ) -> None:
         worker = Worker(mock_client, task_queue="q1", workflows=[CounterQueryWorkflow], activities=[])
-        first_signal_arguments = serializer.encode([3], codec="json")
-        second_signal_arguments = serializer.encode([5], codec="json")
+        first_signal_arguments = serializer.encode([3], codec="avro")
+        second_signal_arguments = serializer.encode([5], codec="avro")
         task = {
             "query_task_id": "qt-false-wait-reopens",
             "query_task_attempt": 1,
@@ -1884,27 +1890,27 @@ class TestWorkflowTaskExecution:
                 },
             ],
             "history_export": {
-                "payloads": {"codec": "json"},
+                "payloads": {"codec": "avro"},
                 "signals": [
                     {
                         "id": "sig-increment-3",
                         "command_id": "cmd-increment-3",
                         "name": "increment",
-                        "payload_codec": "json",
+                        "payload_codec": "avro",
                         "arguments": first_signal_arguments,
                     },
                     {
                         "id": "sig-increment-5",
                         "command_id": "cmd-increment-5",
                         "name": "increment",
-                        "payload_codec": "json",
+                        "payload_codec": "avro",
                         "arguments": second_signal_arguments,
                     },
                 ],
             },
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -1915,7 +1921,7 @@ class TestWorkflowTaskExecution:
             lease_owner=worker.worker_id,
             query_task_attempt=1,
             result=8,
-            codec="json",
+            codec="avro",
             workflow_id="wf-counter",
             run_id="run-counter",
             query_name="current",
@@ -1927,7 +1933,7 @@ class TestWorkflowTaskExecution:
         self, mock_client: AsyncMock
     ) -> None:
         worker = Worker(mock_client, task_queue="q1", workflows=[ReplayQuerySnapshotWorkflow], activities=[])
-        approval_arguments = serializer.encode(["alice"], codec="json")
+        approval_arguments = serializer.encode(["alice"], codec="avro")
         task = {
             "query_task_id": "qt-export-history",
             "query_task_attempt": 1,
@@ -1937,15 +1943,15 @@ class TestWorkflowTaskExecution:
             "query_name": "state",
             "history_events": [],
             "history_export": {
-                "payloads": {"codec": "json"},
+                "payloads": {"codec": "avro"},
                 "history_events": [
                     {
                         "type": "ActivityCompleted",
                         "payload": {
                             "sequence": 1,
                             "activity_type": "load-state",
-                            "payload_codec": "json",
-                            "result": serializer.encode("loaded", codec="json"),
+                            "payload_codec": "avro",
+                            "result": serializer.encode("loaded", codec="avro"),
                         },
                     },
                     {
@@ -1970,14 +1976,14 @@ class TestWorkflowTaskExecution:
                         "id": "sig-approve",
                         "command_id": "cmd-approve",
                         "name": "approve",
-                        "payload_codec": "json",
+                        "payload_codec": "avro",
                         "arguments": approval_arguments,
                     },
                 ],
             },
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -1992,7 +1998,7 @@ class TestWorkflowTaskExecution:
                 "approved_by": "alice",
                 "finished": True,
             },
-            codec="json",
+            codec="avro",
             workflow_id="wf-replay-query",
             run_id="run-replay-query",
             query_name="state",
@@ -2016,7 +2022,7 @@ class TestWorkflowTaskExecution:
         run_id: str,
     ) -> None:
         worker = Worker(mock_client, task_queue="q1", workflows=[ReplayQuerySnapshotWorkflow], activities=[])
-        approval_arguments = serializer.encode(["alice"], codec="json")
+        approval_arguments = serializer.encode(["alice"], codec="avro")
         task = {
             "query_task_id": query_task_id,
             "query_task_attempt": 1,
@@ -2055,13 +2061,13 @@ class TestWorkflowTaskExecution:
                 },
             ],
             "history_export": {
-                "payloads": {"codec": "json"},
+                "payloads": {"codec": "avro"},
                 "activities": [
                     {
                         "sequence": 1,
                         "activity_type": "load-state",
-                        "payload_codec": "json",
-                        "result": serializer.encode("loaded", codec="json"),
+                        "payload_codec": "avro",
+                        "result": serializer.encode("loaded", codec="avro"),
                     },
                 ],
                 "signals": [
@@ -2070,14 +2076,14 @@ class TestWorkflowTaskExecution:
                         "command_id": "cmd-approve",
                         "name": "approve",
                         "workflow_sequence": 2,
-                        "payload_codec": "json",
+                        "payload_codec": "avro",
                         "arguments": approval_arguments,
                     },
                 ],
             },
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -2092,7 +2098,7 @@ class TestWorkflowTaskExecution:
                 "approved_by": "alice",
                 "finished": True,
             },
-            codec="json",
+            codec="avro",
             workflow_id=workflow_id,
             run_id=run_id,
             query_name="state",
@@ -2121,19 +2127,19 @@ class TestWorkflowTaskExecution:
                 },
             ],
             "history_export": {
-                "payloads": {"codec": "json"},
+                "payloads": {"codec": "avro"},
                 "activities": [
                     {
                         "sequence": 1,
                         "activity_type": "load-state",
-                        "payload_codec": "json",
-                        "result": serializer.encode("loaded", codec="json"),
+                        "payload_codec": "avro",
+                        "result": serializer.encode("loaded", codec="avro"),
                     },
                 ],
             },
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -2148,7 +2154,7 @@ class TestWorkflowTaskExecution:
                 "approved_by": None,
                 "finished": False,
             },
-            codec="json",
+            codec="avro",
             workflow_id="wf-compact-activity",
             run_id="run-compact-activity",
             query_name="state",
@@ -2164,9 +2170,9 @@ class TestWorkflowTaskExecution:
             "workflow_type": "async-query-wf",
             "query_name": "current",
             "history_events": [],
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -2177,7 +2183,7 @@ class TestWorkflowTaskExecution:
             lease_owner=worker.worker_id,
             query_task_attempt=1,
             result=0,
-            codec="json",
+            codec="avro",
             workflow_id=None,
             run_id=None,
             query_name="current",
@@ -2193,9 +2199,9 @@ class TestWorkflowTaskExecution:
             "workflow_type": "query-wf",
             "query_name": "missing",
             "history_events": [],
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -2216,9 +2222,9 @@ class TestWorkflowTaskExecution:
             "workflow_type": "query-state-unavailable-wf",
             "query_name": "status",
             "history_events": [],
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -2245,9 +2251,9 @@ class TestWorkflowTaskExecution:
             "workflow_type": "query-wf",
             "query_name": "status",
             "history_events": [],
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -2268,9 +2274,9 @@ class TestWorkflowTaskExecution:
             "workflow_type": "query-wf",
             "query_name": "status",
             "history_events": [],
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         outcome = await worker._run_query_task(task)
@@ -2293,9 +2299,9 @@ class TestUpdateValidationTaskExecution:
             "workflow_type": "validated-update-wf",
             "update_name": "approve",
             "history_events": [],
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "update_arguments": serializer.envelope([approved], codec="json"),
-            "payload_codec": "json",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "update_arguments": serializer.envelope([approved], codec="avro"),
+            "payload_codec": "avro",
             "workflow_id": "wf1",
             "run_id": "run1",
         }
@@ -2361,8 +2367,8 @@ class TestUpdateValidationTaskExecution:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": serializer.envelope([], codec="json"),
-            "payload_codec": "json",
+            "arguments": serializer.envelope([], codec="avro"),
+            "payload_codec": "avro",
         }
         ready_task = workflow_task if task_kind == "workflow" else self.task(True)
 
@@ -2457,9 +2463,9 @@ class TestUpdateValidationTaskExecution:
                 "workflow_type": "blocked-validation-wf",
                 "update_name": "approve",
                 "history_events": [],
-                "workflow_arguments": serializer.envelope([], codec="json"),
-                "update_arguments": serializer.envelope([index], codec="json"),
-                "payload_codec": "json",
+                "workflow_arguments": serializer.envelope([], codec="avro"),
+                "update_arguments": serializer.envelope([index], codec="avro"),
+                "payload_codec": "avro",
                 "workflow_id": "wf1",
                 "run_id": "run1",
             }
@@ -2724,14 +2730,14 @@ class TestActivityTaskExecution:
             "task_id": "at1",
             "activity_attempt_id": "aa1",
             "activity_type": "test-act",
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
         await worker._run_activity_task(task)
         mock_client.complete_activity_task.assert_called_once()
         call_kwargs = mock_client.complete_activity_task.call_args.kwargs
         assert call_kwargs["result"] == "result-hello"
-        assert call_kwargs["codec"] == "json"
+        assert call_kwargs["codec"] == "avro"
 
     @pytest.mark.asyncio
     async def test_activity_echoes_avro_codec(self, mock_client: AsyncMock) -> None:
@@ -2760,8 +2766,8 @@ class TestActivityTaskExecution:
             "task_id": "at2",
             "activity_attempt_id": "aa2",
             "activity_type": "test-async-act",
-            "arguments": '["world"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["world"], codec="avro"),
+            "payload_codec": "avro",
         }
         await worker._run_activity_task(task)
         mock_client.complete_activity_task.assert_called_once()
@@ -2775,7 +2781,7 @@ class TestActivityTaskExecution:
             "task_id": "at3",
             "activity_attempt_id": "aa3",
             "activity_type": "unknown-act",
-            "arguments": "[]",
+            "arguments": serializer.encode([], codec="avro"),
         }
         await worker._run_activity_task(task)
         mock_client.fail_activity_task.assert_called_once()
@@ -2791,8 +2797,8 @@ class TestActivityTaskExecution:
             "task_id": "at4",
             "activity_attempt_id": "aa4",
             "activity_type": "failing-act",
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
         await worker._run_activity_task(task)
         mock_client.fail_activity_task.assert_called_once()
@@ -2812,8 +2818,8 @@ class TestActivityTaskExecution:
             "task_id": "at-typed",
             "activity_attempt_id": "aa-typed",
             "activity_type": "cancel-flight",
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
 
         await worker._run_activity_task(task)
@@ -2857,8 +2863,8 @@ class TestWorkerInterceptors:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
 
         await worker._run_workflow_task(task)
@@ -2908,8 +2914,8 @@ class TestWorkerInterceptors:
                 "task_id": "at-intercept-ok",
                 "activity_attempt_id": "aa-intercept-ok",
                 "activity_type": "test-act",
-                "arguments": '["hello"]',
-                "payload_codec": "json",
+                "arguments": serializer.encode(["hello"], codec="avro"),
+                "payload_codec": "avro",
             }
         )
         await worker._run_activity_task(
@@ -2917,8 +2923,8 @@ class TestWorkerInterceptors:
                 "task_id": "at-intercept-boom",
                 "activity_attempt_id": "aa-intercept-boom",
                 "activity_type": "boom-act",
-                "arguments": "[]",
-                "payload_codec": "json",
+                "arguments": serializer.encode([], codec="avro"),
+                "payload_codec": "avro",
             }
         )
 
@@ -2961,9 +2967,9 @@ class TestWorkerInterceptors:
                 "workflow_type": "query-wf",
                 "query_name": "status",
                 "history_events": [],
-                "workflow_arguments": serializer.envelope([], codec="json"),
-                "query_arguments": serializer.envelope([], codec="json"),
-                "payload_codec": "json",
+                "workflow_arguments": serializer.envelope([], codec="avro"),
+                "query_arguments": serializer.envelope([], codec="avro"),
+                "payload_codec": "avro",
             }
         )
 
@@ -2978,8 +2984,8 @@ class TestEnvelopeArguments:
             "task_id": "at-env",
             "activity_attempt_id": "aa-env",
             "activity_type": "test-act",
-            "arguments": {"codec": "json", "blob": '["hello"]'},
-            "payload_codec": "json",
+            "arguments": {"codec": "avro", "blob": serializer.encode(["hello"], codec="avro")},
+            "payload_codec": "avro",
         }
         await worker._run_activity_task(task)
         mock_client.complete_activity_task.assert_called_once()
@@ -2994,8 +3000,8 @@ class TestEnvelopeArguments:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": {"codec": "json", "blob": '["hello"]'},
-            "payload_codec": "json",
+            "arguments": {"codec": "avro", "blob": serializer.encode(["hello"], codec="avro")},
+            "payload_codec": "avro",
         }
         await worker._run_workflow_task(task)
         mock_client.complete_workflow_task.assert_called_once()
@@ -3012,13 +3018,13 @@ class TestCodecDecodeFailures:
             "activity_attempt_id": "aa-bad-json",
             "activity_type": "test-act",
             "arguments": "{not valid json",
-            "payload_codec": "json",
+            "payload_codec": "avro",
         }
         await worker._run_activity_task(task)
         mock_client.fail_activity_task.assert_called_once()
         call_kwargs = mock_client.fail_activity_task.call_args.kwargs
         assert "decode" in call_kwargs["message"].lower()
-        assert "json" in call_kwargs["message"]
+        assert "json" in call_kwargs["message"].lower()
         assert call_kwargs["non_retryable"] is True
         mock_client.complete_activity_task.assert_not_called()
 
@@ -3050,7 +3056,7 @@ class TestCodecDecodeFailures:
             "task_id": "at-unsupported-codec",
             "activity_attempt_id": "aa-unsupported-codec",
             "activity_type": "test-act",
-            "arguments": {"codec": "json", "blob": '["hello"]'},
+            "arguments": {"codec": "avro", "blob": serializer.encode(["hello"], codec="avro")},
             "payload_codec": "zstd",
         }
 
@@ -3059,7 +3065,7 @@ class TestCodecDecodeFailures:
         assert outcome == "decode_error"
         mock_client.fail_activity_task.assert_called_once()
         call_kwargs = mock_client.fail_activity_task.call_args.kwargs
-        assert "Unsupported payload codec 'zstd'" in call_kwargs["message"]
+        assert "unsupported_payload_codec" in call_kwargs["message"]
         assert call_kwargs["failure_type"] == "ValueError"
         assert call_kwargs["non_retryable"] is True
         mock_client.complete_activity_task.assert_not_called()
@@ -3104,13 +3110,13 @@ class TestCodecDecodeFailures:
             "workflow_task_attempt": 1,
             "history_events": [],
             "arguments": "{not valid json",
-            "payload_codec": "json",
+            "payload_codec": "avro",
         }
         await worker._run_workflow_task(task)
         mock_client.fail_workflow_task.assert_called_once()
         call_kwargs = mock_client.fail_workflow_task.call_args.kwargs
         assert "decode" in call_kwargs["message"].lower()
-        assert "json" in call_kwargs["message"]
+        assert "json" in call_kwargs["message"].lower()
         mock_client.complete_workflow_task.assert_not_called()
 
     @pytest.mark.asyncio
@@ -3123,7 +3129,7 @@ class TestCodecDecodeFailures:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": {"codec": "json", "blob": '["hello"]'},
+            "arguments": {"codec": "avro", "blob": serializer.encode(["hello"], codec="avro")},
             "payload_codec": "zstd",
         }
 
@@ -3132,7 +3138,7 @@ class TestCodecDecodeFailures:
         assert commands is None
         mock_client.fail_workflow_task.assert_called_once()
         call_kwargs = mock_client.fail_workflow_task.call_args.kwargs
-        assert "Unsupported payload codec 'zstd'" in call_kwargs["message"]
+        assert "unsupported_payload_codec" in call_kwargs["message"]
         assert call_kwargs["failure_type"] == "ValueError"
         mock_client.complete_workflow_task.assert_not_called()
 
@@ -3147,8 +3153,8 @@ class TestCodecDecodeFailures:
             "workflow_type": "query-wf",
             "query_name": "status",
             "history_events": [],
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
             "payload_codec": "zstd",
         }
 
@@ -3158,7 +3164,7 @@ class TestCodecDecodeFailures:
         mock_client.fail_query_task.assert_called_once()
         call_kwargs = mock_client.fail_query_task.call_args.kwargs
         assert call_kwargs["reason"] == "query_payload_decode_failed"
-        assert "Unsupported payload codec 'zstd'" in call_kwargs["message"]
+        assert "unsupported_payload_codec" in call_kwargs["message"]
         assert call_kwargs["failure_type"] == "ValueError"
         mock_client.complete_query_task.assert_not_called()
 
@@ -3221,7 +3227,7 @@ class TestCodecDecodeFailures:
             "history_events": [
                 {"event_type": "ActivityCompleted", "payload": {"result": "anything"}},
             ],
-            "arguments": {"codec": "json", "blob": '["hello"]'},
+            "arguments": {"codec": "avro", "blob": serializer.encode(["hello"], codec="avro")},
             "payload_codec": "avro",
         }
         await worker._run_workflow_task(task)
@@ -3260,8 +3266,8 @@ class TestWorkerStop:
             "task_id": "at-slow",
             "activity_attempt_id": "aa-slow",
             "activity_type": "slow-act",
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
         worker._track(worker._dispatch_activity_task(task))
         await completed.wait()
@@ -3326,8 +3332,8 @@ class TestConcurrencyLimits:
                 "task_id": f"at-{i}",
                 "activity_attempt_id": f"aa-{i}",
                 "activity_type": "conc-act",
-                "arguments": "[]",
-                "payload_codec": "json",
+                "arguments": serializer.encode([], codec="avro"),
+                "payload_codec": "avro",
             }
             tasks.append(worker._track(worker._dispatch_activity_task(task)))
 
@@ -3370,8 +3376,8 @@ class TestConcurrencyLimits:
                 "task_id": f"at-lim-{i}",
                 "activity_attempt_id": f"aa-lim-{i}",
                 "activity_type": "limited-act",
-                "arguments": "[]",
-                "payload_codec": "json",
+                "arguments": serializer.encode([], codec="avro"),
+                "payload_codec": "avro",
             }
             tasks.append(worker._track(_acquire_and_dispatch(task)))
 
@@ -3496,8 +3502,8 @@ class TestWorkerShutdown:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
         workflow_polled = False
 
@@ -3651,9 +3657,9 @@ class TestWorkerShutdown:
             "workflow_id": "wf-1",
             "run_id": "run-1",
             "query_name": "status",
-            "payload_codec": "json",
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "avro",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
             "history_events": [],
         }
 
@@ -3813,9 +3819,9 @@ class TestPollLoops:
             "workflow_id": "wf-1",
             "run_id": "run-1",
             "query_name": "status",
-            "payload_codec": "json",
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "avro",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
             "history_events": [],
         }
 
@@ -4077,8 +4083,8 @@ class TestRunUntil:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
 
         mock_client.get_cluster_info = AsyncMock(
@@ -4157,15 +4163,15 @@ class TestRunUntil:
             "workflow_type": "test-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
         activity_task = {
             "task_id": "at-run-until-shutdown",
             "activity_attempt_id": "aa-run-until-shutdown",
             "activity_type": "test-act",
-            "arguments": '["hello"]',
-            "payload_codec": "json",
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
         }
 
         mock_client.get_cluster_info = AsyncMock(
@@ -4233,9 +4239,9 @@ class TestRunUntil:
             "workflow_id": "wf-1",
             "run_id": "run-1",
             "query_name": "status",
-            "payload_codec": "json",
-            "workflow_arguments": serializer.envelope([], codec="json"),
-            "query_arguments": serializer.envelope([], codec="json"),
+            "payload_codec": "avro",
+            "workflow_arguments": serializer.envelope([], codec="avro"),
+            "query_arguments": serializer.envelope([], codec="avro"),
             "history_events": [],
         }
         poll_count = 0

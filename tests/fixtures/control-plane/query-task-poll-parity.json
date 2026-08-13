@@ -28,8 +28,8 @@
       "query_task_attempt": 1,
       "lease_owner": "polyglot-worker-231",
       "input": {
-        "codec": "json",
-        "blob": "{\"include_line_items\":true}"
+        "codec": "avro",
+        "blob": "wwHioz3/VYAiNw4CJGluY2x1ZGVfbGluZV9pdGVtcwIBAA=="
       }
     }
   },

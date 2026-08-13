@@ -321,6 +321,7 @@ def _replay_semantic(
     *,
     workflow_type: str,
     workflow_input: Any,
+    payload_codec: str | None,
     history: Any,
     command_sequence: Any,
     expected: Mapping[str, Any],
@@ -328,7 +329,11 @@ def _replay_semantic(
     """Project every replay representation onto consumer-executed values."""
 
     return {
-        "workflow": {"type": workflow_type, "input": workflow_input},
+        "workflow": {
+            "type": workflow_type,
+            "input": workflow_input,
+            "payload_codec": payload_codec,
+        },
         "history": history,
         "executed_commands": _canonical_executed_commands(
             command_sequence,
@@ -611,6 +616,9 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
     semantic = _replay_semantic(
         workflow_type=workflow["type"],
         workflow_input=workflow.get("input", workflow.get("arguments", [])),
+        payload_codec=(
+            _nullable_string(workflow.get("payload_codec"), f"{path}.workflow.payload_codec")
+        ),
         history=history if history is not None else [],
         command_sequence=commands,
         expected=expected,
@@ -741,6 +749,12 @@ def _golden_history_fixture(
         source.get("worker_protocol_version"),
         f"{path}.source.worker_protocol_version",
     )
+    payload_codec = _nullable_string(
+        source.get("payload_codec"),
+        f"{path}.source.payload_codec",
+    )
+    if require_single_case and payload_codec != "avro":
+        raise CorpusError(f"new golden-history fixture {path} must declare payload_codec=avro")
     cases = _list(document.get("cases"), f"{path}.cases", nonempty=True)
     if require_single_case and len(cases) != 1:
         raise CorpusError(f"new golden-history fixture {path} must contain exactly one minimal case")
@@ -756,6 +770,7 @@ def _golden_history_fixture(
         semantic = _replay_semantic(
             workflow_type=workflow_type,
             workflow_input=case.get("start_input", []),
+            payload_codec=payload_codec,
             history=history,
             command_sequence=case.get("command_sequence"),
             expected=expected,

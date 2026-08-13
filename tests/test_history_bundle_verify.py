@@ -39,7 +39,7 @@ def _base_bundle() -> dict[str, Any]:
             "last_history_sequence": 1,
         },
         "payloads": {
-            "codec": "json",
+            "codec": "avro",
             "arguments": {"available": True, "data": '"order-1"'},
             "output": {"available": True, "data": '{"ok":true}'},
         },
@@ -310,7 +310,7 @@ def test_payload_marked_available_but_missing_is_failed() -> None:
     bundle["payload_manifest"]["entries"].append(
         {
             "path": "payloads.arguments.data",
-            "codec": "json",
+            "codec": "avro",
             "available": True,
             "redacted": False,
             "encoding": "opaque-string",

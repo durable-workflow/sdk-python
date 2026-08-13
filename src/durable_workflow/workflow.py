@@ -2544,6 +2544,18 @@ def _replay_state(
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
 ) -> _ReplayState:
+    if payload_codec is not None and payload_codec != serializer.AVRO_CODEC:
+        try:
+            serializer.decode("", codec=payload_codec)
+        except ValueError as exception:
+            raise WorkflowPayloadDecodeError(
+                str(exception),
+                workflow_id=workflow_id,
+                run_id=run_id or None,
+                codec=payload_codec,
+                exception_type=type(exception).__name__,
+            ) from exception
+
     events = list(history_events)
     workflow_id = workflow_id or _workflow_id_from_history(events)
     event_types_by_sequence: dict[int, list[str]] = {}

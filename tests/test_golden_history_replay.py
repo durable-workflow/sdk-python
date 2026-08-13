@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from durable_workflow import Replayer, workflow
-from durable_workflow.errors import ChildWorkflowFailed
+from durable_workflow.errors import ChildWorkflowFailed, WorkflowPayloadDecodeError
 from durable_workflow.workflow import CompleteWorkflow, ScheduleActivity, WorkflowContext
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "golden_history"
@@ -111,6 +111,10 @@ def _load_fixture(path: Path) -> dict[str, Any]:
     assert source.get("version"), f"{path.name} must name the released package version that emitted the history"
     assert "dev" not in str(source["version"]).lower(), f"{path.name} must not use a dev version as replay baseline"
     assert source.get("worker_protocol_version"), f"{path.name} must declare the worker protocol version"
+    payload_codec = source.get("payload_codec")
+    assert payload_codec in {None, "avro"}, (
+        f"{path.name} must declare Avro or remain an immutable untagged prerelease rejection fixture"
+    )
 
     cases = fixture.get("cases")
     assert isinstance(cases, list), f"{path.name} must contain a cases list"
@@ -164,10 +168,23 @@ def test_golden_history_replay_contract(case: dict[str, Any]) -> None:
         ],
     )
 
+    payload_codec = case["source"].get("payload_codec")
+    if payload_codec != "avro":
+        with pytest.raises(WorkflowPayloadDecodeError, match="unsupported_payload_codec"):
+            replayer.replay(
+                case["history"],
+                case["start_input"],
+                workflow_type=case["workflow_type"],
+                payload_codec="json",
+            )
+
+        return
+
     outcome = replayer.replay(
         case["history"],
         case["start_input"],
         workflow_type=case["workflow_type"],
+        payload_codec=payload_codec,
     )
 
     assert len(outcome.commands) == 1

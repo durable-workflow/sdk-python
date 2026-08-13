@@ -125,7 +125,7 @@ _WORKER_WORKFLOW_FINGERPRINTS: dict[tuple[str, str], str] = {}
 
 
 def _command_payload_codec(codec: object) -> str:
-    return codec if isinstance(codec, str) and codec in serializer.SUPPORTED_CODECS else serializer.AVRO_CODEC
+    return _validate_payload_codec(codec) or serializer.AVRO_CODEC
 
 
 def _validate_payload_codec(codec: object) -> str | None:
@@ -134,7 +134,10 @@ def _validate_payload_codec(codec: object) -> str | None:
     if isinstance(codec, str) and codec in serializer.SUPPORTED_CODECS:
         return codec
     raise ValueError(
-        f"Unsupported payload codec {codec!r}; this SDK supports {serializer.SUPPORTED_CODECS!r}."
+        "unsupported_payload_codec: workflow payload codec "
+        f"{codec!r} is not supported by Durable Workflow 2.0; use codec='avro' "
+        "with the fixed Avro Value schema and single-object framing. JSON remains "
+        "the HTTP document transport, not a workflow payload codec."
     )
 
 
@@ -1523,7 +1526,7 @@ class Worker:
         raw_args = task.get("arguments")
         inbound_codec = task.get("payload_codec")
         try:
-            inbound_codec = _validate_payload_codec(inbound_codec) or serializer.JSON_CODEC
+            inbound_codec = _validate_payload_codec(inbound_codec) or serializer.AVRO_CODEC
             args = serializer.decode_envelope(
                 raw_args,
                 codec=inbound_codec,

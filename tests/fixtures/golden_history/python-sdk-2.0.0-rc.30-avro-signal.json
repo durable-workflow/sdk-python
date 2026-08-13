@@ -1,0 +1,55 @@
+{
+  "fixture_schema": "durable-workflow.golden-history.v1",
+  "source": {
+    "runtime": "sdk-python",
+    "package": "durable-workflow",
+    "version": "2.0.0-rc.30",
+    "worker_protocol_version": "1.1",
+    "control_plane_version": "2",
+    "payload_codec": "avro"
+  },
+  "cases": [
+    {
+      "name": "signal_satisfies_wait_condition",
+      "family": "signal-update",
+      "workflow_type": "golden.signal-wait",
+      "start_input": [],
+      "history": [
+        {
+          "event_type": "ConditionWaitOpened",
+          "payload": {
+            "condition_wait_id": "wait-approval-1",
+            "condition_key": "approval",
+            "timeout_seconds": 30
+          }
+        },
+        {
+          "event_type": "SignalReceived",
+          "payload": {
+            "signal_name": "approve",
+            "arguments": "wwHioz3/VYAiNwwCCgphbGljZQA="
+          }
+        },
+        {
+          "event_type": "ConditionWaitSatisfied",
+          "payload": {
+            "condition_wait_id": "wait-approval-1"
+          }
+        },
+        {
+          "event_type": "ActivityCompleted",
+          "payload": {
+            "result": "wwHioz3/VYAiNwoQbm90aWZpZWQ="
+          }
+        }
+      ],
+      "expected": {
+        "command_type": "CompleteWorkflow",
+        "result": {
+          "approved_by": "alice",
+          "activity_result": "notified"
+        }
+      }
+    }
+  ]
+}

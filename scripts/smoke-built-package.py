@@ -56,8 +56,8 @@ def completed(result):
     return {
         "event_type": "ActivityCompleted",
         "payload": {
-            "result": serializer.encode(result, codec="json"),
-            "payload_codec": "json",
+            "result": serializer.encode(result, codec="avro"),
+            "payload_codec": "avro",
         },
     }
 

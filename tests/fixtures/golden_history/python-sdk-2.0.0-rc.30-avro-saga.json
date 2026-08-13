@@ -1,0 +1,38 @@
+{
+  "fixture_schema": "durable-workflow.golden-history.v1",
+  "source": {
+    "runtime": "sdk-python",
+    "package": "durable-workflow",
+    "version": "2.0.0-rc.30",
+    "worker_protocol_version": "1.1",
+    "control_plane_version": "2",
+    "payload_codec": "avro"
+  },
+  "cases": [
+    {
+      "name": "saga_compensates_after_child_failure",
+      "family": "saga-compensation",
+      "workflow_type": "golden.saga-compensation",
+      "start_input": ["order-123"],
+      "history": [
+        {
+          "event_type": "ActivityCompleted",
+          "payload": {
+            "result": "wwHioz3/VYAiNwoecmVzZXJ2YXRpb24tNDU2"
+          }
+        },
+        {
+          "event_type": "ChildRunFailed",
+          "payload": {
+            "message": "payment declined"
+          }
+        }
+      ],
+      "expected": {
+        "command_type": "ScheduleActivity",
+        "activity_type": "golden.release-inventory",
+        "arguments": ["order-123", "reservation-456", "payment declined"]
+      }
+    }
+  ]
+}

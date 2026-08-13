@@ -74,7 +74,7 @@ def _activity_completed_event(result: Any) -> dict[str, Any]:
 def _json_activity_completed_event(result: Any) -> dict[str, Any]:
     return {
         "event_type": "ActivityCompleted",
-        "payload": {"result": serializer.encode(result, codec="json"), "payload_codec": "json"},
+        "payload": {"result": serializer.encode(result, codec="avro"), "payload_codec": "avro"},
     }
 
 
@@ -101,8 +101,8 @@ def _json_signal_received_event(name: str, args: list[Any]) -> dict[str, Any]:
         "event_type": "SignalReceived",
         "payload": {
             "signal_name": name,
-            "value": serializer.encode(args, codec="json"),
-            "payload_codec": "json",
+            "value": serializer.encode(args, codec="avro"),
+            "payload_codec": "avro",
         },
     }
 
@@ -129,7 +129,7 @@ class TestSignalDispatchDuringReplay:
             _json_activity_completed_event(None),
         ]
 
-        outcome = replay(StartBoundarySignalWorkflow, events, [], payload_codec="json")
+        outcome = replay(StartBoundarySignalWorkflow, events, [], payload_codec="avro")
 
         assert len(outcome.commands) == 1
         assert isinstance(outcome.commands[0], CompleteWorkflow)
@@ -223,7 +223,7 @@ class TestSignalDispatchDuringReplay:
                 "payload": {
                     "signal_name": "approve",
                     "value": "{not valid json",
-                    "payload_codec": "json",
+                    "payload_codec": "avro",
                 },
             },
         ]
@@ -232,7 +232,7 @@ class TestSignalDispatchDuringReplay:
             caplog.at_level(logging.ERROR, logger="durable_workflow.workflow.replay"),
             pytest.raises(WorkflowPayloadDecodeError) as exc_info,
         ):
-            replay(ApprovalWorkflow, events, [], workflow_id="wf-1", run_id="run-1", payload_codec="json")
+            replay(ApprovalWorkflow, events, [], workflow_id="wf-1", run_id="run-1", payload_codec="avro")
 
         err = exc_info.value
         assert err.workflow_id == "wf-1"
@@ -240,7 +240,7 @@ class TestSignalDispatchDuringReplay:
         assert err.event_id == "evt-7"
         assert err.receiver_kind == "signal"
         assert err.receiver_name == "approve"
-        assert err.codec == "json"
+        assert err.codec == "avro"
         assert err.payload_head == "{not valid json"
         assert err.exception_type == "ValueError"
 
@@ -250,6 +250,6 @@ class TestSignalDispatchDuringReplay:
         assert payload["run_id"] == "run-1"
         assert payload["event_id"] == "evt-7"
         assert payload["signal_name"] == "approve"
-        assert payload["codec"] == "json"
+        assert payload["codec"] == "avro"
         assert payload["payload_head"] == "{not valid json"
         assert payload["exception_type"] == "ValueError"

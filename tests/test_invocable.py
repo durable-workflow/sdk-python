@@ -42,7 +42,7 @@ def _refresh_bounds(envelope: dict[str, Any], *, expires_in: timedelta = timedel
 def activity_input(*args: Any, expires_in: timedelta = timedelta(minutes=5)) -> dict[str, Any]:
     envelope = copy.deepcopy(load_fixture("activity-task.v1.json"))
     _refresh_bounds(envelope, expires_in=expires_in)
-    envelope["payloads"]["arguments"] = serializer.envelope(list(args), codec=serializer.JSON_CODEC)
+    envelope["payloads"]["arguments"] = serializer.envelope(list(args), codec=serializer.AVRO_CODEC)
     return envelope
 
 
@@ -50,7 +50,7 @@ async def test_invocable_activity_handler_returns_success_result_envelope() -> N
     handler = InvocableActivityHandler(
         {"billing.charge-card": lambda amount, currency: {"approved": True, "amount": amount, "currency": currency}},
         carrier="lambda-adapter",
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     )
 
     output = await handler.handle(activity_input(4200, "USD"))
@@ -74,7 +74,7 @@ async def test_invocable_activity_handler_awaits_async_handlers() -> None:
     output = await handle_invocable_activity(
         activity_input(42),
         {"billing.charge-card": charge},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     )
     result = parse_external_task_result(output)
 
@@ -96,7 +96,7 @@ async def test_invocable_activity_handler_fails_closed_for_expired_lease_without
 
     output = await InvocableActivityHandler(
         {"billing.charge-card": charge},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     ).handle(envelope)
     result = parse_external_task_result(output)
 
@@ -118,7 +118,7 @@ async def test_invocable_activity_handler_times_out_async_handler_before_success
 
     output = await InvocableActivityHandler(
         {"billing.charge-card": slow_charge},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     ).handle(activity_input(expires_in=timedelta(milliseconds=100)))
     result = parse_external_task_result(output)
 
@@ -137,7 +137,7 @@ async def test_invocable_activity_handler_rejects_sync_success_after_deadline_ov
 
     output = await InvocableActivityHandler(
         {"billing.charge-card": slow_charge},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     ).handle(activity_input(expires_in=timedelta(milliseconds=10)))
     result = parse_external_task_result(output)
 
@@ -148,7 +148,7 @@ async def test_invocable_activity_handler_rejects_sync_success_after_deadline_ov
 
 
 async def test_invocable_activity_handler_fails_closed_for_unknown_handler() -> None:
-    output = await InvocableActivityHandler({}, result_codec=serializer.JSON_CODEC).handle(activity_input("x"))
+    output = await InvocableActivityHandler({}, result_codec=serializer.AVRO_CODEC).handle(activity_input("x"))
     result = parse_external_task_result(output)
 
     assert result.failed is True
@@ -165,7 +165,7 @@ async def test_invocable_activity_handler_maps_non_retryable_errors() -> None:
 
     output = await InvocableActivityHandler(
         {"billing.charge-card": handler},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     ).handle(activity_input())
     result = parse_external_task_result(output)
 
@@ -179,7 +179,7 @@ async def test_invocable_activity_handler_maps_non_retryable_errors() -> None:
 async def test_invocable_activity_handler_rejects_workflow_task_inputs() -> None:
     output = await InvocableActivityHandler(
         {"billing.invoice.workflow": lambda: {"ignored": True}},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     ).handle(load_fixture("workflow-task.v1.json"))
     result = parse_external_task_result(output)
 
@@ -199,7 +199,7 @@ async def test_invocable_http_request_helper_returns_result_response() -> None:
     response = await handle_invocable_http_request(
         json.dumps(activity_input(42)),
         {"billing.charge-card": lambda amount: {"amount": amount}},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     )
 
     assert response.status_code == 200
@@ -215,7 +215,7 @@ async def test_invocable_http_request_helper_accepts_bytes_body() -> None:
     response = await handle_invocable_http_request(
         json.dumps(activity_input(7)).encode(),
         {"billing.charge-card": lambda amount: {"amount": amount}},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     )
 
     assert response.status_code == 200
@@ -233,7 +233,7 @@ async def test_invocable_http_request_helper_rejects_invalid_json_body() -> None
 def test_lambda_invocable_activity_handler_accepts_base64_api_gateway_body() -> None:
     handler = lambda_invocable_activity_handler(
         {"billing.charge-card": lambda amount: {"amount": amount}},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     )
     body = json.dumps(activity_input(99)).encode()
 
@@ -274,7 +274,7 @@ async def test_invocable_http_request_propagates_non_retryable_error_as_200() ->
     response = await handle_invocable_http_request(
         json.dumps(activity_input()),
         {"billing.charge-card": handler},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     )
 
     assert response.status_code == 200
@@ -294,7 +294,7 @@ async def test_invocable_http_request_propagates_generic_exception_as_200() -> N
     response = await handle_invocable_http_request(
         json.dumps(activity_input()),
         {"billing.charge-card": handler},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     )
 
     assert response.status_code == 200
@@ -313,7 +313,7 @@ async def test_invocable_http_request_propagates_cancellation_as_200() -> None:
     response = await handle_invocable_http_request(
         json.dumps(activity_input()),
         {"billing.charge-card": handler},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     )
 
     assert response.status_code == 200
@@ -331,7 +331,7 @@ async def test_invocable_http_request_propagates_expired_deadline_as_200() -> No
     response = await handle_invocable_http_request(
         json.dumps(envelope),
         {"billing.charge-card": lambda: {"approved": True}},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     )
 
     assert response.status_code == 200
@@ -348,7 +348,7 @@ async def test_invocable_http_request_propagates_handler_timeout_as_200() -> Non
     response = await handle_invocable_http_request(
         json.dumps(activity_input(expires_in=timedelta(milliseconds=100))),
         {"billing.charge-card": slow_handler},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     )
 
     assert response.status_code == 200
@@ -362,7 +362,7 @@ async def test_invocable_http_request_propagates_unknown_handler_as_200() -> Non
     response = await handle_invocable_http_request(
         json.dumps(activity_input()),
         {},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     )
 
     assert response.status_code == 200
@@ -378,7 +378,7 @@ async def test_invocable_http_request_propagates_workflow_task_rejection_as_200(
     response = await handle_invocable_http_request(
         json.dumps(load_fixture("workflow-task.v1.json")),
         {"billing.invoice.workflow": lambda: {"ignored": True}},
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     )
 
     assert response.status_code == 200

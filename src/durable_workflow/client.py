@@ -3864,7 +3864,14 @@ class Client:
         external_storage: ExternalStorageDriver | None = None,
         external_storage_threshold_bytes: int | None = None,
     ) -> Any:
-        """Submit the successful result for a worker-routed query task."""
+        """Submit a query result through the Avro payload envelope."""
+        if codec != serializer.AVRO_CODEC:
+            raise ValueError(
+                "unsupported_payload_codec: workflow payload codec "
+                f"{codec!r} is not supported by Durable Workflow 2.0; use codec='avro' "
+                "with the fixed Avro Value schema and single-object framing. JSON remains "
+                "the HTTP document transport, not a workflow payload codec."
+            )
         body: dict[str, Any] = {
             "lease_owner": lease_owner,
             "query_task_attempt": query_task_attempt,

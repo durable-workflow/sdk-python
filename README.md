@@ -438,7 +438,7 @@ payload = serializer.external_storage_envelope(
 - **Type-safe**: Full type hints, passes `mypy --strict`
 - **Polyglot**: Works alongside PHP workers on the same task queue
 - **HTTP/JSON protocol**: No gRPC, no protobuf dependencies
-- **Codec envelopes**: Avro payloads by default, with JSON decode compatibility for existing history
+- **Codec envelopes**: Avro is the sole workflow payload codec; JSON remains the HTTP document transport
 - **External payload references**: opt-in reference envelopes, local filesystem/S3/GCS/Azure Blob drivers, and a bounded verified-byte cache for large-payload offload experiments
 - **Payload-size warnings**: Structured warnings before oversized workflow, activity, schedule, signal, update, query, or search-attribute payloads reach the server
 - **Workflow definition guard**: Worker registration refuses same-id hot reloads when a workflow class definition changed

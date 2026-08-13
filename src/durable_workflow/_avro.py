@@ -260,8 +260,9 @@ def _diagnose_ingress(blob: str, cause: Exception) -> None:
     )
     if looks_like_json:
         raise ValueError(
-            "invalid_payload_framing: payload bytes look like JSON, not base64-encoded Avro. Use the "
-            'explicit "json" codec or encode with the Avro Value codec.'
+            "invalid_payload_framing: payload bytes look like JSON, not base64-encoded Avro. "
+            "JSON is the HTTP document transport, not a workflow payload codec; encode durable "
+            "values with the fixed Avro Value schema and single-object framing."
         ) from cause
     raise ValueError(
         "invalid_payload_framing: failed to base64-decode Avro payload bytes. Avro payloads must be "

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from durable_workflow import activity
+from durable_workflow import activity, serializer
 from durable_workflow.activity import ActivityContext, ActivityInfo, _set_context
 from durable_workflow.client import Client
 from durable_workflow.errors import ActivityCancelled, NonRetryableError
@@ -125,8 +125,8 @@ class TestWorkerActivityContext:
             "activity_attempt_id": "aa1",
             "activity_type": "ctx-act",
             "attempt_number": 2,
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
         await worker._run_activity_task(task)
 
@@ -147,8 +147,8 @@ class TestWorkerActivityContext:
             "task_id": "at2",
             "activity_attempt_id": "aa2",
             "activity_type": "clean-act",
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
         await worker._run_activity_task(task)
 
@@ -166,8 +166,8 @@ class TestWorkerActivityContext:
             "task_id": "at3",
             "activity_attempt_id": "aa3",
             "activity_type": "fail-act",
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
         await worker._run_activity_task(task)
 
@@ -189,8 +189,8 @@ class TestWorkerActivityContext:
             "task_id": "at4",
             "activity_attempt_id": "aa4",
             "activity_type": "hb-act",
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
         await worker._run_activity_task(task)
 
@@ -227,8 +227,8 @@ class TestWorkerActivityContext:
             "task_id": "at-swallow",
             "activity_attempt_id": "aa-swallow",
             "activity_type": "hb-swallow-act",
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
         outcome = await worker._run_activity_task(task)
 
@@ -251,8 +251,8 @@ class TestWorkerActivityContext:
             "task_id": "at5",
             "activity_attempt_id": "aa5",
             "activity_type": "nr-act",
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
         await worker._run_activity_task(task)
 
@@ -277,8 +277,8 @@ class TestWorkerActivityContext:
             "task_id": "at6",
             "activity_attempt_id": "aa6",
             "activity_type": "default-attempt-act",
-            "arguments": "[]",
-            "payload_codec": "json",
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
         }
         await worker._run_activity_task(task)
 
