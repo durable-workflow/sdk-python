@@ -191,6 +191,26 @@ def test_ci_schedules_runtime_matrix_only_for_complete_qualification() -> None:
     assert report["needs"] == "qualification-class"
 
 
+def test_ci_validates_central_action_policy_on_github() -> None:
+    workflow = load_workflow(CI_WORKFLOW)
+    action_policy = workflow["jobs"]["action-policy"]
+    commands = "\n".join(step.get("run", "") for step in action_policy["steps"])
+    central_checkout = action_policy["steps"][1]
+
+    assert action_policy["if"] == "${{ github.server_url == 'https://github.com' }}"
+    assert central_checkout["uses"] == "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
+    assert central_checkout["with"] == {
+        "repository": "durable-workflow/.github",
+        "ref": "main",
+        "path": ".central-action-policy",
+        "persist-credentials": "false",
+    }
+    assert ".central-action-policy/scripts/qualification_policy.py validate" in commands
+    assert "--policy .central-action-policy/qualification/policy.json" in commands
+    assert "--target sdk-python" in commands
+    assert "--workflow-directory .github/workflows" in commands
+
+
 def test_absolute_avro_throughput_is_an_advisory_artifact_not_a_lint_budget() -> None:
     workflow = load_workflow(CI_WORKFLOW)
     jobs = workflow["jobs"]
@@ -214,6 +234,7 @@ def test_terminal_status_accepts_only_the_selected_qualification_shape() -> None
     qualification = workflow["jobs"]["target-branch-qualification"]
     assert qualification["name"] == "Target branch qualification"
     assert set(qualification["needs"]) == RUNTIME_JOBS | {
+        "action-policy",
         "qualification-class",
         "qualification-class-report",
     }
@@ -221,7 +242,7 @@ def test_terminal_status_accepts_only_the_selected_qualification_shape() -> None
     assert 'if [ "$QUALIFICATION_CLASS" = focused-documentation ]' in commands
     assert commands.count("= skipped") == len(RUNTIME_JOBS)
     assert 'elif [ "$QUALIFICATION_CLASS" = complete ]' in commands
-    assert commands.count("= success") == len(RUNTIME_JOBS) + 2
+    assert commands.count("= success") == len(RUNTIME_JOBS) + 3
     assert "else\n  exit 1\nfi" in commands
 
 

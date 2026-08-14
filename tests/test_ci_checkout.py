@@ -69,4 +69,7 @@ def test_ci_workflow_uses_portable_public_checkouts() -> None:
 
     assert "checkout-public-repository.py cli cli" in workflow
     assert "checkout-public-repository.py server server" in workflow
-    assert "repository: durable-workflow/" not in workflow
+    public_repository_inputs = [
+        line.strip() for line in workflow.splitlines() if line.strip().startswith("repository: durable-workflow/")
+    ]
+    assert public_repository_inputs == ["repository: durable-workflow/.github"]
