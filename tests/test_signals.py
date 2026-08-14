@@ -213,6 +213,21 @@ class TestSignalDispatchDuringReplay:
         assert isinstance(outcome.commands[0], CompleteWorkflow)
         assert outcome.commands[0].result == 2
 
+    @pytest.mark.parametrize("codec", ["json", "workflow-serializer-y"])
+    def test_signal_without_args_rejects_unsupported_event_codec(self, codec: str) -> None:
+        events = [
+            {
+                "event_type": "SignalReceived",
+                "payload": {
+                    "signal_name": "approve",
+                    "payload_codec": codec,
+                },
+            },
+        ]
+
+        with pytest.raises(WorkflowPayloadDecodeError, match="unsupported_payload_codec"):
+            replay(ApprovalWorkflow, events, [])
+
     def test_signal_payload_decode_failure_logs_workflow_context(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

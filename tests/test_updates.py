@@ -305,6 +305,22 @@ class TestUpdateApplicationReplay:
         assert command.exception_type == "RuntimeError"
         assert "update exploded" in command.message
 
+    @pytest.mark.parametrize("codec", ["json", "workflow-serializer-y"])
+    def test_update_without_args_rejects_unsupported_event_codec(self, codec: str) -> None:
+        history = [
+            {
+                "event_type": "UpdateApplied",
+                "payload": {
+                    "update_id": "upd-bad-codec",
+                    "update_name": "increment",
+                    "payload_codec": codec,
+                },
+            },
+        ]
+
+        with pytest.raises(WorkflowPayloadDecodeError, match="unsupported_payload_codec"):
+            replay(StatefulUpdateReceiver, history, [])
+
     def test_replay_update_payload_decode_failure_logs_workflow_context(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

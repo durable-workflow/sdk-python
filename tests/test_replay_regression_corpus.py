@@ -89,8 +89,8 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
         f"replay fixture workflow {workflow_type!r} has no Python implementation; "
         "register its reproducer workflow in WORKFLOWS"
     )
-    start_input = workflow.get("input", [])
-    assert isinstance(start_input, list)
+    start_input = workflow.get("input")
+    assert start_input is None or isinstance(start_input, list)
     payload_codec = workflow.get("payload_codec")
 
     history = fixture.get("history", [])
@@ -136,6 +136,17 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
 
     workflow = fixture.get("workflow")
     assert isinstance(workflow, dict)
+    expected = fixture.get("expected")
+    assert isinstance(expected, dict) and expected
+    expected_error = expected.get("error")
+    if isinstance(expected_error, str):
+        with pytest.raises(
+            (ValueError, WorkflowPayloadDecodeError),
+            match=expected_error,
+        ):
+            _execute_fixture(fixture)
+
+        return
     if workflow.get("payload_codec") != serializer.AVRO_CODEC:
         with pytest.raises(WorkflowPayloadDecodeError, match="unsupported_payload_codec"):
             _execute_fixture(fixture)

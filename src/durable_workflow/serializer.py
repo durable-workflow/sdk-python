@@ -458,6 +458,8 @@ def decode_envelope(
     decoder. Untagged raw durable payload blobs are rejected. External payload
     references require an *external_storage* driver and verify size/hash before decode.
     """
+    if isinstance(value, dict) and "codec" in value:
+        _validate_payload_codec(value["codec"])
     if isinstance(value, dict) and "codec" in value and "blob" in value:
         return decode(value["blob"], codec=value["codec"])
     if isinstance(value, dict) and "external_storage" in value:
@@ -465,8 +467,6 @@ def decode_envelope(
             raise ValueError("external payload reference requires an external storage driver")
         reference = ExternalPayloadReference.from_dict(value["external_storage"])
         envelope_codec = value.get("codec")
-        if envelope_codec is not None and envelope_codec != AVRO_CODEC:
-            raise _unsupported_payload_codec(envelope_codec)
         if envelope_codec is not None and envelope_codec != reference.codec:
             raise ValueError("external payload reference codec does not match envelope codec")
         blob = fetch_external_payload(external_storage, reference, cache=external_storage_cache).decode("utf-8")
@@ -500,7 +500,7 @@ def decode_envelopes(
     for index, value in enumerate(values):
         if isinstance(value, dict) and "codec" in value and "blob" in value:
             jobs.append((value["blob"], value["codec"]))
-        elif value is None:
+        elif value is None and codec is None:
             passthroughs[index] = None
             jobs.append((None, None))
         else:
@@ -547,13 +547,18 @@ def decode(blob: str | None, codec: str | None = None) -> Any:
     :class:`~durable_workflow.errors.AvroNotInstalledError` when the Avro
     runtime dependency is missing from a broken or partial installation.
     """
-    if blob is None:
+    if blob is None and codec is None:
         return None
 
-    if codec == AVRO_CODEC:
-        return _avro.decode(blob)
+    _validate_payload_codec(codec)
+    if blob is None:
+        return None
+    return _avro.decode(blob)
 
-    raise _unsupported_payload_codec(codec)
+
+def _validate_payload_codec(codec: object) -> None:
+    if codec != AVRO_CODEC:
+        raise _unsupported_payload_codec(codec)
 
 
 def _unsupported_payload_codec(codec: object) -> ValueError:

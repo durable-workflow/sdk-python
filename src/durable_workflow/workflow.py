@@ -27,7 +27,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from . import serializer
 from .errors import (
@@ -1582,6 +1582,20 @@ class _RecordedStep:
     details: dict[str, Any]
 
 
+def _validated_replay_payload_codec(
+    payload: Mapping[str, Any],
+    fallback_codec: str | None,
+) -> str | None:
+    explicit = "payload_codec" in payload
+    codec = cast(
+        str | None,
+        payload["payload_codec"] if explicit else fallback_codec,
+    )
+    if (explicit or codec is not None) and codec != serializer.AVRO_CODEC:
+        serializer.decode("", codec=codec)
+    return codec
+
+
 def _decode_history_result(
     payload: dict[str, Any],
     fallback_codec: str | None,
@@ -1589,7 +1603,7 @@ def _decode_history_result(
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
 ) -> Any:
-    codec = payload.get("payload_codec") or fallback_codec
+    codec = _validated_replay_payload_codec(payload, fallback_codec)
     value = payload["result"] if "result" in payload else payload.get("output")
 
     return serializer.decode_envelope(
@@ -1615,7 +1629,7 @@ def _decode_signal_args(
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
 ) -> list[Any]:
-    codec = payload.get("payload_codec") or fallback_codec
+    codec = _validated_replay_payload_codec(payload, fallback_codec)
     raw = payload.get("value")
     if raw is None:
         raw = payload.get("input")
@@ -1641,7 +1655,7 @@ def _decode_update_args(
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
 ) -> list[Any]:
-    codec = payload.get("payload_codec") or fallback_codec
+    codec = _validated_replay_payload_codec(payload, fallback_codec)
     raw = payload.get("arguments")
     if raw is None:
         return []
@@ -1734,7 +1748,7 @@ def _start_input_from_history(
         payload = event.get("payload") or {}
         if not isinstance(payload, Mapping):
             return []
-        codec = payload.get("payload_codec") or payload_codec
+        codec = _validated_replay_payload_codec(payload, payload_codec)
         for key in ("input_envelope", "input", "arguments"):
             raw = payload.get(key)
             if raw is None:
@@ -1772,7 +1786,10 @@ def _decode_receiver_args(
     payload = event.get("payload") or {}
     if not isinstance(payload, Mapping):
         payload = {}
-    codec = payload.get("payload_codec") or payload_codec
+    codec = cast(
+        str | None,
+        payload.get("payload_codec", payload_codec),
+    )
     try:
         if receiver_kind == "signal":
             return _decode_signal_args(

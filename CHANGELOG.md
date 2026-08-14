@@ -6,8 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.30`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc30`. This Avro-only SDK release is qualified with Server
+The Python SDK advances to prerelease `2.0.0-rc.31`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc31`. This Avro-only SDK release is qualified with Server
 `2.0.0-rc.32`; JSON remains HTTP transport and is no longer a workflow payload
 codec.
 Earlier SDK versions remain historical releases and are not alternate supported
@@ -56,6 +56,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Explicit JSON and unknown payload-codec tags now fail closed before null,
+  absent, empty-argument, or already-decoded replay shortcuts. Untagged
+  no-payload sentinels and Avro-encoded null values retain their intended
+  behavior.
 - The Python API reference now describes query decorators and query-state
   replay as parts of the shipped server-routed worker query path while keeping
   its Server capability negotiation requirements explicit.

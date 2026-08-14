@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "json-tagged-empty-workflow-start-rejected",
+  "protocol_version": "1.1",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "golden.signal-wait",
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_type": "golden.signal-wait",
+        "payload_codec": "json"
+      }
+    }
+  ],
+  "expected": {
+    "error": "unsupported_payload_codec"
+  }
+}

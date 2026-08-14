@@ -112,6 +112,11 @@ class TestDecode:
     def test_none_blob(self) -> None:
         assert serializer.decode(None) is None
 
+    @pytest.mark.parametrize("codec", ["json", "workflow-serializer-y"])
+    def test_none_blob_rejects_explicit_unsupported_codec(self, codec: str) -> None:
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
+            serializer.decode(None, codec=codec)
+
     def test_untagged_raw_blob_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="unsupported_payload_codec"):
             serializer.decode('{"x":1}')
@@ -146,6 +151,20 @@ class TestDecodeEnvelope:
         with pytest.raises(ValueError, match="unsupported_payload_codec"):
             serializer.decode_envelope({"codec": "workflow-serializer-y", "blob": "data"})
 
+    @pytest.mark.parametrize("codec", ["json", "workflow-serializer-y"])
+    @pytest.mark.parametrize("blob_kind", ["absent", "none"])
+    def test_rejects_unsupported_envelope_codec_before_blob_shortcuts(
+        self,
+        codec: str,
+        blob_kind: str,
+    ) -> None:
+        envelope: dict[str, object] = {"codec": codec}
+        if blob_kind == "none":
+            envelope["blob"] = None
+
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
+            serializer.decode_envelope(envelope)
+
     def test_none_passthrough(self) -> None:
         assert serializer.decode_envelope(None) is None
 
@@ -175,6 +194,14 @@ class TestBatchEncoding:
         envelopes = serializer.envelope_many([["a"], ["b"]], codec="avro")
         assert [envelope["codec"] for envelope in envelopes] == ["avro", "avro"]
         assert serializer.decode_envelopes(envelopes) == [["a"], ["b"]]
+
+    @pytest.mark.parametrize("codec", ["json", "workflow-serializer-y"])
+    def test_decode_envelopes_rejects_unsupported_codec_before_none_passthrough(
+        self,
+        codec: str,
+    ) -> None:
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
+            serializer.decode_envelopes([None], codec=codec)
 
     def test_encode_many_accepts_per_payload_warning_context(
         self, caplog: pytest.LogCaptureFixture

@@ -412,6 +412,23 @@ class TestPublicReplayer:
         assert isinstance(cmd, ScheduleActivity)
         assert cmd.arguments == ["Ada"]
 
+    @pytest.mark.parametrize("codec", ["json", "workflow-serializer-y"])
+    @pytest.mark.parametrize("input_kind", ["absent", "decoded"])
+    def test_workflow_start_rejects_unsupported_codec_before_input_shortcuts(
+        self,
+        codec: str,
+        input_kind: str,
+    ) -> None:
+        payload: dict[str, object] = {
+            "workflow_type": "one-activity",
+            "payload_codec": codec,
+        }
+        if input_kind == "decoded":
+            payload["input"] = ["Ada"]
+
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
+            Replayer(workflows=[OneActivity]).replay([{"event_type": "WorkflowStarted", "payload": payload}])
+
     def test_rejects_unknown_workflow_type(self) -> None:
         history = [
             {"event_type": "WorkflowStarted", "payload": {"workflow_type": "missing"}},
@@ -468,6 +485,24 @@ class TestOneActivity:
         cmd = outcome.commands[0]
         assert isinstance(cmd, CompleteWorkflow)
         assert cmd.result == {"greeting": "hello, avro"}
+
+    @pytest.mark.parametrize("codec", ["json", "workflow-serializer-y"])
+    @pytest.mark.parametrize("result_kind", ["absent", "none"])
+    def test_completed_activity_rejects_unsupported_codec_before_result_shortcuts(
+        self,
+        codec: str,
+        result_kind: str,
+    ) -> None:
+        payload: dict[str, object] = {"payload_codec": codec}
+        if result_kind == "none":
+            payload["result"] = None
+
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
+            replay(
+                OneActivity,
+                [{"event_type": "ActivityCompleted", "payload": payload}],
+                ["world"],
+            )
 
     def test_failed_activity_is_thrown_into_workflow_for_compensation(self) -> None:
         history = [

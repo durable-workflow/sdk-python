@@ -22,8 +22,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def source_metadata(*, stable: bool = False) -> SourceMetadata:
-    version = "2.0.0" if stable else "2.0.0-rc.30"
-    registry_version = "2.0.0" if stable else "2.0.0rc30"
+    version = "2.0.0" if stable else "2.0.0-rc.31"
+    registry_version = "2.0.0" if stable else "2.0.0rc31"
     return SourceMetadata(
         commit="a" * 40,
         name="durable-workflow",
@@ -163,7 +163,7 @@ def test_documented_prerelease_range_must_select_exact_current_rc(
     monkeypatch.setattr("scripts.check_pypi_project_surface._pip_report", resolve)
     monkeypatch.setattr("scripts.check_pypi_project_surface.time.sleep", sleeps.append)
 
-    with pytest.raises(ProjectSurfaceError, match="pip selected 2.0.0rc23; expected 2.0.0rc30"):
+    with pytest.raises(ProjectSurfaceError, match="pip selected 2.0.0rc23; expected 2.0.0rc31"):
         main(["--source-ref", "release-source", "--attempts", "30", "--interval-seconds", "10"])
 
     assert requirements == [
@@ -191,14 +191,14 @@ def test_prerelease_pip_probes_retry_simple_api_lag(
         if "==" in requirement and pip_attempts[requirement] == 1:
             detail = (
                 f"ERROR: Could not find a version that satisfies the requirement {requirement} "
-                "(from versions: 0.4.106, 2.0.0rc29)\n"
+                "(from versions: 0.4.106, 2.0.0rc30)\n"
                 f"ERROR: No matching distribution found for {requirement}\n"
             )
             return subprocess.CompletedProcess(command, 1, stdout="", stderr=detail)
 
         version = source.registry_version
         if "~=" in requirement and pip_attempts[requirement] == 1:
-            version = "2.0.0rc29"
+            version = "2.0.0rc30"
         report_path = Path(command[command.index("--report") + 1])
         report_path.write_text(json.dumps(pip_report(version)), encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
@@ -262,7 +262,7 @@ def test_exact_pip_semantic_mismatch_fails_without_retrying(monkeypatch: pytest.
     )
     monkeypatch.setattr("scripts.check_pypi_project_surface.time.sleep", sleeps.append)
 
-    with pytest.raises(ProjectSurfaceError, match="pip selected 2.0.0rc24; expected 2.0.0rc30"):
+    with pytest.raises(ProjectSurfaceError, match="pip selected 2.0.0rc24; expected 2.0.0rc31"):
         main(["--source-ref", "release-source", "--attempts", "30", "--interval-seconds", "10"])
 
     assert requirements == [f"{source.name}=={source.registry_version}"]

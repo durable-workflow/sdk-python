@@ -47,8 +47,9 @@ def execute_fixture(fixture: dict[str, Any], codec: Any) -> None:
         from durable_workflow import serializer
 
         wire = base64.b64decode(fixture["framing"]["wire_base64"], validate=True).decode("utf-8")
+        blob = None if fixture["value"]["type"] == "null" else wire
         try:
-            serializer.decode_envelope({"codec": "json", "blob": wire})
+            serializer.decode_envelope({"codec": "json", "blob": blob})
         except ValueError as caught:
             _require(
                 fixture["failure_policy"]
