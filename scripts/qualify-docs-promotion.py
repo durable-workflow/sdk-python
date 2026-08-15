@@ -251,8 +251,10 @@ def exercise_search(page: Any, name: str, width: int) -> None:
     opener = page.locator(opener_selector)
     opener.click()
     page.wait_for_function("document.querySelector('#__search').checked")
+    page.wait_for_function("document.querySelector('.md-search').getAttribute('aria-modal') === 'true'")
     search_input = page.locator(".md-search__input")
-    search_input.fill("Client")
+    search_input.fill("")
+    search_input.press_sequentially("Client", delay=25)
     result_list = page.locator(".md-search-result__list")
     result_list.locator("li").first.wait_for(state="visible")
     client_result = result_list.locator('a[href*="reference/client/"]').first
