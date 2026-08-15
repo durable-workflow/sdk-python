@@ -264,7 +264,7 @@ def test_pages_deployment_requires_main_context_and_an_exact_release_tuple() -> 
     assert promotion["if"] == "${{ needs.deploy.result == 'success' }}"
     assert promotion["permissions"] == {"contents": "read"}
     promotion_references = action_references(promotion)
-    assert promotion_references == [CHECKOUT_ACTION, SETUP_PYTHON_ACTION]
+    assert promotion_references == [CHECKOUT_ACTION, SETUP_PYTHON_ACTION, UPLOAD_ARTIFACT_ACTION]
     assert_actions_are_pinned(promotion_references)
     assert promotion["steps"][0]["with"] == {
         "persist-credentials": "false",
@@ -277,6 +277,9 @@ def test_pages_deployment_requires_main_context_and_an_exact_release_tuple() -> 
         'python scripts/qualify-docs-promotion.py --source-revision "${{ needs.build.outputs.source_revision }}"'
         in " ".join(promotion_commands.split())
     )
+    assert "--evidence-directory deployed-visual" in promotion_commands
+    assert promotion["steps"][-1]["if"] == "always()"
+    assert promotion["steps"][-1]["with"]["path"] == "deployed-visual"
     qualifier_source = PROMOTION_QUALIFIER.read_text(encoding="utf-8")
     assert 'RELEASE_AUDIT_URL = f"{DOCS_URL}release-audit.json"' in qualifier_source
     assert 'QUALIFICATION_EVENT = "qualification"' in qualifier_source

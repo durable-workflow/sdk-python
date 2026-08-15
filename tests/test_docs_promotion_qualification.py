@@ -38,6 +38,7 @@ def qualifier() -> ModuleType:
 def test_live_revision_is_verified_before_any_browser_request(
     qualifier: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     calls: list[object] = []
     identity = object()
@@ -78,7 +79,7 @@ def test_live_revision_is_verified_before_any_browser_request(
     monkeypatch.setattr(
         qualifier,
         "qualify_viewport",
-        lambda _browser, name, width, height: calls.append(("viewport", name, width, height)),
+        lambda _browser, name, width, height, _evidence: calls.append(("viewport", name, width, height)),
     )
 
     assert (
@@ -90,6 +91,8 @@ def test_live_revision_is_verified_before_any_browser_request(
                 "3",
                 "--release-audit-retry-sleep",
                 "0.25",
+                "--evidence-directory",
+                str(tmp_path),
             ]
         )
         == 0
@@ -119,7 +122,13 @@ def test_live_viewport_retries_transient_transport_timeout(
     attempts: list[tuple[object, str, int, int]] = []
     browser = object()
 
-    def qualify_once(observed_browser: object, name: str, width: int, height: int) -> None:
+    def qualify_once(
+        observed_browser: object,
+        name: str,
+        width: int,
+        height: int,
+        _evidence_directory: Path | None,
+    ) -> None:
         attempts.append((observed_browser, name, width, height))
         if len(attempts) == 1:
             raise qualifier.PlaywrightTimeoutError("receiver response was temporarily unavailable")

@@ -62,7 +62,7 @@
       recordImpression();
       observer.disconnect();
     }, {threshold: 0.35});
-    observer.observe(promotion);
+    observer.observe(action);
   }
 
   initializePromotion();

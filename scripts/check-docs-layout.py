@@ -37,6 +37,9 @@ GITHUB_API_ENDPOINT = re.compile(
 PUBLIC_DOCS_HOSTNAME = "python.durable-workflow.com"
 PROMOTION_EVENT_URL = "https://cloud.durable-workflow.com/early-access/promotion-events"
 PROMOTION_SOURCE = "sdk-python-reference"
+SDK_GUIDE_URL = "https://durable-workflow.com/docs/2.0/polyglot/python/"
+PYPI_URL = "https://pypi.org/project/durable-workflow/"
+GITHUB_URL = "https://github.com/durable-workflow/sdk-python"
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
@@ -344,6 +347,124 @@ def assert_rendered_health(
     if check_reachability:
         assert geometry["unreachable"] == [], f"{state} has unreachable controls: {geometry['unreachable']}"
     assert runtime_errors == [], f"{state} emitted browser or HTTP errors: {runtime_errors}"
+
+
+def assert_landing_contract(page: Page, label: str) -> None:
+    """Qualify machine-owned landing structure without coupling checks to marketing copy."""
+    contract = page.evaluate(
+        r"""({guideUrl, pypiUrl, githubUrl}) => {
+            const one = (selector) => document.querySelector(selector)
+            const all = (selector) => [...document.querySelectorAll(selector)]
+            const href = (selector) => one(selector)?.href || null
+            const meta = (selector) => one(selector)?.content || null
+            const canonical = href('link[rel="canonical"]')
+            const primary = one('[data-docs-destination="local-self-hosted"]')
+            const guide = one('[data-docs-destination="sdk-guide"]')
+            const reference = one('[data-docs-destination="api-reference"]')
+            const selfHosted = one('[data-runtime="self-hosted"]')
+            const cloud = one('[data-runtime="cloud"]')
+            const install = one('[data-docs-action="install"] code')
+            const localJourney = one('[data-docs-journey="local-self-hosted"]')
+            const destinations = all('[data-docs-destination]').map((element) => ({
+                destination: element.dataset.docsDestination,
+                href: element.href,
+            }))
+            const codeBlocks = all('.dw-landing pre').map((element) => ({
+                clientWidth: element.clientWidth,
+                overflowX: getComputedStyle(element).overflowX,
+                scrollWidth: element.scrollWidth,
+            }))
+            return {
+                codeBlocks,
+                cloudAccess: cloud?.dataset.access || null,
+                cloudBelowFirstViewport: Boolean(cloud && cloud.getBoundingClientRect().top >= innerHeight),
+                cloudFollowsSelfHosted: Boolean(
+                    cloud && selfHosted
+                    && (selfHosted.compareDocumentPosition(cloud) & Node.DOCUMENT_POSITION_FOLLOWING)
+                ),
+                destinations,
+                favicon: href('link[rel~="icon"]'),
+                githubLinked: destinations.some((entry) => entry.href === githubUrl),
+                guideHref: guide?.href || null,
+                guideLinked: destinations.some((entry) => entry.href === guideUrl),
+                installCommand: install?.textContent.trim().replace(/\s+/g, ' ') || null,
+                localJourney: Boolean(localJourney),
+                ogDescription: meta('meta[property="og:description"]'),
+                ogSiteName: meta('meta[property="og:site_name"]'),
+                ogTitle: meta('meta[property="og:title"]'),
+                ogType: meta('meta[property="og:type"]'),
+                ogUrl: meta('meta[property="og:url"]'),
+                pageDescription: meta('meta[name="description"]'),
+                pageTitle: document.title,
+                positiveTabIndexes: all('[tabindex]').filter((element) => Number(element.tabIndex) > 0).length,
+                primaryAccess: primary?.dataset.access || null,
+                primaryHref: primary?.getAttribute('href') || null,
+                pypiLinked: destinations.some((entry) => entry.href === pypiUrl),
+                referenceHref: reference?.getAttribute('href') || null,
+                roles: all('[data-sdk-role]').map((element) => element.dataset.sdkRole).sort(),
+                selfHostedAccess: selfHosted?.dataset.access || null,
+                serverCommand: localJourney
+                    ? all('[data-docs-journey="local-self-hosted"] code')
+                        .map((element) => element.textContent)
+                        .find((text) => text.includes('durableworkflow/server:')) || null
+                    : null,
+                surfaceCount: all('[data-docs-surface="python-sdk-landing"]').length,
+                twitterCard: meta('meta[name="twitter:card"]'),
+                twitterDescription: meta('meta[name="twitter:description"]'),
+                twitterTitle: meta('meta[name="twitter:title"]'),
+                canonical,
+            }
+        }""",
+        {"guideUrl": SDK_GUIDE_URL, "pypiUrl": PYPI_URL, "githubUrl": GITHUB_URL},
+    )
+    assert contract["surfaceCount"] == 1, f"{label} did not render one landing surface: {contract}"
+    assert contract["primaryAccess"] == "no-account-required", f"{label} changed the primary access path"
+    assert contract["primaryHref"] == "#first-workflow", f"{label} changed the primary task destination"
+    assert contract["selfHostedAccess"] == "no-account-required", f"{label} changed self-hosted access"
+    assert contract["cloudAccess"] == "limited", f"{label} did not mark Cloud as limited access"
+    assert contract["cloudFollowsSelfHosted"], f"{label} placed Cloud before the general runtime"
+    assert contract["cloudBelowFirstViewport"], f"{label} put limited Cloud access in the first viewport"
+    assert contract["localJourney"], f"{label} omitted the local self-hosted journey"
+    assert contract["roles"] == ["activity", "client", "worker", "workflow"], (
+        f"{label} did not expose the SDK role model: {contract['roles']}"
+    )
+    assert contract["guideHref"] == SDK_GUIDE_URL, f"{label} changed the guide destination"
+    assert contract["referenceHref"] == "reference/client/", f"{label} changed the reference destination"
+    assert contract["guideLinked"] and contract["pypiLinked"] and contract["githubLinked"], (
+        f"{label} omitted a required developer destination: {contract['destinations']}"
+    )
+    assert contract["installCommand"] == "pip install 'durable-workflow~=2.0.0rc0'", (
+        f"{label} changed the compatibility-channel install command: {contract['installCommand']}"
+    )
+    assert contract["serverCommand"] and "{{" not in contract["serverCommand"], (
+        f"{label} did not resolve the compatible Server image: {contract['serverCommand']}"
+    )
+    assert contract["codeBlocks"] and all(
+        block["scrollWidth"] <= block["clientWidth"] + 1 or block["overflowX"] in {"auto", "scroll"}
+        for block in contract["codeBlocks"]
+    ), f"{label} contains a code block without bounded horizontal scrolling: {contract['codeBlocks']}"
+    assert contract["positiveTabIndexes"] == 0, f"{label} introduced a positive tabindex"
+    assert contract["favicon"] and contract["favicon"].endswith("/assets/favicon.svg"), (
+        f"{label} did not publish the SDK favicon: {contract['favicon']}"
+    )
+    assert contract["ogType"] == "website" and contract["ogSiteName"] == "Durable Workflow Python SDK"
+    assert contract["ogTitle"] == contract["pageTitle"] == contract["twitterTitle"]
+    assert contract["ogDescription"] == contract["pageDescription"] == contract["twitterDescription"]
+    assert contract["ogUrl"] == contract["canonical"]
+    assert contract["twitterCard"] == "summary"
+
+    primary = page.locator('[data-docs-destination="local-self-hosted"]').first
+    guide = page.locator('.dw-hero [data-docs-destination="sdk-guide"]')
+    primary.focus()
+    page.keyboard.press("Tab")
+    assert guide.evaluate("(element) => element === document.activeElement"), (
+        f"{label} does not place the general guide after the first local task in keyboard order"
+    )
+    page.keyboard.press("Shift+Tab")
+    assert primary.evaluate("(element) => element === document.activeElement"), (
+        f"{label} does not restore the first local task in reverse keyboard order"
+    )
+    page.evaluate("scrollTo(0, 0)")
 
 
 def assert_reference_panel_uses_drawer(
@@ -1099,6 +1220,7 @@ def exercise_viewport(browser: Browser, url: str, width: int, height: int) -> No
     try:
         response = page.goto(url, wait_until="networkidle")
         assert response is not None and response.ok, f"documentation returned a non-success response at {label}"
+        assert_landing_contract(page, f"landing at {label}")
         assert_rendered_health(page, f"closed search at {label}", runtime_errors)
         if (width, height) == (640, 360):
             assert_wrapped_inline_control_is_reachable(
@@ -1299,17 +1421,25 @@ def exercise_promotion_contract(browser: Browser, loopback_url: str) -> None:
                 "referer": f"{docs_origin}/",
                 "status": 204,
             }
-            assert requests == [expected_impression], (
-                f"deployed-host promotion did not send one bounded impression: {requests}"
-            )
-
+            assert requests == [], "below-fold Cloud promotion sent an impression before it became visible"
             action = page.locator('[data-promotion-action="early-access"]')
             assert action.get_attribute("href") == (
                 "https://cloud.durable-workflow.com/early-access#source=sdk-python-reference"
             )
+            with page.expect_response(
+                lambda response: response.request.method == "POST" and response.status == 204,
+                timeout=10_000,
+            ):
+                action.scroll_into_view_if_needed()
+            assert requests == [expected_impression], (
+                f"visible deployed-host promotion did not send one bounded impression: {requests}"
+            )
             action.evaluate("element => element.addEventListener('click', event => event.preventDefault())")
-            action.click()
-            page.wait_for_timeout(100)
+            with page.expect_response(
+                lambda response: response.request.method == "POST" and response.status == 204,
+                timeout=10_000,
+            ):
+                action.click()
 
             expected_click = {
                 **expected_impression,

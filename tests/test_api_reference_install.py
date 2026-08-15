@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from scripts.api_reference_release import (
+    INSTALL_REQUIREMENT_TOKEN,
     RELEASE_EVIDENCE_FILENAME,
     load_release_identity,
     release_evidence,
@@ -33,6 +34,14 @@ def test_release_identity_aligns_install_paths_and_server_pairing() -> None:
     identity = load_release_identity(REPO_ROOT)
 
     validate_source_templates(REPO_ROOT, identity)
+
+
+def test_landing_install_requirement_is_owned_by_the_release_helper() -> None:
+    identity = load_release_identity(REPO_ROOT)
+    source = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
+
+    assert INSTALL_REQUIREMENT_TOKEN in source
+    assert identity.requirement not in source
 
 
 def test_rendered_first_install_command_is_discovered(tmp_path: Path) -> None:

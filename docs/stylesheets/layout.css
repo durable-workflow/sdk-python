@@ -1,70 +1,578 @@
+:root,
+[data-md-color-scheme="default"] {
+  --dw-blue: #3156d3;
+  --dw-blue-deep: #1f3ca5;
+  --dw-yellow: #ffd43b;
+  --dw-ink: #172033;
+  --dw-muted: #566078;
+  --dw-panel: #f5f7ff;
+  --dw-panel-raised: #ffffff;
+  --dw-line: #dce2f2;
+  --dw-code: #111827;
+  --dw-code-ink: #edf2ff;
+}
+
+[data-md-color-scheme="slate"] {
+  --dw-blue: #91a7ff;
+  --dw-blue-deep: #b6c4ff;
+  --dw-yellow: #ffe278;
+  --dw-ink: #f2f5ff;
+  --dw-muted: #bac3d9;
+  --dw-panel: #17202f;
+  --dw-panel-raised: #1d2839;
+  --dw-line: #344159;
+  --dw-code: #0a101b;
+  --dw-code-ink: #edf2ff;
+}
+
 @media screen and (max-width: 44.984375em) {
   .md-header__topic {
     font-size: 0.7rem;
   }
 }
 
-.dw-cloud-promotion {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.dw-landing {
+  color: var(--dw-ink);
+  margin-top: 0.75rem;
+}
+
+.dw-landing * {
+  box-sizing: border-box;
+}
+
+.dw-landing a {
+  text-underline-offset: 0.18em;
+}
+
+.dw-hero {
+  display: grid;
   gap: 1.5rem;
-  margin: 1.5rem 0 2rem;
-  padding: 1rem 1.25rem;
-  border: 1px solid var(--md-default-fg-color--lightest);
-  border-left: 3px solid var(--md-primary-fg-color);
-  border-radius: 0.25rem;
-  background: var(--md-default-bg-color);
-  box-shadow: var(--md-shadow-z1);
+  grid-template-columns: minmax(0, 1.3fr) minmax(18rem, 0.7fr);
+  padding: 1.5rem 0 1.75rem;
 }
 
-.dw-cloud-promotion h2,
-.dw-cloud-promotion p {
-  margin: 0;
-}
-
-.dw-cloud-promotion h2 {
-  margin-block: 0.2rem 0.35rem;
-  font-size: 1.1rem;
-}
-
-.dw-cloud-promotion__eyebrow {
-  color: var(--md-primary-fg-color);
-  font-size: 0.64rem;
-  font-weight: 700;
+.dw-eyebrow,
+.dw-tag {
+  color: var(--dw-blue);
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 750;
   letter-spacing: 0;
+  margin: 0 0 0.8rem;
   text-transform: uppercase;
 }
 
-.dw-cloud-promotion__action {
-  flex: 0 0 auto;
-  padding: 0.55rem 0.8rem;
-  border: 1px solid var(--md-primary-fg-color);
-  border-radius: 0.15rem;
-  color: var(--md-primary-fg-color);
-  font-weight: 700;
+.dw-hero h1 {
+  color: var(--dw-ink);
+  font-size: 3.2rem;
+  letter-spacing: 0;
+  line-height: 0.98;
+  margin: 0;
+  max-width: 13ch;
+}
+
+.dw-hero__copy > p:not(.dw-eyebrow, .dw-hero__facts) {
+  color: var(--dw-muted);
+  font-size: 1.02rem;
+  line-height: 1.65;
+  margin: 1.25rem 0 0;
+  max-width: 35rem;
+}
+
+.dw-hero__actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 1.55rem;
+}
+
+.dw-button {
+  align-items: center;
+  border: 1px solid var(--dw-blue);
+  border-radius: 0.5rem;
+  display: inline-flex;
+  font-size: 0.74rem;
+  font-weight: 720;
+  justify-content: center;
+  min-height: 2.55rem;
+  padding: 0.58rem 0.7rem;
   text-decoration: none;
-  white-space: nowrap;
+}
+
+.dw-button--primary {
+  background: var(--dw-blue);
+  color: #fff !important;
+}
+
+[data-md-color-scheme="slate"] .dw-button--primary {
+  color: #111827 !important;
+}
+
+.dw-button--secondary {
+  background: var(--dw-panel-raised);
+  color: var(--dw-blue-deep) !important;
+}
+
+.dw-text-link {
+  color: var(--dw-blue-deep) !important;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.4rem 0.2rem;
+}
+
+.dw-button:hover,
+.dw-button:focus-visible,
+.dw-role-card:hover,
+.dw-role-card:focus-visible,
+.dw-link-card:hover,
+.dw-link-card:focus-visible {
+  border-color: var(--dw-blue-deep);
+  box-shadow: 0 0 0 0.12rem var(--md-default-bg-color), 0 0 0 0.25rem var(--dw-blue);
+}
+
+.dw-button:focus-visible,
+.dw-text-link:focus-visible,
+.dw-role-card:focus-visible,
+.dw-link-card:focus-visible,
+.dw-cloud-promotion__action:focus-visible {
+  outline: none;
+}
+
+.dw-hero__facts {
+  color: var(--dw-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.68rem;
+  font-weight: 650;
+  gap: 0.45rem 1rem;
+  margin: 1.3rem 0 0;
+}
+
+.dw-hero__facts span::before {
+  background: var(--dw-blue);
+  border-radius: 50%;
+  content: "";
+  display: inline-block;
+  height: 0.28rem;
+  margin-right: 0.35rem;
+  vertical-align: 0.08rem;
+  width: 0.28rem;
+}
+
+.dw-install-card {
+  align-self: center;
+  background: var(--dw-code);
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 0.4rem;
+  box-shadow: 0 1.2rem 2.8rem rgb(20 31 60 / 15%);
+  color: var(--dw-code-ink);
+  min-width: 0;
+  overflow: hidden;
+  padding: 1.1rem;
+}
+
+.dw-install-card h2 {
+  color: var(--dw-code-ink);
+  font-size: 0.72rem;
+  letter-spacing: 0;
+  margin: 0 0 0.7rem;
+  text-transform: uppercase;
+}
+
+.dw-install-card .highlight {
+  margin: 0;
+}
+
+.dw-install-card .highlight pre {
+  background: rgb(255 255 255 / 6%);
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 0.4rem;
+  color: var(--dw-code-ink);
+  font-size: 0.68rem;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.dw-install-card > p:not(.dw-install-card__links) {
+  color: #aebad0;
+  font-size: 0.7rem;
+  line-height: 1.55;
+  margin: 0.85rem 0 0;
+}
+
+.dw-install-card__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin: 0.8rem 0 0;
+}
+
+.dw-install-card__links a {
+  color: var(--dw-yellow) !important;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.dw-section {
+  border-top: 1px solid var(--dw-line);
+  margin-top: 2.5rem;
+  padding-top: 2rem;
+}
+
+.dw-section > h2 {
+  color: var(--dw-ink);
+  font-size: 2.2rem;
+  letter-spacing: 0;
+  line-height: 1.08;
+  margin: 0;
+}
+
+.dw-section > h2 + p {
+  color: var(--dw-muted);
+  line-height: 1.7;
+  margin: 0.75rem 0 1.5rem;
+  max-width: 42rem;
+}
+
+.dw-role-grid,
+.dw-link-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dw-role-card,
+.dw-link-card {
+  background: var(--dw-panel-raised);
+  border: 1px solid var(--dw-line);
+  border-radius: 0.4rem;
+  color: var(--dw-ink) !important;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 1rem;
+  text-decoration: none;
+}
+
+.dw-role-card {
+  min-height: 10rem;
+}
+
+.dw-role-card__step {
+  color: var(--dw-blue);
+  font-family: var(--md-code-font-family);
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.dw-role-card strong,
+.dw-link-card strong {
+  font-size: 0.9rem;
+  margin: 0.65rem 0 0.35rem;
+}
+
+.dw-role-card > span:not(.dw-role-card__step, .dw-role-card__link),
+.dw-link-card > span:nth-child(2) {
+  color: var(--dw-muted);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.dw-role-card__link,
+.dw-link-card > span:last-child {
+  color: var(--dw-blue-deep);
+  font-size: 0.68rem;
+  font-weight: 700;
+  margin-top: auto;
+  padding-top: 0.9rem;
+}
+
+.dw-first-run {
+  counter-reset: local-step;
+}
+
+.dw-first-run > h3 {
+  color: var(--dw-ink);
+  counter-increment: local-step;
+  font-size: 1.05rem;
+  margin: 2.2rem 0 0.7rem;
+}
+
+.dw-first-run > h3::before {
+  align-items: center;
+  background: var(--dw-blue);
+  border-radius: 50%;
+  color: #fff;
+  content: counter(local-step);
+  display: inline-flex;
+  font-size: 0.65rem;
+  height: 1.55rem;
+  justify-content: center;
+  margin-right: 0.55rem;
+  vertical-align: 0.1rem;
+  width: 1.55rem;
+}
+
+.dw-first-run > p,
+.dw-version > p {
+  color: var(--dw-muted);
+  line-height: 1.7;
+  max-width: 45rem;
+}
+
+.dw-first-run .highlight {
+  border: 1px solid var(--dw-line);
+  border-radius: 0.4rem;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.dw-first-run .highlight pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.dw-runtime-grid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+}
+
+.dw-runtime-card {
+  border: 1px solid var(--dw-line);
+  border-radius: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 1.25rem;
+}
+
+.dw-runtime-card--primary {
+  background: var(--dw-panel);
+  border-left: 0.25rem solid var(--dw-blue);
+}
+
+.dw-runtime-card--secondary {
+  background: transparent;
+  border-style: dashed;
+}
+
+.dw-runtime-card h3,
+.dw-runtime-card p {
+  margin: 0;
+}
+
+.dw-runtime-card h3 {
+  color: var(--dw-ink);
+  font-size: 1.1rem;
+}
+
+.dw-runtime-card p {
+  color: var(--dw-muted);
+  font-size: 0.74rem;
+  line-height: 1.6;
+  margin: 0.55rem 0 1rem;
+}
+
+.dw-runtime-card .dw-button {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+.dw-cloud-promotion__eyebrow {
+  letter-spacing: 0;
+}
+
+.dw-cloud-promotion__action {
+  align-self: flex-start;
+  color: var(--dw-blue-deep) !important;
+  font-size: 0.72rem;
+  font-weight: 700;
+  margin-top: auto;
+  padding: 0.3rem 0;
 }
 
 .dw-cloud-promotion__action:hover,
 .dw-cloud-promotion__action:focus-visible {
-  background: var(--md-primary-fg-color);
-  color: var(--md-primary-bg-color);
+  box-shadow: 0 0.15rem 0 var(--dw-blue);
+}
+
+.dw-link-card {
+  min-height: 9rem;
+}
+
+.dw-version {
+  background: var(--dw-panel);
+  border: 1px solid var(--dw-line);
+  border-radius: 0.4rem;
+  margin-bottom: 2rem;
+  padding: 1.2rem;
+}
+
+.dw-version > h2 {
+  font-size: 1rem;
+}
+
+.dw-version > p {
+  font-size: 0.74rem;
+  margin-bottom: 0;
+}
+
+@media screen and (max-width: 76rem) {
+  .dw-role-grid,
+  .dw-link-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media screen and (max-width: 64rem) {
+  .dw-hero {
+    gap: 1.75rem;
+    grid-template-columns: 1fr;
+    padding-block: 1.75rem 2.25rem;
+  }
+
+  .dw-hero h1 {
+    font-size: 2.75rem;
+  }
+
+  .dw-install-card {
+    width: 100%;
+  }
 }
 
 @media screen and (max-width: 44.984375em) {
-  .dw-cloud-promotion {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 0.75rem;
-    padding: 1rem;
+  body:has(.dw-landing) .md-main__inner,
+  body:has(.dw-landing) .md-content__inner {
+    margin-top: 0;
   }
 
-  .dw-cloud-promotion__action {
-    width: 100%;
+  .dw-landing {
+    margin-top: 0;
+  }
+
+  .dw-hero {
+    gap: 0.75rem;
+    padding-block: 0.75rem 0.5rem;
+  }
+
+  .dw-hero h1 {
+    font-size: 1.65rem;
+    line-height: 1.05;
+    max-width: none;
+  }
+
+  .dw-eyebrow {
+    margin-bottom: 0.45rem;
+  }
+
+  .dw-hero__copy > p:not(.dw-eyebrow, .dw-hero__facts) {
+    font-size: 0.82rem;
+    line-height: 1.45;
+    margin-top: 0.65rem;
+  }
+
+  .dw-hero__actions {
+    display: grid;
+    gap: 0.4rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 0.8rem;
+  }
+
+  .dw-hero__actions .dw-button--primary {
+    grid-column: 1 / -1;
+  }
+
+  .dw-hero__actions .dw-button,
+  .dw-hero__actions .dw-text-link {
+    font-size: 0.66rem;
+    min-height: 2.15rem;
+    padding: 0.4rem;
+  }
+
+  .dw-hero__facts {
+    gap: 0.35rem 0.7rem;
+    margin-top: 0.65rem;
+  }
+
+  .dw-install-card {
+    padding: 0.75rem;
+  }
+
+  .dw-install-card h2 {
+    margin-bottom: 0.4rem;
+  }
+
+  .dw-install-card > p:not(.dw-install-card__links) {
+    font-size: 0.65rem;
+    line-height: 1.4;
+    margin-top: 0.55rem;
+  }
+
+  .dw-install-card__links {
+    flex-direction: row;
+    justify-content: space-between;
+    margin-top: 0.55rem;
+  }
+
+  .dw-section {
+    margin-top: 2.75rem;
+    padding-top: 2rem;
+  }
+
+  .dw-model {
+    margin-top: 0.75rem;
+    padding-top: 1rem;
+  }
+
+  .dw-section > h2 {
+    font-size: 1.65rem;
+  }
+
+  .dw-install-card__links {
+    align-items: stretch;
+  }
+
+  .dw-button,
+  .dw-text-link {
     text-align: center;
-    white-space: normal;
+    width: 100%;
+  }
+
+  .dw-role-grid,
+  .dw-link-grid,
+  .dw-runtime-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dw-role-card,
+  .dw-link-card {
+    min-height: 0;
+  }
+
+  .dw-first-run .highlight pre,
+  .dw-install-card .highlight pre {
+    font-size: 0.66rem;
+  }
+}
+
+@media screen and (min-width: 32rem) and (max-width: 44.984375em) and (max-height: 24rem) {
+  .dw-hero__actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dw-hero__actions .dw-button--primary {
+    grid-column: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dw-landing *,
+  .dw-landing *::before,
+  .dw-landing *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
   }
 }
 

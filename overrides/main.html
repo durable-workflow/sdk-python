@@ -1,7 +1,34 @@
 {% extends "base.html" %}
 
+{% block htmltitle %}
+  {% if page and page.meta and page.meta.title %}
+    <title>{{ page.meta.title | e }}</title>
+  {% elif page and page.title and not page.is_homepage %}
+    <title>{{ page.title | striptags | e }} - {{ config.site_name | e }}</title>
+  {% else %}
+    <title>{{ config.site_name | e }}</title>
+  {% endif %}
+{% endblock %}
+
 {% block extrahead %}
   {{ super() }}
+  {% if page and page.meta and page.meta.title %}
+    {% set social_title = page.meta.title %}
+  {% elif page and page.title and not page.is_homepage %}
+    {% set social_title = page.title | striptags ~ " - " ~ config.site_name %}
+  {% else %}
+    {% set social_title = config.site_name %}
+  {% endif %}
+  {% set social_description = page.meta.description if page and page.meta and page.meta.description else config.site_description %}
+  {% set social_url = page.canonical_url if page and page.canonical_url else config.site_url %}
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="{{ config.site_name | e }}">
+  <meta property="og:title" content="{{ social_title | e }}">
+  <meta property="og:description" content="{{ social_description | e }}">
+  <meta property="og:url" content="{{ social_url | e }}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{ social_title | e }}">
+  <meta name="twitter:description" content="{{ social_description | e }}">
   <script data-md-component="navigation-accessibility" src="{{ 'javascripts/navigation-accessibility.js' | url }}"></script>
   <script data-md-component="search-accessibility" src="{{ 'javascripts/search-accessibility.js' | url }}"></script>
 {% endblock %}

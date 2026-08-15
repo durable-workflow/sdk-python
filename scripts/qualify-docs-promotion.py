@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify the deployed Python promotion transport in a real browser."""
+"""Qualify the deployed Python landing and promotion transport in a real browser."""
 
 from __future__ import annotations
 
@@ -30,6 +30,10 @@ DESTINATION_URL = "https://cloud.durable-workflow.com/early-access#source=sdk-py
 PROMOTION_EVENT_URL = "https://cloud.durable-workflow.com/early-access/promotion-events"
 PROMOTION_SOURCE = "sdk-python-reference"
 QUALIFICATION_EVENT = "qualification"
+SDK_GUIDE_URL = "https://durable-workflow.com/docs/2.0/polyglot/python/"
+PYPI_URL = "https://pypi.org/project/durable-workflow/"
+GITHUB_URL = "https://github.com/durable-workflow/sdk-python"
+REFERENCE_ROUTES = ("reference/client/", "reference/worker/", "reference/workflow/", "reference/activity/")
 VIEWPORT_ATTEMPTS = 3
 VIEWPORTS = (
     ("desktop", 1440, 900),
@@ -106,7 +110,168 @@ def assert_event_response(response: Response, event: str) -> None:
     assert "no-store" in response.headers.get("cache-control", ""), f"{event} promotion response was cacheable"
 
 
-def qualify_viewport_once(browser: Browser, name: str, width: int, height: int) -> None:
+def assert_deployed_landing(page: Any, name: str) -> None:
+    """Check stable destinations and browser behavior without freezing landing prose."""
+    contract = page.evaluate(
+        r"""({guideUrl, pypiUrl, githubUrl}) => {
+            const one = (selector) => document.querySelector(selector)
+            const all = (selector) => [...document.querySelectorAll(selector)]
+            const href = (selector) => one(selector)?.href || null
+            const meta = (selector) => one(selector)?.content || null
+            const primary = one('[data-docs-destination="local-self-hosted"]')
+            const guide = one('.dw-hero [data-docs-destination="sdk-guide"]')
+            const reference = one('.dw-hero [data-docs-destination="api-reference"]')
+            const selfHosted = one('[data-runtime="self-hosted"]')
+            const cloud = one('[data-runtime="cloud"]')
+            const install = one('[data-docs-action="install"] code')
+            const localJourney = one('[data-docs-journey="local-self-hosted"]')
+            const destinations = all('[data-docs-destination]').map((element) => ({
+                destination: element.dataset.docsDestination,
+                href: element.href,
+            }))
+            return {
+                canonical: href('link[rel="canonical"]'),
+                cloudAccess: cloud?.dataset.access || null,
+                cloudBelowFirstViewport: Boolean(cloud && cloud.getBoundingClientRect().top >= innerHeight),
+                cloudFollowsSelfHosted: Boolean(
+                    cloud && selfHosted
+                    && (selfHosted.compareDocumentPosition(cloud) & Node.DOCUMENT_POSITION_FOLLOWING)
+                ),
+                codeBlocks: all('.dw-landing pre').map((element) => ({
+                    clientWidth: element.clientWidth,
+                    overflowX: getComputedStyle(element).overflowX,
+                    scrollWidth: element.scrollWidth,
+                })),
+                documentWidth: document.documentElement.scrollWidth,
+                favicon: href('link[rel~="icon"]'),
+                githubLinked: destinations.some((entry) => entry.href === githubUrl),
+                guideHref: guide?.href || null,
+                guideLinked: destinations.some((entry) => entry.href === guideUrl),
+                installCommand: install?.textContent.trim().replace(/\s+/g, ' ') || null,
+                localJourney: Boolean(localJourney),
+                ogDescription: meta('meta[property="og:description"]'),
+                ogSiteName: meta('meta[property="og:site_name"]'),
+                ogTitle: meta('meta[property="og:title"]'),
+                ogType: meta('meta[property="og:type"]'),
+                ogUrl: meta('meta[property="og:url"]'),
+                pageDescription: meta('meta[name="description"]'),
+                pageTitle: document.title,
+                positiveTabIndexes: all('[tabindex]').filter((element) => Number(element.tabIndex) > 0).length,
+                primaryAccess: primary?.dataset.access || null,
+                primaryHref: primary?.getAttribute('href') || null,
+                pypiLinked: destinations.some((entry) => entry.href === pypiUrl),
+                referenceHref: reference?.getAttribute('href') || null,
+                roles: all('[data-sdk-role]').map((element) => element.dataset.sdkRole).sort(),
+                selfHostedAccess: selfHosted?.dataset.access || null,
+                serverCommand: localJourney
+                    ? all('[data-docs-journey="local-self-hosted"] code')
+                        .map((element) => element.textContent)
+                        .find((text) => text.includes('durableworkflow/server:')) || null
+                    : null,
+                surfaceCount: all('[data-docs-surface="python-sdk-landing"]').length,
+                twitterCard: meta('meta[name="twitter:card"]'),
+                twitterDescription: meta('meta[name="twitter:description"]'),
+                twitterTitle: meta('meta[name="twitter:title"]'),
+                viewportWidth: document.documentElement.clientWidth,
+            }
+        }""",
+        {"guideUrl": SDK_GUIDE_URL, "pypiUrl": PYPI_URL, "githubUrl": GITHUB_URL},
+    )
+    assert contract["surfaceCount"] == 1, f"deployed {name} landing surface is missing"
+    assert contract["documentWidth"] <= contract["viewportWidth"] + 1, f"deployed {name} landing overflows"
+    assert contract["primaryAccess"] == contract["selfHostedAccess"] == "no-account-required"
+    assert contract["primaryHref"] == "#first-workflow"
+    assert contract["cloudAccess"] == "limited"
+    assert contract["cloudFollowsSelfHosted"], f"deployed {name} landing puts Cloud before self-hosting"
+    assert contract["cloudBelowFirstViewport"], f"deployed {name} first viewport promotes limited Cloud access"
+    assert contract["localJourney"]
+    assert contract["roles"] == ["activity", "client", "worker", "workflow"]
+    assert contract["guideHref"] == SDK_GUIDE_URL
+    assert contract["referenceHref"] == "reference/client/"
+    assert contract["guideLinked"] and contract["pypiLinked"] and contract["githubLinked"]
+    assert contract["installCommand"] == "pip install 'durable-workflow~=2.0.0rc0'"
+    assert contract["serverCommand"] and "{{" not in contract["serverCommand"]
+    assert contract["codeBlocks"] and all(
+        block["scrollWidth"] <= block["clientWidth"] + 1 or block["overflowX"] in {"auto", "scroll"}
+        for block in contract["codeBlocks"]
+    ), f"deployed {name} landing contains an unscrollable code block"
+    assert contract["positiveTabIndexes"] == 0
+    assert contract["favicon"] and contract["favicon"].endswith("/assets/favicon.svg")
+    assert contract["ogType"] == "website" and contract["ogSiteName"] == "Durable Workflow Python SDK"
+    assert contract["ogTitle"] == contract["pageTitle"] == contract["twitterTitle"]
+    assert contract["ogDescription"] == contract["pageDescription"] == contract["twitterDescription"]
+    assert contract["ogUrl"] == contract["canonical"] == DOCS_URL
+    assert contract["twitterCard"] == "summary"
+
+    primary = page.locator('[data-docs-destination="local-self-hosted"]').first
+    guide = page.locator('.dw-hero [data-docs-destination="sdk-guide"]')
+    primary.focus()
+    page.keyboard.press("Tab")
+    assert guide.evaluate("(element) => element === document.activeElement"), (
+        f"deployed {name} landing focus does not move from the local task to the SDK guide"
+    )
+    page.keyboard.press("Shift+Tab")
+    assert primary.evaluate("(element) => element === document.activeElement")
+    page.evaluate("scrollTo(0, 0)")
+
+    resources = page.evaluate(
+        """async ({routes}) => {
+            const requested = [...routes, 'search/search_index.json']
+            const responses = await Promise.all(requested.map(async (path) => {
+                const response = await fetch(new URL(path, location.href), {credentials: 'omit'})
+                let searchDocuments = null
+                if (path.endsWith('.json') && response.ok) {
+                    const payload = await response.clone().json()
+                    searchDocuments = Array.isArray(payload.docs) ? payload.docs.length : null
+                }
+                return {path, status: response.status, searchDocuments}
+            }))
+            const favicon = document.querySelector('link[rel~="icon"]')
+            const faviconResponse = await fetch(favicon.href, {credentials: 'omit'})
+            responses.push({
+                path: new URL(favicon.href).pathname,
+                status: faviconResponse.status,
+                type: faviconResponse.headers.get('content-type'),
+            })
+            return responses
+        }""",
+        {"routes": list(REFERENCE_ROUTES)},
+    )
+    assert all(resource["status"] == 200 for resource in resources), (
+        f"deployed {name} landing resources failed: {resources}"
+    )
+    search = next(resource for resource in resources if resource["path"] == "search/search_index.json")
+    assert search["searchDocuments"] and search["searchDocuments"] > len(REFERENCE_ROUTES)
+    favicon = next(resource for resource in resources if resource["path"].endswith("/assets/favicon.svg"))
+    assert "image/svg+xml" in (favicon.get("type") or "")
+
+
+def exercise_search(page: Any, name: str, width: int) -> None:
+    opener_selector = ".md-header__button[for='__search']" if width < 960 else ".md-search__input"
+    opener = page.locator(opener_selector)
+    opener.click()
+    page.wait_for_function("document.querySelector('#__search').checked")
+    search_input = page.locator(".md-search__input")
+    search_input.fill("Client")
+    result_list = page.locator(".md-search-result__list")
+    result_list.locator("li").first.wait_for(state="visible")
+    client_result = result_list.locator('a[href*="reference/client/"]').first
+    client_result.wait_for(state="visible")
+    close_control = page.locator(".md-search__icon[for='__search']")
+    close_control.click()
+    page.wait_for_function("!document.querySelector('#__search').checked")
+    assert opener.evaluate("(element) => element === document.activeElement"), (
+        f"deployed {name} search did not restore opener focus"
+    )
+
+
+def qualify_viewport_once(
+    browser: Browser,
+    name: str,
+    width: int,
+    height: int,
+    evidence_directory: Path | None = None,
+) -> None:
     context = browser.new_context(viewport={"width": width, "height": height}, reduced_motion="reduce")
     page = context.new_page()
     errors: list[str] = []
@@ -131,10 +296,17 @@ def qualify_viewport_once(browser: Browser, name: str, width: int, height: int) 
 
     try:
         action = page.locator('[data-promotion-action="early-access"]')
-        with page.expect_response(lambda response: is_event(response, QUALIFICATION_EVENT), timeout=30_000) as pending:
-            document = page.goto(DOCS_URL, wait_until="domcontentloaded", timeout=30_000)
-            action.scroll_into_view_if_needed()
+        document = page.goto(DOCS_URL, wait_until="networkidle", timeout=30_000)
         assert document is not None and document.ok, f"deployed docs returned HTTP {document.status} at {name}"
+        assert_deployed_landing(page, name)
+        exercise_search(page, name, width)
+        assert initiated_events == [], f"below-fold Cloud promotion was counted in the {name} first viewport"
+        assert promotion_requests == [], f"below-fold Cloud promotion sent a request in the {name} first viewport"
+        if evidence_directory is not None:
+            page.screenshot(path=evidence_directory / f"landing-{name}-{width}x{height}.png")
+
+        with page.expect_response(lambda response: is_event(response, QUALIFICATION_EVENT), timeout=30_000) as pending:
+            action.scroll_into_view_if_needed()
         assert_event_response(pending.value, QUALIFICATION_EVENT)
 
         action.wait_for(state="visible")
@@ -181,12 +353,18 @@ def qualify_viewport_once(browser: Browser, name: str, width: int, height: int) 
         context.close()
 
 
-def qualify_viewport(browser: Browser, name: str, width: int, height: int) -> None:
+def qualify_viewport(
+    browser: Browser,
+    name: str,
+    width: int,
+    height: int,
+    evidence_directory: Path | None = None,
+) -> None:
     """Qualify one viewport, retrying only transient browser transport timeouts."""
     timeouts: list[str] = []
     for attempt in range(1, VIEWPORT_ATTEMPTS + 1):
         try:
-            qualify_viewport_once(browser, name, width, height)
+            qualify_viewport_once(browser, name, width, height, evidence_directory)
             return
         except PlaywrightTimeoutError as error:
             timeouts.append(f"attempt {attempt}: {error}")
@@ -220,11 +398,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=10,
         help="Seconds between live release-record attempts.",
     )
+    parser.add_argument(
+        "--evidence-directory",
+        type=Path,
+        default=Path("deployed-visual"),
+        help="Retain first-viewport screenshots and a source-bound qualification record.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    evidence_directory = args.evidence_directory.resolve()
+    evidence_directory.mkdir(parents=True, exist_ok=True)
     verify_public_deployment(
         RELEASE_AUDIT_URL,
         load_release_identity(REPO_ROOT),
@@ -240,15 +426,48 @@ def main(argv: Sequence[str] | None = None) -> int:
         browser = playwright.chromium.launch(**launch_options)
         try:
             for name, width, height in VIEWPORTS:
-                qualify_viewport(browser, name, width, height)
+                qualify_viewport(browser, name, width, height, evidence_directory)
         finally:
             browser.close()
 
+    evidence = {
+        "schema": "durable-workflow.python-docs.deployed-landing/v1",
+        "outcome": "pass",
+        "origin": DOCS_URL,
+        "source_revision": args.source_revision,
+        "viewports": [
+            {
+                "name": name,
+                "width": width,
+                "height": height,
+                "screenshot": f"landing-{name}-{width}x{height}.png",
+            }
+            for name, width, height in VIEWPORTS
+        ],
+        "verified": [
+            "account-free-primary-journey",
+            "limited-cloud-secondary-journey",
+            "install-and-compatible-server-commands",
+            "sdk-role-model",
+            "developer-destinations",
+            "reference-routes",
+            "search",
+            "focus-order",
+            "code-overflow",
+            "social-metadata",
+            "favicon",
+            "promotion-transport",
+        ],
+    }
+    (evidence_directory / "qualification.json").write_text(
+        f"{json.dumps(evidence, indent=2)}\n",
+        encoding="utf-8",
+    )
+
     print(
-        f"Confirmed deployed revision {args.source_revision}, two successful non-aggregating qualification "
-        "requests per viewport with bounded transport retries, the source-attributed impression/click initiation "
-        "and destination behavior, and no browser errors at desktop, intermediate, mobile, and short-height "
-        "viewports."
+        f"Confirmed deployed revision {args.source_revision}, the general-first landing and developer destinations, "
+        "reference routes, search, focus, code overflow, social metadata, favicon, and two successful "
+        "non-aggregating promotion requests per viewport at desktop, intermediate, mobile, and short-height sizes."
     )
     return 0
 

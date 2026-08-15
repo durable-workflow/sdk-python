@@ -16,6 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by the Python 3.10 C
 
 SDK_VERSION_TOKEN = "{{ durable_workflow_sdk_version }}"
 SERVER_VERSION_TOKEN = "{{ durable_workflow_server_version }}"
+INSTALL_REQUIREMENT_TOKEN = "{{ durable_workflow_install_requirement }}"
 RELEASE_EVIDENCE_FILENAME = "release-audit.json"
 RELEASE_EVIDENCE_SCHEMA = "durable-workflow.python-api-reference.release"
 
@@ -80,13 +81,15 @@ def load_release_identity(repo_root: Path) -> ReleaseIdentity:
 
 def render_release_identity(markdown: str, identity: ReleaseIdentity) -> str:
     """Replace machine-owned release tokens without coupling tests to prose."""
-    missing = [token for token in (SDK_VERSION_TOKEN, SERVER_VERSION_TOKEN) if token not in markdown]
+    tokens = (SDK_VERSION_TOKEN, SERVER_VERSION_TOKEN, INSTALL_REQUIREMENT_TOKEN)
+    missing = [token for token in tokens if token not in markdown]
     if missing:
         raise ValueError(f"API-reference release template is missing tokens: {', '.join(missing)}")
 
-    rendered = markdown.replace(SDK_VERSION_TOKEN, identity.version).replace(
-        SERVER_VERSION_TOKEN,
-        identity.server_version,
+    rendered = (
+        markdown.replace(SDK_VERSION_TOKEN, identity.version)
+        .replace(SERVER_VERSION_TOKEN, identity.server_version)
+        .replace(INSTALL_REQUIREMENT_TOKEN, identity.requirement)
     )
     if re.search(r"{{\s*durable_workflow_(?:sdk|server)_version\s*}}", rendered):
         raise ValueError("API-reference release template contains an unresolved release token")

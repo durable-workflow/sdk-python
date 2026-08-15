@@ -1,5 +1,5 @@
 site_name: Durable Workflow Python SDK
-site_description: API reference for durable-workflow, the Python SDK for the Durable Workflow server.
+site_description: Build durable Python workflows with the async-first SDK for self-hosted Server or Durable Workflow Cloud.
 site_url: https://python.durable-workflow.com/
 repo_url: https://github.com/durable-workflow/sdk-python
 repo_name: durable-workflow/sdk-python
@@ -12,6 +12,8 @@ theme:
   name: material
   custom_dir: overrides
   font: false
+  logo: assets/favicon.svg
+  favicon: assets/favicon.svg
   features:
     - navigation.sections
     - navigation.top
@@ -63,6 +65,7 @@ plugins:
 
 markdown_extensions:
   - admonition
+  - md_in_html
   - pymdownx.details
   - pymdownx.superfences
   - pymdownx.highlight:
@@ -72,8 +75,10 @@ markdown_extensions:
       permalink: true
 
 nav:
-  - Home: index.md
-  - Reference:
+  - Start here: index.md
+  - SDK guide: https://durable-workflow.com/docs/2.0/polyglot/python/
+  - PyPI: https://pypi.org/project/durable-workflow/
+  - API reference:
       - Client: reference/client.md
       - Auth composition: reference/auth_composition.md
       - Worker: reference/worker.md

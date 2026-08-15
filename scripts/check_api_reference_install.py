@@ -75,27 +75,30 @@ class InstallCodeParser(html.parser.HTMLParser):
             self._pre_depth -= 1
 
 
-def markdown_install_command(path: Path) -> str:
-    text = path.read_text(encoding="utf-8")
+def markdown_install_command_from_text(text: str, source: str) -> str:
     section = re.search(r"(?ms)^## Install\s*$\n(?P<body>.*?)(?=^##\s|\Z)", text)
     if section is None:
-        raise ValueError(f"{path} has no Install section")
+        raise ValueError(f"{source} has no Install section")
     block = re.search(r"(?ms)^```(?:bash|shell)\s*$\n(?P<code>.*?)^```\s*$", section.group("body"))
     if block is None:
-        raise ValueError(f"{path} Install section has no shell command")
+        raise ValueError(f"{source} Install section has no shell command")
     commands = [line.strip() for line in block.group("code").splitlines() if line.strip()]
     if not commands:
-        raise ValueError(f"{path} Install section has an empty shell block")
+        raise ValueError(f"{source} Install section has an empty shell block")
     return commands[0]
+
+
+def markdown_install_command(path: Path) -> str:
+    return markdown_install_command_from_text(path.read_text(encoding="utf-8"), str(path))
 
 
 def validate_source_templates(repo_root: Path, identity: ReleaseIdentity) -> None:
     reference = (repo_root / "docs" / "index.md").read_text(encoding="utf-8")
-    render_release_identity(reference, identity)
+    rendered_reference = render_release_identity(reference, identity)
     if re.search(r"\b[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta|rc)\.[0-9]+\b", reference, re.IGNORECASE):
         raise ValueError("docs/index.md must derive exact prerelease identities from pyproject.toml")
 
-    reference_command = markdown_install_command(repo_root / "docs" / "index.md")
+    reference_command = markdown_install_command_from_text(rendered_reference, "docs/index.md")
     if shlex.split(reference_command) != shlex.split(identity.install_command):
         raise ValueError("docs/index.md first install command must select the supported 2.0 prerelease line")
 
