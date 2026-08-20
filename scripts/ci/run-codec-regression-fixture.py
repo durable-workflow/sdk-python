@@ -43,6 +43,31 @@ def execute_fixture(fixture: dict[str, Any], codec: Any) -> None:
     )
     _require("python" in fixture["bindings"], "fixture must name the python binding")
     protocol = fixture["protocol"]
+    if protocol["codec"] == "task-root":
+        from durable_workflow.worker import _validate_payload_codec
+
+        wire = base64.b64decode(fixture["framing"]["wire_base64"], validate=True).decode("utf-8")
+        tasks = json.loads(wire)
+        _require(tasks == _tagged_value(fixture["value"]), "task fixture value does not match its wire bytes")
+        _require(
+            fixture["failure_policy"]
+            == {
+                "operation": "decode_reject",
+                "error": "unsupported_payload_codec",
+            },
+            "task-root fixture must declare the stable codec rejection",
+        )
+        _require(isinstance(tasks, list) and tasks, "task-root fixture must contain rejected tasks")
+        for task in tasks:
+            _require(isinstance(task, dict), "task-root fixture entries must be task objects")
+            try:
+                _validate_payload_codec(task.get("payload_codec"))
+            except ValueError as caught:
+                _require("unsupported_payload_codec" in str(caught), "task-root rejection is not actionable")
+                continue
+            raise AssertionError("non-exact root task payload codec did not fail closed")
+        return
+
     if protocol["codec"] == "json":
         from durable_workflow import serializer
 
@@ -63,7 +88,7 @@ def execute_fixture(fixture: dict[str, Any], codec: Any) -> None:
             return
         raise AssertionError("json-tagged workflow payload did not fail closed")
 
-    _require(protocol["codec"] == "avro", "fixture codec must be avro or a JSON rejection")
+    _require(protocol["codec"] == "avro", "fixture codec must be avro, task-root, or a JSON rejection")
     _require(
         protocol["version"] == AVRO_PROTOCOL_VERSION,
         "fixture protocol.version must be the canonical version supported by "

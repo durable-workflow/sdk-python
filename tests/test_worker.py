@@ -5,11 +5,12 @@ import contextlib
 import logging
 import sys
 import threading
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 
+import durable_workflow.worker as worker_module
 from durable_workflow import activity, serializer, workflow
 from durable_workflow.auth_composition import (
     AUTH_COMPOSITION_CONTRACT_SCHEMA,
@@ -237,6 +238,9 @@ def echo_activity(val: str) -> str:
 @activity.defn(name="test-async-act")
 async def echo_async_activity(val: str) -> str:
     return f"async-{val}"
+
+
+_MISSING_TASK_CODEC = object()
 
 
 @pytest.fixture
@@ -1431,6 +1435,7 @@ class TestWorkflowTaskExecution:
             "workflow_type": "unknown-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
+            "payload_codec": "avro",
         }
         await worker._run_workflow_task(task)
         mock_client.fail_workflow_task.assert_called_once()
@@ -3009,6 +3014,280 @@ class TestEnvelopeArguments:
 
 class TestCodecDecodeFailures:
     """Codec decode failures at the task boundary must fail tasks deterministically."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload_codec",
+        [
+            pytest.param(_MISSING_TASK_CODEC, id="missing"),
+            pytest.param(None, id="null"),
+            pytest.param("", id="empty"),
+            pytest.param("json", id="json"),
+            pytest.param("zstd", id="unknown"),
+            pytest.param("Avro", id="wrong-case"),
+            pytest.param(0, id="integer"),
+            pytest.param(False, id="boolean"),
+            pytest.param([], id="list"),
+            pytest.param({}, id="mapping"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "task_kind",
+        ["workflow", "activity", "query", "update", "update_validation"],
+    )
+    async def test_task_root_codec_rejection_precedes_decode_and_user_work(
+        self,
+        mock_client: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        payload_codec: object,
+        task_kind: str,
+    ) -> None:
+        if task_kind == "activity":
+            worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[echo_activity])
+            task: dict[str, object] = {
+                "task_id": "at-codec-boundary",
+                "activity_attempt_id": "aa-codec-boundary",
+                "activity_type": "test-act",
+                "arguments": serializer.envelope(["hello"], codec="avro"),
+            }
+        elif task_kind == "query":
+            worker = Worker(mock_client, task_queue="q1", workflows=[QueryWorkflow], activities=[])
+            task = {
+                "query_task_id": "qt-codec-boundary",
+                "query_task_attempt": 1,
+                "workflow_type": "query-wf",
+                "query_name": "status",
+                "history_events": [],
+                "workflow_arguments": serializer.envelope([], codec="avro"),
+                "query_arguments": serializer.envelope([], codec="avro"),
+            }
+        elif task_kind == "update_validation":
+            worker = Worker(
+                mock_client,
+                task_queue="q1",
+                workflows=[ValidatedUpdateWorkflow],
+                activities=[],
+            )
+            task = {
+                "update_validation_task_id": "uv-codec-boundary",
+                "update_validation_attempt": 1,
+                "workflow_type": "validated-update-wf",
+                "update_name": "approve",
+                "history_events": [],
+                "workflow_arguments": serializer.envelope([], codec="avro"),
+                "update_arguments": serializer.envelope([True], codec="avro"),
+            }
+        else:
+            worker = Worker(
+                mock_client,
+                task_queue="q1",
+                workflows=[UpdateWorkflow] if task_kind == "update" else [TestWorkflow],
+                activities=[],
+            )
+            task = {
+                "task_id": f"{task_kind}-codec-boundary",
+                "workflow_type": "update-wf" if task_kind == "update" else "test-wf",
+                "workflow_task_attempt": 1,
+                "history_events": [],
+                "arguments": serializer.envelope([], codec="avro"),
+            }
+            if task_kind == "update":
+                task.update(
+                    {
+                        "workflow_update_id": "upd-codec-boundary",
+                        "history_events": [
+                            {
+                                "event_type": "UpdateAccepted",
+                                "payload": {
+                                    "update_id": "upd-codec-boundary",
+                                    "update_name": "increment",
+                                    "arguments": serializer.envelope([1], codec="avro"),
+                                    "payload_codec": "avro",
+                                },
+                            },
+                        ],
+                    }
+                )
+
+        if payload_codec is not _MISSING_TASK_CODEC:
+            task["payload_codec"] = payload_codec
+
+        decode_spy = Mock(side_effect=AssertionError("task payload decoding must not run"))
+        replay_spy = Mock(side_effect=AssertionError("workflow replay must not run"))
+        query_spy = Mock(side_effect=AssertionError("query handler must not run"))
+        update_spy = Mock(side_effect=AssertionError("update handler must not run"))
+        validator_spy = Mock(side_effect=AssertionError("update validator must not run"))
+        activity_spy = AsyncMock(side_effect=AssertionError("activity handler must not run"))
+        monkeypatch.setattr(serializer, "decode_envelope", decode_spy)
+        monkeypatch.setattr(worker_module, "replay", replay_spy)
+        monkeypatch.setattr(worker_module, "query_state", query_spy)
+        monkeypatch.setattr(worker_module, "apply_update", update_spy)
+        monkeypatch.setattr(worker_module, "validate_update", validator_spy)
+        monkeypatch.setattr(worker, "_execute_activity_callable", activity_spy)
+
+        if task_kind == "activity":
+            outcome = await worker._run_activity_task(task)
+            failure = mock_client.fail_activity_task
+            assert outcome == "decode_error"
+        elif task_kind == "query":
+            outcome = await worker._run_query_task(task)
+            failure = mock_client.fail_query_task
+            assert outcome == "failed"
+        elif task_kind == "update_validation":
+            outcome = await worker._run_update_validation_task(task)
+            failure = mock_client.reject_update_validation_task
+            assert outcome == "rejected"
+        else:
+            outcome = await worker._run_workflow_task(task)
+            failure = mock_client.fail_workflow_task
+            assert outcome is None
+
+        failure.assert_awaited_once()
+        assert "unsupported_payload_codec" in failure.await_args.kwargs["message"]
+        assert failure.await_args.kwargs["failure_type"] == "ValueError"
+        decode_spy.assert_not_called()
+        replay_spy.assert_not_called()
+        query_spy.assert_not_called()
+        update_spy.assert_not_called()
+        validator_spy.assert_not_called()
+        activity_spy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "task_kind",
+        ["workflow", "activity", "query", "update", "update_validation"],
+    )
+    async def test_exact_avro_task_completes_each_path_with_handler_work(
+        self,
+        mock_client: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        task_kind: str,
+    ) -> None:
+        customer_value = {
+            "codec": "customer-codec",
+            "payload_codec": None,
+            "metadata": {"codec": "json", "payload_codec": "Avro"},
+        }
+        if task_kind == "activity":
+            worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[echo_activity])
+            task: dict[str, object] = {
+                "task_id": "at-exact-avro",
+                "activity_attempt_id": "aa-exact-avro",
+                "activity_type": "test-act",
+                "arguments": serializer.envelope([customer_value], codec="avro"),
+                "payload_codec": "avro",
+                "metadata": customer_value,
+            }
+        elif task_kind == "query":
+            worker = Worker(mock_client, task_queue="q1", workflows=[QueryWorkflow], activities=[])
+            task = {
+                "query_task_id": "qt-exact-avro",
+                "query_task_attempt": 1,
+                "workflow_type": "query-wf",
+                "query_name": "status",
+                "history_events": [],
+                "workflow_arguments": serializer.envelope([], codec="avro"),
+                "query_arguments": serializer.envelope([], codec="avro"),
+                "payload_codec": "avro",
+                "metadata": customer_value,
+            }
+        elif task_kind == "update_validation":
+            ValidatedUpdateWorkflow.validator_calls = 0
+            worker = Worker(
+                mock_client,
+                task_queue="q1",
+                workflows=[ValidatedUpdateWorkflow],
+                activities=[],
+            )
+            task = {
+                "update_validation_task_id": "uv-exact-avro",
+                "update_validation_attempt": 1,
+                "workflow_type": "validated-update-wf",
+                "update_name": "approve",
+                "history_events": [],
+                "workflow_arguments": serializer.envelope([], codec="avro"),
+                "update_arguments": serializer.envelope([True], codec="avro"),
+                "payload_codec": "avro",
+                "metadata": customer_value,
+            }
+        else:
+            worker = Worker(
+                mock_client,
+                task_queue="q1",
+                workflows=[UpdateWorkflow] if task_kind == "update" else [TestWorkflow],
+                activities=[],
+            )
+            task = {
+                "task_id": f"{task_kind}-exact-avro",
+                "workflow_type": "update-wf" if task_kind == "update" else "test-wf",
+                "workflow_task_attempt": 1,
+                "history_events": [],
+                "arguments": serializer.envelope(
+                    [] if task_kind == "update" else [customer_value],
+                    codec="avro",
+                ),
+                "payload_codec": "avro",
+                "metadata": customer_value,
+            }
+            if task_kind == "update":
+                task.update(
+                    {
+                        "workflow_update_id": "upd-exact-avro",
+                        "history_events": [
+                            {
+                                "event_type": "UpdateAccepted",
+                                "payload": {
+                                    "update_id": "upd-exact-avro",
+                                    "update_name": "increment",
+                                    "arguments": serializer.envelope([6], codec="avro"),
+                                    "payload_codec": "avro",
+                                },
+                            },
+                        ],
+                    }
+                )
+
+        decode_spy = Mock(wraps=serializer.decode_envelope)
+        replay_spy = Mock(wraps=worker_module.replay)
+        query_spy = Mock(wraps=worker_module.query_state)
+        update_spy = Mock(wraps=worker_module.apply_update)
+        validator_spy = Mock(wraps=worker_module.validate_update)
+        activity_spy = AsyncMock(wraps=worker._execute_activity_callable)
+        monkeypatch.setattr(serializer, "decode_envelope", decode_spy)
+        monkeypatch.setattr(worker_module, "replay", replay_spy)
+        monkeypatch.setattr(worker_module, "query_state", query_spy)
+        monkeypatch.setattr(worker_module, "apply_update", update_spy)
+        monkeypatch.setattr(worker_module, "validate_update", validator_spy)
+        monkeypatch.setattr(worker, "_execute_activity_callable", activity_spy)
+
+        if task_kind == "activity":
+            assert await worker._run_activity_task(task) == "completed"
+            mock_client.complete_activity_task.assert_awaited_once()
+            mock_client.fail_activity_task.assert_not_awaited()
+            activity_spy.assert_awaited_once()
+        elif task_kind == "query":
+            assert await worker._run_query_task(task) == "completed"
+            mock_client.complete_query_task.assert_awaited_once()
+            mock_client.fail_query_task.assert_not_awaited()
+            query_spy.assert_called_once()
+        elif task_kind == "update_validation":
+            assert await worker._run_update_validation_task(task) == "approved"
+            mock_client.approve_update_validation_task.assert_awaited_once()
+            mock_client.reject_update_validation_task.assert_not_awaited()
+            validator_spy.assert_called_once()
+            assert ValidatedUpdateWorkflow.validator_calls == 1
+        else:
+            assert await worker._run_workflow_task(task) is not None
+            mock_client.complete_workflow_task.assert_awaited_once()
+            mock_client.fail_workflow_task.assert_not_awaited()
+            if task_kind == "update":
+                update_spy.assert_called_once()
+            else:
+                replay_spy.assert_called_once()
+                command = mock_client.complete_workflow_task.await_args.kwargs["commands"][0]
+                assert serializer.decode(command["arguments"]["blob"], codec="avro") == [customer_value]
+
+        assert decode_spy.call_count > 0
 
     @pytest.mark.asyncio
     async def test_activity_json_decode_failure_fails_task(self, mock_client: AsyncMock) -> None:

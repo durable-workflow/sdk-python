@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "missing-null-root-task-codecs-rejected",
+  "protocol": {
+    "codec": "task-root",
+    "schema": "durable_workflow.worker.Task",
+    "version": "1",
+    "fingerprint": null
+  },
+  "bindings": [
+    "python"
+  ],
+  "value": {
+    "type": "array",
+    "items": [
+      {
+        "type": "map",
+        "entries": []
+      },
+      {
+        "type": "map",
+        "entries": [
+          {
+            "key": "payload_codec",
+            "value": {
+              "type": "null"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "utf8-json-task",
+    "wire_base64": "W3t9LCB7InBheWxvYWRfY29kZWMiOiBudWxsfV0="
+  },
+  "failure_policy": {
+    "operation": "decode_reject",
+    "error": "unsupported_payload_codec"
+  }
+}
