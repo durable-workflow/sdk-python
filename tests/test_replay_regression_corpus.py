@@ -7,8 +7,9 @@ from typing import Any
 
 import pytest
 
-from durable_workflow import Replayer, serializer
+from durable_workflow import Replayer, serializer, workflow
 from durable_workflow.errors import WorkflowPayloadDecodeError
+from durable_workflow.workflow import WorkflowContext, commands_to_server_commands
 from tests.test_golden_history_replay import (
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
@@ -20,12 +21,27 @@ from tests.test_update_signal_condition_replay import UpdateSignalConditionTimer
 
 FIXTURE_SCHEMA = "durable-workflow.replay-regression/v1"
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "replay_regressions"
+
+
+@workflow.defn(name="tests.replay.parallel-metadata-producer")
+class ParallelMetadataProducerWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return (
+            yield [
+                ctx.schedule_activity("golden.activity-one", []),
+                ctx.start_child_workflow("golden.child", []),
+                ctx.start_timer(1),
+            ]
+        )
+
+
 WORKFLOWS = [
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
     GoldenSingleActivityWorkflow,
     GoldenTimeoutWaitWorkflow,
     GoldenVersionMarkerWorkflow,
+    ParallelMetadataProducerWorkflow,
     UpdateSignalConditionTimerWorkflow,
 ]
 WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__)): workflow for workflow in WORKFLOWS}
@@ -45,16 +61,20 @@ def _decode_envelopes(value: Any) -> Any:
     return value
 
 
-def _command_document(command: Any) -> dict[str, Any]:
-    document = command.to_server_command(
+def _command_documents(commands: Sequence[Any]) -> list[dict[str, Any]]:
+    server_commands = commands_to_server_commands(
+        commands,
         "regression-corpus",
         payload_codec=serializer.AVRO_CODEC,
         size_warning=None,
     )
-    normalized = _decode_envelopes(document)
-    assert isinstance(normalized, dict)
-    normalized["command_type"] = type(command).__name__
-    return normalized
+    documents: list[dict[str, Any]] = []
+    for command, server_command in zip(commands, server_commands, strict=True):
+        normalized = _decode_envelopes(server_command)
+        assert isinstance(normalized, dict)
+        normalized["command_type"] = type(command).__name__
+        documents.append(normalized)
+    return documents
 
 
 def _assert_matches(expected: Any, actual: Any, context: str) -> None:
@@ -104,7 +124,7 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
         workflow_type=workflow_type,
         payload_codec=("json" if payload_codec is None else payload_codec),
     )
-    commands = [_command_document(command) for command in outcome.commands]
+    commands = _command_documents(outcome.commands)
 
     declared_commands = fixture.get("command_sequence")
     if declared_commands is not None:

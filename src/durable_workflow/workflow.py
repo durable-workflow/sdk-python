@@ -25,6 +25,7 @@ import math
 import random
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from copy import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
@@ -450,6 +451,12 @@ class ScheduleActivity:
     schedule_to_start_timeout: int | None = None
     schedule_to_close_timeout: int | None = None
     heartbeat_timeout: int | None = None
+    _parallel_group_path: list[dict[str, Any]] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def to_server_command(
         self,
@@ -535,6 +542,12 @@ class StartTimer:
     """Command requesting a durable timer."""
 
     delay_seconds: int
+    _parallel_group_path: list[dict[str, Any]] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def to_server_command(
         self,
@@ -771,6 +784,12 @@ class StartChildWorkflow:
     retry_policy: ChildWorkflowRetryPolicyInput | None = None
     execution_timeout_seconds: int | None = None
     run_timeout_seconds: int | None = None
+    _parallel_group_path: list[dict[str, Any]] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def to_server_command(
         self,
@@ -1004,6 +1023,18 @@ Command = (
 )
 
 
+def _apply_parallel_group_metadata(
+    command: Command,
+    server_command: dict[str, Any],
+) -> None:
+    path = getattr(command, "_parallel_group_path", None)
+    if not path:
+        return
+
+    server_command.update(path[-1])
+    server_command["parallel_group_path"] = [dict(entry) for entry in path]
+
+
 def commands_to_server_commands(
     commands: Sequence[Command],
     task_queue: str,
@@ -1177,6 +1208,9 @@ def commands_to_server_commands(
         )
         for (index, key, _, _), blob in zip(encode_jobs, blobs, strict=True):
             server_commands[index][key] = blob
+
+    for command, server_command in zip(commands, server_commands, strict=True):
+        _apply_parallel_group_metadata(command, server_command)
 
     return server_commands
 
@@ -3143,6 +3177,54 @@ def _replay_state(
     advanced_cmd: Any = None
     terminal_condition_reopen_cmd: WaitCondition | None = None
 
+    def _annotate_parallel_commands(commands: list[Any]) -> list[Any]:
+        if not commands:
+            return commands
+        if len(commands) > 1000:
+            raise ValueError("parallel workflow group exceeds the deterministic limit of 1000 operations")
+        if not all(isinstance(command, ScheduleActivity | StartTimer | StartChildWorkflow) for command in commands):
+            return commands
+
+        kinds = {
+            "activity"
+            if isinstance(command, ScheduleActivity)
+            else "timer"
+            if isinstance(command, StartTimer)
+            else "child"
+            for command in commands
+        }
+        kind = next(iter(kinds)) if len(kinds) == 1 else "mixed"
+        prefix = {
+            "activity": "parallel-activities",
+            "child": "parallel-children",
+            "timer": "parallel-timers",
+            "mixed": "parallel-calls",
+        }[kind]
+        candidates = _unconsumed_recorded_steps()
+        if candidates:
+            base_sequence = candidates[0].workflow_sequence
+        else:
+            recorded_sequences = [
+                step.workflow_sequence for step in recorded_steps + recorded_wait_steps + recorded_pending_steps
+            ]
+            base_sequence = max(recorded_sequences, default=0) + len(pending) + 1
+
+        group_id = f"{prefix}:{base_sequence}:{len(commands)}"
+        annotated_commands: list[Any] = []
+        for index, command in enumerate(commands):
+            occurrence = copy(command)
+            occurrence._parallel_group_path = [
+                {
+                    "parallel_group_id": group_id,
+                    "parallel_group_kind": kind,
+                    "parallel_group_base_sequence": base_sequence,
+                    "parallel_group_size": len(commands),
+                    "parallel_group_index": index,
+                }
+            ]
+            annotated_commands.append(occurrence)
+        return annotated_commands
+
     def _condition_wait_has_pending_receivers(condition_wait_id: str | None) -> bool:
         if condition_wait_id is None:
             return False
@@ -3194,6 +3276,7 @@ def _replay_state(
             if isinstance(cmd, list):
                 if any(isinstance(child_command, NexusServiceCall) for child_command in cmd):
                     raise TypeError("Nexus service calls must be yielded one at a time")
+                cmd = _annotate_parallel_commands(cmd)
                 needed = len(cmd)
                 if result_cursor + needed <= len(resolved_results):
                     for offset, child_command in enumerate(cmd):

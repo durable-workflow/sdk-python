@@ -29,6 +29,7 @@ from durable_workflow.workflow import (
     StartTimer,
     UpsertSearchAttributes,
     WorkflowContext,
+    commands_to_server_commands,
     replay,
 )
 from tests.integration.polyglot_fixtures import (
@@ -1838,6 +1839,25 @@ class FanOutActivityTimerWorkflow:
         return "done"
 
 
+@workflow.defn(name="parallel-metadata-producer-wf")
+class ParallelMetadataProducerWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return (
+            yield [
+                ctx.schedule_activity("golden.activity-one", []),
+                ctx.start_child_workflow("golden.child", []),
+                ctx.start_timer(1),
+            ]
+        )
+
+
+@workflow.defn(name="repeated-command-fan-out-wf")
+class RepeatedCommandFanOutWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        deferred = ctx.schedule_activity("shared", [])
+        return (yield [deferred, deferred])
+
+
 @workflow.defn(name="fan-out-then-sequential-wf")
 class FanOutThenSequentialWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -1870,6 +1890,42 @@ class TestFanOut:
         assert outcome.commands[0].activity_type == "fetch-a"
         assert isinstance(outcome.commands[1], ScheduleActivity)
         assert outcome.commands[1].activity_type == "fetch-b"
+
+    def test_mixed_batch_emits_language_neutral_parallel_metadata(self) -> None:
+        outcome = replay(ParallelMetadataProducerWorkflow, [], [])
+        commands = commands_to_server_commands(outcome.commands, "parallel-workers")
+
+        assert [command["type"] for command in commands] == [
+            "schedule_activity",
+            "start_child_workflow",
+            "start_timer",
+        ]
+        for index, command in enumerate(commands):
+            entry = {
+                "parallel_group_id": "parallel-calls:1:3",
+                "parallel_group_kind": "mixed",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 3,
+                "parallel_group_index": index,
+            }
+            assert {key: command[key] for key in entry} == entry
+            assert command["parallel_group_path"] == [entry]
+
+    def test_repeated_deferred_command_keeps_occurrence_specific_metadata(self) -> None:
+        outcome = replay(RepeatedCommandFanOutWorkflow, [], [])
+        commands = commands_to_server_commands(outcome.commands, "parallel-workers")
+
+        assert outcome.commands[0] is not outcome.commands[1]
+        for index, command in enumerate(commands):
+            entry = {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": index,
+            }
+            assert {key: command[key] for key in entry} == entry
+            assert command["parallel_group_path"] == [entry]
 
     def test_all_completed(self) -> None:
         history = [

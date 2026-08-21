@@ -6,14 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.32`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc32`. This Avro-only SDK release is qualified with Server
-`2.0.0-rc.32`; JSON remains HTTP transport and is no longer a workflow payload
+The Python SDK advances to prerelease `2.0.0-rc.33`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc33`. This Avro-only SDK release is qualified with Server
+`2.0.0-rc.39`; JSON remains HTTP transport and is no longer a workflow payload
 codec.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
 
 ### Added
+- List-based activity, child-workflow, and timer fan-out now emits the stable
+  language-neutral parallel-group identity and path metadata consumed by
+  service-mode and embedded replay implementations.
 - Declared update validators now run through durable, synchronous pre-accept
   worker tasks. Capability discovery fails closed, validation replay does not
   invoke the handler or commit workflow state, and typed failures preserve the
