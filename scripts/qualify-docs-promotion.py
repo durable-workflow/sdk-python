@@ -33,6 +33,11 @@ QUALIFICATION_EVENT = "qualification"
 SDK_GUIDE_URL = "https://durable-workflow.com/docs/2.0/polyglot/python/"
 PYPI_URL = "https://pypi.org/project/durable-workflow/"
 GITHUB_URL = "https://github.com/durable-workflow/sdk-python"
+MAIN_DOCS_URL = "https://durable-workflow.com/docs/2.0/introduction/"
+CAPABILITIES_URL = "https://durable-workflow.com/docs/2.0/capabilities/"
+COMPATIBILITY_URL = "https://durable-workflow.com/docs/2.0/compatibility/"
+PLAYGROUND_URL = "https://github.com/durable-workflow/sample-app#symmetric-sdk-playground"
+CLOUD_GUIDE_URL = "https://durable-workflow.com/docs/2.0/polyglot/cloud-control-plane/"
 REFERENCE_ROUTES = ("reference/client/", "reference/worker/", "reference/workflow/", "reference/activity/")
 VIEWPORT_ATTEMPTS = 3
 VIEWPORTS = (
@@ -113,18 +118,23 @@ def assert_event_response(response: Response, event: str) -> None:
 def assert_deployed_landing(page: Any, name: str) -> None:
     """Check stable destinations and browser behavior without freezing landing prose."""
     contract = page.evaluate(
-        r"""({guideUrl, pypiUrl, githubUrl}) => {
+        r"""({
+            guideUrl, pypiUrl, githubUrl, mainDocsUrl, capabilitiesUrl,
+            compatibilityUrl, playgroundUrl, cloudGuideUrl,
+        }) => {
             const one = (selector) => document.querySelector(selector)
             const all = (selector) => [...document.querySelectorAll(selector)]
             const href = (selector) => one(selector)?.href || null
             const meta = (selector) => one(selector)?.content || null
             const primary = one('[data-docs-destination="local-self-hosted"]')
-            const guide = one('.dw-hero [data-docs-destination="sdk-guide"]')
+            const cloudHero = one('.dw-hero [data-docs-destination="managed-cloud"]')
+            const guide = one('[data-docs-destination="sdk-guide"]')
             const reference = one('.dw-hero [data-docs-destination="api-reference"]')
             const selfHosted = one('[data-runtime="self-hosted"]')
             const cloud = one('[data-runtime="cloud"]')
             const install = one('[data-docs-action="install"] code')
             const localJourney = one('[data-docs-journey="local-self-hosted"]')
+            const managedJourney = one('[data-docs-journey="managed-cloud"]')
             const destinations = all('[data-docs-destination]').map((element) => ({
                 destination: element.dataset.docsDestination,
                 href: element.href,
@@ -132,6 +142,8 @@ def assert_deployed_landing(page: Any, name: str) -> None:
             return {
                 canonical: href('link[rel="canonical"]'),
                 cloudAccess: cloud?.dataset.access || null,
+                cloudHeroAccess: cloudHero?.dataset.access || null,
+                cloudHeroHref: cloudHero?.getAttribute('href') || null,
                 cloudBelowFirstViewport: Boolean(cloud && cloud.getBoundingClientRect().top >= innerHeight),
                 cloudFollowsSelfHosted: Boolean(
                     cloud && selfHosted
@@ -143,12 +155,28 @@ def assert_deployed_landing(page: Any, name: str) -> None:
                     scrollWidth: element.scrollWidth,
                 })),
                 documentWidth: document.documentElement.scrollWidth,
+                capabilitiesLinked: destinations.some((entry) => entry.href === capabilitiesUrl),
+                cloudGuideLinked: destinations.some((entry) => entry.href === cloudGuideUrl),
+                compatibilityLinked: destinations.some((entry) => entry.href === compatibilityUrl),
+                credentialRoles: all('[data-credential-role]')
+                    .map((element) => element.dataset.credentialRole).sort(),
                 favicon: href('link[rel~="icon"]'),
                 githubLinked: destinations.some((entry) => entry.href === githubUrl),
                 guideHref: guide?.href || null,
                 guideLinked: destinations.some((entry) => entry.href === guideUrl),
                 installCommand: install?.textContent.trim().replace(/\s+/g, ' ') || null,
+                journeyContract: localJourney ? {
+                    activityType: localJourney.dataset.activityType,
+                    taskQueue: localJourney.dataset.taskQueue,
+                    workflowType: localJourney.dataset.workflowType,
+                } : null,
+                journeyCode: localJourney
+                    ? all('[data-docs-journey="local-self-hosted"] code')
+                        .map((element) => element.textContent).join('\n')
+                    : '',
                 localJourney: Boolean(localJourney),
+                mainDocsLinked: destinations.some((entry) => entry.href === mainDocsUrl),
+                managedJourney: Boolean(managedJourney),
                 ogDescription: meta('meta[property="og:description"]'),
                 ogSiteName: meta('meta[property="og:site_name"]'),
                 ogTitle: meta('meta[property="og:title"]'),
@@ -160,6 +188,7 @@ def assert_deployed_landing(page: Any, name: str) -> None:
                 primaryAccess: primary?.dataset.access || null,
                 primaryHref: primary?.getAttribute('href') || null,
                 pypiLinked: destinations.some((entry) => entry.href === pypiUrl),
+                playgroundLinked: destinations.some((entry) => entry.href === playgroundUrl),
                 referenceHref: reference?.getAttribute('href') || null,
                 roles: all('[data-sdk-role]').map((element) => element.dataset.sdkRole).sort(),
                 selfHostedAccess: selfHosted?.dataset.access || null,
@@ -169,26 +198,64 @@ def assert_deployed_landing(page: Any, name: str) -> None:
                         .find((text) => text.includes('durableworkflow/server:')) || null
                     : null,
                 surfaceCount: all('[data-docs-surface="python-sdk-landing"]').length,
+                runtimeUrlContracts: all('[data-runtime-url-contract]')
+                    .map((element) => element.dataset.runtimeUrlContract),
                 twitterCard: meta('meta[name="twitter:card"]'),
                 twitterDescription: meta('meta[name="twitter:description"]'),
                 twitterTitle: meta('meta[name="twitter:title"]'),
                 viewportWidth: document.documentElement.clientWidth,
+                workerReadyOutputs: all('[data-worker-ready-output]')
+                    .map((element) => element.dataset.workerReadyOutput),
             }
         }""",
-        {"guideUrl": SDK_GUIDE_URL, "pypiUrl": PYPI_URL, "githubUrl": GITHUB_URL},
+        {
+            "guideUrl": SDK_GUIDE_URL,
+            "pypiUrl": PYPI_URL,
+            "githubUrl": GITHUB_URL,
+            "mainDocsUrl": MAIN_DOCS_URL,
+            "capabilitiesUrl": CAPABILITIES_URL,
+            "compatibilityUrl": COMPATIBILITY_URL,
+            "playgroundUrl": PLAYGROUND_URL,
+            "cloudGuideUrl": CLOUD_GUIDE_URL,
+        },
     )
     assert contract["surfaceCount"] == 1, f"deployed {name} landing surface is missing"
     assert contract["documentWidth"] <= contract["viewportWidth"] + 1, f"deployed {name} landing overflows"
     assert contract["primaryAccess"] == contract["selfHostedAccess"] == "no-account-required"
     assert contract["primaryHref"] == "#first-workflow"
     assert contract["cloudAccess"] == "limited"
+    assert contract["cloudHeroAccess"] == "limited" and contract["cloudHeroHref"] == "#managed-cloud"
     assert contract["cloudFollowsSelfHosted"], f"deployed {name} landing puts Cloud before self-hosting"
     assert contract["cloudBelowFirstViewport"], f"deployed {name} first viewport promotes limited Cloud access"
     assert contract["localJourney"]
+    assert contract["managedJourney"]
+    assert contract["runtimeUrlContracts"] == ["provisioned-namespace-root"]
+    assert contract["credentialRoles"] == [
+        "control-plane-api-key",
+        "runtime-client-token",
+        "runtime-worker-token",
+    ]
+    assert contract["journeyContract"] == {
+        "activityType": "python.greet",
+        "taskQueue": "python-workers",
+        "workflowType": "python.greeter",
+    }
+    assert all(value in contract["journeyCode"] for value in contract["journeyContract"].values())
+    assert contract["workerReadyOutputs"] == ["registered"]
     assert contract["roles"] == ["activity", "client", "worker", "workflow"]
     assert contract["guideHref"] == SDK_GUIDE_URL
     assert contract["referenceHref"] == "reference/client/"
     assert contract["guideLinked"] and contract["pypiLinked"] and contract["githubLinked"]
+    assert all(
+        contract[key]
+        for key in (
+            "mainDocsLinked",
+            "capabilitiesLinked",
+            "compatibilityLinked",
+            "playgroundLinked",
+            "cloudGuideLinked",
+        )
+    )
     assert contract["installCommand"] == "pip install 'durable-workflow~=2.0.0rc0'"
     assert contract["serverCommand"] and "{{" not in contract["serverCommand"]
     assert contract["codeBlocks"] and all(
@@ -204,11 +271,11 @@ def assert_deployed_landing(page: Any, name: str) -> None:
     assert contract["twitterCard"] == "summary"
 
     primary = page.locator('[data-docs-destination="local-self-hosted"]').first
-    guide = page.locator('.dw-hero [data-docs-destination="sdk-guide"]')
+    cloud_path = page.locator('.dw-hero [data-docs-destination="managed-cloud"]')
     primary.focus()
     page.keyboard.press("Tab")
-    assert guide.evaluate("(element) => element === document.activeElement"), (
-        f"deployed {name} landing focus does not move from the local task to the SDK guide"
+    assert cloud_path.evaluate("(element) => element === document.activeElement"), (
+        f"deployed {name} landing focus does not move from the local task to the managed path"
     )
     page.keyboard.press("Shift+Tab")
     assert primary.evaluate("(element) => element === document.activeElement")
@@ -448,8 +515,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         ],
         "verified": [
             "account-free-primary-journey",
+            "first-screen-runtime-choice",
             "limited-cloud-secondary-journey",
+            "managed-runtime-credential-roles",
+            "namespace-runtime-url-contract",
             "install-and-compatible-server-commands",
+            "workflow-activity-worker-client-journey",
+            "positive-worker-registration-output",
             "sdk-role-model",
             "developer-destinations",
             "reference-routes",

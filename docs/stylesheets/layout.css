@@ -380,6 +380,19 @@
   margin-top: auto;
 }
 
+.dw-runtime-card__actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.85rem;
+  margin-top: auto;
+}
+
+.dw-runtime-card__actions .dw-button,
+.dw-runtime-card__actions .dw-cloud-promotion__action {
+  margin-top: 0;
+}
+
 .dw-cloud-promotion__eyebrow {
   letter-spacing: 0;
 }
@@ -396,6 +409,98 @@
 .dw-cloud-promotion__action:hover,
 .dw-cloud-promotion__action:focus-visible {
   box-shadow: 0 0.15rem 0 var(--dw-blue);
+}
+
+.dw-checkpoint {
+  background: var(--dw-panel);
+  border: 1px solid var(--dw-line);
+  border-left: 0.25rem solid var(--dw-blue);
+  border-radius: 0.4rem;
+  margin-top: 1.25rem;
+  padding: 0.9rem 1rem;
+}
+
+.dw-checkpoint > p {
+  color: var(--dw-muted);
+  font-size: 0.74rem;
+  line-height: 1.6;
+  margin: 0 0 0.7rem;
+}
+
+.dw-checkpoint .highlight {
+  margin: 0;
+}
+
+.dw-cloud-path > p {
+  color: var(--dw-muted);
+  line-height: 1.7;
+  max-width: 48rem;
+}
+
+.dw-cloud-path > h3 {
+  color: var(--dw-ink);
+  font-size: 1.05rem;
+  margin: 1.8rem 0 0.8rem;
+}
+
+.dw-cloud-path .highlight {
+  border: 1px solid var(--dw-line);
+  border-radius: 0.4rem;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.dw-cloud-path .highlight pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.dw-credential-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  list-style: none;
+  margin: 0 0 1.25rem;
+  padding: 0;
+}
+
+.dw-credential-grid li {
+  background: var(--dw-panel-raised);
+  border: 1px solid var(--dw-line);
+  border-radius: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 1rem;
+}
+
+.dw-credential-grid strong {
+  color: var(--dw-ink);
+  font-size: 0.82rem;
+}
+
+.dw-credential-grid span {
+  color: var(--dw-muted);
+  font-size: 0.7rem;
+  line-height: 1.55;
+}
+
+.dw-credential-grid code {
+  overflow-wrap: anywhere;
+}
+
+.dw-inline-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1rem;
+  margin-top: 1.2rem;
+}
+
+.dw-inline-actions .dw-button,
+.dw-inline-actions .dw-text-link {
+  width: auto;
 }
 
 .dw-link-card {
@@ -423,6 +528,10 @@
   .dw-role-grid,
   .dw-link-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dw-credential-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -544,6 +653,20 @@
   .dw-link-grid,
   .dw-runtime-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dw-runtime-card__actions,
+  .dw-inline-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dw-runtime-card__actions .dw-button,
+  .dw-runtime-card__actions .dw-cloud-promotion__action,
+  .dw-inline-actions .dw-button,
+  .dw-inline-actions .dw-text-link {
+    text-align: center;
+    width: 100%;
   }
 
   .dw-role-card,
