@@ -13,8 +13,8 @@ def source_metadata() -> SourceMetadata:
     return SourceMetadata(
         commit="a" * 40,
         name="durable-workflow",
-        version="2.0.0-rc.33",
-        registry_version="2.0.0rc33",
+        version="2.0.0-rc.34",
+        registry_version="2.0.0rc34",
         summary="Release candidate Python SDK for the Durable Workflow 2.0 train",
         classifiers=("Programming Language :: Python :: 3",),
         readme=(

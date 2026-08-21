@@ -195,7 +195,7 @@ def test_clean_install_probes_the_exact_release_before_the_documented_range(
     ]
 
 
-def test_public_rc24_does_not_mask_an_unpublished_exact_rc32(
+def test_public_rc24_does_not_mask_an_unpublished_exact_rc34(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     identity = load_release_identity(REPO_ROOT)
@@ -214,7 +214,7 @@ def test_public_rc24_does_not_mask_an_unpublished_exact_rc32(
             raise PublicRequirementUnavailable(1, ["pip", "install", requirement])
         raise subprocess.CalledProcessError(
             1,
-            ["python", "-c", "installed durable-workflow 2.0.0rc24, expected 2.0.0rc33"],
+            ["python", "-c", "installed durable-workflow 2.0.0rc24, expected 2.0.0rc34"],
         )
 
     monkeypatch.setattr("scripts.check_api_reference_install._run_clean_requirement", run_requirement)
@@ -222,18 +222,18 @@ def test_public_rc24_does_not_mask_an_unpublished_exact_rc32(
     with pytest.raises(PublicRequirementUnavailable):
         run_clean_install(identity.requirement, identity, install_attempts=1, install_retry_sleep=0)
 
-    assert identity.registry_version == "2.0.0rc33"
+    assert identity.registry_version == "2.0.0rc34"
     assert calls == [identity.exact_requirement]
 
 
-def test_stale_documented_range_is_a_hard_failure_after_exact_rc32_exists(
+def test_stale_documented_range_is_a_hard_failure_after_exact_rc34_exists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     identity = load_release_identity(REPO_ROOT)
     calls: list[str] = []
     stale_range = subprocess.CalledProcessError(
         1,
-        ["python", "-c", "installed durable-workflow 2.0.0rc24, expected 2.0.0rc33"],
+        ["python", "-c", "installed durable-workflow 2.0.0rc24, expected 2.0.0rc34"],
     )
 
     def run_requirement(

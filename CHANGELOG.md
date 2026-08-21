@@ -6,8 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.33`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc33`. This Avro-only SDK release is qualified with Server
+The Python SDK advances to prerelease `2.0.0-rc.34`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc34`. This Avro-only SDK release is qualified with Server
 `2.0.0-rc.39`; JSON remains HTTP transport and is no longer a workflow payload
 codec.
 Earlier SDK versions remain historical releases and are not alternate supported
@@ -59,6 +59,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Completed parallel activity, child-workflow, timer, and mixed groups now
+  replay results and select failures by their durable yielded positions rather
+  than terminal-event recording order. Chronological signals, updates, and
+  condition-wait interactions retain their history order.
 - Worker workflow, activity, query, update, and update-validation tasks now
   reject every missing, null, or otherwise non-exact root payload codec before
   decoding envelopes or invoking application code. Customer-owned Avro values

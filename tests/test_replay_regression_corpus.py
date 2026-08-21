@@ -35,6 +35,16 @@ class ParallelMetadataProducerWorkflow:
         )
 
 
+@workflow.defn(name="tests.replay.parallel-result-binding")
+class ParallelResultBindingWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        results = yield [
+            ctx.schedule_activity("position-first", []),
+            ctx.schedule_activity("position-second", []),
+        ]
+        return {"results": results}
+
+
 WORKFLOWS = [
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
@@ -42,6 +52,7 @@ WORKFLOWS = [
     GoldenTimeoutWaitWorkflow,
     GoldenVersionMarkerWorkflow,
     ParallelMetadataProducerWorkflow,
+    ParallelResultBindingWorkflow,
     UpdateSignalConditionTimerWorkflow,
 ]
 WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__)): workflow for workflow in WORKFLOWS}

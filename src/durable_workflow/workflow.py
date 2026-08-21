@@ -1616,6 +1616,15 @@ class _RecordedStep:
     details: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _ParallelGroupMember:
+    group_key: tuple[tuple[str, str, int, int], ...]
+    base_sequence: int
+    size: int
+    index: int
+    workflow_sequence: int
+
+
 def _validated_replay_payload_codec(
     payload: Mapping[str, Any],
     fallback_codec: str | None,
@@ -2198,6 +2207,132 @@ def _workflow_sequence(payload: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _parallel_group_integer(payload: Mapping[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _parallel_group_entry(payload: Mapping[str, Any]) -> tuple[str, str, int, int, int] | None:
+    group_id = payload.get("parallel_group_id")
+    kind = payload.get("parallel_group_kind")
+    base_sequence = _parallel_group_integer(payload, "parallel_group_base_sequence")
+    size = _parallel_group_integer(payload, "parallel_group_size")
+    index = _parallel_group_integer(payload, "parallel_group_index")
+    if (
+        not isinstance(group_id, str)
+        or not group_id
+        or not isinstance(kind, str)
+        or not kind
+        or base_sequence is None
+        or base_sequence < 1
+        or size is None
+        or size < 1
+        or index is None
+        or index < 0
+        or index >= size
+    ):
+        return None
+    return group_id, kind, base_sequence, size, index
+
+
+def _parallel_group_member(payload: Mapping[str, Any]) -> _ParallelGroupMember | None:
+    workflow_sequence = _workflow_sequence(payload)
+    if workflow_sequence is None:
+        return None
+
+    raw_path = payload.get("parallel_group_path")
+    entries: list[tuple[str, str, int, int, int]] = []
+    if isinstance(raw_path, list) and raw_path:
+        for raw_entry in raw_path:
+            if not isinstance(raw_entry, Mapping):
+                return None
+            entry = _parallel_group_entry(raw_entry)
+            if entry is None:
+                return None
+            entries.append(entry)
+
+        top_level = _parallel_group_entry(payload)
+        if top_level is not None and top_level != entries[-1]:
+            return None
+    else:
+        entry = _parallel_group_entry(payload)
+        if entry is None:
+            return None
+        entries.append(entry)
+
+    # Server-assigned workflow sequence is the durable yielded position for
+    # every group path entry. Refuse to reorder metadata that does not preserve
+    # that identity instead of guessing from terminal event order.
+    if any(base_sequence + index != workflow_sequence for _, _, base_sequence, _, index in entries):
+        return None
+
+    _, _, base_sequence, size, index = entries[-1]
+    return _ParallelGroupMember(
+        group_key=tuple((group_id, kind, base, group_size) for group_id, kind, base, group_size, _ in entries),
+        base_sequence=base_sequence,
+        size=size,
+        index=index,
+        workflow_sequence=workflow_sequence,
+    )
+
+
+def _reorder_completed_parallel_groups(
+    resolved_results: list[Any],
+    recorded_steps: list[_RecordedStep],
+    members: list[_ParallelGroupMember | None],
+) -> tuple[list[Any], list[_RecordedStep]]:
+    """Reorder only completed parallel-group slots into yielded position order."""
+    if not (len(resolved_results) == len(recorded_steps) == len(members)):
+        raise ValueError("resolved replay steps and parallel metadata must remain aligned")
+
+    slots_by_group: dict[tuple[tuple[str, str, int, int], ...], list[int]] = {}
+    for slot, member in enumerate(members):
+        if member is not None:
+            slots_by_group.setdefault(member.group_key, []).append(slot)
+
+    ordered_results = list(resolved_results)
+    ordered_steps = list(recorded_steps)
+    for slots in slots_by_group.values():
+        first_member = members[slots[0]]
+        if first_member is None or len(slots) != first_member.size:
+            continue
+
+        group_members = [members[slot] for slot in slots]
+        if any(member is None for member in group_members):
+            continue
+        complete_members = cast(list[_ParallelGroupMember], group_members)
+        if any(
+            member.base_sequence != first_member.base_sequence
+            or member.size != first_member.size
+            or member.workflow_sequence != member.base_sequence + member.index
+            for member in complete_members
+        ):
+            continue
+        if {member.index for member in complete_members} != set(range(first_member.size)):
+            continue
+
+        source_slots = sorted(
+            slots,
+            key=lambda slot: (
+                cast(_ParallelGroupMember, members[slot]).workflow_sequence,
+                cast(_ParallelGroupMember, members[slot]).index,
+            ),
+        )
+        source_results = [resolved_results[slot] for slot in source_slots]
+        source_steps = [recorded_steps[slot] for slot in source_slots]
+        for target_slot, result, step in zip(sorted(slots), source_results, source_steps, strict=True):
+            ordered_results[target_slot] = result
+            ordered_steps[target_slot] = step
+
+    return ordered_results, ordered_steps
+
+
 def _internal_timeout_timer_kind(
     payload: Mapping[str, Any],
     condition_wait_ids_by_sequence: Mapping[int, str] | None = None,
@@ -2673,6 +2808,7 @@ def _replay_state(
 
     resolved_results: list[Any] = []
     recorded_steps: list[_RecordedStep] = []
+    resolved_parallel_members: list[_ParallelGroupMember | None] = []
     recorded_wait_steps: list[_RecordedStep] = []
     recorded_pending_steps: list[_RecordedStep] = []
     pending_sequences_added: set[int] = set()
@@ -2708,12 +2844,15 @@ def _replay_state(
         details = dict(details_by_sequence.get(workflow_sequence, {}))
         details.update(_recorded_step_details(payload))
         resolved_results.append(value)
-        recorded_steps.append(_RecordedStep(
-            workflow_sequence=workflow_sequence,
-            shape=shape,
-            event_types=event_types,
-            details=details,
-        ))
+        resolved_parallel_members.append(_parallel_group_member(payload))
+        recorded_steps.append(
+            _RecordedStep(
+                workflow_sequence=workflow_sequence,
+                shape=shape,
+                event_types=event_types,
+                details=details,
+            )
+        )
 
     def _recorded_step(shape: str, event: Mapping[str, Any]) -> _RecordedStep:
         payload = event.get("payload") or {}
@@ -3064,6 +3203,12 @@ def _replay_state(
                     ),
                     condition_wait_id=condition_wait_id,
                 ))
+
+    resolved_results, recorded_steps = _reorder_completed_parallel_groups(
+        resolved_results,
+        recorded_steps,
+        resolved_parallel_members,
+    )
 
     signal_registry: dict[str, str] = getattr(workflow_cls, "__workflow_signals__", {}) or {}
     update_registry: dict[str, str] = getattr(workflow_cls, "__workflow_updates__", {}) or {}
