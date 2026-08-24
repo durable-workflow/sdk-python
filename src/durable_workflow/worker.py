@@ -1222,6 +1222,10 @@ class Worker:
                 start_input,
                 workflow_id=task.get("workflow_id"),
                 run_id=_string_or_none(task.get("run_id")) or "",
+                workflow_command_id=(
+                    _string_or_none(task.get("workflow_command_id"))
+                    or _string_or_none(task.get("task_id"))
+                ),
                 payload_codec=payload_codec,
                 external_storage=self.external_storage,
                 external_storage_cache=self.external_storage_cache,
@@ -1372,6 +1376,10 @@ class Worker:
                 start_input,
                 workflow_id=task.get("workflow_id"),
                 run_id=run_id,
+                workflow_command_id=(
+                    _string_or_none(task.get("workflow_command_id"))
+                    or _string_or_none(task.get("task_id"))
+                ),
                 payload_codec=codec,
                 external_storage=self.external_storage,
                 external_storage_cache=self.external_storage_cache,

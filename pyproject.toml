@@ -70,9 +70,14 @@ durable-workflow-workflow-updates-conformance = "durable_workflow.workflow_updat
 [tool.durable-workflow]
 product-train = "2.0.0-rc.35"
 registry-version = "2.0.0rc35"
-supported-server-versions = "2.0.0-rc.39"
+supported-server-versions = "2.0.0-rc.43"
 worker-protocol-version = "1.1"
 control-plane-version = "2"
+workflow-streams-contract = "durable-workflow.v2.workflow-streams.contract@1"
+workflow-streams-operations = "list,describe,subscribe,append,close,error"
+workflow-streams-authoring-command = "record_side_effect.workflow_stream"
+workflow-streams-delivery = "at-least-once"
+workflow-streams-external-payload-references = "read-write"
 
 [tool.setuptools.packages.find]
 where = ["src"]

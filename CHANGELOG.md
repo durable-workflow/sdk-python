@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Python SDK advances to prerelease `2.0.0-rc.35`. PyPI displays the normalized
 PEP 440 identity `2.0.0rc35`. This Avro-only SDK release is qualified with Server
-`2.0.0-rc.39`; JSON remains HTTP transport and is no longer a workflow payload
+`2.0.0-rc.43`; JSON remains HTTP transport and is no longer a workflow payload
 codec.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.

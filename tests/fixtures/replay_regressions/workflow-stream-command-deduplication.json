@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "workflow-stream-command-deduplication",
+  "protocol_version": "1.1",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.workflow-stream-author",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "SideEffectRecorded",
+      "payload": {
+        "sequence": 1,
+        "payload_codec": "avro",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwA="
+        }
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "SideEffectRecorded",
+      "payload": {
+        "sequence": 2,
+        "payload_codec": "avro",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwA="
+        }
+      }
+    }
+  ],
+  "expected": {
+    "type": "complete_workflow",
+    "result": "done"
+  }
+}

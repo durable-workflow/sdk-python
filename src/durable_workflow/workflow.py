@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
 
 from . import serializer
+from .client import WorkflowStreamAppendItem
 from .errors import (
     ActivityFailed,
     ChildWorkflowCancelled,
@@ -740,6 +741,7 @@ class RecordSideEffect:
     """Command recording the result of a non-deterministic function."""
 
     result: Any
+    workflow_stream: dict[str, Any] | None = None
 
     def to_server_command(
         self,
@@ -751,7 +753,7 @@ class RecordSideEffect:
         external_storage: ExternalStorageDriver | None = None,
         external_storage_threshold_bytes: int | None = None,
     ) -> dict[str, Any]:
-        return {
+        command = {
             "type": "record_side_effect",
             "result": _payload_blob_or_external_envelope(
                 self.result,
@@ -766,6 +768,9 @@ class RecordSideEffect:
                 external_storage_threshold_bytes=external_storage_threshold_bytes,
             ),
         }
+        if self.workflow_stream is not None:
+            command["workflow_stream"] = self.workflow_stream
+        return command
 
 
 @dataclass
@@ -1133,7 +1138,10 @@ def commands_to_server_commands(
             continue
 
         if isinstance(command, RecordSideEffect):
-            server_commands.append({"type": "record_side_effect"})
+            server_command = {"type": "record_side_effect"}
+            if command.workflow_stream is not None:
+                server_command["workflow_stream"] = command.workflow_stream
+            server_commands.append(server_command)
             encode_jobs.append((
                 len(server_commands) - 1,
                 "result",
@@ -1256,14 +1264,17 @@ class WorkflowContext:
         workflow_id: str = "",
         run_id: str = "",
         current_time: datetime | None = None,
+        workflow_command_id: str | None = None,
     ) -> None:
         self._workflow_id = workflow_id
         self._run_id = run_id
         self._current_time = current_time or datetime.now(timezone.utc)
+        self._workflow_command_id = workflow_command_id or run_id or workflow_id
         seed = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16)
         self._rng = random.Random(seed)
         self._uuid7_counter = 0
         self._nexus_call_counter = 0
+        self._workflow_stream_command_counter = 0
         self.logger = _ReplayLogger(_REPLAY_LOGGER)
 
     def schedule_activity(
@@ -1334,6 +1345,113 @@ class WorkflowContext:
     def side_effect(self, fn: Callable[[], Any]) -> RecordSideEffect:
         result = fn()
         return RecordSideEffect(result=result)
+
+    def append_workflow_stream(
+        self,
+        stream_name: str,
+        items: Sequence[WorkflowStreamAppendItem],
+        *,
+        max_pending_items: int | None = None,
+    ) -> RecordSideEffect:
+        """Append output items at a replay-safe workflow command boundary.
+
+        Each typed item accepts a payload value or explicit ``payload_reference``
+        plus optional ``item_type`` and ``content_type`` fields. The durable
+        workflow command identity is used to derive stable per-item idempotency
+        keys.
+        """
+        if not stream_name:
+            raise ValueError("stream_name must not be empty")
+        if not items:
+            raise ValueError("items must not be empty")
+
+        command_ordinal = self._workflow_stream_command_counter
+        self._workflow_stream_command_counter += 1
+        identity = self._workflow_command_id
+        wire_items: list[dict[str, Any]] = []
+        for item_index, item in enumerate(items):
+            if not isinstance(item, WorkflowStreamAppendItem):
+                raise TypeError("workflow stream items must be WorkflowStreamAppendItem instances")
+            wire_item: dict[str, Any] = {}
+            if item.payload is not None or item.payload_reference is None:
+                wire_item["payload"] = serializer.envelope(item.payload)
+                wire_item["payload_codec"] = serializer.AVRO_CODEC
+            if item.payload_reference is not None:
+                wire_item["payload_reference"] = item.payload_reference
+                wire_item.setdefault("payload_codec", serializer.AVRO_CODEC)
+            if item.item_type is not None:
+                wire_item["item_type"] = item.item_type
+            if item.content_type is not None:
+                wire_item["content_type"] = item.content_type
+            wire_item["idempotency_key"] = f"dw-stream:{identity}:{command_ordinal}:{item_index}"
+            wire_items.append(wire_item)
+
+        directive: dict[str, Any] = {
+            "operation": "append",
+            "stream_name": stream_name,
+            "command_identity": identity,
+            "command_ordinal": command_ordinal,
+            "items": wire_items,
+        }
+        if max_pending_items is not None:
+            if max_pending_items < 1:
+                raise ValueError("max_pending_items must be at least 1")
+            directive["max_pending_items"] = max_pending_items
+        return RecordSideEffect(result=None, workflow_stream=directive)
+
+    def close_workflow_stream(
+        self,
+        stream_name: str,
+        *,
+        retention_seconds: int | None = None,
+    ) -> RecordSideEffect:
+        """Close a run-scoped output stream at a replay-safe boundary."""
+        return self._finish_workflow_stream(
+            stream_name,
+            error_reason=None,
+            retention_seconds=retention_seconds,
+        )
+
+    def error_workflow_stream(
+        self,
+        stream_name: str,
+        error_reason: str,
+        *,
+        retention_seconds: int | None = None,
+    ) -> RecordSideEffect:
+        """Mark a run-scoped output stream errored at a replay-safe boundary."""
+        if not error_reason:
+            raise ValueError("error_reason must not be empty")
+        return self._finish_workflow_stream(
+            stream_name,
+            error_reason=error_reason,
+            retention_seconds=retention_seconds,
+        )
+
+    def _finish_workflow_stream(
+        self,
+        stream_name: str,
+        *,
+        error_reason: str | None,
+        retention_seconds: int | None,
+    ) -> RecordSideEffect:
+        if not stream_name:
+            raise ValueError("stream_name must not be empty")
+        if retention_seconds is not None and retention_seconds < 1:
+            raise ValueError("retention_seconds must be at least 1")
+        command_ordinal = self._workflow_stream_command_counter
+        self._workflow_stream_command_counter += 1
+        directive: dict[str, Any] = {
+            "operation": "error" if error_reason is not None else "close",
+            "stream_name": stream_name,
+            "command_identity": self._workflow_command_id,
+            "command_ordinal": command_ordinal,
+        }
+        if error_reason is not None:
+            directive["error_reason"] = error_reason
+        if retention_seconds is not None:
+            directive["retention_seconds"] = retention_seconds
+        return RecordSideEffect(result=None, workflow_stream=directive)
 
     def start_child_workflow(
         self,
@@ -1884,6 +2002,7 @@ def replay(
     *,
     workflow_id: str | None = None,
     run_id: str = "",
+    workflow_command_id: str | None = None,
     payload_codec: str | None = None,
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
@@ -1894,6 +2013,7 @@ def replay(
         start_input,
         workflow_id=workflow_id,
         run_id=run_id,
+        workflow_command_id=workflow_command_id,
         payload_codec=payload_codec,
         external_storage=external_storage,
         external_storage_cache=external_storage_cache,
@@ -2726,6 +2846,7 @@ def _replay_state(
     *,
     workflow_id: str | None = None,
     run_id: str = "",
+    workflow_command_id: str | None = None,
     payload_codec: str | None = None,
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
@@ -2801,6 +2922,7 @@ def _replay_state(
         workflow_id=workflow_id or "",
         run_id=run_id,
         current_time=workflow_start_time,
+        workflow_command_id=workflow_command_id,
     )
 
     def _state(commands: list[Command]) -> _ReplayState:

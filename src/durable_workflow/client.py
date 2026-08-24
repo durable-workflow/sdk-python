@@ -273,6 +273,109 @@ class WorkflowList:
 
 
 @dataclass
+class WorkflowStreamDescription:
+    """Lifecycle and backlog state for one run-scoped output stream."""
+
+    workflow_id: str
+    run_id: str
+    stream_name: str
+    status: str
+    last_offset: int | None = None
+    total_items: int = 0
+    pending_items: int = 0
+    error_reason: str | None = None
+    opened_at: str | None = None
+    last_appended_at: str | None = None
+    closed_at: str | None = None
+    retention_seconds: int | None = None
+    raw: dict[str, Any] | None = None
+
+    @property
+    def terminal(self) -> bool:
+        """Whether no more items can be appended to this stream."""
+        return self.status in {"closed", "errored"}
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: Mapping[str, Any],
+        *,
+        workflow_id: str = "",
+        run_id: str = "",
+    ) -> WorkflowStreamDescription:
+        return cls(
+            workflow_id=str(data.get("workflow_id", workflow_id)),
+            run_id=str(data.get("workflow_run_id", data.get("run_id", run_id))),
+            stream_name=str(data.get("stream_name", "")),
+            status=str(data.get("status", "open")),
+            last_offset=int(data["last_offset"]) if data.get("last_offset") is not None else None,
+            total_items=int(data.get("total_items", 0)),
+            pending_items=int(data.get("pending_items", 0)),
+            error_reason=data.get("error_reason"),
+            opened_at=data.get("opened_at"),
+            last_appended_at=data.get("last_appended_at"),
+            closed_at=data.get("closed_at"),
+            retention_seconds=(
+                int(data["retention_seconds"])
+                if data.get("retention_seconds") is not None
+                else None
+            ),
+            raw=dict(data),
+        )
+
+
+@dataclass
+class WorkflowStreamAppendItem:
+    """One value or external payload reference to append to a stream."""
+
+    payload: Any = None
+    payload_reference: str | None = None
+    item_type: str | None = None
+    content_type: str | None = None
+    idempotency_key: str | None = None
+
+
+@dataclass
+class WorkflowStreamItem:
+    """One ordered durable stream item returned by a subscription."""
+
+    offset: int
+    payload: Any = None
+    payload_envelope: Mapping[str, Any] | None = None
+    payload_reference: str | None = None
+    payload_codec: str | None = None
+    idempotency_key: str | None = None
+    item_type: str | None = None
+    content_type: str | None = None
+    origin: str | None = None
+    origin_reference: str | None = None
+    emitted_at: str | None = None
+    raw: dict[str, Any] | None = None
+
+
+@dataclass
+class WorkflowStreamPage:
+    """A resumable page of at-least-once stream deliveries."""
+
+    stream: WorkflowStreamDescription
+    items: list[WorkflowStreamItem]
+    next_offset: int
+    terminal: bool
+    raw: dict[str, Any] | None = None
+
+
+@dataclass
+class WorkflowStreamAppendResult:
+    """Offsets created or deduplicated by one append request."""
+
+    stream: WorkflowStreamDescription
+    accepted_offsets: list[int]
+    accepted_count: int
+    deduplicated_count: int
+    raw: dict[str, Any] | None = None
+
+
+@dataclass
 class NamespaceDescription:
     """Server configuration for one workflow namespace."""
 
@@ -3276,6 +3379,307 @@ class Client:
         """Return detailed status, payload, and actionability for one specific workflow run."""
         data = await self._request("GET", f"/workflows/{workflow_id}/runs/{run_id}", context=workflow_id)
         return WorkflowRun.from_dict(data, workflow_id=workflow_id, run_id=run_id)
+
+    @staticmethod
+    def _workflow_stream_path(workflow_id: str, run_id: str, stream_name: str | None = None) -> str:
+        path = (
+            f"/workflows/{quote(workflow_id, safe='')}/runs/"
+            f"{quote(run_id, safe='')}/streams"
+        )
+        if stream_name is not None:
+            path += f"/{quote(stream_name, safe='')}"
+        return path
+
+    async def list_workflow_streams(
+        self,
+        workflow_id: str,
+        run_id: str,
+    ) -> list[WorkflowStreamDescription]:
+        """List every service-mode output stream for one workflow run."""
+        data = await self._request(
+            "GET",
+            self._workflow_stream_path(workflow_id, run_id),
+            context=workflow_id,
+        )
+        response_workflow_id = str(data.get("workflow_id", workflow_id))
+        response_run_id = str(data.get("workflow_run_id", run_id))
+        return [
+            WorkflowStreamDescription.from_dict(
+                stream,
+                workflow_id=response_workflow_id,
+                run_id=response_run_id,
+            )
+            for stream in data.get("streams", [])
+            if isinstance(stream, Mapping)
+        ]
+
+    async def describe_workflow_stream(
+        self,
+        workflow_id: str,
+        run_id: str,
+        stream_name: str,
+    ) -> WorkflowStreamDescription:
+        """Describe lifecycle, offsets, and pending count for one output stream."""
+        data = await self._request(
+            "GET",
+            self._workflow_stream_path(workflow_id, run_id, stream_name),
+            context=workflow_id,
+        )
+        stream = data.get("stream", data)
+        if not isinstance(stream, Mapping):
+            raise ValueError("workflow stream response must contain a stream object")
+        return WorkflowStreamDescription.from_dict(
+            stream,
+            workflow_id=str(data.get("workflow_id", workflow_id)),
+            run_id=str(data.get("workflow_run_id", run_id)),
+        )
+
+    async def subscribe_workflow_stream(
+        self,
+        workflow_id: str,
+        run_id: str,
+        stream_name: str,
+        *,
+        from_offset: int = 0,
+        max_items: int = 100,
+        wait_seconds: int = 0,
+        cancel_event: asyncio.Event | None = None,
+    ) -> WorkflowStreamPage:
+        """Read a page from ``from_offset`` with bounded long polling.
+
+        Delivery is at least once. Persist ``next_offset`` only after the
+        page's effects are durable, and process redelivered items idempotently.
+        Cancelling this coroutine, or setting ``cancel_event``, aborts the
+        outstanding HTTP request.
+        """
+        if from_offset < 0:
+            raise ValueError("from_offset must be non-negative")
+        if not 1 <= max_items <= 500:
+            raise ValueError("max_items must be between 1 and 500")
+        if not 0 <= wait_seconds <= 60:
+            raise ValueError("wait_seconds must be between 0 and 60")
+
+        query = urlencode(
+            {
+                "from": from_offset,
+                "max_items": max_items,
+                "wait_seconds": wait_seconds,
+            }
+        )
+        path = f"{self._workflow_stream_path(workflow_id, run_id, stream_name)}/items?{query}"
+        request_task = asyncio.create_task(
+            self._request(
+                "GET",
+                path,
+                timeout=max(float(wait_seconds) + _WORKER_POLL_HTTP_TIMEOUT_GRACE_SECONDS, 5.0),
+                context=workflow_id,
+            )
+        )
+        cancel_task: asyncio.Task[bool] | None = None
+        try:
+            if cancel_event is None:
+                data = await request_task
+            else:
+                cancel_task = asyncio.create_task(cancel_event.wait())
+                done, _ = await asyncio.wait(
+                    {request_task, cancel_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if cancel_task in done:
+                    request_task.cancel()
+                    await asyncio.gather(request_task, return_exceptions=True)
+                    raise asyncio.CancelledError
+                data = await request_task
+        finally:
+            if not request_task.done():
+                request_task.cancel()
+                await asyncio.gather(request_task, return_exceptions=True)
+            if cancel_task is not None:
+                cancel_task.cancel()
+                await asyncio.gather(cancel_task, return_exceptions=True)
+
+        stream_data = data.get("stream")
+        if not isinstance(stream_data, Mapping):
+            raise ValueError("workflow stream response must contain a stream object")
+        response_workflow_id = str(data.get("workflow_id", workflow_id))
+        response_run_id = str(data.get("workflow_run_id", run_id))
+        stream = WorkflowStreamDescription.from_dict(
+            stream_data,
+            workflow_id=response_workflow_id,
+            run_id=response_run_id,
+        )
+        items: list[WorkflowStreamItem] = []
+        for raw_item in data.get("items", []):
+            if not isinstance(raw_item, Mapping):
+                continue
+            envelope = raw_item.get("payload")
+            payload = envelope
+            payload_reference = raw_item.get("payload_reference")
+            if isinstance(envelope, Mapping) and (
+                "blob" in envelope or "external_storage" in envelope
+            ):
+                if "external_storage" not in envelope or self.external_storage is not None:
+                    payload = serializer.decode_envelope(
+                        envelope,
+                        external_storage=self.external_storage,
+                        external_storage_cache=self.external_storage_cache,
+                    )
+                else:
+                    payload = None
+                external_reference = envelope.get("external_storage")
+                if payload_reference is None and isinstance(external_reference, Mapping):
+                    payload_reference = external_reference.get("uri")
+            items.append(
+                WorkflowStreamItem(
+                    offset=int(raw_item.get("offset", 0)),
+                    payload=payload,
+                    payload_envelope=envelope if isinstance(envelope, Mapping) else None,
+                    payload_reference=(
+                        str(payload_reference) if payload_reference is not None else None
+                    ),
+                    payload_codec=raw_item.get("payload_codec"),
+                    idempotency_key=raw_item.get("idempotency_key"),
+                    item_type=raw_item.get("item_type"),
+                    content_type=raw_item.get("content_type"),
+                    origin=raw_item.get("origin"),
+                    origin_reference=raw_item.get("origin_reference"),
+                    emitted_at=raw_item.get("emitted_at"),
+                    raw=dict(raw_item),
+                )
+            )
+        return WorkflowStreamPage(
+            stream=stream,
+            items=items,
+            next_offset=int(data.get("next_offset", from_offset + len(items))),
+            terminal=bool(data.get("terminal", stream.terminal)),
+            raw=dict(data),
+        )
+
+    async def iter_workflow_stream(
+        self,
+        workflow_id: str,
+        run_id: str,
+        stream_name: str,
+        *,
+        from_offset: int = 0,
+        max_items: int = 100,
+        wait_seconds: int = 30,
+        cancel_event: asyncio.Event | None = None,
+    ) -> AsyncIterator[WorkflowStreamItem]:
+        """Yield items in offset order until the stream reaches a terminal state."""
+        next_offset = from_offset
+        while True:
+            page = await self.subscribe_workflow_stream(
+                workflow_id,
+                run_id,
+                stream_name,
+                from_offset=next_offset,
+                max_items=max_items,
+                wait_seconds=wait_seconds,
+                cancel_event=cancel_event,
+            )
+            for item in page.items:
+                yield item
+            next_offset = page.next_offset
+            if page.terminal:
+                return
+
+    async def append_workflow_stream(
+        self,
+        workflow_id: str,
+        run_id: str,
+        stream_name: str,
+        items: Sequence[WorkflowStreamAppendItem],
+        *,
+        max_pending_items: int | None = None,
+    ) -> WorkflowStreamAppendResult:
+        """Append typed items, using configured external storage when selected."""
+        if not items:
+            raise ValueError("items must not be empty")
+        body_items: list[dict[str, Any]] = []
+        for item in items:
+            wire_item: dict[str, Any] = {}
+            if item.payload is not None or item.payload_reference is None:
+                envelope = self._payload_envelope(
+                    item.payload,
+                    kind="workflow_stream_item",
+                    workflow_id=workflow_id,
+                    run_id=run_id,
+                )
+                wire_item["payload"] = envelope
+                wire_item["payload_codec"] = serializer.AVRO_CODEC
+                external_reference = envelope.get("external_storage")
+                if item.payload_reference is None and isinstance(external_reference, Mapping):
+                    wire_item["payload_reference"] = external_reference.get("uri")
+            if item.payload_reference is not None:
+                wire_item["payload_reference"] = item.payload_reference
+                wire_item.setdefault("payload_codec", serializer.AVRO_CODEC)
+            if item.idempotency_key is not None:
+                wire_item["idempotency_key"] = item.idempotency_key
+            if item.item_type is not None:
+                wire_item["item_type"] = item.item_type
+            if item.content_type is not None:
+                wire_item["content_type"] = item.content_type
+            body_items.append(wire_item)
+        body: dict[str, Any] = {"items": body_items}
+        if max_pending_items is not None:
+            if max_pending_items < 1:
+                raise ValueError("max_pending_items must be at least 1")
+            body["max_pending_items"] = max_pending_items
+        data = await self._request(
+            "POST",
+            f"{self._workflow_stream_path(workflow_id, run_id, stream_name)}/items",
+            json=body,
+            context=workflow_id,
+        )
+        stream_data = data.get("stream")
+        if not isinstance(stream_data, Mapping):
+            raise ValueError("workflow stream response must contain a stream object")
+        return WorkflowStreamAppendResult(
+            stream=WorkflowStreamDescription.from_dict(
+                stream_data,
+                workflow_id=str(data.get("workflow_id", workflow_id)),
+                run_id=str(data.get("workflow_run_id", run_id)),
+            ),
+            accepted_offsets=[int(offset) for offset in data.get("accepted_offsets", [])],
+            accepted_count=int(data.get("accepted", 0)),
+            deduplicated_count=int(data.get("deduped", 0)),
+            raw=dict(data),
+        )
+
+    async def close_workflow_stream(
+        self,
+        workflow_id: str,
+        run_id: str,
+        stream_name: str,
+        *,
+        error_reason: str | None = None,
+        retention_seconds: int | None = None,
+    ) -> WorkflowStreamDescription:
+        """Close a stream, or mark it errored when ``error_reason`` is set."""
+        body: dict[str, Any] = {}
+        if error_reason is not None:
+            if not error_reason:
+                raise ValueError("error_reason must not be empty")
+            body["error_reason"] = error_reason
+        if retention_seconds is not None:
+            if retention_seconds < 1:
+                raise ValueError("retention_seconds must be at least 1")
+            body["retention_seconds"] = retention_seconds
+        data = await self._request(
+            "POST",
+            f"{self._workflow_stream_path(workflow_id, run_id, stream_name)}/close",
+            json=body,
+            context=workflow_id,
+        )
+        stream = data.get("stream", data)
+        if not isinstance(stream, Mapping):
+            raise ValueError("workflow stream response must contain a stream object")
+        return WorkflowStreamDescription.from_dict(
+            stream,
+            workflow_id=str(data.get("workflow_id", workflow_id)),
+            run_id=str(data.get("workflow_run_id", run_id)),
+        )
 
     # ── Standalone Activities ─────────────────────────────────────────
     #

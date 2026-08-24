@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from durable_workflow import Replayer, serializer, workflow
+from durable_workflow.client import WorkflowStreamAppendItem
 from durable_workflow.errors import WorkflowPayloadDecodeError
 from durable_workflow.workflow import WorkflowContext, commands_to_server_commands
 from tests.test_golden_history_replay import (
@@ -45,6 +46,17 @@ class ParallelResultBindingWorkflow:
         return {"results": results}
 
 
+@workflow.defn(name="tests.replay.workflow-stream-author")
+class WorkflowStreamAuthorWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.append_workflow_stream(
+            "output",
+            [WorkflowStreamAppendItem(payload={"message": "once"})],
+        )
+        yield ctx.close_workflow_stream("output")
+        return "done"
+
+
 WORKFLOWS = [
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
@@ -54,6 +66,7 @@ WORKFLOWS = [
     ParallelMetadataProducerWorkflow,
     ParallelResultBindingWorkflow,
     UpdateSignalConditionTimerWorkflow,
+    WorkflowStreamAuthorWorkflow,
 ]
 WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__)): workflow for workflow in WORKFLOWS}
 

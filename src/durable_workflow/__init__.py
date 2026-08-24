@@ -50,6 +50,11 @@ from .client import (
     WorkflowList,
     WorkflowRun,
     WorkflowRunList,
+    WorkflowStreamAppendItem,
+    WorkflowStreamAppendResult,
+    WorkflowStreamDescription,
+    WorkflowStreamItem,
+    WorkflowStreamPage,
 )
 from .errors import (
     ActivityCancelled,
@@ -280,6 +285,11 @@ __all__ = [
     "WorkflowPayloadDecodeError",
     "WorkflowRun",
     "WorkflowRunList",
+    "WorkflowStreamAppendItem",
+    "WorkflowStreamAppendResult",
+    "WorkflowStreamDescription",
+    "WorkflowStreamItem",
+    "WorkflowStreamPage",
     "activity",
     "parse_auth_composition_contract",
     "sync",
