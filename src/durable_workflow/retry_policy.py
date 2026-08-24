@@ -54,7 +54,7 @@ class TransportRetryPolicy:
             return False
 
         # Retry connection errors and timeouts
-        if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError)):
+        if isinstance(exc, httpx.ConnectError | httpx.TimeoutException | httpx.NetworkError):
             return True
 
         # Retry 5xx server errors and 429 rate limit

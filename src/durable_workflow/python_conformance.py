@@ -102,6 +102,7 @@ REQUIRED_SCENARIOS = (
     "activity_backed_workflow_execution",
     "workflow_result_surface",
     "worker_restart_activity_and_signal_state",
+    "runtime_external_payload_round_trips",
     "protocol_trace_capture",
     "php_assumption_audit",
     "capability_table_complete",
@@ -123,6 +124,12 @@ REQUIRED_CAPABILITIES = (
     "workflow_result_returned",
     "worker_restart_replays_activity_state",
     "worker_restart_replays_signal_state",
+    "runtime_external_payload_inline_round_trip",
+    "runtime_external_payload_externalized_round_trip",
+    "runtime_external_payload_cross_language_round_trip",
+    "runtime_external_payload_standalone_server",
+    "runtime_external_payload_isolated_cloud",
+    "runtime_external_payload_provider_setup_absent",
     "protocol_traces_recorded",
     "php_assumptions_absent",
 )
@@ -188,6 +195,15 @@ SCENARIO_REQUIRED_EVIDENCE: Mapping[str, tuple[str, ...]] = {
         "restart_boundary",
         "activity_state_after_restart",
         "signal_state_after_restart",
+    ),
+    "runtime_external_payload_round_trips": (
+        "standalone_server",
+        "isolated_cloud",
+        "inline_round_trip",
+        "externalized_round_trip",
+        "cross_language_round_trip",
+        "ordinary_runtime_credentials",
+        "provider_setup_absent",
     ),
     "protocol_trace_capture": (
         "control_plane_traces",
@@ -847,7 +863,7 @@ def _entry_collection(value: Any) -> Any:
             "capabilityResults",
         ):
             nested = value.get(field)
-            if isinstance(nested, (Mapping, list)):
+            if isinstance(nested, Mapping | list):
                 return nested
     return value
 
@@ -1916,7 +1932,7 @@ def _mapping_value(value: Any) -> Mapping[str, Any]:
 
 
 def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, Iterable) or isinstance(value, (str, bytes, Mapping)):
+    if not isinstance(value, Iterable) or isinstance(value, str | bytes | Mapping):
         return []
     return [item for item in value if isinstance(item, str)]
 

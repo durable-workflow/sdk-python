@@ -29,6 +29,7 @@ class _LoopAffineTransport(httpx.AsyncBaseTransport):
     def __init__(self) -> None:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.request_count = 0
+        self.request_paths: list[str] = []
         self.close_count = 0
 
     def _check_loop(self) -> None:
@@ -41,6 +42,7 @@ class _LoopAffineTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self._check_loop()
         self.request_count += 1
+        self.request_paths.append(request.url.path)
         if request.method == "POST":
             return httpx.Response(
                 201,
@@ -828,7 +830,11 @@ class TestSyncClientContextManager:
 
             client.close()
 
-        assert transport.request_count == 2
+        assert transport.request_paths == [
+            "/api/cluster/info",
+            "/api/workflows",
+            "/api/workflows/wf-loop",
+        ]
         assert transport.close_count == 1
         assert transport.loop is not None
         assert transport.loop.is_closed()

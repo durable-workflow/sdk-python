@@ -30,6 +30,7 @@ The Python SDK claims two targets from the suite's matrix:
 | `child_workflow_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/child-workflow-runtime-scenarios.json> | stable, parity-shared with PHP worker and server child-workflow runtime behavior |
 | `saga_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/saga-runtime-scenarios.json> | stable, parity-shared with PHP workflow compensation, cross-language activities, replay, CLI, and Waterline visibility |
 | `worker_versioning_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/worker-versioning-runtime-scenarios.json> | stable, parity-shared with PHP workers, CLI, Waterline, and server worker routing behavior |
+| `runtime_external_payload_transport` | `tests/test_runtime_external_payload_transport.py` and `durable-workflow-python-conformance --manifest` | release-blocking published-artifact proof for inline/externalized cross-language round trips on standalone Server and isolated Cloud |
 | `worker_task_lifecycle` | `tests/fixtures/external-task-input/`, `tests/fixtures/external-task-result/` | stable |
 | `history_replay_bundles` | `tests/fixtures/golden_history/` and the public replay scenario manifest at <https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json> | stable, parity-shared with `workflow` golden bundles and the full runtime replay scenario matrix |
 
@@ -95,6 +96,7 @@ The result gate requires one result for every scenario below, all marked
 - `activity_backed_workflow_execution`
 - `workflow_result_surface`
 - `worker_restart_activity_and_signal_state`
+- `runtime_external_payload_round_trips`
 - `protocol_trace_capture`
 - `php_assumption_audit`
 - `capability_table_complete`
@@ -105,6 +107,12 @@ timestamps; protocol traces; a no-PHP-assumption audit; and the complete
 capability table. Any omitted scenario, placeholder artifact version,
 runner-blocked cell, unsupported public surface, or non-pass scenario
 without linked findings is nonconforming.
+
+The runtime external-payload row requires both inline and externalized values
+to round-trip across languages against published standalone Server and
+isolated Cloud artifacts. Evidence must show ordinary runtime credentials and
+the absence of SDK-side provider configuration; a source-checkout smoke or a
+single-environment pass does not satisfy it.
 
 This SDK claim follows the currently published platform conformance
 contract and public scenario manifests. Draft categories are not

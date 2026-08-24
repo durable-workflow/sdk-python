@@ -396,41 +396,35 @@ commands that return terminal workflow output: `workflow:start --wait`,
 
 ## External payload storage
 
-Large payload offload is opt-in. `serializer.external_storage_envelope(...)`
-keeps small encoded payloads inline and stores larger bytes through an
-`ExternalStorageDriver`, returning a stable reference envelope with URI, codec,
-size, optional expiry, and SHA-256 integrity metadata.
-`serializer.decode_envelope(...)` fetches referenced bytes through the same
-driver and verifies size/hash before decode.
+Large payload transport is automatic when the namespace runtime advertises the
+authenticated external-payload capability. `Client` keeps small Avro payloads
+inline, uploads larger encoded bytes through the runtime URL, and sends only an
+opaque runtime-owned reference. Incoming references are fetched with the same
+namespace and role credential, then size and SHA-256 are verified before Avro
+decode. The bounded verified-byte cache reduces repeated replay fetches and
+never deletes runtime-owned objects.
 
-The SDK includes a local filesystem driver for development plus dependency-free
-S3, GCS, and Azure Blob adapters. Cloud SDKs stay application-owned: pass an
-already-configured boto3-compatible S3 client, google-cloud-storage client, or
-azure-storage-blob container client when your deployment enables external
-payload storage.
-Retention cleanup should delete by typed reference rather than by raw URI:
-`delete_external_payload(storage, reference, cache=cache)` calls the configured
-driver and evicts any verified replay-cache entry for the same reference.
-When the server or Cloud API returns an external payload storage policy, use
-`ExternalPayloadStoragePolicy.from_dict(...)` plus
-`external_storage_driver_from_policy(...)` to turn that control-plane payload
-into the matching SDK driver while keeping provider clients application-owned.
+Managed Cloud applications do not configure a bucket, container, provider SDK,
+provider credential, or provider URI parser. The ordinary client configuration
+is sufficient for client operations and workers:
 
 ```python
-from durable_workflow import (
-    ExternalPayloadStoragePolicy,
-    external_storage_driver_from_policy,
-    serializer,
-)
+from durable_workflow import Client
 
-policy = ExternalPayloadStoragePolicy.from_dict(namespace_response)
-storage = external_storage_driver_from_policy(policy, s3_client=s3_client)
-payload = serializer.external_storage_envelope(
-    {"large": "value"},
-    external_storage=storage,
-    threshold_bytes=policy.threshold_bytes or 2 * 1024 * 1024,
+client = Client(
+    "https://runtime.example",
+    token=runtime_role_credential,
+    namespace="billing",
 )
 ```
+
+The local filesystem, S3, GCS, and Azure Blob drivers remain available only as
+explicit self-hosted integrations for runtimes that advertise acceptance of
+direct provider references. Selecting one requires passing an
+`external_storage` instance yourself; namespace discovery never constructs a
+provider driver from the runtime's backing-storage identity. Those adapters
+are not the managed Cloud contract and the SDK does not install their provider
+libraries.
 
 ## Features
 
@@ -439,7 +433,7 @@ payload = serializer.external_storage_envelope(
 - **Polyglot**: Works alongside PHP workers on the same task queue
 - **HTTP/JSON protocol**: No gRPC, no protobuf dependencies
 - **Codec envelopes**: Avro is the sole workflow payload codec; JSON remains the HTTP document transport
-- **External payload references**: opt-in reference envelopes, local filesystem/S3/GCS/Azure Blob drivers, and a bounded verified-byte cache for large-payload offload experiments
+- **External payload references**: automatic runtime-mediated upload/fetch with opaque references, typed failures, integrity verification, and a bounded cache; direct provider drivers remain explicit self-hosted integrations
 - **Payload-size warnings**: Structured warnings before oversized workflow, activity, schedule, signal, update, query, or search-attribute payloads reach the server
 - **Workflow definition guard**: Worker registration refuses same-id hot reloads when a workflow class definition changed
 - **Deterministic workflow helpers**: `ctx.now()`, `ctx.random()`, `ctx.uuid4()`, and `ctx.uuid7()` replay from workflow state

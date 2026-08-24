@@ -88,7 +88,49 @@ def execute_fixture(fixture: dict[str, Any], codec: Any) -> None:
             return
         raise AssertionError("json-tagged workflow payload did not fail closed")
 
-    _require(protocol["codec"] == "avro", "fixture codec must be avro, task-root, or a JSON rejection")
+    if protocol["codec"] == "runtime-external-payload":
+        from durable_workflow import serializer
+
+        wire = base64.b64decode(fixture["framing"]["wire_base64"], validate=True).decode("utf-8")
+        envelope = json.loads(wire)
+        _require(
+            envelope == _tagged_value(fixture["value"]),
+            "runtime external payload fixture value does not match its wire bytes",
+        )
+        _require(
+            fixture["failure_policy"]
+            == {
+                "operation": "decode_reject",
+                "error": "external_payload_unsupported",
+            },
+            "runtime external payload fixture must declare the stable unresolved-reference rejection",
+        )
+        try:
+            serializer.decode_envelope(envelope)
+        except Exception as caught:
+            _require(
+                type(caught).__name__ == "ExternalPayloadUnsupported",
+                "unresolved runtime reference did not raise the typed transport failure",
+            )
+            _require(
+                getattr(caught, "reason", None) == fixture["failure_policy"]["error"],
+                "unresolved runtime reference did not expose its stable failure reason",
+            )
+            _require(
+                getattr(caught, "retryable", None) is False,
+                "unresolved runtime reference rejection must not be retryable",
+            )
+            _require(
+                "resolved by Client" in str(caught),
+                "unresolved runtime reference rejection is not actionable",
+            )
+            return
+        raise AssertionError("unresolved runtime external payload reference reached the Avro decoder")
+
+    _require(
+        protocol["codec"] == "avro",
+        "fixture codec must be avro, task-root, runtime-external-payload, or a JSON rejection",
+    )
     _require(
         protocol["version"] == AVRO_PROTOCOL_VERSION,
         "fixture protocol.version must be the canonical version supported by "

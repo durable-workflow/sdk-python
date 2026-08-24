@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -11,8 +12,14 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote, unquote, urlparse
 
+from .errors import ExternalPayloadIntegrityMismatch, ExternalPayloadUnsupported
+
 EXTERNAL_PAYLOAD_REFERENCE_SCHEMA = "durable-workflow.v2.external-payload-reference.v1"
+RUNTIME_EXTERNAL_PAYLOAD_REFERENCE_SCHEMA = (
+    "durable-workflow.v2.runtime-external-payload-reference.v1"
+)
 PUBLIC_PAYLOAD_CODEC = "avro"
+_RUNTIME_REFERENCE_ID = re.compile(r"\Aep_[0-9A-HJKMNP-TV-Z]{26}\Z")
 
 
 def _require_public_payload_codec(codec: object) -> str:
@@ -27,7 +34,7 @@ def _require_public_payload_codec(codec: object) -> str:
     return PUBLIC_PAYLOAD_CODEC
 
 
-class ExternalPayloadIntegrityError(ValueError):
+class ExternalPayloadIntegrityError(ExternalPayloadIntegrityMismatch, ValueError):
     """Raised when fetched external payload bytes do not match their reference."""
 
 
@@ -155,6 +162,80 @@ class ExternalPayloadReference:
         )
 
 
+@dataclass(frozen=True)
+class RuntimeExternalPayloadReference:
+    """Provider-neutral reference owned by the authenticated namespace runtime."""
+
+    reference_id: str
+    sha256: str
+    size_bytes: int
+    codec: str
+    schema: str = RUNTIME_EXTERNAL_PAYLOAD_REFERENCE_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.schema != RUNTIME_EXTERNAL_PAYLOAD_REFERENCE_SCHEMA:
+            raise ExternalPayloadUnsupported(
+                "unsupported runtime external payload reference schema"
+            )
+        if _RUNTIME_REFERENCE_ID.fullmatch(self.reference_id) is None:
+            raise ExternalPayloadUnsupported(
+                "runtime external payload reference_id is malformed",
+                reference_id=self.reference_id,
+            )
+        try:
+            _require_public_payload_codec(self.codec)
+        except ValueError as exc:
+            raise ExternalPayloadUnsupported(str(exc), reference_id=self.reference_id) from exc
+        if type(self.size_bytes) is not int or self.size_bytes < 0:
+            raise ExternalPayloadUnsupported(
+                "runtime external payload size_bytes must be a non-negative integer",
+                reference_id=self.reference_id,
+            )
+        if (
+            len(self.sha256) != 64
+            or self.sha256 != self.sha256.lower()
+            or any(char not in "0123456789abcdef" for char in self.sha256)
+        ):
+            raise ExternalPayloadUnsupported(
+                "runtime external payload sha256 must be a lowercase hex digest",
+                reference_id=self.reference_id,
+            )
+
+    def to_dict(self) -> dict[str, str | int]:
+        return {
+            "schema": self.schema,
+            "reference_id": self.reference_id,
+            "codec": self.codec,
+            "size_bytes": self.size_bytes,
+            "sha256": self.sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, data: object) -> RuntimeExternalPayloadReference:
+        if not isinstance(data, dict):
+            raise ExternalPayloadUnsupported(
+                "runtime external payload reference must be an object"
+            )
+        required_keys = {"schema", "reference_id", "codec", "size_bytes", "sha256"}
+        if set(data) != required_keys:
+            raise ExternalPayloadUnsupported(
+                "runtime external payload reference must contain exactly schema, "
+                "reference_id, codec, size_bytes, and sha256"
+            )
+        reference_id = data.get("reference_id")
+        schema = data.get("schema")
+        codec = data.get("codec")
+        size_bytes = data.get("size_bytes")
+        sha256 = data.get("sha256")
+        return cls(
+            schema=schema if isinstance(schema, str) else "",
+            reference_id=reference_id if isinstance(reference_id, str) else "",
+            codec=codec if isinstance(codec, str) else "",
+            size_bytes=size_bytes if type(size_bytes) is int else -1,
+            sha256=sha256 if isinstance(sha256, str) else "",
+        )
+
+
 class ExternalPayloadCache:
     """Bounded cache for verified external payload bytes during replay.
 
@@ -174,7 +255,10 @@ class ExternalPayloadCache:
         self.current_bytes = 0
         self._entries: OrderedDict[tuple[str, str, int, str], bytes] = OrderedDict()
 
-    def get(self, reference: ExternalPayloadReference) -> bytes | None:
+    def get(
+        self,
+        reference: ExternalPayloadReference | RuntimeExternalPayloadReference,
+    ) -> bytes | None:
         key = self._key(reference)
         data = self._entries.get(key)
         if data is None:
@@ -182,7 +266,11 @@ class ExternalPayloadCache:
         self._entries.move_to_end(key)
         return data
 
-    def put(self, reference: ExternalPayloadReference, data: bytes) -> None:
+    def put(
+        self,
+        reference: ExternalPayloadReference | RuntimeExternalPayloadReference,
+        data: bytes,
+    ) -> None:
         if len(data) > self.max_bytes:
             return
 
@@ -195,7 +283,10 @@ class ExternalPayloadCache:
         self.current_bytes += len(data)
         self._evict()
 
-    def discard(self, reference: ExternalPayloadReference) -> None:
+    def discard(
+        self,
+        reference: ExternalPayloadReference | RuntimeExternalPayloadReference,
+    ) -> None:
         """Remove verified bytes for *reference* after external retention cleanup."""
         data = self._entries.pop(self._key(reference), None)
         if data is not None:
@@ -209,8 +300,15 @@ class ExternalPayloadCache:
         return len(self._entries)
 
     @staticmethod
-    def _key(reference: ExternalPayloadReference) -> tuple[str, str, int, str]:
-        return (reference.uri, reference.sha256, reference.size_bytes, reference.codec)
+    def _key(
+        reference: ExternalPayloadReference | RuntimeExternalPayloadReference,
+    ) -> tuple[str, str, int, str]:
+        identity = (
+            reference.reference_id
+            if isinstance(reference, RuntimeExternalPayloadReference)
+            else reference.uri
+        )
+        return (identity, reference.sha256, reference.size_bytes, reference.codec)
 
     def _evict(self) -> None:
         while len(self._entries) > self.max_entries or self.current_bytes > self.max_bytes:

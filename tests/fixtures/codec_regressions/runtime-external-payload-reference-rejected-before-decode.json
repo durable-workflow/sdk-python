@@ -1,0 +1,77 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "runtime-external-payload-reference-rejected-before-decode",
+  "protocol": {
+    "codec": "runtime-external-payload",
+    "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+    "version": "1",
+    "fingerprint": null
+  },
+  "bindings": [
+    "python"
+  ],
+  "value": {
+    "type": "map",
+    "entries": [
+      {
+        "key": "codec",
+        "value": {
+          "type": "string",
+          "value": "avro"
+        }
+      },
+      {
+        "key": "external_payload",
+        "value": {
+          "type": "map",
+          "entries": [
+            {
+              "key": "schema",
+              "value": {
+                "type": "string",
+                "value": "durable-workflow.v2.runtime-external-payload-reference.v1"
+              }
+            },
+            {
+              "key": "reference_id",
+              "value": {
+                "type": "string",
+                "value": "ep_00000000000000000000000001"
+              }
+            },
+            {
+              "key": "codec",
+              "value": {
+                "type": "string",
+                "value": "avro"
+              }
+            },
+            {
+              "key": "size_bytes",
+              "value": {
+                "type": "long",
+                "value": "10"
+              }
+            },
+            {
+              "key": "sha256",
+              "value": {
+                "type": "string",
+                "value": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "utf8-json-envelope",
+    "wire_base64": "eyJjb2RlYyI6ImF2cm8iLCJleHRlcm5hbF9wYXlsb2FkIjp7InNjaGVtYSI6ImR1cmFibGUtd29ya2Zsb3cudjIucnVudGltZS1leHRlcm5hbC1wYXlsb2FkLXJlZmVyZW5jZS52MSIsInJlZmVyZW5jZV9pZCI6ImVwXzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxIiwiY29kZWMiOiJhdnJvIiwic2l6ZV9ieXRlcyI6MTAsInNoYTI1NiI6IjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAifX0="
+  },
+  "failure_policy": {
+    "operation": "decode_reject",
+    "error": "external_payload_unsupported"
+  }
+}

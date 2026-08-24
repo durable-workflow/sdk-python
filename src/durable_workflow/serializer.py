@@ -29,6 +29,7 @@ from typing import Any, TypeGuard, cast
 from uuid import UUID
 
 from . import _avro
+from .errors import ExternalPayloadUnsupported
 from .external_storage import (
     ExternalPayloadCache,
     ExternalPayloadReference,
@@ -471,6 +472,10 @@ def decode_envelope(
             raise ValueError("external payload reference codec does not match envelope codec")
         blob = fetch_external_payload(external_storage, reference, cache=external_storage_cache).decode("utf-8")
         return decode(blob, codec=reference.codec)
+    if isinstance(value, dict) and "external_payload" in value:
+        raise ExternalPayloadUnsupported(
+            "runtime external payload references must be resolved by Client before payload decode"
+        )
     return decode(value, codec=codec)
 
 

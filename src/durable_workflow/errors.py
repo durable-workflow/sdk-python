@@ -64,6 +64,76 @@ class RuntimeCapabilityUnsupported(DurableWorkflowError):
         self.supported_values = supported_values
 
 
+class ExternalPayloadError(DurableWorkflowError):
+    """Base class for failures at the runtime-owned payload boundary.
+
+    ``reason`` and ``retryable`` are stable protocol fields. ``status`` and
+    ``body`` preserve the runtime response when the failure came from HTTP;
+    local reference and integrity validation use the same typed hierarchy.
+    """
+
+    reason = "external_payload_error"
+    default_retryable = False
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        retryable: bool | None = None,
+        reference_id: str | None = None,
+        body: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.retryable = self.default_retryable if retryable is None else retryable
+        self.reference_id = reference_id
+        self.body = body
+
+
+class ExternalPayloadNotFound(ExternalPayloadError):
+    """The opaque reference is absent from the authenticated namespace."""
+
+    reason = "external_payload_not_found"
+
+
+class ExternalPayloadExpired(ExternalPayloadError):
+    """An unclaimed runtime payload reference expired before use."""
+
+    reason = "external_payload_expired"
+
+
+class ExternalPayloadUnauthorized(ExternalPayloadError):
+    """The runtime credential cannot upload or fetch namespace payloads."""
+
+    reason = "external_payload_unauthorized"
+
+
+class ExternalPayloadUnavailable(ExternalPayloadError):
+    """Runtime-owned payload storage is temporarily unavailable."""
+
+    reason = "external_payload_unavailable"
+    default_retryable = True
+
+
+class ExternalPayloadOversized(ExternalPayloadError):
+    """The encoded payload exceeds the runtime transport's advertised limit."""
+
+    reason = "external_payload_oversized"
+
+
+class ExternalPayloadUnsupported(ExternalPayloadError):
+    """The runtime reference schema, codec, or transport shape is unsupported."""
+
+    reason = "external_payload_unsupported"
+
+
+class ExternalPayloadIntegrityMismatch(ExternalPayloadError):
+    """Fetched bytes or metadata do not match the opaque reference."""
+
+    reason = "external_payload_integrity_mismatch"
+
+
 class ServerError(DurableWorkflowError):
     """A server response was an error that does not map to a typed subclass.
 
@@ -534,6 +604,41 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
     reason = body.get("reason") if isinstance(body, dict) else None
     message = body.get("message", "") if isinstance(body, dict) else str(body)
     operation = _control_plane_operation(body)
+
+    external_payload_errors: dict[str, type[ExternalPayloadError]] = {
+        ExternalPayloadNotFound.reason: ExternalPayloadNotFound,
+        ExternalPayloadExpired.reason: ExternalPayloadExpired,
+        ExternalPayloadUnauthorized.reason: ExternalPayloadUnauthorized,
+        ExternalPayloadUnavailable.reason: ExternalPayloadUnavailable,
+        ExternalPayloadOversized.reason: ExternalPayloadOversized,
+        ExternalPayloadUnsupported.reason: ExternalPayloadUnsupported,
+        ExternalPayloadIntegrityMismatch.reason: ExternalPayloadIntegrityMismatch,
+    }
+    external_payload_error = external_payload_errors.get(reason) if isinstance(reason, str) else None
+    if external_payload_error is not None:
+        retryable = body.get("retryable") if isinstance(body, dict) else None
+        reference_id = body.get("reference_id") if isinstance(body, dict) else None
+        external_payload_message = (
+            message
+            if isinstance(message, str) and message
+            else reason
+            if isinstance(reason, str)
+            else "external payload request failed"
+        )
+        raise external_payload_error(
+            external_payload_message,
+            status=status,
+            retryable=retryable if isinstance(retryable, bool) else None,
+            reference_id=reference_id if isinstance(reference_id, str) else None,
+            body=body,
+        )
+
+    if status in (401, 403) and context == "external_payload":
+        raise ExternalPayloadUnauthorized(
+            message or "runtime external payload transport authorization failed",
+            status=status,
+            body=body,
+        )
 
     if status == 401:
         raise Unauthorized(message or "unauthorized")

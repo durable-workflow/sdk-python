@@ -6,14 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.34`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc34`. This Avro-only SDK release is qualified with Server
+The Python SDK advances to prerelease `2.0.0-rc.35`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc35`. This Avro-only SDK release is qualified with Server
 `2.0.0-rc.39`; JSON remains HTTP transport and is no longer a workflow payload
 codec.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
 
 ### Added
+- Clients and workers now externalize large Avro payloads through the
+  authenticated namespace runtime using only the runtime URL, namespace, and
+  role credential. Opaque references are resolved before decode with bounded
+  caching, size/SHA-256 verification, typed retryable and terminal failures,
+  and no SDK delete authority over runtime-owned objects. Direct local, S3,
+  GCS, and Azure adapters remain explicit self-hosted integrations and are
+  never inferred from the runtime's backing driver.
 - List-based activity, child-workflow, and timer fan-out now emits the stable
   language-neutral parallel-group identity and path metadata consumed by
   service-mode and embedded replay implementations.

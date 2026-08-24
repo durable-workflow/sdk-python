@@ -239,7 +239,7 @@ def _require_sequence(value: Mapping[str, Any], key: str) -> Sequence[Any]:
     if key not in value:
         raise ExternalTaskInputError(f"External task input is missing required field [{key}].")
     item = value[key]
-    if not isinstance(item, Sequence) or isinstance(item, (str, bytes, bytearray)):
+    if not isinstance(item, Sequence) or isinstance(item, str | bytes | bytearray):
         raise ExternalTaskInputError(f"External task input field [{key}] must be an array.")
     return item
 

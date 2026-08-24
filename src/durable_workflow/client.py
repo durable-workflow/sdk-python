@@ -19,6 +19,7 @@ methods without repeating the id on every call.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 import os
 import time
@@ -35,6 +36,10 @@ import httpx
 
 from . import serializer
 from .errors import (
+    ExternalPayloadIntegrityMismatch,
+    ExternalPayloadOversized,
+    ExternalPayloadUnavailable,
+    ExternalPayloadUnsupported,
     RuntimeCapabilityUnsupported,
     RuntimeDiscoveryUnavailable,
     ServerError,
@@ -43,7 +48,13 @@ from .errors import (
     WorkflowTerminated,
     _raise_for_status,
 )
-from .external_storage import ExternalPayloadCache, ExternalPayloadStoragePolicy, ExternalStorageDriver
+from .external_storage import (
+    RUNTIME_EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
+    ExternalPayloadCache,
+    ExternalPayloadStoragePolicy,
+    ExternalStorageDriver,
+    RuntimeExternalPayloadReference,
+)
 from .metrics import CLIENT_REQUEST_DURATION_SECONDS, CLIENT_REQUESTS, NOOP_METRICS, MetricsRecorder
 from .nexus import NexusOperationResult, nexus_request_payload
 from .retry_policy import TransportRetryPolicy
@@ -56,6 +67,20 @@ _QUERY_TASKS_DISCOVERY_PATH = "worker_protocol.server_capabilities.query_tasks"
 _UPDATE_WAIT_STAGES_DISCOVERY_PATH = (
     "control_plane.request_contract.operations.update.fields.wait_for.canonical_values"
 )
+_RUNTIME_EXTERNAL_PAYLOAD_DISCOVERY_PATH = (
+    "namespace.external_payload_storage.transport"
+)
+_RUNTIME_EXTERNAL_PAYLOAD_TRANSPORT_SCHEMA = (
+    "durable-workflow.v2.runtime-external-payload-transport.v1"
+)
+_RUNTIME_EXTERNAL_PAYLOAD_UPLOAD_SCHEMA = (
+    "durable-workflow.v2.runtime-external-payload-upload.v1"
+)
+_RUNTIME_EXTERNAL_PAYLOAD_UPLOAD_PATH = "/external-payloads/v1"
+_RUNTIME_EXTERNAL_PAYLOAD_FETCH_PATH_TEMPLATE = (
+    "/external-payloads/v1/{referenceId}"
+)
+_RUNTIME_EXTERNAL_PAYLOAD_ERROR_BODY_LIMIT = 64 * 1024
 
 
 def _default_sdk_version() -> str:
@@ -174,6 +199,52 @@ def _resolve_namespace_name(
     if name is None:
         raise TypeError(f"{method}() missing required argument: 'name'")
     return name
+
+
+def _contains_inline_payload_envelope(value: object) -> bool:
+    if isinstance(value, dict):
+        if set(value) == {"codec", "blob"} and isinstance(value.get("blob"), str):
+            return True
+        if (
+            value.get("type") == "record_side_effect"
+            and isinstance(value.get("result"), str)
+        ):
+            return True
+        return any(_contains_inline_payload_envelope(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_inline_payload_envelope(item) for item in value)
+    return False
+
+
+def _contains_runtime_payload_envelope(value: object) -> bool:
+    if isinstance(value, dict):
+        if "external_payload" in value:
+            return True
+        return any(_contains_runtime_payload_envelope(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_runtime_payload_envelope(item) for item in value)
+    return False
+
+
+def _contains_direct_external_storage_envelope(value: object) -> bool:
+    if isinstance(value, dict):
+        if "external_storage" in value:
+            return True
+        return any(
+            _contains_direct_external_storage_envelope(item)
+            for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(_contains_direct_external_storage_envelope(item) for item in value)
+    return False
+
+
+@dataclass(frozen=True)
+class _RuntimeExternalPayloadTransport:
+    threshold_bytes: int
+    max_payload_bytes: int
+    request_timeout_seconds: float
+    status: str
 
 
 @dataclass
@@ -1308,6 +1379,10 @@ class Client:
         self._http = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
         self._cluster_info: dict[str, Any] | None = None
         self._cluster_info_lock = asyncio.Lock()
+        self._runtime_external_payload_transport_cache: (
+            _RuntimeExternalPayloadTransport | None
+        ) = None
+        self._runtime_external_payload_transport_resolved = False
 
     async def aclose(self) -> None:
         """Close the underlying ``httpx`` connection pool.
@@ -1491,6 +1566,27 @@ class Client:
         if discovery and path != "/cluster/info":
             raise ValueError("cluster discovery credentials can only authorize /cluster/info")
 
+        request_json = json
+        if (
+            not discovery
+            and json is not None
+            and _contains_direct_external_storage_envelope(json)
+        ):
+            await self._require_direct_external_storage_support()
+        if (
+            not discovery
+            and json is not None
+            and _contains_inline_payload_envelope(json)
+        ):
+            transport = await self._runtime_external_payload_transport()
+            if transport is not None:
+                request_json = await self._externalize_runtime_payloads(
+                    json,
+                    worker=worker,
+                    transport=transport,
+                    uploaded={},
+                )
+
         start = time.perf_counter()
         route = _route_for_metrics(path)
         discovery_uses_worker_token = discovery and bool(self.worker_token)
@@ -1503,7 +1599,7 @@ class Client:
                 method,
                 f"/api{path}",
                 headers=self._discovery_headers() if discovery else self._headers(worker=worker),
-                json=json,
+                json=request_json,
                 timeout=timeout,
             )
             # Raise HTTPStatusError for 4xx/5xx so retry policy can catch it
@@ -1529,6 +1625,19 @@ class Client:
                 outcome = "ok"
                 return None
             result = resp.json()
+            if not discovery and _contains_runtime_payload_envelope(result):
+                transport = await self._runtime_external_payload_transport()
+                if transport is None:
+                    raise ExternalPayloadUnsupported(
+                        "runtime returned an external payload reference without advertising "
+                        "the authenticated namespace transport"
+                    )
+                result = await self._resolve_runtime_payloads(
+                    result,
+                    worker=worker,
+                    transport=transport,
+                )
+            result = self._hydrate_result_envelopes(result)
             outcome = "ok"
             return result
         except Exception as exc:
@@ -1545,6 +1654,507 @@ class Client:
             }
             self.metrics.increment(CLIENT_REQUESTS, tags=tags)
             self.metrics.record(CLIENT_REQUEST_DURATION_SECONDS, time.perf_counter() - start, tags=tags)
+
+    async def _runtime_external_payload_transport(
+        self,
+    ) -> _RuntimeExternalPayloadTransport | None:
+        if self._runtime_external_payload_transport_resolved:
+            return self._runtime_external_payload_transport_cache
+
+        info = await self._runtime_discovery(
+            operation="Client external payload transport",
+            required_path=_RUNTIME_EXTERNAL_PAYLOAD_DISCOVERY_PATH,
+        )
+        namespace = info.get("namespace")
+        policy = (
+            namespace.get("external_payload_storage")
+            if isinstance(namespace, dict)
+            else None
+        )
+        capabilities = info.get("worker_protocol")
+        capabilities = (
+            capabilities.get("server_capabilities")
+            if isinstance(capabilities, dict)
+            else None
+        )
+        advertised = (
+            capabilities.get("runtime_external_payload_transport") is True
+            if isinstance(capabilities, dict)
+            else False
+        )
+
+        if not isinstance(policy, dict):
+            self._runtime_external_payload_transport_resolved = True
+            return None
+        manifest = policy.get("transport")
+        if not advertised and not (
+            isinstance(manifest, dict)
+            and manifest.get("schema") == _RUNTIME_EXTERNAL_PAYLOAD_TRANSPORT_SCHEMA
+        ):
+            self._runtime_external_payload_transport_resolved = True
+            return None
+        if not isinstance(manifest, dict):
+            raise ExternalPayloadUnsupported(
+                "runtime external payload capability is missing its transport manifest"
+            )
+        if manifest.get("schema") != _RUNTIME_EXTERNAL_PAYLOAD_TRANSPORT_SCHEMA:
+            raise ExternalPayloadUnsupported(
+                "runtime external payload transport schema is unsupported"
+            )
+        if manifest.get("version") != 1:
+            raise ExternalPayloadUnsupported(
+                "runtime external payload transport version is unsupported"
+            )
+        if manifest.get("reference_schema") != RUNTIME_EXTERNAL_PAYLOAD_REFERENCE_SCHEMA:
+            raise ExternalPayloadUnsupported(
+                "runtime external payload reference schema is unsupported"
+            )
+        if manifest.get("mode") != "authenticated_namespace_runtime":
+            raise ExternalPayloadUnsupported(
+                "runtime external payload transport mode is unsupported"
+            )
+
+        upload = manifest.get("upload")
+        fetch = manifest.get("fetch")
+        if not (
+            isinstance(upload, dict)
+            and upload.get("method") == "POST"
+            and upload.get("path") == f"/api{_RUNTIME_EXTERNAL_PAYLOAD_UPLOAD_PATH}"
+            and isinstance(fetch, dict)
+            and fetch.get("method") == "GET"
+            and fetch.get("path_template")
+            == f"/api{_RUNTIME_EXTERNAL_PAYLOAD_FETCH_PATH_TEMPLATE}"
+        ):
+            raise ExternalPayloadUnsupported(
+                "runtime external payload transport paths are unsupported"
+            )
+
+        threshold_bytes = policy.get("threshold_bytes")
+        limits = manifest.get("limits")
+        max_payload_bytes = (
+            limits.get("max_payload_bytes") if isinstance(limits, dict) else None
+        )
+        request_timeout_seconds = (
+            limits.get("request_timeout_seconds") if isinstance(limits, dict) else None
+        )
+        if type(threshold_bytes) is not int or threshold_bytes < 1:
+            raise ExternalPayloadUnsupported(
+                "runtime external payload threshold_bytes must be a positive integer"
+            )
+        if type(max_payload_bytes) is not int or max_payload_bytes < threshold_bytes:
+            raise ExternalPayloadUnsupported(
+                "runtime external payload max_payload_bytes must be at least threshold_bytes"
+            )
+        if (
+            isinstance(request_timeout_seconds, bool)
+            or not isinstance(request_timeout_seconds, int | float)
+            or request_timeout_seconds <= 0
+        ):
+            raise ExternalPayloadUnsupported(
+                "runtime external payload request timeout must be positive"
+            )
+
+        status = policy.get("status")
+        transport = _RuntimeExternalPayloadTransport(
+            threshold_bytes=threshold_bytes,
+            max_payload_bytes=max_payload_bytes,
+            request_timeout_seconds=float(request_timeout_seconds),
+            status=status if isinstance(status, str) else "unknown",
+        )
+        self._runtime_external_payload_transport_cache = transport
+        self._runtime_external_payload_transport_resolved = True
+        return transport
+
+    async def _require_direct_external_storage_support(self) -> None:
+        info = await self._runtime_discovery(
+            operation="Client direct external storage",
+            required_path=(
+                "namespace.external_payload_storage.direct_provider_adapters"
+            ),
+        )
+        worker_protocol = info.get("worker_protocol")
+        capabilities = (
+            worker_protocol.get("server_capabilities")
+            if isinstance(worker_protocol, dict)
+            else None
+        )
+        if not (
+            isinstance(capabilities, dict)
+            and capabilities.get("runtime_external_payload_transport") is True
+        ):
+            # Pre-runtime-transport self-hosted servers negotiated direct
+            # references through their legacy namespace storage policy.
+            return
+
+        namespace = info.get("namespace")
+        policy = (
+            namespace.get("external_payload_storage")
+            if isinstance(namespace, dict)
+            else None
+        )
+        direct = (
+            policy.get("direct_provider_adapters")
+            if isinstance(policy, dict)
+            else None
+        )
+        if not isinstance(direct, dict) and isinstance(policy, dict):
+            manifest = policy.get("transport")
+            direct = (
+                manifest.get("direct_provider_adapters")
+                if isinstance(manifest, dict)
+                else None
+            )
+        if not (
+            isinstance(direct, dict)
+            and direct.get("capability_negotiated") is True
+            and direct.get("enabled") is True
+        ):
+            raise RuntimeCapabilityUnsupported(
+                "Client direct external storage",
+                "direct_provider_adapters",
+                "the namespace runtime does not accept direct provider references; "
+                "use its runtime-mediated external payload transport",
+            )
+
+    async def _externalize_runtime_payloads(
+        self,
+        value: Any,
+        *,
+        worker: bool,
+        transport: _RuntimeExternalPayloadTransport,
+        uploaded: dict[tuple[str, str, int], RuntimeExternalPayloadReference],
+    ) -> Any:
+        if isinstance(value, dict):
+            if (
+                value.get("type") == "record_side_effect"
+                and isinstance(value.get("result"), str)
+            ):
+                normalized_command = dict(value)
+                externalized_result = await self._externalize_runtime_payloads(
+                    {"codec": serializer.AVRO_CODEC, "blob": value["result"]},
+                    worker=worker,
+                    transport=transport,
+                    uploaded=uploaded,
+                )
+                if "external_payload" in externalized_result:
+                    normalized_command["result"] = externalized_result
+                value = normalized_command
+
+            if set(value) == {"codec", "blob"} and isinstance(value.get("blob"), str):
+                codec = value.get("codec")
+                if codec != serializer.AVRO_CODEC:
+                    return dict(value)
+                data = value["blob"].encode("utf-8")
+                if len(data) <= transport.threshold_bytes:
+                    return dict(value)
+                if transport.status != "available":
+                    raise ExternalPayloadUnavailable(
+                        "runtime external payload storage is not available for this namespace"
+                    )
+                if len(data) > transport.max_payload_bytes:
+                    raise ExternalPayloadOversized(
+                        "encoded payload exceeds the runtime external payload limit"
+                    )
+                sha256 = hashlib.sha256(data).hexdigest()
+                identity = (codec, sha256, len(data))
+                reference = uploaded.get(identity)
+                if reference is None:
+                    reference = await self._upload_runtime_payload(
+                        data,
+                        codec=codec,
+                        sha256=sha256,
+                        worker=worker,
+                        transport=transport,
+                    )
+                    uploaded[identity] = reference
+                return {"codec": codec, "external_payload": reference.to_dict()}
+
+            externalized = {
+                key: await self._externalize_runtime_payloads(
+                    item,
+                    worker=worker,
+                    transport=transport,
+                    uploaded=uploaded,
+                )
+                for key, item in value.items()
+            }
+            result_envelope = externalized.get("result_envelope")
+            if (
+                "result" in externalized
+                and isinstance(result_envelope, dict)
+                and "external_payload" in result_envelope
+            ):
+                # Query completion retains the legacy decoded result field for
+                # inline compatibility. Once its canonical envelope is
+                # externalized, sending that duplicate would defeat offload.
+                externalized["result"] = None
+            return externalized
+        if isinstance(value, list):
+            return [
+                await self._externalize_runtime_payloads(
+                    item,
+                    worker=worker,
+                    transport=transport,
+                    uploaded=uploaded,
+                )
+                for item in value
+            ]
+        return value
+
+    async def _upload_runtime_payload(
+        self,
+        data: bytes,
+        *,
+        codec: str,
+        sha256: str,
+        worker: bool,
+        transport: _RuntimeExternalPayloadTransport,
+    ) -> RuntimeExternalPayloadReference:
+        headers = self._headers(worker=worker)
+        headers.update({
+            "Accept": "application/json",
+            "Content-Type": "application/octet-stream",
+            "X-Durable-Workflow-Payload-Codec": codec,
+            "X-Durable-Workflow-Payload-Size": str(len(data)),
+            "X-Durable-Workflow-Payload-SHA256": sha256,
+        })
+
+        async def _do_request() -> httpx.Response:
+            response = await self._http.request(
+                "POST",
+                f"/api{_RUNTIME_EXTERNAL_PAYLOAD_UPLOAD_PATH}",
+                headers=headers,
+                content=data,
+                timeout=transport.request_timeout_seconds,
+            )
+            response.raise_for_status()
+            return response
+
+        try:
+            response = await self.retry_policy.execute(_do_request)
+        except httpx.HTTPStatusError as exc:
+            self._raise_runtime_payload_response(exc.response)
+            raise
+        except httpx.TransportError as exc:
+            raise ExternalPayloadUnavailable(
+                f"runtime external payload upload failed: {exc}"
+            ) from exc
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise ExternalPayloadUnsupported(
+                "runtime external payload upload returned malformed JSON"
+            ) from exc
+        if not isinstance(body, dict):
+            raise ExternalPayloadUnsupported(
+                "runtime external payload upload response must be an object"
+            )
+        if (
+            body.get("schema") != _RUNTIME_EXTERNAL_PAYLOAD_UPLOAD_SCHEMA
+            or body.get("transport_version") != 1
+        ):
+            raise ExternalPayloadUnsupported(
+                "runtime external payload upload response schema is unsupported"
+            )
+        reference = RuntimeExternalPayloadReference.from_dict(body.get("reference"))
+        if (
+            reference.codec != codec
+            or reference.size_bytes != len(data)
+            or reference.sha256 != sha256
+        ):
+            raise ExternalPayloadIntegrityMismatch(
+                "runtime external payload upload returned conflicting integrity metadata",
+                reference_id=reference.reference_id,
+            )
+        self.external_storage_cache.put(reference, data)
+        return reference
+
+    async def _resolve_runtime_payloads(
+        self,
+        value: Any,
+        *,
+        worker: bool,
+        transport: _RuntimeExternalPayloadTransport,
+    ) -> Any:
+        if isinstance(value, dict):
+            if "external_payload" in value:
+                if set(value) != {"codec", "external_payload"}:
+                    raise ExternalPayloadUnsupported(
+                        "runtime external payload envelope must contain exactly codec and external_payload"
+                    )
+                reference = RuntimeExternalPayloadReference.from_dict(
+                    value.get("external_payload")
+                )
+                if value.get("codec") != reference.codec:
+                    raise ExternalPayloadIntegrityMismatch(
+                        "runtime external payload envelope codec does not match its reference",
+                        reference_id=reference.reference_id,
+                    )
+                data = await self._fetch_runtime_payload(
+                    reference,
+                    worker=worker,
+                    transport=transport,
+                )
+                try:
+                    blob = data.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise ExternalPayloadIntegrityMismatch(
+                        "runtime external payload bytes are not a UTF-8 payload blob",
+                        reference_id=reference.reference_id,
+                    ) from exc
+                return {"codec": reference.codec, "blob": blob}
+            return {
+                key: await self._resolve_runtime_payloads(
+                    item,
+                    worker=worker,
+                    transport=transport,
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                await self._resolve_runtime_payloads(
+                    item,
+                    worker=worker,
+                    transport=transport,
+                )
+                for item in value
+            ]
+        return value
+
+    async def _fetch_runtime_payload(
+        self,
+        reference: RuntimeExternalPayloadReference,
+        *,
+        worker: bool,
+        transport: _RuntimeExternalPayloadTransport,
+    ) -> bytes:
+        if reference.size_bytes > transport.max_payload_bytes:
+            raise ExternalPayloadOversized(
+                "runtime external payload reference exceeds the advertised transport limit",
+                reference_id=reference.reference_id,
+            )
+        cached = self.external_storage_cache.get(reference)
+        if cached is not None:
+            return cached
+
+        headers = self._headers(worker=worker)
+        headers.update({
+            "Accept": "application/octet-stream",
+            "X-Durable-Workflow-Payload-Codec": reference.codec,
+            "X-Durable-Workflow-Payload-Size": str(reference.size_bytes),
+            "X-Durable-Workflow-Payload-SHA256": reference.sha256,
+        })
+        path = _RUNTIME_EXTERNAL_PAYLOAD_FETCH_PATH_TEMPLATE.replace(
+            "{referenceId}", quote(reference.reference_id, safe="")
+        )
+
+        async def _do_request() -> tuple[httpx.Headers, bytes]:
+            async with self._http.stream(
+                "GET",
+                f"/api{path}",
+                headers=headers,
+                timeout=transport.request_timeout_seconds,
+            ) as response:
+                if response.status_code >= 400:
+                    body = await self._read_bounded_response(
+                        response,
+                        _RUNTIME_EXTERNAL_PAYLOAD_ERROR_BODY_LIMIT,
+                    )
+                    error_response = httpx.Response(
+                        response.status_code,
+                        headers=response.headers,
+                        content=body,
+                        request=response.request,
+                    )
+                    error_response.raise_for_status()
+
+                data = await self._read_bounded_response(
+                    response,
+                    min(reference.size_bytes, transport.max_payload_bytes),
+                )
+                return response.headers, data
+
+        try:
+            response_headers, data = await self.retry_policy.execute(_do_request)
+        except httpx.HTTPStatusError as exc:
+            self._raise_runtime_payload_response(exc.response)
+            raise
+        except httpx.TransportError as exc:
+            raise ExternalPayloadUnavailable(
+                f"runtime external payload fetch failed: {exc}",
+                reference_id=reference.reference_id,
+            ) from exc
+
+        expected_headers = {
+            "X-Durable-Workflow-Payload-Codec": reference.codec,
+            "X-Durable-Workflow-Payload-Size": str(reference.size_bytes),
+            "X-Durable-Workflow-Payload-SHA256": reference.sha256,
+        }
+        if any(response_headers.get(key) != expected for key, expected in expected_headers.items()):
+            raise ExternalPayloadIntegrityMismatch(
+                "runtime external payload response metadata does not match its reference",
+                reference_id=reference.reference_id,
+            )
+        if len(data) != reference.size_bytes:
+            raise ExternalPayloadIntegrityMismatch(
+                "runtime external payload size does not match its reference",
+                reference_id=reference.reference_id,
+            )
+        if hashlib.sha256(data).hexdigest() != reference.sha256:
+            raise ExternalPayloadIntegrityMismatch(
+                "runtime external payload hash does not match its reference",
+                reference_id=reference.reference_id,
+            )
+        self.external_storage_cache.put(reference, data)
+        return data
+
+    @staticmethod
+    async def _read_bounded_response(response: httpx.Response, limit: int) -> bytes:
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in response.aiter_bytes():
+            size += len(chunk)
+            if size > limit:
+                raise ExternalPayloadIntegrityMismatch(
+                    "runtime external payload response exceeded its declared bound"
+                )
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    @staticmethod
+    def _raise_runtime_payload_response(response: httpx.Response) -> None:
+        try:
+            body: object = response.json()
+        except ValueError:
+            body = response.text
+        _raise_for_status(response.status_code, body, context="external_payload")
+
+    def _hydrate_result_envelopes(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            hydrated = {
+                key: self._hydrate_result_envelopes(item)
+                for key, item in value.items()
+            }
+            result_envelope = hydrated.get("result_envelope")
+            if (
+                hydrated.get("result") is None
+                and isinstance(result_envelope, dict)
+                and (
+                    "blob" in result_envelope
+                    or "external_storage" in result_envelope
+                )
+            ):
+                hydrated["result"] = serializer.decode_envelope(
+                    result_envelope,
+                    external_storage=self.external_storage,
+                    external_storage_cache=self.external_storage_cache,
+                )
+            return hydrated
+        if isinstance(value, list):
+            return [self._hydrate_result_envelopes(item) for item in value]
+        return value
 
     async def _request_bridge_outcome(self, path: str, *, json: Any = None, context: str = "") -> dict[str, Any]:
         start = time.perf_counter()

@@ -95,6 +95,17 @@ def complete_result() -> dict[str, Any]:
             "signal_state_after_restart": {"signal": "replayed"},
         }
     )
+    scenario_results["runtime_external_payload_round_trips"].update(
+        {
+            "standalone_server": {"status": "pass"},
+            "isolated_cloud": {"status": "pass"},
+            "inline_round_trip": {"status": "pass", "value": "inline"},
+            "externalized_round_trip": {"status": "pass", "value": "externalized"},
+            "cross_language_round_trip": {"status": "pass", "languages": ["python", "php"]},
+            "ordinary_runtime_credentials": {"status": "pass"},
+            "provider_setup_absent": {"status": "pass"},
+        }
+    )
     scenario_results["protocol_trace_capture"].update(
         {
             "control_plane_traces": [{"method": "POST", "path": "/workflows"}],
@@ -209,6 +220,10 @@ def test_manifest_names_full_python_parity_surface() -> None:
     assert "protocol_trace_capture" in payload["required_scenarios"]
     assert "php_assumption_audit" in payload["required_scenarios"]
     assert "capability_table_complete" in payload["required_scenarios"]
+    assert "runtime_external_payload_round_trips" in payload["required_scenarios"]
+    assert "runtime_external_payload_isolated_cloud" in {
+        row["id"] for row in payload["capability_table"]
+    }
     assert payload["host_evidence"]["schema"] == "durable-workflow.v2.python-sdk-parity.host-evidence"
     assert payload["host_evidence"]["missing_scenario_status"] == "not_covered"
     assert "server-up" in payload["host_evidence"]["entry_id_aliases"]["capability_ids"]["server_up"]
