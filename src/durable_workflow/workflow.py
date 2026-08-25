@@ -40,6 +40,8 @@ from .errors import (
     NexusOperationFailed,
     NonDeterministicReplayError,
     QueryFailed,
+    SagaCompensationFailed,
+    WorkflowCancelled,
     WorkflowPayloadDecodeError,
 )
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
@@ -1255,6 +1257,93 @@ class _ReplayLogger:
             self._inner.error(msg, *args, **kwargs)
 
 
+@dataclass(frozen=True)
+class _SagaCompensation:
+    command: ScheduleActivity
+    registration_order: int
+
+
+class Saga:
+    """Deterministic reverse-order activity compensation helper.
+
+    Register a compensation only after its corresponding forward step has
+    completed. :meth:`run` compensates on ordinary workflow failure or
+    cooperative cancellation, using regular activity commands so replay uses
+    the existing command/history protocol.
+    """
+
+    def __init__(self, context: WorkflowContext) -> None:
+        self._context = context
+        self._compensations: list[_SagaCompensation] = []
+        self._closed = False
+
+    def add_compensation(
+        self,
+        activity_type: str,
+        arguments: list[Any] | None = None,
+        *,
+        queue: str | None = None,
+        retry_policy: ActivityRetryPolicyInput | None = None,
+        start_to_close_timeout: int | None = None,
+        schedule_to_start_timeout: int | None = None,
+        schedule_to_close_timeout: int | None = None,
+        heartbeat_timeout: int | None = None,
+    ) -> Saga:
+        """Register one compensation at the current deterministic position."""
+        if self._closed:
+            raise RuntimeError("cannot register a compensation after saga compensation has started")
+        if not isinstance(activity_type, str) or not activity_type.strip():
+            raise ValueError("compensation activity_type must be a non-empty string")
+        command = self._context.schedule_activity(
+            activity_type,
+            list(arguments or []),
+            queue=queue,
+            retry_policy=retry_policy,
+            start_to_close_timeout=start_to_close_timeout,
+            schedule_to_start_timeout=schedule_to_start_timeout,
+            schedule_to_close_timeout=schedule_to_close_timeout,
+            heartbeat_timeout=heartbeat_timeout,
+        )
+        self._compensations.append(_SagaCompensation(command=command, registration_order=len(self._compensations) + 1))
+        return self
+
+    def compensate(self, initiating_failure: BaseException) -> Any:
+        """Yield registered compensations in reverse order.
+
+        Compensation stops at the first compensation failure and raises
+        :class:`SagaCompensationFailed`, preserving both typed causes.
+        """
+        if self._closed:
+            raise RuntimeError("a saga instance can only compensate once")
+        self._closed = True
+        for compensation in reversed(self._compensations):
+            try:
+                yield compensation.command
+            except (Exception, WorkflowCancelled) as compensation_failure:
+                raise SagaCompensationFailed(
+                    initiating_failure,
+                    compensation_failure,
+                    compensation_activity_type=compensation.command.activity_type,
+                    compensation_registration_order=compensation.registration_order,
+                ) from compensation_failure
+
+    def run(self, forward: Callable[[Saga], Any]) -> Any:
+        """Run ``forward`` and compensate if it fails or is cancelled."""
+        if self._closed:
+            raise RuntimeError("a saga instance can only be run once")
+        try:
+            result = forward(self)
+            if hasattr(result, "send"):
+                value = yield from result
+                self._closed = True
+                return value
+            self._closed = True
+            return result
+        except (Exception, WorkflowCancelled) as initiating_failure:
+            yield from self.compensate(initiating_failure)
+            raise
+
+
 class WorkflowContext:
     """Replay-safe helper surface passed to workflow ``run`` methods."""
 
@@ -1265,17 +1354,33 @@ class WorkflowContext:
         run_id: str = "",
         current_time: datetime | None = None,
         workflow_command_id: str | None = None,
+        cancel_requested: bool = False,
     ) -> None:
         self._workflow_id = workflow_id
         self._run_id = run_id
         self._current_time = current_time or datetime.now(timezone.utc)
         self._workflow_command_id = workflow_command_id or run_id or workflow_id
+        self._cancel_requested = bool(cancel_requested)
         seed = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16)
         self._rng = random.Random(seed)
         self._uuid7_counter = 0
         self._nexus_call_counter = 0
         self._workflow_stream_command_counter = 0
         self.logger = _ReplayLogger(_REPLAY_LOGGER)
+
+    @property
+    def is_cancellation_requested(self) -> bool:
+        """Whether this workflow task requests cooperative cancellation."""
+        return self._cancel_requested
+
+    def throw_if_cancellation_requested(self) -> None:
+        """Raise :class:`WorkflowCancelled` at an explicit safe point."""
+        if self._cancel_requested:
+            raise WorkflowCancelled("workflow cancellation was requested")
+
+    def saga(self) -> Saga:
+        """Create a deterministic reverse-order compensation scope."""
+        return Saga(self)
 
     def schedule_activity(
         self,
@@ -1673,6 +1778,7 @@ class Replayer:
         payload_codec: str | None = None,
         external_storage: ExternalStorageDriver | None = None,
         external_storage_cache: ExternalPayloadCache | None = None,
+        cancel_requested: bool = False,
     ) -> ReplayOutcome:
         events = _history_events_from_export(history)
         selected_workflow_type = workflow_type or _workflow_type_from_history(events)
@@ -1696,6 +1802,7 @@ class Replayer:
             payload_codec=payload_codec,
             external_storage=external_storage,
             external_storage_cache=external_storage_cache,
+            cancel_requested=cancel_requested,
         )
 
     def _workflow_cls(self, workflow_type: str | None) -> type:
@@ -2006,6 +2113,7 @@ def replay(
     payload_codec: str | None = None,
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
+    cancel_requested: bool = False,
 ) -> ReplayOutcome:
     return _replay_state(
         workflow_cls,
@@ -2017,6 +2125,7 @@ def replay(
         payload_codec=payload_codec,
         external_storage=external_storage,
         external_storage_cache=external_storage_cache,
+        cancel_requested=cancel_requested,
     ).outcome
 
 
@@ -2290,6 +2399,32 @@ def _fail_workflow_from_exception(exc: BaseException, *, prefix: str | None = No
     exception_type = type(exc).__name__
     exception_class = _exception_class_name(exc)
     exception: dict[str, Any] | None = None
+    if isinstance(exc, SagaCompensationFailed):
+        initiating = exc.initiating_failure
+        compensation = exc.compensation_failure
+        exception = {
+            "type": exception_type,
+            "class": exception_class,
+            "message": message,
+            "initiating_failure": {
+                "type": type(initiating).__name__,
+                "class": _exception_class_name(initiating),
+                "message": str(initiating) or type(initiating).__name__,
+            },
+            "compensation_failure": {
+                "type": type(compensation).__name__,
+                "class": _exception_class_name(compensation),
+                "message": str(compensation) or type(compensation).__name__,
+                "activity_type": exc.compensation_activity_type,
+                "registration_order": exc.compensation_registration_order,
+            },
+        }
+        return FailWorkflow(
+            message=message,
+            exception_type=exception_type,
+            exception_class=exception_class,
+            exception=exception,
+        )
     cause = exc.__cause__
     activity_failure = exc if isinstance(exc, ActivityFailed) else cause if isinstance(cause, ActivityFailed) else None
     if isinstance(activity_failure, ActivityFailed):
@@ -2392,9 +2527,9 @@ def _parallel_group_member(payload: Mapping[str, Any]) -> _ParallelGroupMember |
     if any(base_sequence + index != workflow_sequence for _, _, base_sequence, _, index in entries):
         return None
 
-    _, _, base_sequence, size, index = entries[-1]
+    group_id, kind, base_sequence, size, index = entries[0]
     return _ParallelGroupMember(
-        group_key=tuple((group_id, kind, base, group_size) for group_id, kind, base, group_size, _ in entries),
+        group_key=((group_id, kind, base_sequence, size),),
         base_sequence=base_sequence,
         size=size,
         index=index,
@@ -2635,6 +2770,26 @@ def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
         value = payload.get(key)
         if isinstance(value, str) and value:
             details[key] = value
+    raw_parallel_path = payload.get("parallel_group_path")
+    if (
+        isinstance(raw_parallel_path, list)
+        and raw_parallel_path
+        and all(isinstance(entry, Mapping) for entry in raw_parallel_path)
+    ):
+        details["parallel_group_path"] = [dict(entry) for entry in raw_parallel_path]
+    elif _parallel_group_entry(payload) is not None:
+        details["parallel_group_path"] = [
+            {
+                key: payload[key]
+                for key in (
+                    "parallel_group_id",
+                    "parallel_group_kind",
+                    "parallel_group_base_sequence",
+                    "parallel_group_size",
+                    "parallel_group_index",
+                )
+            }
+        ]
     return details
 
 
@@ -2695,6 +2850,17 @@ def _command_diagnostic_shape(command: Any) -> str:
 
 
 def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
+    expected_parallel_path = getattr(command, "_parallel_group_path", None)
+    recorded_parallel_path = step.details.get("parallel_group_path")
+    if (
+        expected_parallel_path is not None
+        and recorded_parallel_path is not None
+        and recorded_parallel_path != expected_parallel_path
+    ):
+        return (
+            f"Recorded parallel_group_path {recorded_parallel_path!r}, but current workflow "
+            f"yielded {expected_parallel_path!r}."
+        )
     if isinstance(command, ScheduleActivity):
         recorded = step.details.get("activity_type")
         if isinstance(recorded, str) and recorded != command.activity_type:
@@ -2850,6 +3016,7 @@ def _replay_state(
     payload_codec: str | None = None,
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
+    cancel_requested: bool = False,
 ) -> _ReplayState:
     if payload_codec is not None and payload_codec != serializer.AVRO_CODEC:
         try:
@@ -2923,6 +3090,7 @@ def _replay_state(
         run_id=run_id,
         current_time=workflow_start_time,
         workflow_command_id=workflow_command_id,
+        cancel_requested=cancel_requested,
     )
 
     def _state(commands: list[Command]) -> _ReplayState:
@@ -3195,9 +3363,31 @@ def _replay_state(
 
     receiver_condition_wait_ids = _receiver_condition_wait_bindings()
 
+    delivered_terminals: dict[tuple[str, int], dict[str, Any]] = {}
     for event_index, ev in enumerate(events):
         etype = _history_event_type(ev)
-        payload = ev.get("payload") or {}
+        raw_payload = ev.get("payload") or {}
+        payload = dict(raw_payload) if isinstance(raw_payload, Mapping) else {}
+        sequence = _workflow_sequence(payload)
+        if (
+            etype
+            in {
+                "ActivityCompleted",
+                "ActivityFailed",
+                "ActivityTimedOut",
+                "TimerFired",
+                "ChildRunCompleted",
+                "ChildRunFailed",
+                "ChildRunCancelled",
+                "ChildRunTerminated",
+            }
+            and sequence is not None
+        ):
+            duplicate_key = (etype, sequence)
+            delivered = delivered_terminals.get(duplicate_key)
+            if delivered == payload:
+                continue
+            delivered_terminals[duplicate_key] = dict(payload)
         if etype == "ActivityCompleted":
             _append_resolved_result(
                 _decode_history_result(
@@ -3427,6 +3617,8 @@ def _replay_state(
         gen = instance.run(ctx, *start_input)
     except NonDeterministicReplayError:
         raise
+    except WorkflowCancelled as exc:
+        return _state([_fail_workflow_from_exception(exc)])
     except Exception as exc:
         return _state([_fail_workflow_from_exception(exc)])
     if not hasattr(gen, "__next__"):
@@ -3444,29 +3636,57 @@ def _replay_state(
     advanced_cmd: Any = None
     terminal_condition_reopen_cmd: WaitCondition | None = None
 
-    def _annotate_parallel_commands(commands: list[Any]) -> list[Any]:
-        if not commands:
-            return commands
-        if len(commands) > 1000:
-            raise ValueError("parallel workflow group exceeds the deterministic limit of 1000 operations")
-        if not all(isinstance(command, ScheduleActivity | StartTimer | StartChildWorkflow) for command in commands):
-            return commands
+    def _parallel_leaf_kind(command: Any) -> str:
+        if isinstance(command, ScheduleActivity):
+            return "activity"
+        if isinstance(command, StartTimer):
+            return "timer"
+        if isinstance(command, StartChildWorkflow):
+            return "child"
+        if isinstance(command, NexusServiceCall):
+            raise TypeError("Nexus service calls must be yielded one at a time")
+        raise TypeError(f"parallel groups support activities, timers, child workflows, and nested lists: {command!r}")
 
-        kinds = {
-            "activity"
-            if isinstance(command, ScheduleActivity)
-            else "timer"
-            if isinstance(command, StartTimer)
-            else "child"
-            for command in commands
-        }
-        kind = next(iter(kinds)) if len(kinds) == 1 else "mixed"
+    def _parallel_leaves(commands: list[Any], *, nested: bool = False) -> list[Any]:
+        if nested and not commands:
+            raise ValueError("nested parallel workflow groups must contain at least one operation")
+        leaves: list[Any] = []
+        for command in commands:
+            if isinstance(command, list):
+                leaves.extend(_parallel_leaves(command, nested=True))
+            else:
+                _parallel_leaf_kind(command)
+                leaves.append(command)
+        if len(leaves) > 1000:
+            raise ValueError("parallel workflow group exceeds the deterministic limit of 1000 operations")
+        return leaves
+
+    def _parallel_group_kind(commands: list[Any]) -> str:
+        kinds = {_parallel_leaf_kind(command) for command in commands if not isinstance(command, list)}
+        for command in commands:
+            if isinstance(command, list):
+                kinds.update(_parallel_leaf_kind(leaf) for leaf in _parallel_leaves(command, nested=True))
+        return next(iter(kinds)) if len(kinds) == 1 else "mixed"
+
+    def _parallel_group_entry(base_sequence: int, size: int, index: int, kind: str) -> dict[str, Any]:
         prefix = {
             "activity": "parallel-activities",
             "child": "parallel-children",
             "timer": "parallel-timers",
             "mixed": "parallel-calls",
         }[kind]
+        return {
+            "parallel_group_id": f"{prefix}:{base_sequence}:{size}",
+            "parallel_group_kind": kind,
+            "parallel_group_base_sequence": base_sequence,
+            "parallel_group_size": size,
+            "parallel_group_index": index,
+        }
+
+    def _annotate_parallel_commands(commands: list[Any]) -> tuple[list[Any], list[Any]]:
+        leaves = _parallel_leaves(commands)
+        if not leaves:
+            return [], []
         candidates = _unconsumed_recorded_steps()
         if candidates:
             base_sequence = candidates[0].workflow_sequence
@@ -3476,21 +3696,45 @@ def _replay_state(
             ]
             base_sequence = max(recorded_sequences, default=0) + len(pending) + 1
 
-        group_id = f"{prefix}:{base_sequence}:{len(commands)}"
-        annotated_commands: list[Any] = []
-        for index, command in enumerate(commands):
-            occurrence = copy(command)
-            occurrence._parallel_group_path = [
-                {
-                    "parallel_group_id": group_id,
-                    "parallel_group_kind": kind,
-                    "parallel_group_base_sequence": base_sequence,
-                    "parallel_group_size": len(commands),
-                    "parallel_group_index": index,
-                }
-            ]
-            annotated_commands.append(occurrence)
-        return annotated_commands
+        def _build(group: list[Any], group_base: int) -> tuple[list[Any], list[Any]]:
+            size = len(_parallel_leaves(group, nested=group is not commands))
+            kind = _parallel_group_kind(group)
+            annotated: list[Any] = []
+            shape: list[Any] = []
+            cursor = 0
+            for command in group:
+                if isinstance(command, list):
+                    nested_commands, nested_shape = _build(command, group_base + cursor)
+                    for offset, nested_command in enumerate(nested_commands):
+                        nested_command._parallel_group_path.insert(
+                            0,
+                            _parallel_group_entry(group_base, size, cursor + offset, kind),
+                        )
+                    annotated.extend(nested_commands)
+                    shape.append(nested_shape)
+                    cursor += len(nested_commands)
+                    continue
+                occurrence = copy(command)
+                occurrence._parallel_group_path = [_parallel_group_entry(group_base, size, cursor, kind)]
+                annotated.append(occurrence)
+                shape.append(None)
+                cursor += 1
+            return annotated, shape
+
+        return _build(commands, base_sequence)
+
+    def _parallel_result_shape(shape: list[Any], values: Iterable[Any]) -> list[Any]:
+        iterator = iter(values)
+
+        def _build(group_shape: list[Any]) -> list[Any]:
+            return [next(iterator) if member is None else _build(member) for member in group_shape]
+
+        result = _build(shape)
+        try:
+            next(iterator)
+        except StopIteration:
+            return result
+        raise RuntimeError("parallel result shape did not consume every durable result")
 
     def _condition_wait_has_pending_receivers(condition_wait_id: str | None) -> bool:
         if condition_wait_id is None:
@@ -3541,14 +3785,12 @@ def _replay_state(
                 first = False
             _apply_due_receivers()
             if isinstance(cmd, list):
-                if any(isinstance(child_command, NexusServiceCall) for child_command in cmd):
-                    raise TypeError("Nexus service calls must be yielded one at a time")
-                cmd = _annotate_parallel_commands(cmd)
+                cmd, result_shape = _annotate_parallel_commands(cmd)
                 needed = len(cmd)
                 if result_cursor + needed <= len(resolved_results):
                     for offset, child_command in enumerate(cmd):
                         _assert_next_step_matches(child_command, offset)
-                    vals = resolved_results[result_cursor:result_cursor + needed]
+                    vals = resolved_results[result_cursor : result_cursor + needed]
                     result_cursor += needed
                     failed = _first_yield_failure(vals)
                     if failed is not None:
@@ -3557,7 +3799,7 @@ def _replay_state(
                             continue
                         except StopIteration as stop:
                             return _terminal_state(stop.value, include_pending=False)
-                    next_value = vals
+                    next_value = _parallel_result_shape(result_shape, vals)
                     continue
                 ctx.logger._set_replaying(False)
                 for offset, child_command in enumerate(cmd):
@@ -3724,5 +3966,7 @@ def _replay_state(
             return _state([_fail_workflow_from_exception(exc)])
     except NonDeterministicReplayError:
         raise
+    except WorkflowCancelled as exc:
+        return _state([_fail_workflow_from_exception(exc)])
     except Exception as exc:
         return _state([_fail_workflow_from_exception(exc)])

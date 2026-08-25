@@ -1229,6 +1229,7 @@ class Worker:
                 payload_codec=payload_codec,
                 external_storage=self.external_storage,
                 external_storage_cache=self.external_storage_cache,
+                cancel_requested=bool(task.get("cancel_requested", False)),
             )
             commands = list(outcome.commands)
 
@@ -1383,6 +1384,7 @@ class Worker:
                 payload_codec=codec,
                 external_storage=self.external_storage,
                 external_storage_cache=self.external_storage_cache,
+                cancel_requested=bool(task.get("cancel_requested", False)),
             )
         except AvroNotInstalledError as e:
             log.exception("replay failed: Avro dependency unavailable")

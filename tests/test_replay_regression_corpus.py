@@ -46,6 +46,20 @@ class ParallelResultBindingWorkflow:
         return {"results": results}
 
 
+@workflow.defn(name="tests.replay.nested-parallel-path")
+class NestedParallelPathWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return (
+            yield [
+                ctx.schedule_activity("path-first", []),
+                [
+                    ctx.start_child_workflow("path-child", []),
+                    ctx.start_timer(1),
+                ],
+            ]
+        )
+
+
 @workflow.defn(name="tests.replay.workflow-stream-author")
 class WorkflowStreamAuthorWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -63,6 +77,7 @@ WORKFLOWS = [
     GoldenSingleActivityWorkflow,
     GoldenTimeoutWaitWorkflow,
     GoldenVersionMarkerWorkflow,
+    NestedParallelPathWorkflow,
     ParallelMetadataProducerWorkflow,
     ParallelResultBindingWorkflow,
     UpdateSignalConditionTimerWorkflow,

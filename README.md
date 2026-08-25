@@ -186,6 +186,54 @@ receipt = yield ctx.start_child_workflow(
 )
 ```
 
+## Deterministic parallel groups
+
+Yield a list to schedule one durable parallel barrier. Lists can nest and mix
+activities, child workflows, and timers. The worker flattens only the Server
+commands, records a stable full `parallel_group_path` on every leaf, and
+returns results in the original nested input shape regardless of terminal
+delivery order:
+
+```python
+results = yield [
+    ctx.schedule_activity("load-profile", [customer_id]),
+    [
+        ctx.start_child_workflow("quote-shipping", [customer_id]),
+        ctx.start_timer(5),
+    ],
+]
+profile, (shipping, _) = results
+```
+
+One failed activity or child is thrown at the list-yield point by durable input
+position. Already recorded sibling completions remain replayable; late and
+exact duplicate terminal deliveries do not change the selected result.
+
+## Saga compensation
+
+`ctx.saga()` registers ordinary activity commands as compensations and runs
+them sequentially in reverse registration order after failure or cooperative
+cancellation:
+
+```python
+def forward(saga):
+    flight = yield ctx.schedule_activity("trip.reserve-flight", [])
+    saga.add_compensation("trip.cancel-flight", [flight])
+
+    hotel = yield ctx.schedule_activity("trip.reserve-hotel", [])
+    saga.add_compensation("trip.cancel-hotel", [hotel])
+
+    ctx.throw_if_cancellation_requested()
+    yield ctx.schedule_activity("trip.charge", [])
+    return {"status": "booked"}
+
+return (yield from ctx.saga().run(forward))
+```
+
+Compensation stops at its first failure. `SagaCompensationFailed` retains the
+initiating failure, compensation failure, activity type, and deterministic
+registration order as structured fields.
+
 ## Nexus service calls
 
 Workflow code can call a registered Nexus service operation through

@@ -541,6 +541,32 @@ class WorkflowTerminated(DurableWorkflowError):
         super().__init__(message)
 
 
+class SagaCompensationFailed(DurableWorkflowError):
+    """A saga compensation failed after an earlier workflow failure.
+
+    Both failures remain available as typed attributes so applications and
+    failure serializers do not have to recover the initiating cause from
+    formatted text.
+    """
+
+    def __init__(
+        self,
+        initiating_failure: BaseException,
+        compensation_failure: BaseException,
+        *,
+        compensation_activity_type: str,
+        compensation_registration_order: int,
+    ) -> None:
+        super().__init__(
+            f"saga compensation {compensation_activity_type!r} failed after "
+            f"{type(initiating_failure).__name__}: {initiating_failure}"
+        )
+        self.initiating_failure = initiating_failure
+        self.compensation_failure = compensation_failure
+        self.compensation_activity_type = compensation_activity_type
+        self.compensation_registration_order = compensation_registration_order
+
+
 class WorkflowCancelled(BaseException):
     """A workflow was cancelled and finished in the ``cancelled`` state.
 

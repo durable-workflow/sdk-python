@@ -14,6 +14,14 @@ Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
 
 ### Added
+- List-yield parallel composition now accepts nested activity, child-workflow,
+  and timer groups, schedules every durable leaf through the existing command
+  protocol, restores the nested input shape on replay, and keeps stable full
+  group paths across restart and duplicate terminal delivery.
+- `WorkflowContext.saga()` provides deterministic reverse-order activity
+  compensation for failures and cooperative cancellation.
+  `SagaCompensationFailed` preserves both the initiating and compensation
+  failures as structured diagnostics.
 - Clients and workers now externalize large Avro payloads through the
   authenticated namespace runtime using only the runtime URL, namespace, and
   role credential. Opaque references are resolved before decode with bounded
