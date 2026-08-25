@@ -2,19 +2,24 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from types import ModuleType
 
 import pytest
 from scripts import check_release_metadata
 from scripts.check_release_metadata import ReleaseMetadataError, SourceMetadata
 
+from durable_workflow.client import PROTOCOL_VERSION
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def source_metadata() -> SourceMetadata:
     return SourceMetadata(
         commit="a" * 40,
         name="durable-workflow",
-        version="2.0.0-rc.35",
-        registry_version="2.0.0rc35",
+        version="2.0.0-rc.36",
+        registry_version="2.0.0rc36",
         summary="Release candidate Python SDK for the Durable Workflow 2.0 train",
         classifiers=("Programming Language :: Python :: 3",),
         readme=(
@@ -22,6 +27,20 @@ def source_metadata() -> SourceMetadata:
             "Build replay-safe Python workflows with explicit activities and durable execution semantics.\n"
         ),
     )
+
+
+def test_worker_release_identity_matches_supported_server_and_protocol() -> None:
+    manifest = check_release_metadata._load_toml_parser().loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    project = manifest["project"]
+    release = manifest["tool"]["durable-workflow"]
+
+    assert project["version"] == "2.0.0-rc.36"
+    assert release["product-train"] == project["version"]
+    assert release["registry-version"] == "2.0.0rc36"
+    assert release["supported-server-versions"] == "2.0.0-rc.50"
+    assert release["worker-protocol-version"] == PROTOCOL_VERSION == "1.16"
 
 
 def pypi_json(source: SourceMetadata, **overrides: object) -> bytes:

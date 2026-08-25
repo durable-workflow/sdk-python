@@ -36,6 +36,8 @@ from durable_workflow.interceptors import (
 )
 from durable_workflow.nexus import NEXUS_OPERATION_RESULT_SCHEMA, NexusOperationResult
 from durable_workflow.worker import (
+    MEMO_UPSERTS_CAPABILITY,
+    TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
     UPDATE_VALIDATION_TASKS_CAPABILITY,
     WORKFLOW_UPDATES_CAPABILITY,
     Worker,
@@ -361,32 +363,52 @@ class TestWorkerRegistration:
             activities=[echo_activity],
             worker_id="w-test",
         )
+        process_metrics = {
+            "host": "worker-host",
+            "process_id": 1234,
+            "process_started_at": "2026-08-25T18:00:00Z",
+        }
+        worker._current_process_metrics = Mock(return_value=process_metrics)  # type: ignore[method-assign]
+
         await worker._register()
-        mock_client.register_worker.assert_called_once()
+        mock_client.register_worker.assert_awaited_once()
         call_kwargs = mock_client.register_worker.call_args.kwargs
-        assert call_kwargs["task_queue"] == "q1"
-        assert "test-wf" in call_kwargs["supported_workflow_types"]
-        assert call_kwargs["workflow_definition_fingerprints"]["test-wf"].startswith("sha256:")
-        assert call_kwargs["workflow_command_contracts"]["test-wf"] == {
-            "queries": [],
-            "query_contracts": [],
-            "signals": [],
-            "signal_contracts": [],
-            "updates": [],
-            "update_contracts": [],
-            "update_validators": [],
+        assert call_kwargs == {
+            "worker_id": "w-test",
+            "task_queue": "q1",
+            "supported_workflow_types": ["test-wf"],
+            "workflow_definition_fingerprints": worker.workflow_definition_fingerprints,
+            "workflow_command_contracts": {
+                "test-wf": {
+                    "queries": [],
+                    "query_contracts": [],
+                    "signals": [],
+                    "signal_contracts": [],
+                    "updates": [],
+                    "update_contracts": [],
+                    "update_validators": [],
+                }
+            },
+            "supported_activity_types": ["test-act"],
+            "max_concurrent_workflow_tasks": 10,
+            "max_concurrent_activity_tasks": 10,
+            "build_id": None,
+            "capabilities": [
+                "memo_upserts",
+                "typed_search_attributes",
+                "query_tasks",
+            ],
+            "task_slots": {
+                "workflow_available": 10,
+                "activity_available": 10,
+            },
+            "process_metrics": process_metrics,
         }
-        assert "test-act" in call_kwargs["supported_activity_types"]
-        assert call_kwargs["max_concurrent_workflow_tasks"] == 10
-        assert call_kwargs["max_concurrent_activity_tasks"] == 10
-        assert call_kwargs["capabilities"] == ["query_tasks"]
-        assert call_kwargs["task_slots"] == {
-            "workflow_available": 10,
-            "activity_available": 10,
-        }
-        process_metrics = call_kwargs["process_metrics"]
-        assert process_metrics["process_id"] > 0
-        assert "process_started_at" in process_metrics
+
+        await worker.stop()
+
+        assert worker._registered is False
+        mock_client.deregister_worker_registration.assert_awaited_once_with("w-test")
 
     @pytest.mark.asyncio
     async def test_register_advertises_typed_workflow_command_contracts(
@@ -497,6 +519,8 @@ class TestWorkerRegistration:
         }
         assert mock_client.register_worker.await_args_list[0].kwargs["build_id"] == "release-a"
         assert mock_client.register_worker.await_args_list[0].kwargs["capabilities"] == [
+            MEMO_UPSERTS_CAPABILITY,
+            TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
             "query_tasks",
             WORKFLOW_UPDATES_CAPABILITY,
         ]
@@ -578,6 +602,8 @@ class TestWorkerRegistration:
         registered = mock_client.register_worker.await_args.kwargs
         assert registered["workflow_command_contracts"]["validated-registration-wf"]["update_validators"] == ["approve"]
         assert registered["capabilities"] == [
+            MEMO_UPSERTS_CAPABILITY,
+            TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
             "query_tasks",
             UPDATE_VALIDATION_TASKS_CAPABILITY,
             WORKFLOW_UPDATES_CAPABILITY,
@@ -657,7 +683,7 @@ class TestWorkerRegistration:
         assert mock_client.poll_workflow_task.call_args.kwargs["timeout"] == 17.0
 
     @pytest.mark.asyncio
-    async def test_register_omits_query_task_capability_when_server_does_not_support_it(
+    async def test_register_keeps_baseline_capabilities_when_server_does_not_support_query_tasks(
         self, mock_client: AsyncMock
     ) -> None:
         mock_client.get_cluster_info = AsyncMock(
@@ -674,7 +700,10 @@ class TestWorkerRegistration:
         await worker._register()
 
         call_kwargs = mock_client.register_worker.call_args.kwargs
-        assert call_kwargs["capabilities"] is None
+        assert call_kwargs["capabilities"] == [
+            MEMO_UPSERTS_CAPABILITY,
+            TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
+        ]
 
     @pytest.mark.asyncio
     async def test_register_advertises_custom_concurrency_limits(self, mock_client: AsyncMock) -> None:
@@ -922,7 +951,7 @@ class TestWorkerRegistration:
             return_value=compatible_cluster_info(worker_protocol={"version": "1.0"})
         )
         worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
-        with pytest.raises(RuntimeError, match=r"minor>='1\.14'"):
+        with pytest.raises(RuntimeError, match=rf"minor>='{PROTOCOL_VERSION}'"):
             await worker._register()
         mock_client.register_worker.assert_not_called()
 

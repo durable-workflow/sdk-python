@@ -144,6 +144,7 @@ class TestHeaders:
 
     def test_worker_headers(self, client: Client) -> None:
         h = client._headers(worker=True)
+        assert PROTOCOL_VERSION == "1.16"
         assert h["X-Durable-Workflow-Protocol-Version"] == PROTOCOL_VERSION
         assert "X-Durable-Workflow-Control-Plane-Version" not in h
 
@@ -3259,16 +3260,26 @@ class TestRegisterWorker:
             }
 
     @pytest.mark.asyncio
-    async def test_register_sends_worker_capabilities_when_configured(self, client: Client) -> None:
+    async def test_register_preserves_explicit_worker_capabilities(self, client: Client) -> None:
         resp = _mock_response(201, {"worker_id": "w1", "registered": True})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
             await client.register_worker(
                 worker_id="w1",
                 task_queue="q1",
-                capabilities=["query_tasks"],
+                runtime="custom-runtime",
+                sdk_version="custom-sdk/9.9.9",
+                capabilities=["custom_capability", "typed_search_attributes"],
             )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
-            assert body["capabilities"] == ["query_tasks"]
+            assert body == {
+                "worker_id": "w1",
+                "task_queue": "q1",
+                "runtime": "custom-runtime",
+                "sdk_version": "custom-sdk/9.9.9",
+                "supported_workflow_types": [],
+                "supported_activity_types": [],
+                "capabilities": ["custom_capability", "typed_search_attributes"],
+            }
 
     @pytest.mark.asyncio
     async def test_register_sends_worker_capacity_when_configured(self, client: Client) -> None:

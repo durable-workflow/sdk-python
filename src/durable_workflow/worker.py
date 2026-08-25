@@ -91,6 +91,16 @@ log = logging.getLogger("durable_workflow.worker")
 QUERY_TASKS_CAPABILITY = "query_tasks"
 UPDATE_VALIDATION_TASKS_CAPABILITY = "update_validation_tasks"
 WORKFLOW_UPDATES_CAPABILITY = "workflow_updates"
+MEMO_UPSERTS_CAPABILITY = "memo_upserts"
+TYPED_SEARCH_ATTRIBUTES_CAPABILITY = "typed_search_attributes"
+
+# Command capabilities implemented by every high-level Python worker. Keep this
+# advertisement explicit: worker capabilities are not inferred from runtime,
+# SDK, or protocol-version metadata.
+_WORKFLOW_COMMAND_CAPABILITIES = (
+    MEMO_UPSERTS_CAPABILITY,
+    TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
+)
 
 _WORKFLOW_WORK_TASK_KINDS = ("workflow", "update_validation")
 _MULTIPLEXED_WORKFLOW_POLL_ENDPOINT = "/worker/workflow-tasks/poll"
@@ -1114,7 +1124,7 @@ class Worker:
             _manifest_version(info.get("worker_protocol")),
         )
 
-        capabilities: list[str] = []
+        capabilities = list(_WORKFLOW_COMMAND_CAPABILITIES)
         if self._query_tasks_supported:
             capabilities.append(QUERY_TASKS_CAPABILITY)
         if has_update_validators:
@@ -1132,7 +1142,7 @@ class Worker:
             max_concurrent_workflow_tasks=self.max_concurrent_workflow_tasks,
             max_concurrent_activity_tasks=self.max_concurrent_activity_tasks,
             build_id=self.build_id,
-            capabilities=capabilities or None,
+            capabilities=capabilities,
             task_slots=self._current_task_slots(),
             process_metrics=self._current_process_metrics(),
         )
