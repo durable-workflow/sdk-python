@@ -18,11 +18,13 @@ history.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import logging
 import math
 import random
+import re
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import copy
@@ -965,6 +967,96 @@ class UpsertSearchAttributes:
         }
 
 
+_MEMO_KEY_PATTERN = re.compile(r"^(?!-?[0-9]+$)[A-Za-z0-9_.:-]{1,64}$")
+_MAX_MEMO_ENTRIES = 100
+_MAX_MEMO_VALUE_SIZE_BYTES = 10_240
+_MAX_MEMO_TOTAL_SIZE_BYTES = 65_536
+
+
+def _canonical_memo_value(value: Any) -> Any:
+    value = serializer.to_avro_payload_value(value)
+    if isinstance(value, Mapping):
+        normalized: dict[str, Any] = {}
+        for key, nested in value.items():
+            if not isinstance(key, str):
+                raise ValueError("workflow memo map keys must be strings")
+            normalized[key] = _canonical_memo_value(nested)
+        return {key: normalized[key] for key in sorted(normalized)}
+    if isinstance(value, list):
+        return [_canonical_memo_value(item) for item in value]
+    serializer.encode(value, size_warning=None)
+    return value
+
+
+def _memo_avro_bytes(value: Any) -> bytes:
+    return base64.b64decode(serializer.encode(value, size_warning=None), validate=True)
+
+
+def _memo_replay_identity(value: Mapping[str, Any]) -> str:
+    return serializer.encode(_canonical_memo_entries(value), size_warning=None)
+
+
+def _canonical_memo_entries(entries: Mapping[str, Any], *, require_entries: bool = True) -> dict[str, Any]:
+    if require_entries and not entries:
+        raise ValueError("workflow memo updates require at least one entry")
+    if len(entries) > _MAX_MEMO_ENTRIES:
+        raise ValueError(f"workflow memo updates may contain at most {_MAX_MEMO_ENTRIES} entries")
+
+    normalized: dict[str, Any] = {}
+    for key, value in entries.items():
+        if not isinstance(key, str) or _MEMO_KEY_PATTERN.fullmatch(key) is None:
+            raise ValueError("workflow memo keys must match ^(?!-?[0-9]+$)[A-Za-z0-9_.:-]{1,64}$")
+        canonical = _canonical_memo_value(value)
+        if len(_memo_avro_bytes(canonical)) > _MAX_MEMO_VALUE_SIZE_BYTES:
+            raise ValueError(
+                f"workflow memo value {key!r} exceeds the {_MAX_MEMO_VALUE_SIZE_BYTES}-byte limit"
+            )
+        normalized[key] = canonical
+
+    normalized = {key: normalized[key] for key in sorted(normalized)}
+    if len(_memo_avro_bytes(normalized)) > _MAX_MEMO_TOTAL_SIZE_BYTES:
+        raise ValueError(
+            f"workflow memo update exceeds the {_MAX_MEMO_TOTAL_SIZE_BYTES}-byte total limit"
+        )
+    return normalized
+
+
+@dataclass
+class UpsertMemo:
+    """Merge non-indexed workflow memo metadata through durable history.
+
+    ``None`` deletes a key. The SDK encodes the complete patch in the public
+    Avro payload envelope consumed by Server and Cloud runtimes.
+    """
+
+    entries: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        self.entries = _canonical_memo_entries(self.entries)
+
+    def to_server_command(
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
+    ) -> dict[str, Any]:
+        return {
+            "type": "upsert_memo",
+            "entries": serializer.envelope(
+                self.entries,
+                codec=payload_codec,
+                size_warning=size_warning,
+                warning_context=_payload_warning_context(
+                    warning_context,
+                    kind="workflow_memo_entries",
+                    task_queue=task_queue,
+                ),
+            ),
+        }
+
+
 @dataclass
 class WaitCondition:
     """Command that yields execution until a workflow-defined predicate becomes true.
@@ -1026,7 +1118,7 @@ def _condition_predicate_fingerprint(predicate: Callable[[], bool]) -> str:
 Command = (
     ScheduleActivity | StartTimer | CompleteWorkflow | FailWorkflow
     | CompleteUpdate | FailUpdate | ContinueAsNew | RecordSideEffect | StartChildWorkflow
-    | NexusServiceCall | RecordVersionMarker | UpsertSearchAttributes | WaitCondition
+    | NexusServiceCall | RecordVersionMarker | UpsertMemo | UpsertSearchAttributes | WaitCondition
 )
 
 
@@ -1704,6 +1796,10 @@ class WorkflowContext:
 
     def upsert_search_attributes(self, attributes: dict[str, Any]) -> UpsertSearchAttributes:
         return UpsertSearchAttributes(attributes=dict(attributes))
+
+    def upsert_memo(self, entries: Mapping[str, Any]) -> UpsertMemo:
+        """Return a replayable memo merge command with structural validation."""
+        return UpsertMemo(entries=dict(entries))
 
     def continue_as_new(
         self,
@@ -2770,6 +2866,11 @@ def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
         value = payload.get(key)
         if isinstance(value, str) and value:
             details[key] = value
+    entries = payload.get("entries")
+    if isinstance(entries, Mapping):
+        details["entries_identity"] = _memo_replay_identity(
+            _decode_memo_history_map(entries, require_entries=True)
+        )
     raw_parallel_path = payload.get("parallel_group_path")
     if (
         isinstance(raw_parallel_path, list)
@@ -2793,6 +2894,20 @@ def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
     return details
 
 
+def _decode_memo_history_map(
+    envelope: Mapping[str, Any],
+    *,
+    require_entries: bool,
+) -> dict[str, Any]:
+    """Decode the inline Avro map envelope persisted in MemoUpserted history."""
+    if set(envelope) != {"codec", "blob"}:
+        raise ValueError("MemoUpserted history requires exactly the public {codec, blob} payload envelope")
+    decoded = serializer.decode_envelope(dict(envelope))
+    if not isinstance(decoded, Mapping):
+        raise ValueError("MemoUpserted Avro payload must decode to a string-keyed map")
+    return _canonical_memo_entries(decoded, require_entries=require_entries)
+
+
 def _is_resolved_step_event(
     event_type: str | None,
     payload: Mapping[str, Any],
@@ -2808,6 +2923,7 @@ def _is_resolved_step_event(
         "ChildRunTerminated",
         "SideEffectRecorded",
         "VersionMarkerRecorded",
+        "MemoUpserted",
         "SearchAttributesUpserted",
     ):
         return True
@@ -2829,6 +2945,8 @@ def _command_history_shape(command: Any) -> str | None:
         return "side effect"
     if isinstance(command, RecordVersionMarker):
         return "version marker"
+    if isinstance(command, UpsertMemo):
+        return "memo upsert"
     if isinstance(command, UpsertSearchAttributes):
         return "search attributes upsert"
     if isinstance(command, WaitCondition):
@@ -2882,6 +3000,10 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
                 f"Recorded version change_id {recorded!r}, but current workflow "
                 f"requested {command.change_id!r}."
             )
+    elif isinstance(command, UpsertMemo):
+        recorded = step.details.get("entries_identity")
+        if isinstance(recorded, str) and recorded != _memo_replay_identity(command.entries):
+            return "Recorded memo entries differ from the current workflow memo update."
     return None
 
 
@@ -3047,7 +3169,13 @@ def _replay_state(
             continue
         if event_type is not None:
             event_types_by_sequence.setdefault(sequence, []).append(event_type)
-        details_by_sequence.setdefault(sequence, {}).update(_recorded_step_details(payload))
+        try:
+            recorded_details = _recorded_step_details(payload)
+        except (TypeError, ValueError):
+            # The sequence-specific history parser below turns malformed memo
+            # envelopes into the public non-determinism diagnostic.
+            recorded_details = {}
+        details_by_sequence.setdefault(sequence, {}).update(recorded_details)
         if event_type == "ConditionWaitOpened":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
@@ -3102,6 +3230,7 @@ def _replay_state(
     recorded_wait_steps: list[_RecordedStep] = []
     recorded_pending_steps: list[_RecordedStep] = []
     pending_sequences_added: set[int] = set()
+    memo_sequences_added: set[int] = set()
     # External receivers normally apply by resolved-result cursor. Receivers
     # observed while a condition wait is open are pinned to that wait so
     # sequential signal-driven waits do not collapse to the same cursor.
@@ -3461,6 +3590,58 @@ def _replay_state(
             _append_pending_step("child workflow", ev)
         elif etype == "VersionMarkerRecorded":
             _append_resolved_result(payload.get("version", 0), "version marker", ev)
+        elif etype == "MemoUpserted":
+            sequence = _workflow_sequence(payload)
+            if sequence is None:
+                raise NonDeterministicReplayError(
+                    len(recorded_steps) + 1,
+                    "memo upsert with positive workflow sequence",
+                    ["MemoUpserted"],
+                    detail="MemoUpserted history must retain its replay sequence.",
+                )
+            if sequence in memo_sequences_added:
+                raise NonDeterministicReplayError(
+                    sequence,
+                    "one MemoUpserted event",
+                    ["MemoUpserted", "MemoUpserted"],
+                    detail="A workflow sequence cannot record the same memo update twice.",
+                )
+            entries = payload.get("entries")
+            if not isinstance(entries, Mapping):
+                raise NonDeterministicReplayError(
+                    sequence,
+                    "memo upsert with canonical entries",
+                    ["MemoUpserted"],
+                    detail="MemoUpserted history must retain the applied entries as replay identity.",
+                )
+            try:
+                _decode_memo_history_map(entries, require_entries=True)
+            except (TypeError, ValueError) as exc:
+                raise NonDeterministicReplayError(
+                    sequence,
+                    "memo upsert with canonical Avro entries envelope",
+                    ["MemoUpserted"],
+                    detail=f"MemoUpserted history has invalid entries: {exc}",
+                ) from exc
+            merged = payload.get("merged")
+            if not isinstance(merged, Mapping):
+                raise NonDeterministicReplayError(
+                    sequence,
+                    "memo upsert with merged projection",
+                    ["MemoUpserted"],
+                    detail="MemoUpserted history must retain the merged memo projection.",
+                )
+            try:
+                _decode_memo_history_map(merged, require_entries=False)
+            except (TypeError, ValueError) as exc:
+                raise NonDeterministicReplayError(
+                    sequence,
+                    "memo upsert with merged Avro projection envelope",
+                    ["MemoUpserted"],
+                    detail=f"MemoUpserted history has invalid merged projection: {exc}",
+                ) from exc
+            memo_sequences_added.add(sequence)
+            _append_resolved_result(None, "memo upsert", ev)
         elif etype == "SearchAttributesUpserted":
             _append_resolved_result(None, "search attributes upsert", ev)
         elif etype == "SignalReceived":
@@ -3837,7 +4018,7 @@ def _replay_state(
                 pending.append(cmd)
                 next_value = cmd.result
                 continue
-            if isinstance(cmd, UpsertSearchAttributes):
+            if isinstance(cmd, UpsertMemo | UpsertSearchAttributes):
                 if result_cursor < len(resolved_results):
                     _assert_next_step_matches(cmd)
                     next_value = resolved_results[result_cursor]

@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def test_release_identity_aligns_install_paths_and_server_pairing() -> None:
     identity = load_release_identity(REPO_ROOT)
 
-    assert identity.server_version == "2.0.0-rc.43"
+    assert identity.server_version == "2.0.0-rc.47"
     validate_source_templates(REPO_ROOT, identity)
 
 

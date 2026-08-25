@@ -55,6 +55,13 @@ class TestWorkflow:
         return result
 
 
+@workflow.defn(name="memo-wf")
+class MemoWorkflow:
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        yield ctx.upsert_memo({"stage": "processing"})
+        return "done"
+
+
 @workflow.defn(name="fanout-wf")
 class FanOutWorkflow:
     def run(self, ctx):  # type: ignore[no-untyped-def]
@@ -908,19 +915,19 @@ class TestWorkerRegistration:
         mock_client.register_worker.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_register_rejects_worker_protocol_below_payload_codec_floor(
+    async def test_register_rejects_worker_protocol_below_current_command_floor(
         self, mock_client: AsyncMock
     ) -> None:
         mock_client.get_cluster_info = AsyncMock(
             return_value=compatible_cluster_info(worker_protocol={"version": "1.0"})
         )
         worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
-        with pytest.raises(RuntimeError, match=r"minor>='1\.1'"):
+        with pytest.raises(RuntimeError, match=r"minor>='1\.14'"):
             await worker._register()
         mock_client.register_worker.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_register_accepts_protocol_1_1_when_newer_feature_floor_is_unavailable(
+    async def test_register_accepts_current_protocol_when_optional_feature_is_unavailable(
         self, mock_client: AsyncMock
     ) -> None:
         mock_client.get_cluster_info = AsyncMock(
@@ -976,6 +983,69 @@ class TestWorkerRegistration:
 
 
 class TestWorkflowTaskExecution:
+    @pytest.mark.asyncio
+    async def test_memo_command_uses_discovered_runtime_capability(self, mock_client: AsyncMock) -> None:
+        info = compatible_cluster_info()
+        worker_protocol = dict(info["worker_protocol"])  # type: ignore[arg-type]
+        capabilities = dict(worker_protocol["server_capabilities"])
+        capabilities.update({
+            "workflow_memo_updates": {"supported": True, "minimum_protocol_version": "1.14"},
+            "supported_workflow_task_commands": ["upsert_memo", "complete_workflow"],
+        })
+        worker_protocol["server_capabilities"] = capabilities
+        info["worker_protocol"] = worker_protocol
+        mock_client.get_cluster_info = AsyncMock(return_value=info)
+        worker = Worker(mock_client, task_queue="q1", workflows=[MemoWorkflow], activities=[])
+        await worker._register()
+        mock_client.complete_workflow_task.reset_mock()
+
+        await worker._run_workflow_task({
+            "task_id": "memo-task",
+            "workflow_type": "memo-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
+        })
+
+        commands = mock_client.complete_workflow_task.await_args.kwargs["commands"]
+        assert commands[0]["type"] == "upsert_memo"
+        assert set(commands[0]["entries"]) == {"codec", "blob"}
+        assert serializer.decode_envelope(commands[0]["entries"]) == {"stage": "processing"}
+
+    @pytest.mark.asyncio
+    async def test_memo_command_fails_before_completion_without_runtime_capability(
+        self, mock_client: AsyncMock
+    ) -> None:
+        info = compatible_cluster_info()
+        worker_protocol = dict(info["worker_protocol"])  # type: ignore[arg-type]
+        capabilities = dict(worker_protocol["server_capabilities"])
+        capabilities.update({
+            "workflow_memo_updates": {"supported": False, "minimum_protocol_version": "1.14"},
+            "supported_workflow_task_commands": ["complete_workflow"],
+        })
+        worker_protocol["server_capabilities"] = capabilities
+        info["worker_protocol"] = worker_protocol
+        mock_client.get_cluster_info = AsyncMock(return_value=info)
+        worker = Worker(mock_client, task_queue="q1", workflows=[MemoWorkflow], activities=[])
+        await worker._register()
+        mock_client.complete_workflow_task.reset_mock()
+        mock_client.fail_workflow_task.reset_mock()
+
+        await worker._run_workflow_task({
+            "task_id": "memo-task-unsupported",
+            "workflow_type": "memo-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": serializer.encode([], codec="avro"),
+            "payload_codec": "avro",
+        })
+
+        mock_client.complete_workflow_task.assert_not_called()
+        assert "workflow_memo_updates_unavailable" in (
+            mock_client.fail_workflow_task.await_args.kwargs["message"]
+        )
+
     @pytest.mark.asyncio
     async def test_schedule_activity_on_first_replay(self, mock_client: AsyncMock) -> None:
         worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])

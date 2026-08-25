@@ -71,6 +71,22 @@ class WorkflowStreamAuthorWorkflow:
         return "done"
 
 
+@workflow.defn(name="tests.replay.workflow-memo-author")
+class WorkflowMemoAuthorWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.upsert_memo(
+            {
+                "binary": b"same",
+                "double": 7.0,
+                "invalid_binary": b"\xff\x00",
+                "long": 7,
+                "nested": {"beta": 2, "alpha": 1},
+                "text": "same",
+            }
+        )
+        return "memo-replayed"
+
+
 WORKFLOWS = [
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
@@ -82,6 +98,7 @@ WORKFLOWS = [
     ParallelResultBindingWorkflow,
     UpdateSignalConditionTimerWorkflow,
     WorkflowStreamAuthorWorkflow,
+    WorkflowMemoAuthorWorkflow,
 ]
 WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__)): workflow for workflow in WORKFLOWS}
 

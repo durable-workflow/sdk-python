@@ -78,6 +78,7 @@ from .workflow import (
     Command,
     NexusServiceCall,
     RecordSideEffect,
+    UpsertMemo,
     apply_update,
     commands_to_server_commands,
     query_state,
@@ -829,6 +830,23 @@ def _server_supports_query_tasks(info: dict[str, Any]) -> bool:
     return isinstance(capabilities, dict) and capabilities.get("query_tasks") is True
 
 
+def _server_supports_workflow_memo_updates(info: dict[str, Any]) -> bool:
+    worker_protocol = info.get("worker_protocol")
+    if not isinstance(worker_protocol, dict):
+        return False
+    capabilities = worker_protocol.get("server_capabilities")
+    if not isinstance(capabilities, dict):
+        return False
+    memo = capabilities.get("workflow_memo_updates")
+    supported_commands = capabilities.get("supported_workflow_task_commands")
+    return (
+        isinstance(memo, dict)
+        and memo.get("supported") is True
+        and isinstance(supported_commands, list)
+        and "upsert_memo" in supported_commands
+    )
+
+
 def _server_supports_update_validation_tasks(info: dict[str, Any]) -> bool:
     worker_protocol = info.get("worker_protocol")
     if not isinstance(worker_protocol, dict):
@@ -952,6 +970,7 @@ class Worker:
         self._registration_done = asyncio.Event()
         self._shutdown_task: asyncio.Task[None] | None = None
         self._query_tasks_supported = False
+        self._workflow_memo_updates_supported = False
         self._update_validation_tasks_supported = False
         self._query_thread_stop = threading.Event()
         self._query_thread: threading.Thread | None = None
@@ -1072,6 +1091,7 @@ class Worker:
 
         _validate_server_compatibility(info)
         self._query_tasks_supported = _server_supports_query_tasks(info)
+        self._workflow_memo_updates_supported = _server_supports_workflow_memo_updates(info)
         has_update_validators = any(
             contract["update_validators"] for contract in self.workflow_command_contracts.values()
         )
@@ -1441,6 +1461,26 @@ class Worker:
                 )
             except Exception as fe:
                 log.warning("failed to report workflow Nexus resolution failure: %s", fe)
+            return None
+
+        if (
+            any(isinstance(command, UpsertMemo) for command in workflow_commands)
+            and not self._workflow_memo_updates_supported
+        ):
+            message = (
+                "workflow_memo_updates_unavailable: the connected runtime did not advertise "
+                "workflow memo update support"
+            )
+            try:
+                await self.client.fail_workflow_task(
+                    task_id=task_id,
+                    lease_owner=self.worker_id,
+                    workflow_task_attempt=attempt,
+                    message=message,
+                    failure_type="RuntimeCapabilityUnsupported",
+                )
+            except Exception as failure_error:
+                log.warning("failed to report workflow memo capability failure: %s", failure_error)
             return None
 
         commands = commands_to_server_commands(

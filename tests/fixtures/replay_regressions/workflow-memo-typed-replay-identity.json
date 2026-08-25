@@ -1,0 +1,34 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "workflow-memo-typed-replay-identity",
+  "protocol_version": "1.14",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.workflow-memo-author",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "MemoUpserted",
+      "payload": {
+        "sequence": 1,
+        "entries": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4MDGJpbmFyeQgIc2FtZQxkb3VibGUGAAAAAAAAHEAcaW52YWxpZF9iaW5hcnkIBP8ACGxvbmcEDgxuZXN0ZWQOBAphbHBoYQQCCGJldGEEBAAIdGV4dAoIc2FtZQA="
+        },
+        "merged": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4MDGJpbmFyeQgIc2FtZQxkb3VibGUGAAAAAAAAHEAcaW52YWxpZF9iaW5hcnkIBP8ACGxvbmcEDgxuZXN0ZWQOBAphbHBoYQQCCGJldGEEBAAIdGV4dAoIc2FtZQA="
+        }
+      }
+    }
+  ],
+  "expected": {
+    "type": "complete_workflow",
+    "result": "memo-replayed"
+  }
+}

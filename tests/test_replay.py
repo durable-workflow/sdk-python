@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 
@@ -27,6 +28,7 @@ from durable_workflow.workflow import (
     ScheduleActivity,
     StartChildWorkflow,
     StartTimer,
+    UpsertMemo,
     UpsertSearchAttributes,
     WorkflowContext,
     commands_to_server_commands,
@@ -1342,6 +1344,32 @@ class SearchAttrWorkflow:
         return result
 
 
+@workflow.defn(name="memo-upsert-wf")
+class MemoUpsertWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.upsert_memo({
+            "text": "same",
+            "nested": {"beta": 2, "alpha": 1},
+            "long": 7,
+            "double": 7.0,
+            "binary": b"same",
+        })
+        return "done"
+
+
+@workflow.defn(name="memo-upsert-changed-types-wf")
+class MemoUpsertChangedTypesWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.upsert_memo({
+            "text": b"same",
+            "nested": {"alpha": 1, "beta": 2},
+            "long": 7.0,
+            "double": 7,
+            "binary": "same",
+        })
+        return "done"
+
+
 @workflow.defn(name="tests.polyglot.history-contract")
 class PolyglotHistoryContractWorkflow:
     def __init__(self) -> None:
@@ -1812,6 +1840,105 @@ class TestSearchAttributeUpsert:
         sc = cmd.to_server_command("q")
         assert sc["type"] == "upsert_search_attributes"
         assert sc["attributes"] == {"key": "val"}
+
+
+class TestMemoUpsert:
+    def test_first_replay_emits_canonical_language_neutral_command(self) -> None:
+        outcome = replay(MemoUpsertWorkflow, [], [])
+        server_entries = {
+            "codec": "avro",
+            "blob": (
+                "wwHioz3/VYAiNw4KDGJpbmFyeQgIc2FtZQxkb3VibGUGAAAAAAAAHEAIbG9uZwQODG5lc3RlZA4ECmFscGhhBAIIYmV0YQQEAAh0ZXh0CghzYW1lAA=="
+            ),
+        }
+
+        assert len(outcome.commands) == 2
+        command = outcome.commands[0]
+        assert isinstance(command, UpsertMemo)
+        assert list(command.entries) == ["binary", "double", "long", "nested", "text"]
+        server_command = command.to_server_command("q")
+        assert server_command["type"] == "upsert_memo"
+        assert server_command["entries"] == server_entries
+        assert serializer.decode_envelope(server_command["entries"]) == command.entries
+        assert command.entries["binary"] == b"same"
+        assert type(command.entries["double"]) is float
+        assert type(command.entries["long"]) is int
+        assert command.entries["nested"] == {"alpha": 1, "beta": 2}
+        assert command.entries["text"] == "same"
+
+    def test_matching_history_replays_without_emitting_update(self) -> None:
+        first = replay(MemoUpsertWorkflow, [], []).commands[0]
+        assert isinstance(first, UpsertMemo)
+        server_entries = {
+            "codec": "avro",
+            "blob": (
+                "wwHioz3/VYAiNw4KDGJpbmFyeQgIc2FtZQxkb3VibGUGAAAAAAAAHEAIbG9uZwQODG5lc3RlZA4ECmFscGhhBAIIYmV0YQQEAAh0ZXh0CghzYW1lAA=="
+            ),
+        }
+        assert first.to_server_command("q")["entries"] == server_entries
+        outcome = replay(MemoUpsertWorkflow, [{
+            "event_type": "MemoUpserted",
+            "payload": {
+                "sequence": 1,
+                "entries": server_entries,
+                "merged": server_entries,
+            },
+        }], [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+
+        with pytest.raises(NonDeterministicReplayError, match="memo"):
+            replay(MemoUpsertChangedTypesWorkflow, [{
+                "event_type": "MemoUpserted",
+                "payload": {
+                    "sequence": 1,
+                    "entries": server_entries,
+                    "merged": server_entries,
+                },
+            }], [])
+
+    def test_changed_update_fails_replay_identity(self) -> None:
+        with pytest.raises(NonDeterministicReplayError, match="memo"):
+            replay(MemoUpsertWorkflow, [{
+                "event_type": "MemoUpserted",
+                "payload": {
+                    "sequence": 1,
+                    "entries": serializer.envelope({"stage": "changed"}),
+                    "merged": serializer.envelope({"stage": "changed"}),
+                },
+            }], [])
+
+    @pytest.mark.parametrize(
+        "history",
+        [
+            [{
+                "event_type": "MemoUpserted",
+                "payload": {
+                    "entries": serializer.envelope({"stage": "processing"}),
+                    "merged": serializer.envelope({"stage": "processing"}),
+                },
+            }],
+            [{
+                "event_type": "MemoUpserted",
+                "payload": {
+                    "sequence": 1,
+                    "entries": serializer.envelope({"stage": "processing"}),
+                    "merged": serializer.envelope({"stage": "processing"}),
+                },
+            }] * 2,
+        ],
+    )
+    def test_missing_or_duplicate_history_identity_fails_replay(
+        self,
+        history: list[dict[str, Any]],
+    ) -> None:
+        with pytest.raises(NonDeterministicReplayError, match="memo|MemoUpserted"):
+            replay(MemoUpsertWorkflow, history, [])
+
+    def test_invalid_key_is_rejected_before_transport(self) -> None:
+        with pytest.raises(ValueError, match="memo keys"):
+            UpsertMemo({"x" * 65: "invalid"})
 
 
 @workflow.defn(name="fan-out-wf")
