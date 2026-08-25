@@ -17,6 +17,11 @@ Earlier SDK versions remain historical releases and are not alternate supported
 - `WorkflowContext.upsert_memo()` now authors validated memo patches, replays
   `MemoUpserted` identities, carries opaque payload envelopes, and fails before
   completion when runtime capability discovery does not advertise memo updates.
+- Workflow Streams are now a first-party client and workflow-authoring surface
+  with list, describe, resumable at-least-once subscription, idempotent append,
+  close, and error operations. Run-scoped stream items support runtime-mediated
+  external payload references, and replay-safe workflow commands derive stable
+  per-item idempotency keys from the durable command identity.
 - List-yield parallel composition now accepts nested activity, child-workflow,
   and timer groups, schedules every durable leaf through the existing command
   protocol, restores the nested input shape on replay, and keeps stable full
