@@ -88,6 +88,7 @@ jobs:
         working-directory: candidate
         run: |
           mkdocs build --strict
+          python scripts/docstring_cross_references.py --site site
           python scripts/check-docs-analytics.py site
 
       - name: Verify responsive navigation breakpoint transition

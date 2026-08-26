@@ -26,6 +26,7 @@ DOCS_PATHS = [
     "scripts/check_api_reference_install.py",
     "scripts/check-docs-analytics.py",
     "scripts/check-docs-layout.py",
+    "scripts/docstring_cross_references.py",
     "scripts/mkdocs_hooks.py",
     "scripts/qualify-docs-promotion.py",
     ".github/workflows/docs.yml",
@@ -136,6 +137,7 @@ def test_docs_pull_request_checks_are_read_only_and_complete() -> None:
     commands = run_commands(validate)
     assert "python scripts/ci/test-classify-docs-visual-changes.py" in commands
     assert "mkdocs build --strict" in commands
+    assert "python scripts/docstring_cross_references.py --site site" in commands
     assert "python scripts/check_api_reference_install.py --site site" in commands
     assert "python scripts/check-docs-analytics.py site" in commands
     assert "python scripts/check-docs-layout.py site" in commands
@@ -186,6 +188,7 @@ def test_pages_deployment_requires_main_context_and_an_exact_release_tuple() -> 
     assert '--release-version "$RELEASE_VERSION"' in commands
     assert "python scripts/ci/test-classify-docs-visual-changes.py" in commands
     assert "mkdocs build --strict" in commands
+    assert commands.count("python scripts/docstring_cross_references.py --site site") == 2
     assert "python scripts/check_api_reference_install.py --site site" in commands
     assert 'python scripts/check_api_reference_install.py "${arguments[@]}"' in commands
     assert '--source-revision "$SOURCE_REVISION"' in commands
@@ -352,6 +355,7 @@ def test_visual_evidence_workflow_uses_the_interaction_classifier_and_exact_view
     assert "capture search-populated" in commands
     assert "python -m playwright install --with-deps chromium" in commands
     assert "candidate/scripts/check-docs-layout.py candidate/site" in commands
+    assert "python scripts/docstring_cross_references.py --site site" in commands
     assert "--navigation-transition-only" in commands
     assert "visual-review/navigation-breakpoint-transition.json" in commands
     assert "--nested-navigation-only" in commands

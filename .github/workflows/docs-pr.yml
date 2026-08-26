@@ -16,6 +16,7 @@ on:
       - 'scripts/check_api_reference_install.py'
       - 'scripts/check-docs-analytics.py'
       - 'scripts/check-docs-layout.py'
+      - 'scripts/docstring_cross_references.py'
       - 'scripts/mkdocs_hooks.py'
       - 'scripts/qualify-docs-promotion.py'
       - '.github/workflows/docs.yml'
@@ -50,6 +51,7 @@ jobs:
         run: |
           python scripts/ci/test-classify-docs-visual-changes.py
           mkdocs build --strict
+          python scripts/docstring_cross_references.py --site site
           python scripts/check_api_reference_install.py --site site
           python scripts/check-docs-analytics.py site
           python scripts/check-docs-layout.py site
