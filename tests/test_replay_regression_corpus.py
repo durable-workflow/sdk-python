@@ -71,6 +71,20 @@ class WorkflowStreamAuthorWorkflow:
         return "done"
 
 
+@workflow.defn(name="tests.replay.message-stream-consumer")
+class MessageStreamConsumerWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        messages = yield from ctx.message_stream("orders").receive(2)
+        return [
+            {
+                "message_id": message.message_id,
+                "position": message.position,
+                "arguments": message.arguments,
+            }
+            for message in messages
+        ]
+
+
 @workflow.defn(name="tests.replay.workflow-memo-author")
 class WorkflowMemoAuthorWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -93,6 +107,7 @@ WORKFLOWS = [
     GoldenSingleActivityWorkflow,
     GoldenTimeoutWaitWorkflow,
     GoldenVersionMarkerWorkflow,
+    MessageStreamConsumerWorkflow,
     NestedParallelPathWorkflow,
     ParallelMetadataProducerWorkflow,
     ParallelResultBindingWorkflow,
@@ -192,7 +207,11 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
 
     expected = fixture.get("expected")
     assert isinstance(expected, dict) and expected
-    observed: dict[str, Any] = {"command_sequence": commands}
+    observed: dict[str, Any] = {
+        "command_sequence": commands,
+        "message_stream_cursors": outcome.message_stream_cursors,
+        "message_stream_waits": outcome.message_stream_waits,
+    }
     if len(commands) == 1:
         observed.update(commands[0])
     _assert_matches(expected, observed, f"{fixture.get('id', '<unnamed>')}.expected")

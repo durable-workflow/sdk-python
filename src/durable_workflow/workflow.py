@@ -26,7 +26,7 @@ import math
 import random
 import re
 import uuid
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -53,6 +53,11 @@ _WorkflowT = TypeVar("_WorkflowT")
 
 _REGISTRY: dict[str, type] = {}
 
+MESSAGE_STREAM_SIGNAL = "__durable_workflow_message_stream"
+MESSAGE_STREAM_SCHEMA = "durable-workflow.v2.message-stream.message"
+MESSAGE_STREAM_CURSOR_SCHEMA = "durable-workflow.v2.message-stream.cursor"
+MESSAGE_STREAM_MAX_BATCH = 100
+
 
 def defn(*, name: str) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
     """Register a class as a workflow type under a language-neutral name.
@@ -75,6 +80,8 @@ def defn(*, name: str) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
             member = getattr(cls, attr, None)
             signal_name = getattr(member, "__signal_name__", None)
             if isinstance(signal_name, str) and signal_name:
+                if signal_name == MESSAGE_STREAM_SIGNAL:
+                    raise ValueError(f"signal name {signal_name!r} is reserved by the workflow runtime")
                 signals[signal_name] = attr
             query_name = getattr(member, "__query_name__", None)
             if isinstance(query_name, str) and query_name:
@@ -116,6 +123,9 @@ def signal(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     loop, mutate ``self.*`` attributes (as ``on_approve`` does above) and
     yield the usual commands from ``run()``.
     """
+
+    if name == MESSAGE_STREAM_SIGNAL:
+        raise ValueError(f"signal name {name!r} is reserved by the workflow runtime")
 
     def wrap(method: Callable[..., Any]) -> Callable[..., Any]:
         method.__signal_name__ = name  # type: ignore[attr-defined]
@@ -1350,6 +1360,54 @@ class _ReplayLogger:
 
 
 @dataclass(frozen=True)
+class MessageStreamMessage:
+    """One server-ordered message consumed from a durable named stream."""
+
+    stream_name: str
+    message_id: str
+    position: int
+    arguments: list[Any]
+
+
+class MessageStream:
+    """Replay-safe receiver for repeated, ordered workflow input."""
+
+    def __init__(self, context: WorkflowContext, name: str) -> None:
+        self._context = context
+        self.name = name
+
+    def receive(self, max_items: int = 1) -> Generator[Command, Any, list[MessageStreamMessage]]:
+        """Wait for one message, then return a bounded currently-available batch."""
+        if (
+            not isinstance(max_items, int)
+            or isinstance(max_items, bool)
+            or not 1 <= max_items <= MESSAGE_STREAM_MAX_BATCH
+        ):
+            raise ValueError(f"max_items must be between 1 and {MESSAGE_STREAM_MAX_BATCH}")
+
+        while not self._context._message_stream_pending(self.name):
+            cursor = self._context._message_stream_cursor(self.name)
+            self._context._message_stream_waits[self.name] = cursor
+            yield self._context.wait_condition(
+                lambda: self._context._message_stream_pending(self.name),
+                key=f"message-stream:{self.name}:{cursor}",
+            )
+
+        self._context._message_stream_waits.pop(self.name, None)
+        queue = self._context._message_stream_messages.setdefault(self.name, [])
+        batch = queue[:max_items]
+        del queue[: len(batch)]
+        if batch:
+            self._context._message_stream_cursors[self.name] = batch[-1].position
+        return batch
+
+    def receive_one(self) -> Generator[Command, Any, MessageStreamMessage]:
+        """Wait for and return the next message."""
+        batch = yield from self.receive(1)
+        return batch[0]
+
+
+@dataclass(frozen=True)
 class _SagaCompensation:
     command: ScheduleActivity
     registration_order: int
@@ -1445,6 +1503,8 @@ class WorkflowContext:
         workflow_id: str = "",
         run_id: str = "",
         current_time: datetime | None = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_cache: ExternalPayloadCache | None = None,
         workflow_command_id: str | None = None,
         cancel_requested: bool = False,
     ) -> None:
@@ -1457,8 +1517,82 @@ class WorkflowContext:
         self._rng = random.Random(seed)
         self._uuid7_counter = 0
         self._nexus_call_counter = 0
+        self._message_stream_messages: dict[str, list[MessageStreamMessage]] = {}
+        self._message_stream_cursors: dict[str, int] = {}
+        self._message_stream_waits: dict[str, int] = {}
+        self._external_storage = external_storage
+        self._external_storage_cache = external_storage_cache
         self._workflow_stream_command_counter = 0
         self.logger = _ReplayLogger(_REPLAY_LOGGER)
+
+    def message_stream(self, name: str) -> MessageStream:
+        """Open an instance-scoped durable input stream by its portable name."""
+        if not isinstance(name, str) or not name or len(name) > 128:
+            raise ValueError("message stream name must contain 1-128 characters")
+        allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-"
+        if any(character not in allowed for character in name):
+            raise ValueError("message stream name contains unsupported characters")
+        return MessageStream(self, name)
+
+    def _message_stream_pending(self, name: str) -> bool:
+        return bool(self._message_stream_messages.get(name))
+
+    def _message_stream_cursor(self, name: str) -> int:
+        return self._message_stream_cursors.get(name, 0)
+
+    def _accept_message_stream(self, arguments: list[Any]) -> None:
+        if len(arguments) != 1 or not isinstance(arguments[0], Mapping):
+            return
+        envelope = arguments[0]
+        stream_name = envelope.get("stream_name")
+        if (
+            envelope.get("schema") == MESSAGE_STREAM_CURSOR_SCHEMA
+            and isinstance(stream_name, str)
+            and isinstance(envelope.get("through_position"), int)
+            and not isinstance(envelope.get("through_position"), bool)
+            and envelope["through_position"] >= 0
+        ):
+            through_position = envelope["through_position"]
+            self._message_stream_cursors[stream_name] = max(
+                through_position,
+                self._message_stream_cursor(stream_name),
+            )
+            queue = self._message_stream_messages.setdefault(stream_name, [])
+            self._message_stream_messages[stream_name] = [
+                message for message in queue if message.position > through_position
+            ]
+            return
+
+        message_id = envelope.get("message_id")
+        position = envelope.get("position")
+        payload_envelope = envelope.get("payload_envelope")
+        if (
+            envelope.get("schema") != MESSAGE_STREAM_SCHEMA
+            or not isinstance(stream_name, str)
+            or not isinstance(message_id, str)
+            or not isinstance(position, int)
+            or isinstance(position, bool)
+            or position < 1
+            or not isinstance(payload_envelope, Mapping)
+        ):
+            return
+        try:
+            values = serializer.decode_envelope(
+                dict(payload_envelope),
+                external_storage=self._external_storage,
+                external_storage_cache=self._external_storage_cache,
+            )
+        except (TypeError, ValueError):
+            return
+        if not isinstance(values, list):
+            return
+        if position <= self._message_stream_cursor(stream_name):
+            return
+        queue = self._message_stream_messages.setdefault(stream_name, [])
+        if any(message.position == position or message.message_id == message_id for message in queue):
+            return
+        queue.append(MessageStreamMessage(stream_name, message_id, position, list(values)))
+        queue.sort(key=lambda message: message.position)
 
     @property
     def is_cancellation_requested(self) -> bool:
@@ -1842,6 +1976,8 @@ class WorkflowContext:
 @dataclass
 class ReplayOutcome:
     commands: list[Command]
+    message_stream_cursors: list[dict[str, Any]] = field(default_factory=list)
+    message_stream_waits: list[dict[str, Any]] = field(default_factory=list)
 
 
 class Replayer:
@@ -3217,12 +3353,53 @@ def _replay_state(
         workflow_id=workflow_id or "",
         run_id=run_id,
         current_time=workflow_start_time,
+        external_storage=external_storage,
+        external_storage_cache=external_storage_cache,
         workflow_command_id=workflow_command_id,
         cancel_requested=cancel_requested,
     )
+    # Continue-as-new cursor checkpoints describe instance state that predates
+    # this run. Seed them before the workflow opens its first stream wait so
+    # both the durable wait key and worker acknowledgement use the global
+    # position rather than restarting at zero.
+    for event in events:
+        if _history_event_type(event) != "SignalReceived":
+            continue
+        payload = event.get("payload") or {}
+        if not isinstance(payload, Mapping) or payload.get("signal_name") != MESSAGE_STREAM_SIGNAL:
+            continue
+        arguments = _decode_receiver_args(
+            event,
+            receiver_kind="signal",
+            receiver_name=MESSAGE_STREAM_SIGNAL,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            payload_codec=payload_codec,
+            external_storage=external_storage,
+            external_storage_cache=external_storage_cache,
+        )
+        if (
+            len(arguments) == 1
+            and isinstance(arguments[0], Mapping)
+            and arguments[0].get("schema") == MESSAGE_STREAM_CURSOR_SCHEMA
+        ):
+            ctx._accept_message_stream(arguments)
 
     def _state(commands: list[Command]) -> _ReplayState:
-        return _ReplayState(outcome=ReplayOutcome(commands=commands), instance=instance)
+        return _ReplayState(
+            outcome=ReplayOutcome(
+                commands=commands,
+                message_stream_cursors=[
+                    {"stream_name": name, "through_position": position}
+                    for name, position in sorted(ctx._message_stream_cursors.items())
+                ],
+                message_stream_waits=[
+                    {"stream_name": name, "after_position": position}
+                    for name, position in sorted(ctx._message_stream_waits.items())
+                ],
+            ),
+            instance=instance,
+        )
 
     resolved_results: list[Any] = []
     recorded_steps: list[_RecordedStep] = []
@@ -3708,6 +3885,9 @@ def _replay_state(
 
     def _apply_receiver(receiver: _PendingReceiver) -> None:
         if receiver.kind == "signal":
+            if receiver.name == MESSAGE_STREAM_SIGNAL:
+                ctx._accept_message_stream(receiver.args)
+                return
             method_name = signal_registry.get(receiver.name)
             if method_name is None:
                 return

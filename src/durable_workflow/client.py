@@ -61,6 +61,8 @@ from .retry_policy import TransportRetryPolicy
 
 PROTOCOL_VERSION = "1.16"
 CONTROL_PLANE_VERSION = "2"
+_MESSAGE_STREAMS_CAPABILITY = "message_streams"
+_MESSAGE_STREAMS_MINIMUM_WORKER_PROTOCOL = (1, 15)
 CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA = "durable-workflow.v2.control-plane-request.contract"
 CONTROL_PLANE_REQUEST_CONTRACT_VERSION = 1
 _QUERY_TASKS_DISCOVERY_PATH = "worker_protocol.server_capabilities.query_tasks"
@@ -126,6 +128,18 @@ def _protocol_version_from_env(name: str, default: str) -> str:
         return default
 
     return value.strip()
+
+
+def _worker_protocol_supports_message_streams() -> bool:
+    version = _protocol_version_from_env(
+        "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION",
+        PROTOCOL_VERSION,
+    )
+    parts = version.split(".")
+    if len(parts) != 2 or not all(part.isdigit() for part in parts):
+        return False
+
+    return (int(parts[0]), int(parts[1])) >= _MESSAGE_STREAMS_MINIMUM_WORKER_PROTOCOL
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -1239,6 +1253,20 @@ class WorkflowHandle:
     async def signal(self, signal_name: str, args: list[Any] | None = None) -> None:
         """Deliver an external signal to this workflow. See :meth:`Client.signal_workflow`."""
         await self._client.signal_workflow(self.workflow_id, signal_name, args=args)
+
+    async def append_message(
+        self,
+        stream_name: str,
+        message_id: str,
+        args: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        """Append one idempotently identified message to a durable input stream."""
+        return await self._client.append_message_stream(
+            self.workflow_id,
+            stream_name,
+            message_id,
+            args=args,
+        )
 
     async def query(self, query_name: str, args: list[Any] | None = None) -> Any:
         """Execute a read-only query against this workflow. See :meth:`Client.query_workflow`."""
@@ -3955,6 +3983,30 @@ class Client:
             )
         await self._request("POST", f"/workflows/{workflow_id}/signal/{signal_name}", json=body, context=workflow_id)
 
+    async def append_message_stream(
+        self,
+        workflow_id: str,
+        stream_name: str,
+        message_id: str,
+        *,
+        args: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        """Append repeated input without requiring workflow-authored cursor bookkeeping."""
+        body: dict[str, Any] = {"message_id": message_id}
+        if args is not None:
+            body["input"] = self._payload_envelope(
+                args,
+                kind="message_stream",
+                workflow_id=workflow_id,
+            )
+        result = await self._request(
+            "POST",
+            f"/workflows/{quote(workflow_id, safe='._:-')}/message-streams/{quote(stream_name, safe='._:-')}/messages",
+            json=body,
+            context=workflow_id,
+        )
+        return dict(result)
+
     async def query_workflow(
         self, workflow_id: str, query_name: str, *, args: list[Any] | None = None
     ) -> Any:
@@ -4532,6 +4584,12 @@ class Client:
             raise ValueError("max_concurrent_workflow_tasks must be at least 1")
         if max_concurrent_activity_tasks is not None and max_concurrent_activity_tasks < 1:
             raise ValueError("max_concurrent_activity_tasks must be at least 1")
+        if (
+            capabilities
+            and _MESSAGE_STREAMS_CAPABILITY in capabilities
+            and not _worker_protocol_supports_message_streams()
+        ):
+            raise ValueError("message streams require worker protocol 1.15 or newer")
 
         body: dict[str, Any] = {
             "worker_id": worker_id,
@@ -4745,6 +4803,8 @@ class Client:
         lease_owner: str,
         workflow_task_attempt: int,
         commands: list[dict[str, Any]],
+        message_stream_cursors: list[dict[str, Any]] | None = None,
+        message_stream_waits: list[dict[str, Any]] | None = None,
     ) -> Any:
         """Report successful execution of a workflow task with its emitted commands.
 
@@ -4752,11 +4812,18 @@ class Client:
         ``commands`` is the list of serialized commands the workflow yielded
         for this task.
         """
+        if (message_stream_cursors or message_stream_waits) and not _worker_protocol_supports_message_streams():
+            raise ValueError("message stream completion metadata requires worker protocol 1.15 or newer")
+
         body: dict[str, Any] = {
             "lease_owner": lease_owner,
             "workflow_task_attempt": workflow_task_attempt,
             "commands": commands,
         }
+        if message_stream_cursors:
+            body["message_stream_cursors"] = message_stream_cursors
+        if message_stream_waits:
+            body["message_stream_waits"] = message_stream_waits
         return await self._request(
             "POST", f"/worker/workflow-tasks/{task_id}/complete", worker=True, json=body
         )

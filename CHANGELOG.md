@@ -14,6 +14,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
 
 ### Added
+- `WorkflowContext.message_stream()` now consumes named repeated input in
+  ordered bounded batches. Runtime-owned cursor and wait metadata survives
+  replay, worker replacement, server restart, duplicates, and continue-as-new
+  without exposing the reserved transport signal to workflow declarations.
 - `WorkflowContext.upsert_memo()` now authors validated memo patches, replays
   `MemoUpserted` identities, carries opaque payload envelopes, and fails before
   completion when runtime capability discovery does not advertise memo updates.

@@ -91,6 +91,7 @@ log = logging.getLogger("durable_workflow.worker")
 QUERY_TASKS_CAPABILITY = "query_tasks"
 UPDATE_VALIDATION_TASKS_CAPABILITY = "update_validation_tasks"
 WORKFLOW_UPDATES_CAPABILITY = "workflow_updates"
+MESSAGE_STREAMS_CAPABILITY = "message_streams"
 MEMO_UPSERTS_CAPABILITY = "memo_upserts"
 TYPED_SEARCH_ATTRIBUTES_CAPABILITY = "typed_search_attributes"
 
@@ -1131,6 +1132,7 @@ class Worker:
             capabilities.append(UPDATE_VALIDATION_TASKS_CAPABILITY)
         if any(contract["updates"] for contract in self.workflow_command_contracts.values()):
             capabilities.append(WORKFLOW_UPDATES_CAPABILITY)
+        capabilities.append(MESSAGE_STREAMS_CAPABILITY)
 
         ack = await self.client.register_worker(
             worker_id=self.worker_id,
@@ -1539,6 +1541,8 @@ class Worker:
                 task_id=task_id,
                 attempt=attempt,
                 commands=commands,
+                message_stream_cursors=outcome.message_stream_cursors,
+                message_stream_waits=outcome.message_stream_waits,
             )
         except Exception as e:
             log.warning("failed to complete workflow task %s: %s", task_id, e)
@@ -1553,6 +1557,8 @@ class Worker:
         task_id: str,
         attempt: int,
         commands: list[dict[str, Any]],
+        message_stream_cursors: list[dict[str, Any]] | None = None,
+        message_stream_waits: list[dict[str, Any]] | None = None,
     ) -> None:
         for completion_attempt in range(1, _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS + 1):
             try:
@@ -1561,6 +1567,8 @@ class Worker:
                     lease_owner=self.worker_id,
                     workflow_task_attempt=attempt,
                     commands=commands,
+                    message_stream_cursors=message_stream_cursors,
+                    message_stream_waits=message_stream_waits,
                 )
                 return
             except Exception as error:

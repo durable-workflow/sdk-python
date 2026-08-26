@@ -37,6 +37,7 @@ from durable_workflow.interceptors import (
 from durable_workflow.nexus import NEXUS_OPERATION_RESULT_SCHEMA, NexusOperationResult
 from durable_workflow.worker import (
     MEMO_UPSERTS_CAPABILITY,
+    MESSAGE_STREAMS_CAPABILITY,
     TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
     UPDATE_VALIDATION_TASKS_CAPABILITY,
     WORKFLOW_UPDATES_CAPABILITY,
@@ -397,6 +398,7 @@ class TestWorkerRegistration:
                 "memo_upserts",
                 "typed_search_attributes",
                 "query_tasks",
+                MESSAGE_STREAMS_CAPABILITY,
             ],
             "task_slots": {
                 "workflow_available": 10,
@@ -523,6 +525,7 @@ class TestWorkerRegistration:
             TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
             "query_tasks",
             WORKFLOW_UPDATES_CAPABILITY,
+            MESSAGE_STREAMS_CAPABILITY,
         ]
 
     @pytest.mark.asyncio
@@ -607,6 +610,7 @@ class TestWorkerRegistration:
             "query_tasks",
             UPDATE_VALIDATION_TASKS_CAPABILITY,
             WORKFLOW_UPDATES_CAPABILITY,
+            MESSAGE_STREAMS_CAPABILITY,
         ]
 
     @pytest.mark.asyncio
@@ -703,6 +707,7 @@ class TestWorkerRegistration:
         assert call_kwargs["capabilities"] == [
             MEMO_UPSERTS_CAPABILITY,
             TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
+            MESSAGE_STREAMS_CAPABILITY,
         ]
 
     @pytest.mark.asyncio
