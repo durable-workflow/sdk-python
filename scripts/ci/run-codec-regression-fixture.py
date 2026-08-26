@@ -43,6 +43,50 @@ def execute_fixture(fixture: dict[str, Any], codec: Any) -> None:
     )
     _require("python" in fixture["bindings"], "fixture must name the python binding")
     protocol = fixture["protocol"]
+    if protocol["codec"] == "batch-envelope":
+        from durable_workflow import serializer
+
+        wire = base64.b64decode(fixture["framing"]["wire_base64"], validate=True).decode("utf-8")
+        matrix = json.loads(wire)
+        _require(
+            matrix == _tagged_value(fixture["value"]),
+            "batch envelope fixture value does not match its wire bytes",
+        )
+        _require(
+            fixture["failure_policy"]
+            == {
+                "operation": "decode_reject",
+                "error": "unsupported_payload_codec",
+            },
+            "batch envelope fixture must declare the stable codec rejection",
+        )
+        for item_codec in matrix["item_codecs"]:
+            for blob_state in matrix["blob_states"]:
+                item = {"codec": item_codec}
+                if blob_state == "null":
+                    item["blob"] = None
+                for fallback_name in matrix["fallback_codecs"]:
+                    fallback_codec = None if fallback_name == "absent" else fallback_name
+                    for external_storage_enabled in matrix["external_storage"]:
+                        try:
+                            serializer.decode_envelopes(
+                                [item],
+                                codec=fallback_codec,
+                                external_storage=object() if external_storage_enabled else None,
+                            )
+                        except ValueError as caught:
+                            _require(
+                                "unsupported_payload_codec" in str(caught),
+                                "batch envelope rejection is not actionable",
+                            )
+                            _require(
+                                repr(item_codec) in str(caught),
+                                "batch envelope rejection did not preserve item codec precedence",
+                            )
+                            continue
+                        raise AssertionError("unsupported batch item payload codec did not fail closed")
+        return
+
     if protocol["codec"] == "task-root":
         from durable_workflow.worker import _validate_payload_codec
 
@@ -129,7 +173,7 @@ def execute_fixture(fixture: dict[str, Any], codec: Any) -> None:
 
     _require(
         protocol["codec"] == "avro",
-        "fixture codec must be avro, task-root, runtime-external-payload, or a JSON rejection",
+        "fixture codec must be avro, batch-envelope, task-root, runtime-external-payload, or a JSON rejection",
     )
     _require(
         protocol["version"] == AVRO_PROTOCOL_VERSION,

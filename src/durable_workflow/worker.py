@@ -1158,6 +1158,29 @@ class Worker:
         log.info("worker %s registered on %s", self.worker_id, self.task_queue)
 
     async def _run_workflow_task(self, task: dict[str, Any]) -> list[dict[str, Any]] | None:
+        codec = task.get("payload_codec")
+        try:
+            _validate_payload_codec(codec)
+        except ValueError as e:
+            task_id: str = task["task_id"]
+            attempt: int = task.get("workflow_task_attempt", 1)
+            log.exception("task %s start input decode failed (codec=%r)", task_id, codec)
+            try:
+                await self.client.fail_workflow_task(
+                    task_id=task_id,
+                    lease_owner=self.worker_id,
+                    workflow_task_attempt=attempt,
+                    message=(
+                        f"cannot decode workflow start input with codec {codec!r}: {e}. "
+                        "Verify the start input bytes match the declared codec and writer schema."
+                    ),
+                    failure_type=type(e).__name__,
+                    stack_trace=traceback.format_exc(),
+                )
+            except Exception as failure_error:
+                log.warning("failed to report start input decode failure: %s", failure_error)
+            return None
+
         context = WorkflowTaskInterceptorContext(
             worker_id=self.worker_id,
             task_queue=self.task_queue,
@@ -1773,6 +1796,22 @@ class Worker:
         return await handler(context)
 
     async def _run_query_task(self, task: dict[str, Any], *, client: Client | None = None) -> str:
+        client = client or self.client
+        codec = task.get("payload_codec")
+        try:
+            _validate_payload_codec(codec)
+        except ValueError as e:
+            await self._fail_query_task(
+                task["query_task_id"],
+                task.get("query_task_attempt", 1),
+                f"cannot decode query payload with codec {codec!r}: {e}.",
+                reason="query_payload_decode_failed",
+                failure_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
+                client=client,
+            )
+            return "failed"
+
         context = QueryTaskInterceptorContext(
             worker_id=self.worker_id,
             task_queue=self.task_queue,

@@ -6,6 +6,7 @@ from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from enum import Enum, IntEnum
 from pathlib import Path
+from unittest.mock import Mock
 from uuid import UUID
 
 import pytest
@@ -317,6 +318,40 @@ class TestBatchDecoding:
             ],
             codec="avro",
         ) == ["avro:a", None, "avro:b"]
+
+    @pytest.mark.parametrize("item_codec", ["json", "workflow-serializer-y"])
+    @pytest.mark.parametrize("include_blob", [False, True], ids=["absent-blob", "null-blob"])
+    @pytest.mark.parametrize("fallback_codec", [None, "avro"], ids=["no-fallback", "avro-fallback"])
+    @pytest.mark.parametrize("external_storage_enabled", [False, True], ids=["optimized", "external-storage"])
+    def test_decode_envelopes_rejects_item_codec_before_batch_grouping(
+        self,
+        item_codec: str,
+        include_blob: bool,
+        fallback_codec: str | None,
+        external_storage_enabled: bool,
+    ) -> None:
+        item: dict[str, object] = {"codec": item_codec}
+        if include_blob:
+            item["blob"] = None
+
+        with pytest.raises(ValueError, match="unsupported_payload_codec"):
+            serializer.decode_envelopes(
+                [item],
+                codec=fallback_codec,
+                external_storage=Mock() if external_storage_enabled else None,
+            )
+
+    def test_decode_envelopes_preserves_item_codec_precedence_and_null_values(self) -> None:
+        assert serializer.decode_envelopes(
+            [
+                {"codec": "avro", "blob": None},
+                serializer.envelope(None, codec="avro"),
+            ],
+            codec="json",
+        ) == [None, None]
+
+    def test_decode_envelopes_preserves_untagged_no_payload_sentinel(self) -> None:
+        assert serializer.decode_envelopes([None]) == [None]
 
     def test_decode_many_propagates_first_codec_error(self) -> None:
         good = serializer.encode({"ok": True}, codec="avro")

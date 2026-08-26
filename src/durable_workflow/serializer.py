@@ -503,6 +503,8 @@ def decode_envelopes(
     jobs: list[tuple[str | None, str | None]] = []
     passthroughs: dict[int, Any] = {}
     for index, value in enumerate(values):
+        if isinstance(value, dict) and "codec" in value:
+            _validate_payload_codec(value["codec"])
         if isinstance(value, dict) and "codec" in value and "blob" in value:
             jobs.append((value["blob"], value["codec"]))
         elif value is None and codec is None:

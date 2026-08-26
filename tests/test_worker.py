@@ -3079,6 +3079,105 @@ class TestWorkerInterceptors:
 
         assert events == ["before:qt-intercept", "after:completed"]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("task_kind", ["workflow", "update", "query"])
+    @pytest.mark.parametrize(
+        "payload_codec",
+        [
+            pytest.param(_MISSING_TASK_CODEC, id="missing"),
+            pytest.param(None, id="null"),
+            pytest.param("", id="empty"),
+            pytest.param("json", id="json"),
+            pytest.param("zstd", id="unknown"),
+            pytest.param("Avro", id="wrong-case"),
+            pytest.param(0, id="non-string"),
+        ],
+    )
+    async def test_invalid_root_codec_cannot_reach_or_be_suppressed_by_interceptors(
+        self,
+        mock_client: AsyncMock,
+        task_kind: str,
+        payload_codec: object,
+    ) -> None:
+        interceptor_calls: list[str] = []
+
+        class MutatingShortCircuitInterceptor(PassthroughWorkerInterceptor):
+            async def execute_workflow_task(
+                self,
+                context: WorkflowTaskInterceptorContext,
+                next: WorkflowTaskHandler,
+            ) -> list[dict[str, object]] | None:
+                interceptor_calls.append("workflow")
+                context.task["payload_codec"] = "avro"
+                return []
+
+            async def execute_query_task(
+                self,
+                context: QueryTaskInterceptorContext,
+                next: QueryTaskHandler,
+            ) -> str:
+                interceptor_calls.append("query")
+                context.task["payload_codec"] = "avro"
+                return "completed"
+
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[UpdateWorkflow] if task_kind == "update" else [QueryWorkflow, TestWorkflow],
+            activities=[],
+            interceptors=[MutatingShortCircuitInterceptor()],
+        )
+
+        if task_kind == "query":
+            task: dict[str, object] = {
+                "query_task_id": "qt-invalid-interceptor-codec",
+                "query_task_attempt": 1,
+                "workflow_type": "query-wf",
+                "query_name": "status",
+                "history_events": [],
+                "workflow_arguments": serializer.envelope([], codec="avro"),
+                "query_arguments": serializer.envelope([], codec="avro"),
+            }
+        else:
+            task = {
+                "task_id": f"{task_kind}-invalid-interceptor-codec",
+                "workflow_type": "update-wf" if task_kind == "update" else "test-wf",
+                "workflow_task_attempt": 1,
+                "history_events": [],
+                "arguments": serializer.envelope([], codec="avro"),
+            }
+            if task_kind == "update":
+                task.update(
+                    {
+                        "workflow_update_id": "upd-invalid-interceptor-codec",
+                        "history_events": [
+                            {
+                                "event_type": "UpdateAccepted",
+                                "payload": {
+                                    "update_id": "upd-invalid-interceptor-codec",
+                                    "update_name": "increment",
+                                    "arguments": serializer.envelope([1], codec="avro"),
+                                    "payload_codec": "avro",
+                                },
+                            }
+                        ],
+                    }
+                )
+
+        if payload_codec is not _MISSING_TASK_CODEC:
+            task["payload_codec"] = payload_codec
+
+        if task_kind == "query":
+            assert await worker._run_query_task(task) == "failed"
+            failure = mock_client.fail_query_task
+        else:
+            assert await worker._run_workflow_task(task) is None
+            failure = mock_client.fail_workflow_task
+
+        assert interceptor_calls == []
+        failure.assert_awaited_once()
+        assert "unsupported_payload_codec" in failure.await_args.kwargs["message"]
+
 
 class TestEnvelopeArguments:
     @pytest.mark.asyncio

@@ -1,0 +1,91 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "batch-envelope-codecs-rejected-before-grouping",
+  "protocol": {
+    "codec": "batch-envelope",
+    "schema": "durable_workflow.serializer.BatchEnvelopeDecode",
+    "version": "1",
+    "fingerprint": null
+  },
+  "bindings": [
+    "python"
+  ],
+  "value": {
+    "type": "map",
+    "entries": [
+      {
+        "key": "blob_states",
+        "value": {
+          "type": "array",
+          "items": [
+            {
+              "type": "string",
+              "value": "absent"
+            },
+            {
+              "type": "string",
+              "value": "null"
+            }
+          ]
+        }
+      },
+      {
+        "key": "external_storage",
+        "value": {
+          "type": "array",
+          "items": [
+            {
+              "type": "boolean",
+              "value": false
+            },
+            {
+              "type": "boolean",
+              "value": true
+            }
+          ]
+        }
+      },
+      {
+        "key": "fallback_codecs",
+        "value": {
+          "type": "array",
+          "items": [
+            {
+              "type": "string",
+              "value": "absent"
+            },
+            {
+              "type": "string",
+              "value": "avro"
+            }
+          ]
+        }
+      },
+      {
+        "key": "item_codecs",
+        "value": {
+          "type": "array",
+          "items": [
+            {
+              "type": "string",
+              "value": "json"
+            },
+            {
+              "type": "string",
+              "value": "workflow-serializer-y"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "utf8-json-batch-envelope-matrix",
+    "wire_base64": "eyJibG9iX3N0YXRlcyI6WyJhYnNlbnQiLCJudWxsIl0sImV4dGVybmFsX3N0b3JhZ2UiOltmYWxzZSx0cnVlXSwiZmFsbGJhY2tfY29kZWNzIjpbImFic2VudCIsImF2cm8iXSwiaXRlbV9jb2RlY3MiOlsianNvbiIsIndvcmtmbG93LXNlcmlhbGl6ZXIteSJdfQ=="
+  },
+  "failure_policy": {
+    "operation": "decode_reject",
+    "error": "unsupported_payload_codec"
+  }
+}
