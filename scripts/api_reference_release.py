@@ -14,11 +14,28 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by the Python 3.10 C
     import tomli as tomllib  # type: ignore[import-not-found]
 
 
-SDK_VERSION_TOKEN = "{{ durable_workflow_sdk_version }}"
-SERVER_VERSION_TOKEN = "{{ durable_workflow_server_version }}"
-INSTALL_REQUIREMENT_TOKEN = "{{ durable_workflow_install_requirement }}"
+SERVER_IMAGE_RESOLVER_TOKEN = "{{ durable_workflow_server_image_resolver }}"
 RELEASE_EVIDENCE_FILENAME = "release-audit.json"
 RELEASE_EVIDENCE_SCHEMA = "durable-workflow.python-api-reference.release"
+QUICKSTART_CONTRACT_SCHEMA = "durable-workflow.docs.v2.quickstart-execution-contract"
+QUICKSTART_CONTRACT_URL = "https://durable-workflow.com/quickstart-execution-contract.json"
+SUPPORTED_PRERELEASE_INSTALL_COMMAND = "curl -fsSL https://durable-workflow.com/install-sdk.sh | sh -s -- python"
+SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND = rf'''export DW_SERVER_IMAGE="$(
+  curl -fsSL "${{DURABLE_WORKFLOW_QUICKSTART_CONTRACT_URL:-{QUICKSTART_CONTRACT_URL}}}" |
+    python -c 'import json, re, sys
+contract = json.load(sys.stdin)
+if contract.get("schema") != "{QUICKSTART_CONTRACT_SCHEMA}":
+    raise SystemExit("The public quickstart contract has an unsupported schema.")
+server = contract.get("artifacts", {{}}).get("server", {{}})
+version = server.get("version")
+image = server.get("image")
+reference = server.get("reference")
+if not isinstance(version, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+", version) is None:
+    raise SystemExit("The public quickstart contract has an invalid Server prerelease.")
+if not isinstance(image, str) or reference != f"{{image}}:{{version}}":
+    raise SystemExit("The public quickstart contract has an invalid Server reference.")
+print(reference)'
+)"'''
 
 
 @dataclass(frozen=True)
@@ -29,16 +46,15 @@ class ReleaseIdentity:
     server_version: str
 
     @property
-    def requirement(self) -> str:
-        return f"{self.package}~=2.0.0rc0"
-
-    @property
     def exact_requirement(self) -> str:
         return f"{self.package}=={self.registry_version}"
 
-    @property
-    def install_command(self) -> str:
-        return f"pip install '{self.requirement}'"
+@dataclass(frozen=True)
+class QualifiedOnboarding:
+    sdk_version: str
+    sdk_registry_version: str
+    server_version: str
+    server_reference: str
 
 
 def normalize_registry_version(version: str) -> str:
@@ -79,21 +95,50 @@ def load_release_identity(repo_root: Path) -> ReleaseIdentity:
     return identity
 
 
-def render_release_identity(markdown: str, identity: ReleaseIdentity) -> str:
-    """Replace machine-owned release tokens without coupling tests to prose."""
-    tokens = (SDK_VERSION_TOKEN, SERVER_VERSION_TOKEN, INSTALL_REQUIREMENT_TOKEN)
-    missing = [token for token in tokens if token not in markdown]
-    if missing:
-        raise ValueError(f"API-reference release template is missing tokens: {', '.join(missing)}")
+def render_onboarding_resolvers(markdown: str) -> str:
+    """Render machine-owned versionless onboarding commands."""
+    if SERVER_IMAGE_RESOLVER_TOKEN not in markdown:
+        raise ValueError("API-reference template is missing the Server image resolver token")
 
-    rendered = (
-        markdown.replace(SDK_VERSION_TOKEN, identity.version)
-        .replace(SERVER_VERSION_TOKEN, identity.server_version)
-        .replace(INSTALL_REQUIREMENT_TOKEN, identity.requirement)
-    )
-    if re.search(r"{{\s*durable_workflow_(?:sdk|server)_version\s*}}", rendered):
-        raise ValueError("API-reference release template contains an unresolved release token")
+    rendered = markdown.replace(SERVER_IMAGE_RESOLVER_TOKEN, SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND)
+    if re.search(r"{{\s*durable_workflow_[a-z_]+\s*}}", rendered):
+        raise ValueError("API-reference template contains an unresolved onboarding token")
     return rendered
+
+
+def load_qualified_onboarding(payload: object) -> QualifiedOnboarding:
+    """Validate the public contract fields used by Python onboarding."""
+    if not isinstance(payload, dict) or payload.get("schema") != QUICKSTART_CONTRACT_SCHEMA:
+        raise ValueError("Public quickstart contract has an unsupported schema")
+
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("Public quickstart contract does not contain artifacts")
+    sdk = artifacts.get("sdk-python")
+    server = artifacts.get("server")
+    if not isinstance(sdk, dict) or not isinstance(server, dict):
+        raise ValueError("Public quickstart contract does not contain the Python SDK/Server pair")
+
+    sdk_version = sdk.get("version")
+    server_version = server.get("version")
+    server_image = server.get("image")
+    server_reference = server.get("reference")
+    prerelease = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta|rc)\.[0-9]+")
+    if not isinstance(sdk_version, str) or prerelease.fullmatch(sdk_version) is None:
+        raise ValueError("Public quickstart contract has an invalid Python SDK prerelease")
+    if not isinstance(server_version, str) or prerelease.fullmatch(server_version) is None:
+        raise ValueError("Public quickstart contract has an invalid Server prerelease")
+    if not isinstance(server_image, str) or not server_image:
+        raise ValueError("Public quickstart contract has an invalid Server image")
+    if server_reference != f"{server_image}:{server_version}":
+        raise ValueError("Public quickstart contract Server reference does not match its image and version")
+
+    return QualifiedOnboarding(
+        sdk_version=sdk_version,
+        sdk_registry_version=normalize_registry_version(sdk_version),
+        server_version=server_version,
+        server_reference=server_reference,
+    )
 
 
 def release_evidence(identity: ReleaseIdentity, source_revision: str) -> dict[str, Any]:
@@ -105,7 +150,7 @@ def release_evidence(identity: ReleaseIdentity, source_revision: str) -> dict[st
         "schema": RELEASE_EVIDENCE_SCHEMA,
         "source_revision": source_revision,
         "pypi_version": identity.registry_version,
-        "install_command": identity.install_command,
+        "install_command": SUPPORTED_PRERELEASE_INSTALL_COMMAND,
         "artifact_versions": {
             "sdk-python": identity.version,
             "server": identity.server_version,

@@ -24,11 +24,13 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from scripts.api_reference_release import SUPPORTED_PRERELEASE_INSTALL_COMMAND
     from scripts.check_release_metadata import ReleaseMetadataError, SourceMetadata, load_source_metadata
 except ModuleNotFoundError as error:  # pragma: no cover - direct command-line execution
     if error.name != "scripts":
         raise
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.api_reference_release import SUPPORTED_PRERELEASE_INSTALL_COMMAND
     from scripts.check_release_metadata import ReleaseMetadataError, SourceMetadata, load_source_metadata
 
 PUBLIC_PYPI_INDEX = "https://pypi.org/simple"
@@ -50,8 +52,7 @@ class ProjectSurfaceEvidence:
     exact_version_json_url: str
     release_channel: str
     exact_install_version: str
-    documented_requirement: str | None
-    documented_install_version: str | None
+    documented_install_command: str | None
     project_json_url: str | None
     default_install_version: str | None
     historical_versions: tuple[str, ...]
@@ -172,7 +173,7 @@ def verify_stable_project_json(
     return tuple(legacy_versions)
 
 
-def supported_prerelease_requirement(source: SourceMetadata) -> str:
+def supported_prerelease_install_command(source: SourceMetadata) -> str:
     section = re.search(r"(?ms)^## Install\s*$\n(?P<body>.*?)(?=^##\s|\Z)", source.readme)
     if section is None:
         raise ProjectSurfaceError("README has no Install section")
@@ -182,13 +183,10 @@ def supported_prerelease_requirement(source: SourceMetadata) -> str:
     commands = [line.strip() for line in block.group("code").splitlines() if line.strip()]
     if not commands:
         raise ProjectSurfaceError("README Install section has an empty shell block")
-    arguments = shlex.split(commands[0])
-    if len(arguments) != 3 or arguments[:2] != ["pip", "install"]:
-        raise ProjectSurfaceError("README first install command must select one package requirement")
-    requirement = arguments[2]
-    if requirement != f"{source.name}~=2.0.0rc0":
-        raise ProjectSurfaceError("README first install command must select the supported 2.0 prerelease line")
-    return requirement
+    command = commands[0]
+    if shlex.split(command) != shlex.split(SUPPORTED_PRERELEASE_INSTALL_COMMAND):
+        raise ProjectSurfaceError("README first install command must use the supported prerelease resolver")
+    return SUPPORTED_PRERELEASE_INSTALL_COMMAND
 
 
 def _selected_pip_version(report: object, source: SourceMetadata) -> str:
@@ -219,25 +217,12 @@ def verify_pip_report(report: object, source: SourceMetadata, expected_version: 
     return version
 
 
-def _is_previous_prerelease(version: str, expected_version: str) -> bool:
-    pattern = re.compile(r"(?P<release>[0-9]+(?:\.[0-9]+){2})rc(?P<number>[1-9][0-9]*)")
-    selected = pattern.fullmatch(version)
-    expected = pattern.fullmatch(expected_version)
-    return (
-        selected is not None
-        and expected is not None
-        and selected.group("release") == expected.group("release")
-        and int(selected.group("number")) + 1 == int(expected.group("number"))
-    )
-
-
 def _resolve_pip_with_convergence(
     requirement: str,
     source: SourceMetadata,
     *,
     attempts: int,
     interval_seconds: float,
-    retry_previous_prerelease: bool = False,
 ) -> str:
     last_lag: ProjectSurfaceError | None = None
     for attempt in range(1, attempts + 1):
@@ -246,16 +231,7 @@ def _resolve_pip_with_convergence(
         except _SimpleApiVisibilityLag as error:
             last_lag = error
         else:
-            version = _selected_pip_version(report, source)
-            if version == source.registry_version:
-                return version
-            mismatch = ProjectSurfaceError(f"pip selected {version}; expected {source.registry_version}")
-            if not retry_previous_prerelease or not _is_previous_prerelease(
-                version,
-                source.registry_version,
-            ):
-                raise mismatch
-            last_lag = mismatch
+            return verify_pip_report(report, source, source.registry_version)
         if attempt < attempts:
             time.sleep(interval_seconds)
 
@@ -267,7 +243,7 @@ def _resolve_pip_with_convergence(
 
 def write_evidence(path: Path, source: SourceMetadata, evidence: ProjectSurfaceEvidence) -> None:
     payload = {
-        "schema": "durable-workflow.python-pypi-project-surface.v2",
+        "schema": "durable-workflow.python-pypi-project-surface.v3",
         "source_commit": source.commit,
         "package": source.name,
         "public_urls": {
@@ -277,8 +253,7 @@ def write_evidence(path: Path, source: SourceMetadata, evidence: ProjectSurfaceE
         "release_channel": evidence.release_channel,
         "exact_install_version": evidence.exact_install_version,
         "default_install_version": evidence.default_install_version,
-        "documented_requirement": evidence.documented_requirement,
-        "documented_install_version": evidence.documented_install_version,
+        "documented_install_command": evidence.documented_install_command,
         "historical_versions": list(evidence.historical_versions),
     }
     path.write_text(f"{json.dumps(payload, indent=2, sort_keys=True)}\n", encoding="utf-8")
@@ -377,9 +352,9 @@ def main(argv: list[str] | None = None) -> int:
     except ReleaseMetadataError as error:
         raise ProjectSurfaceError(str(error)) from error
     channel = release_channel(source)
-    requirement = supported_prerelease_requirement(source) if channel == "prerelease" else None
+    install_command = supported_prerelease_install_command(source) if channel == "prerelease" else None
     if args.source_only:
-        detail = f"; documented prerelease install selects {requirement}" if requirement is not None else ""
+        detail = f"; documented prerelease install uses {install_command}" if install_command is not None else ""
         print(f"source metadata declares {source.name} {source.registry_version} ({channel}){detail}")
         return 0
 
@@ -411,18 +386,8 @@ def main(argv: list[str] | None = None) -> int:
 
     project_json_url: str | None = None
     default_install_version: str | None = None
-    documented_install_version: str | None = None
     historical_versions: tuple[str, ...] = ()
-    if channel == "prerelease":
-        assert requirement is not None
-        documented_install_version = _resolve_pip_with_convergence(
-            requirement,
-            source,
-            attempts=args.attempts,
-            interval_seconds=args.interval_seconds,
-            retry_previous_prerelease=True,
-        )
-    else:
+    if channel == "stable":
         project_json_url = f"https://pypi.org/pypi/{source.name}/json"
         project_last_error: BaseException | None = None
         for attempt in range(1, args.attempts + 1):
@@ -453,8 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         exact_version_json_url=exact_version_json_url,
         release_channel=channel,
         exact_install_version=exact_install_version,
-        documented_requirement=requirement,
-        documented_install_version=documented_install_version,
+        documented_install_command=install_command,
         project_json_url=project_json_url,
         default_install_version=default_install_version,
         historical_versions=historical_versions,
@@ -463,8 +427,9 @@ def main(argv: list[str] | None = None) -> int:
         write_evidence(args.evidence, source, evidence)
     if channel == "prerelease":
         print(
-            f"PyPI exact-version JSON, exact install, and documented prerelease install select "
-            f"{source.name} {source.registry_version}; project-root/default selection is deferred until stable; "
+            f"PyPI exact-version JSON and exact install select {source.name} {source.registry_version}; "
+            f"published metadata documents the supported prerelease resolver; "
+            f"project-root/default selection is deferred until stable; "
             f"public metadata: {exact_version_json_url}"
         )
     else:

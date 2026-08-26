@@ -8,20 +8,28 @@ from types import SimpleNamespace
 
 import pytest
 from scripts.api_reference_release import (
-    INSTALL_REQUIREMENT_TOKEN,
+    QUICKSTART_CONTRACT_SCHEMA,
+    QUICKSTART_CONTRACT_URL,
     RELEASE_EVIDENCE_FILENAME,
+    SUPPORTED_PRERELEASE_INSTALL_COMMAND,
+    SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND,
+    QualifiedOnboarding,
+    load_qualified_onboarding,
     load_release_identity,
     release_evidence,
     write_release_evidence,
 )
 from scripts.check_api_reference_install import (
     PUBLIC_PYPI_INDEX,
+    OnboardingCommands,
     PublicRequirementUnavailable,
     install_public_requirement,
     rendered_install_command,
+    rendered_server_image_command,
     run_clean_install,
     validate_command,
     validate_rendered_site,
+    validate_server_image_command,
     validate_source_templates,
     verify_public_deployment,
 )
@@ -30,37 +38,49 @@ from scripts.mkdocs_hooks import on_page_markdown
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_release_identity_aligns_install_paths_and_server_pairing() -> None:
-    identity = load_release_identity(REPO_ROOT)
+def onboarding_commands() -> OnboardingCommands:
+    return OnboardingCommands(
+        install=SUPPORTED_PRERELEASE_INSTALL_COMMAND,
+        server_image=SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND,
+    )
 
-    assert identity.server_version == "2.0.0-rc.50"
-    validate_source_templates(REPO_ROOT, identity)
+
+def quickstart_contract(sdk_version: str, server_version: str) -> dict[str, object]:
+    return {
+        "schema": QUICKSTART_CONTRACT_SCHEMA,
+        "artifacts": {
+            "sdk-python": {"version": sdk_version},
+            "server": {
+                "version": server_version,
+                "image": "durableworkflow/server",
+                "reference": f"durableworkflow/server:{server_version}",
+            },
+        },
+    }
 
 
-def test_landing_install_requirement_is_owned_by_the_release_helper() -> None:
-    identity = load_release_identity(REPO_ROOT)
-    source = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
-
-    assert INSTALL_REQUIREMENT_TOKEN in source
-    assert identity.requirement not in source
+def test_release_identity_and_onboarding_sources_are_valid() -> None:
+    load_release_identity(REPO_ROOT)
+    validate_source_templates(REPO_ROOT)
 
 
 def test_rendered_first_install_command_is_discovered(tmp_path: Path) -> None:
-    identity = load_release_identity(REPO_ROOT)
     (tmp_path / "index.html").write_text(
         '<main><h2 id="install">Install</h2><div class="highlight"><pre><code>'
-        "pip<span> </span>install<span> </span>"
-        "'durable-workflow<span>~=</span>2.0.0rc0'"
-        '</code></pre></div><h2 id="versioning">Versioning</h2>'
-        f"<p>SDK {identity.version}; durableworkflow/server:{identity.server_version}</p></main>",
+        f"{SUPPORTED_PRERELEASE_INSTALL_COMMAND}"
+        '</code></pre></div><section data-docs-journey="local-self-hosted"><pre><code>'
+        f"{SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND}"
+        '</code></pre></section><h2 id="versioning">Versioning</h2>'
+        f'<span data-release-authority-url="{QUICKSTART_CONTRACT_URL}"></span></main>',
         encoding="utf-8",
     )
 
-    assert rendered_install_command(tmp_path) == identity.install_command
-    assert validate_rendered_site(tmp_path, identity) == identity.requirement
+    assert rendered_install_command(tmp_path) == SUPPORTED_PRERELEASE_INSTALL_COMMAND
+    assert rendered_server_image_command(tmp_path) == SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND
+    assert validate_rendered_site(tmp_path) == onboarding_commands()
 
 
-def test_manifest_change_alone_changes_rendered_release_tuple(tmp_path: Path) -> None:
+def test_manifest_change_does_not_change_public_onboarding_resolvers(tmp_path: Path) -> None:
     current = load_release_identity(REPO_ROOT)
     sdk_version = "2.0.0-rc.999"
     registry_version = "2.0.0rc999"
@@ -83,29 +103,65 @@ def test_manifest_change_alone_changes_rendered_release_tuple(tmp_path: Path) ->
         1,
     )
     (tmp_path / "pyproject.toml").write_text(manifest, encoding="utf-8")
+    load_release_identity(tmp_path)
 
     source = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
     page = SimpleNamespace(file=SimpleNamespace(src_uri="index.md"))
     config = SimpleNamespace(config_file_path=str(tmp_path / "mkdocs.yml"))
     rendered = on_page_markdown(source, page, config, files=None)
 
-    assert "pip install 'durable-workflow~=2.0.0rc0'" in rendered
-    assert f"durableworkflow/server:{server_version}" in rendered
+    assert SUPPORTED_PRERELEASE_INSTALL_COMMAND in rendered
+    assert SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND in rendered
+    assert sdk_version not in rendered
+    assert server_version not in rendered
     assert current.version not in rendered
 
 
-def test_unversioned_first_install_command_is_rejected() -> None:
+def test_contract_change_alone_changes_the_qualified_sdk_server_pair() -> None:
+    current = load_qualified_onboarding(quickstart_contract("2.0.0-rc.101", "2.0.0-rc.201"))
+    changed = load_qualified_onboarding(quickstart_contract("2.0.0-rc.102", "2.0.0-rc.202"))
+
+    assert current == QualifiedOnboarding(
+        sdk_version="2.0.0-rc.101",
+        sdk_registry_version="2.0.0rc101",
+        server_version="2.0.0-rc.201",
+        server_reference="durableworkflow/server:2.0.0-rc.201",
+    )
+    assert changed.sdk_version != current.sdk_version
+    assert changed.server_reference != current.server_reference
+
+
+def test_contract_rejects_a_mismatched_server_reference() -> None:
+    contract = quickstart_contract("2.0.0-rc.101", "2.0.0-rc.201")
+    artifacts = contract["artifacts"]
+    assert isinstance(artifacts, dict)
+    server = artifacts["server"]
+    assert isinstance(server, dict)
+    server["reference"] = "durableworkflow/server:unqualified"
+
+    with pytest.raises(ValueError, match="does not match"):
+        load_qualified_onboarding(contract)
+
+
+def test_server_resolver_rejects_a_local_manifest_command() -> None:
     identity = load_release_identity(REPO_ROOT)
 
-    with pytest.raises(ValueError, match="First install command must be"):
-        validate_command("pip install durable-workflow", identity)
+    with pytest.raises(ValueError, match="public quickstart contract resolver"):
+        validate_server_image_command(
+            f"export DW_SERVER_IMAGE='durableworkflow/server:{identity.server_version}'"
+        )
+
+
+def test_direct_pip_install_is_rejected() -> None:
+    with pytest.raises(ValueError, match="supported prerelease resolver"):
+        validate_command("pip install durable-workflow")
 
 
 def test_delayed_public_pypi_release_is_retried_before_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    requirement = load_release_identity(REPO_ROOT).requirement
+    requirement = load_release_identity(REPO_ROOT).exact_requirement
     return_codes = iter((1, 1, 0))
     calls: list[tuple[list[str], dict[str, str]]] = []
     sleeps: list[float] = []
@@ -147,7 +203,7 @@ def test_unavailable_public_pypi_release_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    requirement = load_release_identity(REPO_ROOT).requirement
+    requirement = load_release_identity(REPO_ROOT).exact_requirement
 
     def unavailable(
         command: list[str],
@@ -169,11 +225,14 @@ def test_unavailable_public_pypi_release_fails_closed(
         )
 
 
-def test_clean_install_probes_the_exact_release_before_the_documented_range(
+def test_clean_install_probes_the_exact_release_before_the_documented_resolver(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     identity = load_release_identity(REPO_ROOT)
-    calls: list[tuple[str, str | None]] = []
+    commands = onboarding_commands()
+    qualified = load_qualified_onboarding(quickstart_contract("2.0.0-rc.101", "2.0.0-rc.201"))
+    requirements: list[tuple[str, str | None]] = []
+    resolver_pairs: list[tuple[OnboardingCommands, QualifiedOnboarding]] = []
 
     def run_requirement(
         requirement: str,
@@ -184,19 +243,22 @@ def test_clean_install_probes_the_exact_release_before_the_documented_range(
     ) -> None:
         assert install_attempts == 1
         assert install_retry_sleep == 0
-        calls.append((requirement, expected_version))
+        requirements.append((requirement, expected_version))
 
     monkeypatch.setattr("scripts.check_api_reference_install._run_clean_requirement", run_requirement)
+    monkeypatch.setattr("scripts.check_api_reference_install.load_public_qualified_onboarding", lambda: qualified)
+    monkeypatch.setattr(
+        "scripts.check_api_reference_install._run_clean_onboarding",
+        lambda selected_commands, selected_pair: resolver_pairs.append((selected_commands, selected_pair)),
+    )
 
-    run_clean_install(identity.requirement, identity, install_attempts=1, install_retry_sleep=0)
+    run_clean_install(commands, identity, install_attempts=1, install_retry_sleep=0)
 
-    assert calls == [
-        (f"durable-workflow=={identity.registry_version}", identity.registry_version),
-        ("durable-workflow~=2.0.0rc0", identity.registry_version),
-    ]
+    assert requirements == [(identity.exact_requirement, identity.registry_version)]
+    assert resolver_pairs == [(commands, qualified)]
 
 
-def test_public_rc24_does_not_mask_an_unpublished_exact_rc36(
+def test_resolver_result_does_not_mask_an_unpublished_exact_release(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     identity = load_release_identity(REPO_ROOT)
@@ -213,28 +275,31 @@ def test_public_rc24_does_not_mask_an_unpublished_exact_rc36(
         calls.append(requirement)
         if requirement == identity.exact_requirement:
             raise PublicRequirementUnavailable(1, ["pip", "install", requirement])
-        raise subprocess.CalledProcessError(
-            1,
-            ["python", "-c", "installed durable-workflow 2.0.0rc24, expected 2.0.0rc36"],
-        )
+        pytest.fail(f"unexpected requirement probe: {requirement}")
 
     monkeypatch.setattr("scripts.check_api_reference_install._run_clean_requirement", run_requirement)
+    monkeypatch.setattr(
+        "scripts.check_api_reference_install.load_public_qualified_onboarding",
+        lambda: pytest.fail("public resolver must not run before the exact API-reference release is public"),
+    )
 
     with pytest.raises(PublicRequirementUnavailable):
-        run_clean_install(identity.requirement, identity, install_attempts=1, install_retry_sleep=0)
+        run_clean_install(onboarding_commands(), identity, install_attempts=1, install_retry_sleep=0)
 
-    assert identity.registry_version == "2.0.0rc36"
     assert calls == [identity.exact_requirement]
 
 
-def test_stale_documented_range_is_a_hard_failure_after_exact_rc36_exists(
+def test_resolver_failure_is_a_hard_failure_after_exact_release_exists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     identity = load_release_identity(REPO_ROOT)
-    calls: list[str] = []
-    stale_range = subprocess.CalledProcessError(
+    commands = onboarding_commands()
+    qualified = load_qualified_onboarding(quickstart_contract("2.0.0-rc.101", "2.0.0-rc.201"))
+    requirements: list[str] = []
+    resolver_pairs: list[tuple[OnboardingCommands, QualifiedOnboarding]] = []
+    resolver_failure = subprocess.CalledProcessError(
         1,
-        ["python", "-c", "installed durable-workflow 2.0.0rc24, expected 2.0.0rc36"],
+        ["sh", "-c", commands.install],
     )
 
     def run_requirement(
@@ -247,17 +312,25 @@ def test_stale_documented_range_is_a_hard_failure_after_exact_rc36_exists(
         assert expected_version == identity.registry_version
         assert install_attempts == 1
         assert install_retry_sleep == 0
-        calls.append(requirement)
-        if requirement == identity.requirement:
-            raise stale_range
+        requirements.append(requirement)
+
+    def run_resolver(
+        selected_commands: OnboardingCommands,
+        selected_pair: QualifiedOnboarding,
+    ) -> None:
+        resolver_pairs.append((selected_commands, selected_pair))
+        raise resolver_failure
 
     monkeypatch.setattr("scripts.check_api_reference_install._run_clean_requirement", run_requirement)
+    monkeypatch.setattr("scripts.check_api_reference_install.load_public_qualified_onboarding", lambda: qualified)
+    monkeypatch.setattr("scripts.check_api_reference_install._run_clean_onboarding", run_resolver)
 
     with pytest.raises(subprocess.CalledProcessError) as failure:
-        run_clean_install(identity.requirement, identity, install_attempts=1, install_retry_sleep=0)
+        run_clean_install(commands, identity, install_attempts=1, install_retry_sleep=0)
 
-    assert failure.value is stale_range
-    assert calls == [identity.exact_requirement, identity.requirement]
+    assert failure.value is resolver_failure
+    assert requirements == [identity.exact_requirement]
+    assert resolver_pairs == [(commands, qualified)]
 
 
 def test_public_release_evidence_derives_from_manifest(tmp_path: Path) -> None:
@@ -271,7 +344,7 @@ def test_public_release_evidence_derives_from_manifest(tmp_path: Path) -> None:
         "schema": "durable-workflow.python-api-reference.release",
         "source_revision": source_revision,
         "pypi_version": identity.registry_version,
-        "install_command": identity.install_command,
+        "install_command": SUPPORTED_PRERELEASE_INSTALL_COMMAND,
         "artifact_versions": {
             "sdk-python": identity.version,
             "server": identity.server_version,

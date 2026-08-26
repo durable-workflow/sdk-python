@@ -7,11 +7,12 @@ from typing import Any
 
 import pytest
 import yaml
+from scripts.api_reference_release import SUPPORTED_PRERELEASE_INSTALL_COMMAND
 from scripts.check_pypi_project_surface import (
     ProjectSurfaceError,
     main,
     release_channel,
-    supported_prerelease_requirement,
+    supported_prerelease_install_command,
     verify_exact_version_json,
     verify_pip_report,
     verify_stable_project_json,
@@ -36,7 +37,7 @@ def source_metadata(*, stable: bool = False) -> SourceMetadata:
             "Build replay-safe Python workflows.\n\n"
             "## Install\n\n"
             "```bash\n"
-            "pip install 'durable-workflow~=2.0.0rc0'\n"
+            f"{SUPPORTED_PRERELEASE_INSTALL_COMMAND}\n"
             "```\n"
         ),
     )
@@ -117,10 +118,7 @@ def test_prerelease_with_existing_final_skips_project_root_and_bare_install(
 
     assert main(["--source-ref", "release-source", "--attempts", "30"]) == 0
     assert requested_urls == [f"https://pypi.org/pypi/{source.name}/{source.registry_version}/json"]
-    assert requirements == [
-        (f"{source.name}=={source.registry_version}", False),
-        ("durable-workflow~=2.0.0rc0", False),
-    ]
+    assert requirements == [(f"{source.name}=={source.registry_version}", False)]
 
 
 def test_exact_version_metadata_mismatch_fails_without_retrying(
@@ -142,34 +140,6 @@ def test_exact_version_metadata_mismatch_fails_without_retrying(
         main(["--source-ref", "release-source", "--attempts", "30", "--interval-seconds", "10"])
 
     assert len(requested_urls) == 1
-    assert sleeps == []
-
-
-def test_documented_prerelease_range_must_select_exact_current_rc(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = source_metadata()
-    requirements: list[str] = []
-    sleeps: list[float] = []
-    monkeypatch.setattr("scripts.check_pypi_project_surface.load_source_metadata", lambda _: source)
-    monkeypatch.setattr("scripts.check_pypi_project_surface._request_json", lambda _: exact_version_payload(source))
-
-    def resolve(requirement: str, *, prerelease: bool) -> object:
-        del prerelease
-        requirements.append(requirement)
-        version = source.registry_version if "==" in requirement else "2.0.0rc23"
-        return pip_report(version)
-
-    monkeypatch.setattr("scripts.check_pypi_project_surface._pip_report", resolve)
-    monkeypatch.setattr("scripts.check_pypi_project_surface.time.sleep", sleeps.append)
-
-    with pytest.raises(ProjectSurfaceError, match="pip selected 2.0.0rc23; expected 2.0.0rc36"):
-        main(["--source-ref", "release-source", "--attempts", "30", "--interval-seconds", "10"])
-
-    assert requirements == [
-        f"{source.name}=={source.registry_version}",
-        "durable-workflow~=2.0.0rc0",
-    ]
     assert sleeps == []
 
 
@@ -196,11 +166,8 @@ def test_prerelease_pip_probes_retry_simple_api_lag(
             )
             return subprocess.CompletedProcess(command, 1, stdout="", stderr=detail)
 
-        version = source.registry_version
-        if "~=" in requirement and pip_attempts[requirement] == 1:
-            version = "2.0.0rc35"
         report_path = Path(command[command.index("--report") + 1])
-        report_path.write_text(json.dumps(pip_report(version)), encoding="utf-8")
+        report_path.write_text(json.dumps(pip_report(source.registry_version)), encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr("scripts.check_pypi_project_surface.subprocess.run", run_pip)
@@ -221,14 +188,11 @@ def test_prerelease_pip_probes_retry_simple_api_lag(
         )
         == 0
     )
-    assert pip_attempts == {
-        f"{source.name}=={source.registry_version}": 2,
-        "durable-workflow~=2.0.0rc0": 2,
-    }
-    assert sleeps == [4.0, 4.0]
+    assert pip_attempts == {f"{source.name}=={source.registry_version}": 2}
+    assert sleeps == [4.0]
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert evidence["exact_install_version"] == source.registry_version
-    assert evidence["documented_install_version"] == source.registry_version
+    assert evidence["documented_install_command"] == SUPPORTED_PRERELEASE_INSTALL_COMMAND
 
 
 def test_malformed_pip_report_fails_without_retrying(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -411,7 +375,7 @@ def test_prerelease_evidence_records_deferred_default_surface(
 
     assert main(["--source-ref", "release-source", "--evidence", str(evidence_path)]) == 0
     assert json.loads(evidence_path.read_text(encoding="utf-8")) == {
-        "schema": "durable-workflow.python-pypi-project-surface.v2",
+        "schema": "durable-workflow.python-pypi-project-surface.v3",
         "source_commit": source.commit,
         "package": source.name,
         "public_urls": {
@@ -421,19 +385,18 @@ def test_prerelease_evidence_records_deferred_default_surface(
         "release_channel": "prerelease",
         "exact_install_version": source.registry_version,
         "default_install_version": None,
-        "documented_requirement": "durable-workflow~=2.0.0rc0",
-        "documented_install_version": source.registry_version,
+        "documented_install_command": SUPPORTED_PRERELEASE_INSTALL_COMMAND,
         "historical_versions": [],
     }
 
 
-def test_documented_requirement_is_machine_checked() -> None:
+def test_documented_install_command_is_machine_checked() -> None:
     source = source_metadata()
-    assert supported_prerelease_requirement(source) == "durable-workflow~=2.0.0rc0"
+    assert supported_prerelease_install_command(source) == SUPPORTED_PRERELEASE_INSTALL_COMMAND
 
-    changed = SourceMetadata(**{**source.__dict__, "readme": source.readme.replace("rc0", "rc23")})
-    with pytest.raises(ProjectSurfaceError, match="supported 2.0 prerelease line"):
-        supported_prerelease_requirement(changed)
+    changed = SourceMetadata(**{**source.__dict__, "readme": source.readme.replace("install-sdk.sh", "install.sh")})
+    with pytest.raises(ProjectSurfaceError, match="supported prerelease resolver"):
+        supported_prerelease_install_command(changed)
 
 
 def test_pip_report_must_select_expected_version() -> None:

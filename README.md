@@ -13,14 +13,13 @@ Python workers execute server-routed query tasks after the Server advertises the
 ## Install
 
 ```bash
-pip install 'durable-workflow~=2.0.0rc0'
+curl -fsSL https://durable-workflow.com/install-sdk.sh | sh -s -- python
 ```
 
-The compatible-release constraint selects the newest published 2.0 prerelease
-without allowing prereleases of unrelated dependencies or implying that stable
-2.0 has shipped. The
-[API reference](https://python.durable-workflow.com/) shows the exact supported
-SDK and Server versions.
+The versionless resolver reads the last passing public quickstart contract and
+invokes pip with the qualified SDK identity. The
+[API reference](https://python.durable-workflow.com/) resolves the matching
+Server image from that same contract.
 
 Or for development:
 

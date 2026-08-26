@@ -9,6 +9,7 @@ import os
 import re
 import ssl
 import subprocess
+import sys
 import tempfile
 import threading
 from collections.abc import Iterator
@@ -20,6 +21,22 @@ from typing import Any
 from urllib.parse import urlparse
 
 from playwright.sync_api import Browser, Locator, Page, Response, Route, sync_playwright
+
+try:
+    from scripts.api_reference_release import (
+        QUICKSTART_CONTRACT_URL,
+        SUPPORTED_PRERELEASE_INSTALL_COMMAND,
+        SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND,
+    )
+except ModuleNotFoundError as error:  # pragma: no cover - direct command-line execution
+    if error.name != "scripts":
+        raise
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.api_reference_release import (
+        QUICKSTART_CONTRACT_URL,
+        SUPPORTED_PRERELEASE_INSTALL_COMMAND,
+        SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND,
+    )
 
 VIEWPORTS = ((1440, 920), (768, 1024), (390, 844), (640, 360))
 NESTED_REFERENCE_ROUTES = (
@@ -430,12 +447,14 @@ def assert_landing_contract(page: Page, label: str) -> None:
                 pypiLinked: destinations.some((entry) => entry.href === pypiUrl),
                 playgroundLinked: destinations.some((entry) => entry.href === playgroundUrl),
                 referenceHref: reference?.getAttribute('href') || null,
+                releaseAuthorityUrl: one('[data-release-authority="public-quickstart-contract"]')
+                    ?.dataset.releaseAuthorityUrl || null,
                 roles: all('[data-sdk-role]').map((element) => element.dataset.sdkRole).sort(),
                 selfHostedAccess: selfHosted?.dataset.access || null,
                 serverCommand: localJourney
                     ? all('[data-docs-journey="local-self-hosted"] code')
-                        .map((element) => element.textContent)
-                        .find((text) => text.includes('durableworkflow/server:')) || null
+                        .map((element) => element.textContent.trim())
+                        .find((text) => text.includes('DW_SERVER_IMAGE=')) || null
                     : null,
                 surfaceCount: all('[data-docs-surface="python-sdk-landing"]').length,
                 runtimeUrlContracts: all('[data-runtime-url-contract]')
@@ -506,11 +525,14 @@ def assert_landing_contract(page: Page, label: str) -> None:
             "cloudGuideLinked",
         )
     ), f"{label} omitted a platform or playground destination: {contract['destinations']}"
-    assert contract["installCommand"] == "pip install 'durable-workflow~=2.0.0rc0'", (
-        f"{label} changed the compatibility-channel install command: {contract['installCommand']}"
+    assert contract["installCommand"] == SUPPORTED_PRERELEASE_INSTALL_COMMAND, (
+        f"{label} changed the supported prerelease resolver: {contract['installCommand']}"
     )
-    assert contract["serverCommand"] and "{{" not in contract["serverCommand"], (
-        f"{label} did not resolve the compatible Server image: {contract['serverCommand']}"
+    assert contract["serverCommand"] == SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND, (
+        f"{label} changed the qualified Server resolver: {contract['serverCommand']}"
+    )
+    assert contract["releaseAuthorityUrl"] == QUICKSTART_CONTRACT_URL, (
+        f"{label} split SDK and Server authority: {contract['releaseAuthorityUrl']}"
     )
     assert contract["codeBlocks"] and all(
         block["scrollWidth"] <= block["clientWidth"] + 1 or block["overflowX"] in {"auto", "scroll"}

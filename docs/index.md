@@ -5,7 +5,7 @@ hide:
   - toc
 ---
 
-<div class="dw-landing" data-docs-surface="python-sdk-landing" data-sdk-release="{{ durable_workflow_sdk_version }}" markdown="1">
+<div class="dw-landing" data-docs-surface="python-sdk-landing" markdown="1">
 
 <section class="dw-hero" aria-labelledby="durable-workflows-in-python" markdown="1">
 
@@ -34,11 +34,11 @@ namespace.
 ## Install
 
 ```bash
-pip install '{{ durable_workflow_install_requirement }}'
+curl -fsSL https://durable-workflow.com/install-sdk.sh | sh -s -- python
 ```
 
-The requirement is rendered from the SDK's current package and compatibility
-authority instead of being copied into this page.
+The versionless resolver reads the public quickstart contract and invokes pip
+with its qualified SDK identity.
 
 <p class="dw-install-card__links"><a data-docs-destination="pypi" href="https://pypi.org/project/durable-workflow/">View on PyPI</a><a data-docs-destination="github" href="https://github.com/durable-workflow/sdk-python">Source on GitHub</a></p>
 
@@ -93,16 +93,22 @@ endpoint, credentials, and operating boundary change.
 
 ## Run your first local workflow
 
-This source-free path starts the compatibility-qualified Server image, then
-runs one Python file containing an activity, workflow, worker, and client.
+This source-free path resolves the compatibility-qualified Server image from
+the same public quickstart contract as the SDK installer, then runs one Python
+file containing an activity, workflow, worker, and client.
 
 ### 1. Start Server
 
-Docker keeps this first run local. The image below is rendered from the same
-compatibility authority as the install command.
+Docker keeps this first run local. Resolve the Server image without copying a
+prerelease sequence number into the page:
 
 ```bash
-export DW_SERVER_IMAGE='durableworkflow/server:{{ durable_workflow_server_version }}'
+{{ durable_workflow_server_image_resolver }}
+```
+
+Then bootstrap and start that qualified image:
+
+```bash
 export DURABLE_WORKFLOW_RUNTIME_URL='http://127.0.0.1:8080'
 export DURABLE_WORKFLOW_RUNTIME_NAMESPACE='default'
 export DURABLE_WORKFLOW_TOKEN='local-python-example-token'
@@ -251,10 +257,11 @@ python greeter.py
 
 ## Versioning
 
-<span hidden data-release-authority="package-metadata">SDK {{ durable_workflow_sdk_version }}; durableworkflow/server:{{ durable_workflow_server_version }}</span>
+<span hidden data-release-authority="public-quickstart-contract" data-release-authority-url="https://durable-workflow.com/quickstart-execution-contract.json"></span>
 
-The install requirement and compatible Server image on this page are generated
-from the SDK package metadata. Lock the resolved package in your application
+The SDK installer and Server image resolver both read the public quickstart
+contract. Neither command stores a release-candidate sequence number in this
+page. Lock the resolved package and Server image digest in your application
 when you need reproducible builds.
 
 </section>

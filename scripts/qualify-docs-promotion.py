@@ -21,7 +21,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from playwright.sync_api import Browser, Request, Response, sync_playwright  # noqa: E402
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError  # noqa: E402
-from scripts.api_reference_release import load_release_identity  # noqa: E402
+from scripts.api_reference_release import (  # noqa: E402
+    SUPPORTED_PRERELEASE_INSTALL_COMMAND,
+    load_release_identity,
+)
 from scripts.check_api_reference_install import verify_public_deployment  # noqa: E402
 
 DOCS_URL = "https://python.durable-workflow.com/"
@@ -256,7 +259,7 @@ def assert_deployed_landing(page: Any, name: str) -> None:
             "cloudGuideLinked",
         )
     )
-    assert contract["installCommand"] == "pip install 'durable-workflow~=2.0.0rc0'"
+    assert contract["installCommand"] == SUPPORTED_PRERELEASE_INSTALL_COMMAND
     assert contract["serverCommand"] and "{{" not in contract["serverCommand"]
     assert contract["codeBlocks"] and all(
         block["scrollWidth"] <= block["clientWidth"] + 1 or block["overflowX"] in {"auto", "scroll"}

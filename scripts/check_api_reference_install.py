@@ -14,14 +14,21 @@ import sys
 import tempfile
 import time
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 try:
     from scripts.api_reference_release import (
+        QUICKSTART_CONTRACT_SCHEMA,
+        QUICKSTART_CONTRACT_URL,
+        SUPPORTED_PRERELEASE_INSTALL_COMMAND,
+        SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND,
+        QualifiedOnboarding,
         ReleaseIdentity,
+        load_qualified_onboarding,
         load_release_identity,
-        render_release_identity,
+        render_onboarding_resolvers,
         validate_release_evidence,
         write_release_evidence,
     )
@@ -30,12 +37,24 @@ except ModuleNotFoundError as error:  # pragma: no cover - used by the documente
         raise
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from scripts.api_reference_release import (
+        QUICKSTART_CONTRACT_SCHEMA,
+        QUICKSTART_CONTRACT_URL,
+        SUPPORTED_PRERELEASE_INSTALL_COMMAND,
+        SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND,
+        QualifiedOnboarding,
         ReleaseIdentity,
+        load_qualified_onboarding,
         load_release_identity,
-        render_release_identity,
+        render_onboarding_resolvers,
         validate_release_evidence,
         write_release_evidence,
     )
+
+
+@dataclass(frozen=True)
+class OnboardingCommands:
+    install: str
+    server_image: str
 
 
 class InstallCodeParser(html.parser.HTMLParser):
@@ -43,36 +62,53 @@ class InstallCodeParser(html.parser.HTMLParser):
         super().__init__()
         self.commands: list[str] = []
         self._in_install_section = False
+        self._local_section_depth = 0
         self._pre_depth = 0
         self._capturing = False
+        self._capture_target: str | None = None
         self._parts: list[str] = []
         self._in_versioning_section = False
-        self.versioning_parts: list[str] = []
+        self.local_commands: list[str] = []
+        self.release_authority_urls: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
-        if tag == "h2":
+        if tag == "section":
+            if self._local_section_depth:
+                self._local_section_depth += 1
+            elif attributes.get("data-docs-journey") == "local-self-hosted":
+                self._local_section_depth = 1
+                self._in_install_section = False
+        elif tag == "h2":
             self._in_install_section = attributes.get("id") == "install"
             self._in_versioning_section = attributes.get("id") == "versioning"
-        elif tag == "pre" and self._in_install_section:
+        elif tag == "pre" and (self._in_install_section or self._local_section_depth):
             self._pre_depth += 1
         elif tag == "code" and self._pre_depth:
             self._capturing = True
+            self._capture_target = "install" if self._in_install_section else "local"
             self._parts = []
+        if self._in_versioning_section and attributes.get("data-release-authority-url"):
+            self.release_authority_urls.append(attributes["data-release-authority-url"] or "")
 
     def handle_data(self, data: str) -> None:
         if self._capturing:
             self._parts.append(data)
-        if self._in_versioning_section:
-            self.versioning_parts.append(data)
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "code" and self._capturing:
-            self.commands.append("".join(self._parts).strip())
+            command = "".join(self._parts).strip()
+            if self._capture_target == "install":
+                self.commands.append(command)
+            elif self._capture_target == "local":
+                self.local_commands.append(command)
             self._capturing = False
+            self._capture_target = None
             self._parts = []
         elif tag == "pre" and self._pre_depth:
             self._pre_depth -= 1
+        elif tag == "section" and self._local_section_depth:
+            self._local_section_depth -= 1
 
 
 def markdown_install_command_from_text(text: str, source: str) -> str:
@@ -92,29 +128,58 @@ def markdown_install_command(path: Path) -> str:
     return markdown_install_command_from_text(path.read_text(encoding="utf-8"), str(path))
 
 
-def validate_source_templates(repo_root: Path, identity: ReleaseIdentity) -> None:
+def markdown_server_image_command_from_text(text: str, source: str) -> str:
+    section = re.search(r"(?ms)^### 1\. Start Server\s*$\n(?P<body>.*?)(?=^###\s|\Z)", text)
+    if section is None:
+        raise ValueError(f"{source} has no first-run Server section")
+    blocks = re.finditer(
+        r"(?ms)^```(?:bash|shell)\s*$\n(?P<code>.*?)^```\s*$",
+        section.group("body"),
+    )
+    for block in blocks:
+        command = block.group("code").strip()
+        if "DW_SERVER_IMAGE=" in command:
+            return command
+    raise ValueError(f"{source} first-run Server section has no image resolver")
+
+
+def validate_source_templates(repo_root: Path) -> None:
     reference = (repo_root / "docs" / "index.md").read_text(encoding="utf-8")
-    rendered_reference = render_release_identity(reference, identity)
-    if re.search(r"\b[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta|rc)\.[0-9]+\b", reference, re.IGNORECASE):
-        raise ValueError("docs/index.md must derive exact prerelease identities from pyproject.toml")
+    rendered_reference = render_onboarding_resolvers(reference)
 
-    reference_command = markdown_install_command_from_text(rendered_reference, "docs/index.md")
-    if shlex.split(reference_command) != shlex.split(identity.install_command):
-        raise ValueError("docs/index.md first install command must select the supported 2.0 prerelease line")
+    exact_prerelease = re.compile(
+        r"\bv?[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta|rc)\.[0-9]+\b|"
+        r"\b[0-9]+\.[0-9]+\.[0-9]+(?:a|b|rc)[0-9]+\b",
+        re.IGNORECASE,
+    )
+    for relative_path in ("README.md", "docs/index.md"):
+        path = repo_root / relative_path
+        if exact_prerelease.search(path.read_text(encoding="utf-8")):
+            raise ValueError(f"{relative_path} must not hand-maintain an exact prerelease identity")
+    validate_command(markdown_install_command(repo_root / "README.md"))
+    validate_command(
+        markdown_install_command_from_text(rendered_reference, "docs/index.md"),
+    )
+    validate_server_image_command(
+        markdown_server_image_command_from_text(rendered_reference, "docs/index.md")
+    )
 
-    readme = repo_root / "README.md"
-    expected = ["pip", "install", "durable-workflow~=2.0.0rc0"]
-    command = markdown_install_command(readme)
-    if shlex.split(command) != expected:
-        raise ValueError(f"README first install command must select the 2.0 prerelease line, got {command!r}")
 
-
-def validate_command(command: str, identity: ReleaseIdentity) -> str:
+def validate_command(command: str) -> str:
     arguments = shlex.split(command)
-    expected = ["pip", "install", identity.requirement]
+    expected = shlex.split(SUPPORTED_PRERELEASE_INSTALL_COMMAND)
     if arguments != expected:
-        raise ValueError(f"First install command must be {identity.install_command!r}, got {command!r}")
-    return arguments[2]
+        raise ValueError(
+            f"First install command must use the supported prerelease resolver "
+            f"{SUPPORTED_PRERELEASE_INSTALL_COMMAND!r}, got {command!r}"
+        )
+    return SUPPORTED_PRERELEASE_INSTALL_COMMAND
+
+
+def validate_server_image_command(command: str) -> str:
+    if command.strip() != SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND:
+        raise ValueError("First-run Server command must use the public quickstart contract resolver")
+    return SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND
 
 
 def rendered_install_command(site: Path) -> str:
@@ -126,20 +191,31 @@ def rendered_install_command(site: Path) -> str:
     return parser.commands[0]
 
 
-def validate_rendered_site(site: Path, identity: ReleaseIdentity) -> str:
+def rendered_server_image_command(site: Path) -> str:
+    index = site / "index.html"
+    parser = InstallCodeParser()
+    parser.feed(index.read_text(encoding="utf-8"))
+    commands = [command for command in parser.local_commands if "DW_SERVER_IMAGE=" in command]
+    if len(commands) != 1:
+        raise ValueError(f"{index} must render exactly one Server image resolver")
+    return commands[0]
+
+
+def validate_rendered_site(site: Path) -> OnboardingCommands:
     index = site / "index.html"
     parser = InstallCodeParser()
     parser.feed(index.read_text(encoding="utf-8"))
     if not parser.commands:
         raise ValueError(f"{index} has no rendered bash command")
-    command = parser.commands[0]
-    qualification = " ".join("".join(parser.versioning_parts).split())
-    expected_server = f"durableworkflow/server:{identity.server_version}"
-    if identity.version not in qualification or expected_server not in qualification:
-        raise ValueError(
-            "Rendered Versioning section does not contain the manifest-derived SDK and Server release tuple"
-        )
-    return validate_command(command, identity)
+    server_commands = [command for command in parser.local_commands if "DW_SERVER_IMAGE=" in command]
+    if len(server_commands) != 1:
+        raise ValueError(f"{index} must render exactly one Server image resolver")
+    if parser.release_authority_urls != [QUICKSTART_CONTRACT_URL]:
+        raise ValueError("Rendered Versioning authority does not identify the public quickstart contract")
+    return OnboardingCommands(
+        install=validate_command(parser.commands[0]),
+        server_image=validate_server_image_command(server_commands[0]),
+    )
 
 
 PUBLIC_PYPI_INDEX = "https://pypi.org/simple"
@@ -235,26 +311,104 @@ print(f"clean API-reference install imported durable-workflow {installed}")
         subprocess.run([str(python), "-c", check], cwd=clean_root, env=env, check=True)
 
 
+def load_public_qualified_onboarding() -> QualifiedOnboarding:
+    request = urllib.request.Request(QUICKSTART_CONTRACT_URL, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - fixed public HTTPS URL
+        return load_qualified_onboarding(json.load(response))
+
+
+def _run_clean_onboarding(commands: OnboardingCommands, qualified: QualifiedOnboarding) -> None:
+    """Exercise both documented resolvers against one contract snapshot."""
+    with tempfile.TemporaryDirectory(prefix="dw-api-reference-resolver-") as temporary:
+        clean_root = Path(temporary)
+        venv = clean_root / ".venv"
+        subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
+        bin_dir = venv / ("Scripts" if os.name == "nt" else "bin")
+        python = bin_dir / ("python.exe" if os.name == "nt" else "python")
+        pip = bin_dir / ("pip.exe" if os.name == "nt" else "pip")
+        contract = clean_root / "quickstart-execution-contract.json"
+        contract.write_text(
+            json.dumps(
+                {
+                    "schema": QUICKSTART_CONTRACT_SCHEMA,
+                    "artifacts": {
+                        "sdk-python": {"version": qualified.sdk_version},
+                        "server": {
+                            "version": qualified.server_version,
+                            "image": qualified.server_reference.rsplit(":", 1)[0],
+                            "reference": qualified.server_reference,
+                        },
+                    },
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        env = {
+            **os.environ,
+            "DURABLE_WORKFLOW_QUICKSTART_CONTRACT_URL": contract.as_uri(),
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "PIP_BIN": str(pip),
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_INDEX_URL": PUBLIC_PYPI_INDEX,
+            "PYTHONPATH": "",
+        }
+        for variable in ("PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "PIP_NO_INDEX"):
+            env.pop(variable, None)
+
+        subprocess.run(["sh", "-c", commands.install], cwd=clean_root, env=env, check=True)
+        check = """
+import importlib.metadata
+import os
+
+import durable_workflow
+
+expected = os.environ["EXPECTED_DURABLE_WORKFLOW_VERSION"]
+installed = importlib.metadata.version("durable-workflow")
+if installed != expected:
+    raise SystemExit(f"qualified resolver installed durable-workflow {installed}, expected {expected}")
+if durable_workflow.__version__ != installed:
+    raise SystemExit(f"imported durable-workflow {durable_workflow.__version__}, installed {installed}")
+print(f"clean API-reference resolver imported durable-workflow {installed}")
+"""
+        subprocess.run(
+            [str(python), "-c", check],
+            cwd=clean_root,
+            env={**env, "EXPECTED_DURABLE_WORKFLOW_VERSION": qualified.sdk_registry_version},
+            check=True,
+        )
+        server = subprocess.run(
+            ["sh", "-c", f"set -eu\n{commands.server_image}\nprintf '%s\\n' \"$DW_SERVER_IMAGE\""],
+            cwd=clean_root,
+            env=env,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        if server.stdout.strip() != qualified.server_reference:
+            raise ValueError(
+                f"Server resolver selected {server.stdout.strip()!r}, expected {qualified.server_reference!r}"
+            )
+
+
 def run_clean_install(
-    requirement: str,
+    commands: OnboardingCommands,
     identity: ReleaseIdentity,
     *,
     install_attempts: int = 6,
     install_retry_sleep: float = 20,
 ) -> None:
-    """Require the exact release before exercising the documented range."""
+    """Require the exact release before exercising the documented resolver pair."""
+    validate_command(commands.install)
+    validate_server_image_command(commands.server_image)
     _run_clean_requirement(
         identity.exact_requirement,
         expected_version=identity.registry_version,
         install_attempts=install_attempts,
         install_retry_sleep=install_retry_sleep,
     )
-    _run_clean_requirement(
-        requirement,
-        expected_version=identity.registry_version,
-        install_attempts=install_attempts,
-        install_retry_sleep=install_retry_sleep,
-    )
+    _run_clean_onboarding(commands, load_public_qualified_onboarding())
 
 
 def verify_public_deployment(
@@ -301,7 +455,7 @@ def main() -> int:
     parser.add_argument(
         "--install",
         action="store_true",
-        help="Install the rendered requirement from the package registry in a clean virtual environment.",
+        help="Exercise the rendered supported-prerelease resolver in a clean virtual environment.",
     )
     parser.add_argument(
         "--install-attempts",
@@ -318,7 +472,7 @@ def main() -> int:
     parser.add_argument(
         "--unavailable-exit-code",
         type=int,
-        help="Return this distinct code only when public PyPI cannot install the documented or exact requirement.",
+        help="Return this distinct code only when public PyPI cannot install the exact API-reference release.",
     )
     parser.add_argument(
         "--source-revision",
@@ -347,14 +501,14 @@ def main() -> int:
     repo_root = args.repo_root.resolve()
     site = args.site if args.site.is_absolute() else repo_root / args.site
     identity = load_release_identity(repo_root)
-    validate_source_templates(repo_root, identity)
-    requirement = validate_rendered_site(site, identity)
+    validate_source_templates(repo_root)
+    commands = validate_rendered_site(site)
     if args.source_revision:
         write_release_evidence(site, identity, args.source_revision)
     if args.install:
         try:
             run_clean_install(
-                requirement,
+                commands,
                 identity,
                 install_attempts=args.install_attempts,
                 install_retry_sleep=args.install_retry_sleep,
@@ -374,8 +528,9 @@ def main() -> int:
             retry_sleep=args.deployment_retry_sleep,
         )
     print(
-        f"API-reference install command selects {identity.package} {identity.version} "
-        f"with Server {identity.server_version}"
+        "API-reference SDK and Server commands use the public qualified resolver pair; "
+        f"release evidence records {identity.package} {identity.version} "
+        f"with its package-supported Server baseline {identity.server_version}"
     )
     return 0
 

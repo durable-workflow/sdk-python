@@ -1,4 +1,4 @@
-"""MkDocs hooks for manifest-derived API-reference release guidance."""
+"""MkDocs hooks for machine-owned API-reference onboarding commands."""
 
 from __future__ import annotations
 
@@ -7,19 +7,18 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts.api_reference_release import load_release_identity, render_release_identity
+    from scripts.api_reference_release import render_onboarding_resolvers
 except ModuleNotFoundError as error:  # pragma: no cover - MkDocs loads hook files outside the package path
     if error.name != "scripts":
         raise
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from scripts.api_reference_release import load_release_identity, render_release_identity
+    from scripts.api_reference_release import render_onboarding_resolvers
 
 
 def on_page_markdown(markdown: str, page: Any, config: Any, files: Any) -> str:
-    """Render the API-reference release tuple from pyproject.toml."""
-    del files
+    """Render versionless onboarding resolvers on the landing page."""
+    del config, files
     if page.file.src_uri != "index.md":
         return markdown
 
-    repo_root = Path(config.config_file_path).resolve().parent
-    return render_release_identity(markdown, load_release_identity(repo_root))
+    return render_onboarding_resolvers(markdown)
