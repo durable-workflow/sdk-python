@@ -61,6 +61,23 @@ from .retry_policy import TransportRetryPolicy
 
 PROTOCOL_VERSION = "1.16"
 CONTROL_PLANE_VERSION = "2"
+PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST: dict[str, dict[str, str | bool]] = {
+    "local_activities": {
+        "supported": False,
+        "minimum_protocol_version": "1.18",
+        "reason": "python_worker_does_not_execute_record_local_activity",
+    },
+    "worker_sessions": {
+        "supported": False,
+        "minimum_protocol_version": "1.18",
+        "reason": "python_worker_has_no_typed_session_lifecycle",
+    },
+    "sticky_execution": {
+        "supported": False,
+        "minimum_protocol_version": "1.18",
+        "reason": "python_worker_uses_complete_durable_history_replay",
+    },
+}
 _MESSAGE_STREAMS_CAPABILITY = "message_streams"
 _MESSAGE_STREAMS_MINIMUM_WORKER_PROTOCOL = (1, 15)
 CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA = "durable-workflow.v2.control-plane-request.contract"
@@ -4568,6 +4585,7 @@ class Client:
         sdk_version: str | None = None,
         build_id: str | None = None,
         capabilities: list[str] | None = None,
+        capability_manifest: dict[str, dict[str, Any]] | None = None,
         task_slots: dict[str, int] | None = None,
         process_metrics: dict[str, Any] | None = None,
         heartbeat_interval_seconds: int | None = None,
@@ -4605,6 +4623,8 @@ class Client:
             body["workflow_command_contracts"] = workflow_command_contracts
         if capabilities is not None:
             body["capabilities"] = [capability for capability in capabilities if capability]
+        if capability_manifest is not None:
+            body["capability_manifest"] = capability_manifest
         if build_id is not None:
             body["build_id"] = build_id
         if max_concurrent_workflow_tasks is not None:

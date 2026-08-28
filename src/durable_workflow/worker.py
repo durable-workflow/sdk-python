@@ -44,6 +44,7 @@ from .client import (
     CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA,
     CONTROL_PLANE_REQUEST_CONTRACT_VERSION,
     CONTROL_PLANE_VERSION,
+    PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
     PROTOCOL_VERSION,
     Client,
     WorkflowExecution,
@@ -1145,6 +1146,7 @@ class Worker:
             max_concurrent_activity_tasks=self.max_concurrent_activity_tasks,
             build_id=self.build_id,
             capabilities=capabilities,
+            capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
             task_slots=self._current_task_slots(),
             process_metrics=self._current_process_metrics(),
         )

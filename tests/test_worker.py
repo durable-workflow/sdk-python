@@ -400,6 +400,23 @@ class TestWorkerRegistration:
                 "query_tasks",
                 MESSAGE_STREAMS_CAPABILITY,
             ],
+            "capability_manifest": {
+                "local_activities": {
+                    "supported": False,
+                    "minimum_protocol_version": "1.18",
+                    "reason": "python_worker_does_not_execute_record_local_activity",
+                },
+                "worker_sessions": {
+                    "supported": False,
+                    "minimum_protocol_version": "1.18",
+                    "reason": "python_worker_has_no_typed_session_lifecycle",
+                },
+                "sticky_execution": {
+                    "supported": False,
+                    "minimum_protocol_version": "1.18",
+                    "reason": "python_worker_uses_complete_durable_history_replay",
+                },
+            },
             "task_slots": {
                 "workflow_available": 10,
                 "activity_available": 10,
