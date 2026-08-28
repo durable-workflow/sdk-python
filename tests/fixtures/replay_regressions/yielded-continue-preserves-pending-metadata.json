@@ -1,0 +1,58 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "yielded-continue-preserves-pending-metadata",
+  "protocol_version": "1.16",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.yielded-continue-after-metadata",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "command_sequence": [
+    {
+      "type": "upsert_search_attributes",
+      "attributes": {
+        "stage": "continued"
+      }
+    },
+    {
+      "type": "upsert_memo",
+      "entries": {
+        "added": "from-upsert",
+        "overwritten": "after"
+      }
+    },
+    {
+      "type": "continue_as_new",
+      "arguments": [
+        "successor"
+      ]
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "upsert_search_attributes",
+        "attributes": {
+          "stage": "continued"
+        }
+      },
+      {
+        "type": "upsert_memo",
+        "entries": {
+          "added": "from-upsert",
+          "overwritten": "after"
+        }
+      },
+      {
+        "type": "continue_as_new",
+        "arguments": [
+          "successor"
+        ]
+      }
+    ]
+  }
+}

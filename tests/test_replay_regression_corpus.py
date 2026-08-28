@@ -101,6 +101,14 @@ class WorkflowMemoAuthorWorkflow:
         return "memo-replayed"
 
 
+@workflow.defn(name="tests.replay.yielded-continue-after-metadata")
+class YieldedContinueAfterMetadataWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.upsert_search_attributes({"stage": "continued"})
+        yield ctx.upsert_memo({"added": "from-upsert", "overwritten": "after"})
+        yield ctx.continue_as_new("successor")
+
+
 WORKFLOWS = [
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
@@ -114,6 +122,7 @@ WORKFLOWS = [
     UpdateSignalConditionTimerWorkflow,
     WorkflowStreamAuthorWorkflow,
     WorkflowMemoAuthorWorkflow,
+    YieldedContinueAfterMetadataWorkflow,
 ]
 WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__)): workflow for workflow in WORKFLOWS}
 

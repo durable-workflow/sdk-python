@@ -89,6 +89,9 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Yielded continue-as-new commands now preserve pending memo and search-
+  attribute upserts in the same order as returned continuations, while replayed
+  metadata updates remain consumed exactly once.
 - High-level workers now explicitly advertise memo-upsert and typed-search-
   attribute command support when registering with Server. Worker requests use
   protocol 1.16, while direct `Client.register_worker()` callers retain full

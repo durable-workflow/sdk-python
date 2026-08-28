@@ -4168,7 +4168,7 @@ def _replay_state(
                 pending.extend(cmd)
                 return _state(pending)
             if isinstance(cmd, ContinueAsNew):
-                return _state([cmd])
+                return _terminal_state(cmd, include_pending=True)
             if isinstance(cmd, NexusServiceCall):
                 if result_cursor < len(resolved_results):
                     _assert_next_step_matches(cmd)

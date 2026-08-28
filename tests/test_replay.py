@@ -1003,6 +1003,22 @@ class ContinueAsNewYieldWorkflow:
         return ctx.continue_as_new(counter - 1)
 
 
+@workflow.defn(name="continue-as-new-after-metadata-return-wf")
+class ContinueAsNewAfterMetadataReturnWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.upsert_search_attributes({"stage": "continued"})
+        yield ctx.upsert_memo({"added": "from-upsert", "overwritten": "after"})
+        return ctx.continue_as_new("successor")
+
+
+@workflow.defn(name="continue-as-new-after-metadata-yield-wf")
+class ContinueAsNewAfterMetadataYieldWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.upsert_search_attributes({"stage": "continued"})
+        yield ctx.upsert_memo({"added": "from-upsert", "overwritten": "after"})
+        yield ctx.continue_as_new("successor")
+
+
 @workflow.defn(name="side-effect-wf")
 class SideEffectWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -1041,6 +1057,40 @@ class TestContinueAsNew:
         cmd = outcome.commands[0]
         assert isinstance(cmd, ContinueAsNew)
         assert cmd.arguments == [4]
+
+    @pytest.mark.parametrize(
+        "workflow_cls",
+        [
+            ContinueAsNewAfterMetadataReturnWorkflow,
+            ContinueAsNewAfterMetadataYieldWorkflow,
+        ],
+    )
+    def test_pending_metadata_precedes_every_continue_authoring_form(self, workflow_cls: type) -> None:
+        first = replay(workflow_cls, [], [])
+
+        assert [command.to_server_command("q")["type"] for command in first.commands] == [
+            "upsert_search_attributes",
+            "upsert_memo",
+            "continue_as_new",
+        ]
+
+        entries = _avro({"added": "from-upsert", "overwritten": "after"})
+        merged = _avro({"added": "from-upsert", "overwritten": "after"})
+        replayed = replay(
+            workflow_cls,
+            [
+                {"event_type": "SearchAttributesUpserted", "payload": {"sequence": 1}},
+                {
+                    "event_type": "MemoUpserted",
+                    "payload": {"sequence": 2, "entries": entries, "merged": merged},
+                },
+            ],
+            [],
+        )
+
+        assert len(replayed.commands) == 1
+        assert isinstance(replayed.commands[0], ContinueAsNew)
+        assert replayed.commands[0].arguments == ["successor"]
 
     def test_server_command_shape(self) -> None:
         cmd = ContinueAsNew(workflow_type="other", arguments=[1, 2], task_queue="q2")
