@@ -25,7 +25,11 @@ from scripts.api_reference_release import (  # noqa: E402
     SUPPORTED_PRERELEASE_INSTALL_COMMAND,
     load_release_identity,
 )
-from scripts.check_api_reference_install import verify_public_deployment  # noqa: E402
+from scripts.check_api_reference_install import (  # noqa: E402
+    select_server_image_command,
+    validate_server_image_command,
+    verify_public_deployment,
+)
 
 DOCS_URL = "https://python.durable-workflow.com/"
 RELEASE_AUDIT_URL = f"{DOCS_URL}release-audit.json"
@@ -118,6 +122,12 @@ def assert_event_response(response: Response, event: str) -> None:
     assert "no-store" in response.headers.get("cache-control", ""), f"{event} promotion response was cacheable"
 
 
+def validate_deployed_server_image_command(page: Any, name: str) -> str:
+    commands = page.locator('[data-docs-journey="local-self-hosted"] code').all_text_contents()
+    command = select_server_image_command(commands, f"deployed {name} local journey")
+    return validate_server_image_command(command)
+
+
 def assert_deployed_landing(page: Any, name: str) -> None:
     """Check stable destinations and browser behavior without freezing landing prose."""
     contract = page.evaluate(
@@ -138,6 +148,10 @@ def assert_deployed_landing(page: Any, name: str) -> None:
             const install = one('[data-docs-action="install"] code')
             const localJourney = one('[data-docs-journey="local-self-hosted"]')
             const managedJourney = one('[data-docs-journey="managed-cloud"]')
+            const localCommands = localJourney
+                ? all('[data-docs-journey="local-self-hosted"] code')
+                    .map((element) => element.textContent)
+                : []
             const destinations = all('[data-docs-destination]').map((element) => ({
                 destination: element.dataset.docsDestination,
                 href: element.href,
@@ -173,10 +187,7 @@ def assert_deployed_landing(page: Any, name: str) -> None:
                     taskQueue: localJourney.dataset.taskQueue,
                     workflowType: localJourney.dataset.workflowType,
                 } : null,
-                journeyCode: localJourney
-                    ? all('[data-docs-journey="local-self-hosted"] code')
-                        .map((element) => element.textContent).join('\n')
-                    : '',
+                journeyCode: localCommands.join('\n'),
                 localJourney: Boolean(localJourney),
                 mainDocsLinked: destinations.some((entry) => entry.href === mainDocsUrl),
                 managedJourney: Boolean(managedJourney),
@@ -195,11 +206,6 @@ def assert_deployed_landing(page: Any, name: str) -> None:
                 referenceHref: reference?.getAttribute('href') || null,
                 roles: all('[data-sdk-role]').map((element) => element.dataset.sdkRole).sort(),
                 selfHostedAccess: selfHosted?.dataset.access || null,
-                serverCommand: localJourney
-                    ? all('[data-docs-journey="local-self-hosted"] code')
-                        .map((element) => element.textContent)
-                        .find((text) => text.includes('durableworkflow/server:')) || null
-                    : null,
                 surfaceCount: all('[data-docs-surface="python-sdk-landing"]').length,
                 runtimeUrlContracts: all('[data-runtime-url-contract]')
                     .map((element) => element.dataset.runtimeUrlContract),
@@ -260,7 +266,7 @@ def assert_deployed_landing(page: Any, name: str) -> None:
         )
     )
     assert contract["installCommand"] == SUPPORTED_PRERELEASE_INSTALL_COMMAND
-    assert contract["serverCommand"] and "{{" not in contract["serverCommand"]
+    validate_deployed_server_image_command(page, name)
     assert contract["codeBlocks"] and all(
         block["scrollWidth"] <= block["clientWidth"] + 1 or block["overflowX"] in {"auto", "scroll"}
         for block in contract["codeBlocks"]

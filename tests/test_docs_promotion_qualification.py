@@ -7,6 +7,10 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from scripts.api_reference_release import (
+    QUICKSTART_CONTRACT_URL,
+    SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QUALIFIER_PATH = REPO_ROOT / "scripts" / "qualify-docs-promotion.py"
@@ -33,6 +37,38 @@ def qualifier() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def deployed_landing_with_commands(commands: list[str]) -> SimpleNamespace:
+    def locator(selector: str) -> SimpleNamespace:
+        assert selector == '[data-docs-journey="local-self-hosted"] code'
+        return SimpleNamespace(all_text_contents=lambda: commands)
+
+    return SimpleNamespace(locator=locator)
+
+
+def test_deployed_landing_accepts_rendered_source_free_server_resolver(qualifier: ModuleType) -> None:
+    command = SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND
+
+    assert QUICKSTART_CONTRACT_URL in command
+    assert "durableworkflow/server:" not in command
+    assert (
+        qualifier.validate_deployed_server_image_command(
+            deployed_landing_with_commands(["python worker.py", command, 'docker run --rm "$DW_SERVER_IMAGE"']),
+            "desktop",
+        )
+        == command
+    )
+
+
+def test_deployed_landing_rejects_unresolved_server_resolver_placeholder(qualifier: ModuleType) -> None:
+    unresolved = SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND.replace(
+        QUICKSTART_CONTRACT_URL,
+        "{{ quickstart_contract_url }}",
+    )
+
+    with pytest.raises(ValueError, match="unresolved documentation template placeholder"):
+        qualifier.validate_deployed_server_image_command(deployed_landing_with_commands([unresolved]), "mobile")
 
 
 def test_live_revision_is_verified_before_any_browser_request(

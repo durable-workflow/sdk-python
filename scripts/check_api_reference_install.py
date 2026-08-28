@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -160,9 +161,7 @@ def validate_source_templates(repo_root: Path) -> None:
     validate_command(
         markdown_install_command_from_text(rendered_reference, "docs/index.md"),
     )
-    validate_server_image_command(
-        markdown_server_image_command_from_text(rendered_reference, "docs/index.md")
-    )
+    validate_server_image_command(markdown_server_image_command_from_text(rendered_reference, "docs/index.md"))
 
 
 def validate_command(command: str) -> str:
@@ -177,9 +176,18 @@ def validate_command(command: str) -> str:
 
 
 def validate_server_image_command(command: str) -> str:
+    if "{{" in command or "}}" in command:
+        raise ValueError("First-run Server command contains an unresolved documentation template placeholder")
     if command.strip() != SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND:
         raise ValueError("First-run Server command must use the public quickstart contract resolver")
     return SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND
+
+
+def select_server_image_command(commands: Sequence[str], source: str) -> str:
+    selected = [command.strip() for command in commands if "DW_SERVER_IMAGE=" in command]
+    if len(selected) != 1:
+        raise ValueError(f"{source} must contain exactly one Server image resolver")
+    return selected[0]
 
 
 def rendered_install_command(site: Path) -> str:
@@ -195,10 +203,7 @@ def rendered_server_image_command(site: Path) -> str:
     index = site / "index.html"
     parser = InstallCodeParser()
     parser.feed(index.read_text(encoding="utf-8"))
-    commands = [command for command in parser.local_commands if "DW_SERVER_IMAGE=" in command]
-    if len(commands) != 1:
-        raise ValueError(f"{index} must render exactly one Server image resolver")
-    return commands[0]
+    return select_server_image_command(parser.local_commands, str(index))
 
 
 def validate_rendered_site(site: Path) -> OnboardingCommands:
@@ -207,14 +212,11 @@ def validate_rendered_site(site: Path) -> OnboardingCommands:
     parser.feed(index.read_text(encoding="utf-8"))
     if not parser.commands:
         raise ValueError(f"{index} has no rendered bash command")
-    server_commands = [command for command in parser.local_commands if "DW_SERVER_IMAGE=" in command]
-    if len(server_commands) != 1:
-        raise ValueError(f"{index} must render exactly one Server image resolver")
     if parser.release_authority_urls != [QUICKSTART_CONTRACT_URL]:
         raise ValueError("Rendered Versioning authority does not identify the public quickstart contract")
     return OnboardingCommands(
         install=validate_command(parser.commands[0]),
-        server_image=validate_server_image_command(server_commands[0]),
+        server_image=validate_server_image_command(select_server_image_command(parser.local_commands, str(index))),
     )
 
 
