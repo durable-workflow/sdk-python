@@ -39,6 +39,7 @@ from .errors import (
     ChildWorkflowCancelled,
     ChildWorkflowFailed,
     ChildWorkflowTerminated,
+    DurableOperationCancelled,
     NexusOperationFailed,
     NonDeterministicReplayError,
     QueryFailed,
@@ -1082,6 +1083,12 @@ class WaitCondition:
     condition_key: str | None = None
     condition_definition_fingerprint: str | None = None
     timeout_seconds: int | None = None
+    _parallel_group_path: list[dict[str, Any]] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def to_server_command(
         self,
@@ -1099,6 +1106,94 @@ class WaitCondition:
         if self.timeout_seconds is not None:
             cmd["timeout_seconds"] = self.timeout_seconds
         return cmd
+
+
+@dataclass(frozen=True)
+class SelectGroup:
+    """A durable first-completion group.
+
+    Yield this value to start every member and resume with a
+    :class:`SelectionResult` when Server commits the first eligible winner.
+    Members that do not win remain durable and addressable through the
+    returned handles.
+    """
+
+    operations: tuple[tuple[int | str, Any], ...]
+
+
+@dataclass(frozen=True)
+class DurableOperationHandle:
+    """Stable reference to one member of a durable selection group."""
+
+    key: int | str
+    index: int
+    kind: str
+    identity: str
+    base_sequence: int
+    size: int
+    selection_group_id: str
+    operation: Any = field(compare=False, repr=False)
+
+    def await_result(self) -> DurableOperationHandle:
+        """Return the yieldable handle used to await this member later."""
+        return self
+
+    def cancel(self) -> CancelDurableOperation:
+        """Return the void/unit cancellation request yieldable.
+
+        Only ``SelectionOperationCancelled`` history proves cancellation won;
+        awaiting a member that completed first still returns that completion.
+        """
+        return CancelDurableOperation(self)
+
+
+@dataclass(frozen=True)
+class SelectionResult:
+    """The one winner committed for a durable selection group."""
+
+    key: int | str
+    index: int
+    kind: str
+    identity: str
+    value: Any
+    failure: BaseException | None
+    winner: DurableOperationHandle
+    handles: Mapping[int | str, DurableOperationHandle]
+
+    @property
+    def succeeded(self) -> bool:
+        return self.failure is None
+
+    def result(self) -> Any:
+        if self.failure is not None:
+            raise self.failure
+        return self.value
+
+    def remaining(self) -> dict[int | str, DurableOperationHandle]:
+        return {key: handle for key, handle in self.handles.items() if key != self.key}
+
+
+@dataclass(frozen=True)
+class CancelDurableOperation:
+    """Explicitly cancel one still-running durable selection member."""
+
+    handle: DurableOperationHandle
+
+    def to_server_command(
+        self,
+        task_queue: str,
+        **_: Any,
+    ) -> dict[str, Any]:
+        return {
+            "type": "cancel_selection_operation",
+            "selection_group_id": self.handle.selection_group_id,
+            "member_key": self.handle.key,
+            "member_index": self.handle.index,
+            "member_base_sequence": self.handle.base_sequence,
+            "member_size": self.handle.size,
+            "operation_kind": self.handle.kind,
+            "operation_identity": self.handle.identity,
+        }
 
 
 def _condition_predicate_fingerprint(predicate: Callable[[], bool]) -> str:
@@ -1129,6 +1224,7 @@ Command = (
     ScheduleActivity | StartTimer | CompleteWorkflow | FailWorkflow
     | CompleteUpdate | FailUpdate | ContinueAsNew | RecordSideEffect | StartChildWorkflow
     | NexusServiceCall | RecordVersionMarker | UpsertMemo | UpsertSearchAttributes | WaitCondition
+    | CancelDurableOperation
 )
 
 
@@ -1673,6 +1769,30 @@ class WorkflowContext:
             timeout_seconds=timeout_seconds,
         )
 
+    def select(
+        self,
+        operations: Mapping[int | str, Any] | Sequence[Any],
+    ) -> SelectGroup:
+        """Start independent durable operations and wait for one winner.
+
+        A mapping preserves application-defined member keys. A sequence uses
+        stable integer indexes. Supported members are activities, child
+        workflows, timers, conditions, and nested ordinary parallel lists.
+        """
+        entries = tuple(operations.items()) if isinstance(operations, Mapping) else tuple(enumerate(operations))
+        if not entries:
+            raise ValueError("durable selection requires at least one operation")
+        keys = [key for key, _ in entries]
+        if any(isinstance(key, bool) or not isinstance(key, int | str) for key in keys):
+            raise TypeError("durable selection member keys must be strings or integers")
+        if any(not _valid_selection_key(key) for key in keys):
+            raise ValueError(
+                "durable selection member keys must be non-empty strings or non-negative integers"
+            )
+        if len(set(keys)) != len(keys):
+            raise ValueError("durable selection member keys must be unique")
+        return SelectGroup(entries)
+
     def side_effect(self, fn: Callable[[], Any]) -> RecordSideEffect:
         result = fn()
         return RecordSideEffect(result=result)
@@ -2058,7 +2178,9 @@ class _ReplayState:
 
 @dataclass
 class _PendingReceiver:
+    history_index: int
     result_index: int
+    selection_marker_index: int
     kind: str
     name: str
     args: list[Any]
@@ -2728,6 +2850,34 @@ def _parallel_group_entry(payload: Mapping[str, Any]) -> tuple[str, str, int, in
     return group_id, kind, base_sequence, size, index
 
 
+def _selection_group_metadata(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Return the outer durable-selection metadata entry, if present."""
+    raw_path = payload.get("parallel_group_path")
+    candidates: list[Mapping[str, Any]] = []
+    if isinstance(raw_path, list):
+        candidates.extend(entry for entry in raw_path if isinstance(entry, Mapping))
+    candidates.append(payload)
+    for candidate in candidates:
+        if candidate.get("parallel_group_mode") == "select" and _parallel_group_entry(candidate) is not None:
+            key = candidate.get("selection_member_key")
+            if not _valid_selection_key(key):
+                base_sequence = _parallel_group_integer(candidate, "parallel_group_base_sequence") or 0
+                raise NonDeterministicReplayError(
+                    base_sequence,
+                    "non-empty string or non-negative integer selection member key",
+                    ["SelectionGroupMetadata"],
+                    detail="selection history contains an invalid member key",
+                )
+            return candidate
+    return None
+
+
+def _valid_selection_key(value: Any) -> bool:
+    return (isinstance(value, str) and bool(value)) or (
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    )
+
+
 def _parallel_group_member(payload: Mapping[str, Any]) -> _ParallelGroupMember | None:
     workflow_sequence = _workflow_sequence(payload)
     if workflow_sequence is None:
@@ -3294,6 +3444,7 @@ def _replay_state(
     details_by_sequence: dict[int, dict[str, Any]] = {}
     resolved_sequences: set[int] = set()
     condition_wait_ids_by_sequence: dict[int, str] = {}
+    selected_condition_wait_ids_by_sequence: dict[int, str] = {}
 
     for event in events:
         event_type = _history_event_type(event)
@@ -3316,6 +3467,8 @@ def _replay_state(
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
                 condition_wait_ids_by_sequence[sequence] = wait_id
+                if _selection_group_metadata(payload) is not None:
+                    selected_condition_wait_ids_by_sequence[sequence] = wait_id
 
     if _has_metadata_poor_timer_schedule(events):
         condition_wait_ids_by_sequence.update(
@@ -3412,9 +3565,9 @@ def _replay_state(
     # observed while a condition wait is open are pinned to that wait so
     # sequential signal-driven waits do not collapse to the same cursor.
     #
-    # (resolved_result_index_before_apply, receiver_kind, name, decoded_args) —
-    # external receivers apply before the generator consumes the resolved_result
-    # at the stored index, preserving history interleaving with activities.
+    # Each receiver records the ordinary-result and selection-marker cursors at
+    # its history position. Replay applies it only after the generator consumes
+    # every preceding boundary, preserving interleaving with selected winners.
     pending_receivers: list[_PendingReceiver] = []
     # Ordered ``ConditionWaitOpened`` payloads, used by ``WaitCondition`` yields
     # to match against their corresponding opened wait in history
@@ -3424,6 +3577,26 @@ def _replay_state(
     # in history, future server-recorded) or 'timed_out' (from a matching
     # condition_timeout TimerFired event).
     wait_resolutions: dict[str, str] = {}
+    # Event index of the terminal history row for each physical condition wait.
+    # Receiver replay uses this exact boundary so interleaved input is applied
+    # in durable order without leaking input recorded after the terminal row.
+    condition_wait_terminal_indexes: dict[str, int] = {}
+    # Selection members are bound by their durable sequence instead of being
+    # inserted into the ordinary completion-order cursor. This is what lets a
+    # loser complete before or after unrelated successor work without changing
+    # replay binding.
+    selection_resolutions: dict[int, Any] = {}
+    selection_steps: dict[int, list[_RecordedStep]] = {}
+    selection_payloads: dict[int, list[dict[str, Any]]] = {}
+    selection_opening_payloads: dict[int, dict[str, Any]] = {}
+    selection_condition_terminal_payloads: dict[int, list[dict[str, Any]]] = {}
+    selection_condition_sequences: dict[str, int] = {}
+    selection_markers: list[dict[str, Any]] = []
+    selection_marker_cursor = 0
+    consumed_selection_sequences: set[int] = set()
+    cancelled_selection_members: dict[tuple[str, int], dict[str, Any]] = {}
+    validated_selection_cancellations: set[tuple[str, int]] = set()
+    authored_selection_handles: dict[int, DurableOperationHandle] = {}
 
     def _append_resolved_result(value: Any, shape: str, event: Mapping[str, Any]) -> None:
         payload = event.get("payload") or {}
@@ -3439,18 +3612,26 @@ def _replay_state(
             event_types = ["<unknown>"]
         details = dict(details_by_sequence.get(workflow_sequence, {}))
         details.update(_recorded_step_details(payload))
+        step = _RecordedStep(
+            workflow_sequence=workflow_sequence,
+            shape=shape,
+            event_types=event_types,
+            details=details,
+        )
+        if _selection_group_metadata(payload) is not None:
+            selection_resolutions[workflow_sequence] = value
+            _append_selection_step(shape, event, fallback_sequence=workflow_sequence)
+            return
         resolved_results.append(value)
         resolved_parallel_members.append(_parallel_group_member(payload))
-        recorded_steps.append(
-            _RecordedStep(
-                workflow_sequence=workflow_sequence,
-                shape=shape,
-                event_types=event_types,
-                details=details,
-            )
-        )
+        recorded_steps.append(step)
 
-    def _recorded_step(shape: str, event: Mapping[str, Any]) -> _RecordedStep:
+    def _recorded_step(
+        shape: str,
+        event: Mapping[str, Any],
+        *,
+        include_sequence_details: bool = True,
+    ) -> _RecordedStep:
         payload = event.get("payload") or {}
         if not isinstance(payload, Mapping):
             payload = {}
@@ -3462,7 +3643,11 @@ def _replay_state(
             event_types = [event_type]
         if not event_types:
             event_types = ["<unknown>"]
-        details = dict(details_by_sequence.get(workflow_sequence, {}))
+        details = (
+            dict(details_by_sequence.get(workflow_sequence, {}))
+            if include_sequence_details
+            else {}
+        )
         details.update(_recorded_step_details(payload))
         return _RecordedStep(
             workflow_sequence=workflow_sequence,
@@ -3471,17 +3656,66 @@ def _replay_state(
             details=details,
         )
 
-    def _append_pending_step(shape: str, event: Mapping[str, Any]) -> None:
+    def _append_selection_step(
+        shape: str,
+        event: Mapping[str, Any],
+        *,
+        fallback_sequence: int | None = None,
+        opening: bool = False,
+    ) -> int | None:
+        payload = event.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            payload = {}
+        workflow_sequence = _workflow_sequence(payload) or fallback_sequence
+        if workflow_sequence is None:
+            return None
+        selection_steps.setdefault(workflow_sequence, []).append(
+            _recorded_step(shape, event, include_sequence_details=False)
+        )
+        copied_payload = dict(payload)
+        selection_payloads.setdefault(workflow_sequence, []).append(copied_payload)
+        if opening:
+            selection_opening_payloads.setdefault(workflow_sequence, copied_payload)
+        return workflow_sequence
+
+    def _append_pending_step(
+        shape: str,
+        event: Mapping[str, Any],
+        *,
+        selection_opening: bool = False,
+    ) -> None:
         payload = event.get("payload") or {}
         if not isinstance(payload, Mapping):
             payload = {}
         sequence = _workflow_sequence(payload)
         if sequence is None:
             return
+        if _selection_group_metadata(payload) is not None:
+            _append_selection_step(shape, event, opening=selection_opening)
+            return
         if sequence in resolved_sequences or sequence in pending_sequences_added:
             return
         pending_sequences_added.add(sequence)
         recorded_pending_steps.append(_recorded_step(shape, event))
+
+    def _append_selection_condition_resolution(
+        event: Mapping[str, Any],
+        wait_id: str,
+        value: bool,
+    ) -> bool:
+        selection_sequence = selection_condition_sequences.get(wait_id)
+        if selection_sequence is None:
+            return False
+        payload = event.get("payload") or {}
+        copied_payload = dict(payload) if isinstance(payload, Mapping) else {}
+        selection_condition_terminal_payloads.setdefault(selection_sequence, []).append(copied_payload)
+        _append_selection_step(
+            "condition wait",
+            event,
+            fallback_sequence=selection_sequence,
+        )
+        selection_resolutions[selection_sequence] = value
+        return True
 
     def _assert_step_matches(command: Any, step: _RecordedStep) -> None:
         expected_shape = _command_history_shape(command)
@@ -3533,13 +3767,58 @@ def _replay_state(
 
     def _assert_no_unconsumed_history(terminal_shape: str) -> None:
         step = _next_unconsumed_recorded_step()
-        if step is None:
-            return
-        raise NonDeterministicReplayError(
-            step.workflow_sequence,
-            terminal_shape,
-            step.event_types,
+        if step is not None:
+            raise NonDeterministicReplayError(
+                step.workflow_sequence,
+                terminal_shape,
+                step.event_types,
+            )
+        selection_step = min(
+            (
+                step
+                for sequence, steps in selection_steps.items()
+                if sequence not in consumed_selection_sequences
+                for step in steps
+            ),
+            key=lambda candidate: candidate.workflow_sequence,
+            default=None,
         )
+        if selection_step is not None:
+            raise NonDeterministicReplayError(
+                selection_step.workflow_sequence,
+                terminal_shape,
+                selection_step.event_types,
+                detail="durable selection member history does not match replayed workflow code",
+            )
+        if selection_marker_cursor < len(selection_markers):
+            marker = selection_markers[selection_marker_cursor]
+            marker_sequence = (
+                _parallel_group_integer(marker, "selection_group_base_sequence")
+                or _parallel_group_integer(marker, "member_base_sequence")
+                or 0
+            )
+            raise NonDeterministicReplayError(
+                marker_sequence,
+                terminal_shape,
+                ["SelectionResolved"],
+                detail="durable selection resolution does not match replayed workflow code",
+            )
+        unvalidated = next(
+            (
+                (key, payload)
+                for key, payload in cancelled_selection_members.items()
+                if key not in validated_selection_cancellations
+            ),
+            None,
+        )
+        if unvalidated is not None:
+            (group_id, member_base), _ = unvalidated
+            raise NonDeterministicReplayError(
+                member_base,
+                "SelectionOperationCancelled matching an authored selection handle",
+                ["SelectionOperationCancelled"],
+                detail=f"cancellation group {group_id!r} does not match replayed workflow code",
+            )
 
     def _is_external_receiver_event(event_type: str | None) -> bool:
         return event_type in ("SignalReceived", "UpdateApplied")
@@ -3628,9 +3907,21 @@ def _replay_state(
                 continue
 
             if _is_external_receiver_event(event_type):
-                explicit_sequence = _workflow_sequence(payload) is not None
+                explicit_sequence = _workflow_sequence(payload)
+                explicit_selected_wait_id = (
+                    selected_condition_wait_ids_by_sequence.get(explicit_sequence)
+                    if explicit_sequence is not None
+                    else None
+                )
+                if explicit_selected_wait_id is not None:
+                    # Selected conditions may be open concurrently, so their
+                    # durable sequence is a stronger binding than whichever
+                    # wait happens to occur latest in history. Sequential
+                    # repeated waits keep the positional fallback below.
+                    bindings[index] = explicit_selected_wait_id
+                    continue
                 if current_wait_id is None:
-                    if prefix_can_bind_to_first_wait or not explicit_sequence:
+                    if prefix_can_bind_to_first_wait or explicit_sequence is None:
                         prefix_receivers.append(index)
                     continue
 
@@ -3708,7 +3999,11 @@ def _replay_state(
         elif etype in ("ActivityFailed", "ActivityTimedOut"):
             _append_resolved_result(_activity_failed_from_payload(payload), "activity", ev)
         elif etype in ("ActivityScheduled", "ActivityStarted"):
-            _append_pending_step("activity", ev)
+            _append_pending_step(
+                "activity",
+                ev,
+                selection_opening=etype == "ActivityScheduled",
+            )
         elif etype == "TimerFired":
             timer_kind = _internal_timeout_timer_kind(
                 payload,
@@ -3720,7 +4015,9 @@ def _replay_state(
                     condition_wait_ids_by_sequence,
                 )
                 if wait_id is not None:
-                    wait_resolutions[wait_id] = "timed_out"
+                    condition_wait_terminal_indexes.setdefault(wait_id, event_index)
+                    if not _append_selection_condition_resolution(ev, wait_id, False):
+                        wait_resolutions[wait_id] = "timed_out"
                 continue
             if timer_kind == "signal_timeout":
                 continue
@@ -3731,20 +4028,47 @@ def _replay_state(
                 condition_wait_ids_by_sequence,
             )
             if timer_kind is None:
-                _append_pending_step("timer", ev)
+                _append_pending_step("timer", ev, selection_opening=True)
         elif etype == "ConditionWaitOpened":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
-                recorded_wait_steps.append(_recorded_step("condition wait", ev))
-                wait_opened.append(dict(payload))
+                sequence = _workflow_sequence(payload)
+                if sequence is not None and _selection_group_metadata(payload) is not None:
+                    selection_condition_sequences[wait_id] = sequence
+                    _append_selection_step("condition wait", ev, opening=True)
+                else:
+                    recorded_wait_steps.append(_recorded_step("condition wait", ev))
+                    wait_opened.append(dict(payload))
         elif etype == "ConditionWaitSatisfied":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
-                wait_resolutions[wait_id] = "satisfied"
+                condition_wait_terminal_indexes.setdefault(wait_id, event_index)
+                if not _append_selection_condition_resolution(ev, wait_id, True):
+                    wait_resolutions[wait_id] = "satisfied"
         elif etype == "ConditionWaitTimedOut":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
-                wait_resolutions[wait_id] = "timed_out"
+                condition_wait_terminal_indexes.setdefault(wait_id, event_index)
+                if not _append_selection_condition_resolution(ev, wait_id, False):
+                    wait_resolutions[wait_id] = "timed_out"
+        elif etype == "SelectionResolved":
+            if isinstance(payload.get("selection_group_id"), str):
+                selection_markers.append(dict(payload))
+        elif etype == "SelectionOperationCancelled":
+            group_id = payload.get("selection_group_id")
+            member_base = _parallel_group_integer(payload, "member_base_sequence")
+            if isinstance(group_id, str) and member_base is not None:
+                cancellation_key = (group_id, member_base)
+                cancellation_payload = dict(payload)
+                existing = cancelled_selection_members.get(cancellation_key)
+                if existing is not None and existing != cancellation_payload:
+                    raise NonDeterministicReplayError(
+                        member_base,
+                        "one stable SelectionOperationCancelled marker",
+                        ["SelectionOperationCancelled"],
+                        detail="conflicting cancellation markers target the same durable member",
+                    )
+                cancelled_selection_members[cancellation_key] = cancellation_payload
         elif etype in ("SideEffectRecorded", "ChildRunCompleted"):
             shape = "side effect" if etype == "SideEffectRecorded" else "child workflow"
             _append_resolved_result(
@@ -3764,7 +4088,11 @@ def _replay_state(
                 ev,
             )
         elif etype in ("ChildWorkflowScheduled", "ChildRunStarted"):
-            _append_pending_step("child workflow", ev)
+            _append_pending_step(
+                "child workflow",
+                ev,
+                selection_opening=etype == "ChildWorkflowScheduled",
+            )
         elif etype == "VersionMarkerRecorded":
             _append_resolved_result(payload.get("version", 0), "version marker", ev)
         elif etype == "MemoUpserted":
@@ -3832,7 +4160,9 @@ def _replay_state(
                 else:
                     condition_wait_id = None
                 pending_receivers.append(_PendingReceiver(
+                    history_index=event_index,
                     result_index=len(resolved_results),
+                    selection_marker_index=len(selection_markers),
                     kind="signal",
                     name=signal_name,
                     args=_decode_receiver_args(
@@ -3858,7 +4188,9 @@ def _replay_state(
                 else:
                     condition_wait_id = None
                 pending_receivers.append(_PendingReceiver(
+                    history_index=event_index,
                     result_index=len(resolved_results),
+                    selection_marker_index=len(selection_markers),
                     kind="update",
                     name=update_name,
                     args=_decode_receiver_args(
@@ -3878,6 +4210,9 @@ def _replay_state(
         resolved_results,
         recorded_steps,
         resolved_parallel_members,
+    )
+    selection_markers.sort(
+        key=lambda marker: _parallel_group_integer(marker, "selection_group_base_sequence") or 0
     )
 
     signal_registry: dict[str, str] = getattr(workflow_cls, "__workflow_signals__", {}) or {}
@@ -3906,10 +4241,14 @@ def _replay_state(
     def _receiver_due(receiver: _PendingReceiver, *, before_consuming_result: bool) -> bool:
         if receiver.condition_wait_id is not None:
             return False
+        if before_consuming_result:
+            return (
+                receiver.result_index < result_cursor
+                and receiver.selection_marker_index < selection_marker_cursor
+            )
         return (
-            receiver.result_index < result_cursor
-            if before_consuming_result
-            else receiver.result_index <= result_cursor
+            receiver.result_index <= result_cursor
+            and receiver.selection_marker_index <= selection_marker_cursor
         )
 
     def _apply_due_receivers(*, before_consuming_result: bool = False) -> None:
@@ -3922,10 +4261,28 @@ def _replay_state(
     def _apply_condition_wait_receivers(condition_wait_id: str | None) -> None:
         if condition_wait_id is None:
             return
-        while pending_receivers:
-            receiver = pending_receivers[0]
-            if receiver.condition_wait_id != condition_wait_id:
-                break
+        terminal_index = condition_wait_terminal_indexes.get(condition_wait_id)
+        if terminal_index is not None:
+            while pending_receivers and pending_receivers[0].history_index < terminal_index:
+                _apply_receiver(pending_receivers.pop(0))
+            return
+        target_index = next(
+            (
+                index
+                for index, receiver in enumerate(pending_receivers)
+                if receiver.condition_wait_id == condition_wait_id
+            ),
+            None,
+        )
+        if target_index is None:
+            return
+        # Concurrent conditions can leave an earlier receiver at the queue
+        # head. Preserve history order through the winning wait, but leave
+        # receivers beyond that wait for their ordinary replay boundary.
+        boundary = target_index + 1
+        while boundary < len(pending_receivers) and pending_receivers[boundary].condition_wait_id == condition_wait_id:
+            boundary += 1
+        for _ in range(boundary):
             _apply_receiver(pending_receivers.pop(0))
 
     def _condition_wait_mismatch(opened: Mapping[str, Any], cmd: WaitCondition) -> FailWorkflow | None:
@@ -4004,9 +4361,14 @@ def _replay_state(
             return "timer"
         if isinstance(command, StartChildWorkflow):
             return "child"
+        if isinstance(command, WaitCondition):
+            return "condition"
         if isinstance(command, NexusServiceCall):
             raise TypeError("Nexus service calls must be yielded one at a time")
-        raise TypeError(f"parallel groups support activities, timers, child workflows, and nested lists: {command!r}")
+        raise TypeError(
+            "parallel groups support activities, timers, child workflows, "
+            f"conditions, and nested lists: {command!r}"
+        )
 
     def _parallel_leaves(commands: list[Any], *, nested: bool = False) -> list[Any]:
         if nested and not commands:
@@ -4034,6 +4396,7 @@ def _replay_state(
             "activity": "parallel-activities",
             "child": "parallel-children",
             "timer": "parallel-timers",
+            "condition": "parallel-conditions",
             "mixed": "parallel-calls",
         }[kind]
         return {
@@ -4044,12 +4407,17 @@ def _replay_state(
             "parallel_group_index": index,
         }
 
-    def _annotate_parallel_commands(commands: list[Any]) -> tuple[list[Any], list[Any]]:
+    def _annotate_parallel_commands(
+        commands: list[Any],
+        base_sequence_override: int | None = None,
+    ) -> tuple[list[Any], list[Any]]:
         leaves = _parallel_leaves(commands)
         if not leaves:
             return [], []
         candidates = _unconsumed_recorded_steps()
-        if candidates:
+        if base_sequence_override is not None:
+            base_sequence = base_sequence_override
+        elif candidates:
             base_sequence = candidates[0].workflow_sequence
         else:
             recorded_sequences = [
@@ -4083,6 +4451,364 @@ def _replay_state(
             return annotated, shape
 
         return _build(commands, base_sequence)
+
+    def _selection_leaf_identity(kind: str, sequence: int) -> str:
+        identity_fields = {
+            "activity": ("activity_execution_id",),
+            "timer": ("timer_id",),
+            "child": ("child_workflow_run_id",),
+            "signal": ("signal_wait_id",),
+            "condition": ("condition_wait_id",),
+        }
+        field_names = identity_fields.get(kind, ())
+        opening = selection_opening_payloads.get(sequence, {})
+        identity = next(
+            (
+                value
+                for field_name in field_names
+                if isinstance((value := opening.get(field_name)), str) and value
+            ),
+            None,
+        )
+        if identity is None:
+            raise NonDeterministicReplayError(
+                sequence,
+                f"durable {kind} resource identity from scheduled/open history",
+                event_types_by_sequence.get(sequence, ["SelectionResolved"]),
+                detail="selection member history is missing its canonical operation identity",
+            )
+
+        for payload in selection_payloads.get(sequence, []):
+            recorded_identity = next(
+                (
+                    value
+                    for field_name in field_names
+                    if isinstance((value := payload.get(field_name)), str) and value
+                ),
+                None,
+            )
+            if recorded_identity != identity:
+                raise NonDeterministicReplayError(
+                    sequence,
+                    f"stable durable {kind} operation identity",
+                    event_types_by_sequence.get(sequence, ["SelectionResolved"]),
+                    detail=(
+                        "selection opening and later history disagree on the "
+                        "canonical operation identity"
+                    ),
+                )
+        return identity
+
+    def _selection_identity(kind: str, base_sequence: int, size: int) -> str:
+        if kind == "group":
+            return f"group:{base_sequence}:{size}"
+        if size == 1:
+            return _selection_leaf_identity(kind, base_sequence)
+        raise NonDeterministicReplayError(
+            base_sequence,
+            f"durable {kind} resource identity from scheduled/open history",
+            ["SelectionResolved"],
+            detail="selection member history is missing its canonical operation identity",
+        )
+
+    def _assert_condition_selection_terminal_path(sequence: int) -> None:
+        for payload in selection_condition_terminal_payloads.get(sequence, []):
+            raw_path = payload.get("parallel_group_path")
+            if (
+                not isinstance(raw_path, list)
+                or not raw_path
+                or not all(isinstance(entry, Mapping) for entry in raw_path)
+            ):
+                raise NonDeterministicReplayError(
+                    sequence,
+                    "condition terminal history with its durable selection path",
+                    event_types_by_sequence.get(sequence, ["SelectionResolved"]),
+                    detail="terminal condition selection history is missing parallel_group_path",
+                )
+
+    def _selection_member_value(
+        base_sequence: int,
+        size: int,
+        shape: list[Any] | None,
+        *,
+        outcome: str | None = None,
+        resolution_sequence: int | None = None,
+    ) -> tuple[bool, Any, BaseException | None]:
+        if outcome == "failed":
+            if resolution_sequence is None:
+                return False, None, None
+            value = selection_resolutions.get(resolution_sequence)
+            return (
+                (True, None, value)
+                if isinstance(value, BaseException)
+                else (False, None, None)
+            )
+        if outcome is None:
+            for sequence, value in selection_resolutions.items():
+                if (
+                    base_sequence <= sequence < base_sequence + size
+                    and isinstance(value, BaseException)
+                ):
+                    return True, None, value
+        values: list[Any] = []
+        for sequence in range(base_sequence, base_sequence + size):
+            if sequence not in selection_resolutions:
+                return False, None, None
+            value = selection_resolutions[sequence]
+            if isinstance(value, BaseException):
+                return True, None, value
+            values.append(value)
+        if shape is None:
+            return True, values[0], None
+        return True, _parallel_result_shape(shape, values), None
+
+    def _selection_cancellation_for_handle(
+        handle: DurableOperationHandle,
+    ) -> dict[str, Any] | None:
+        payload = cancelled_selection_members.get(
+            (handle.selection_group_id, handle.base_sequence)
+        )
+        if payload is None:
+            return None
+        expected = {
+            "selection_group_id": handle.selection_group_id,
+            "member_key": handle.key,
+            "member_index": handle.index,
+            "member_base_sequence": handle.base_sequence,
+            "member_size": handle.size,
+            "operation_kind": handle.kind,
+            "operation_identity": handle.identity,
+        }
+        for field_name, expected_value in expected.items():
+            if payload.get(field_name) != expected_value:
+                raise NonDeterministicReplayError(
+                    handle.base_sequence,
+                    "SelectionOperationCancelled matching the authored selection handle",
+                    ["SelectionOperationCancelled"],
+                    detail=f"cancellation field {field_name} does not match the durable member",
+                )
+        return payload
+
+    def _assert_authored_selection_handle(handle: DurableOperationHandle) -> None:
+        if authored_selection_handles.get(id(handle)) is not handle:
+            raise ValueError("durable operation handle was not authored by the current workflow replay")
+
+    def _validate_selection_cancellations(
+        handles: Mapping[int | str, DurableOperationHandle],
+    ) -> None:
+        if not handles:
+            return
+        group_id = next(iter(handles.values())).selection_group_id
+        handles_by_base = {handle.base_sequence: handle for handle in handles.values()}
+        for key, _payload in cancelled_selection_members.items():
+            recorded_group, member_base = key
+            if recorded_group != group_id:
+                continue
+            handle = handles_by_base.get(member_base)
+            if handle is None:
+                raise NonDeterministicReplayError(
+                    member_base,
+                    "SelectionOperationCancelled matching an authored selection handle",
+                    ["SelectionOperationCancelled"],
+                    detail="cancellation member base does not name an authored member",
+                )
+            _selection_cancellation_for_handle(handle)
+            validated_selection_cancellations.add(key)
+
+    def _validated_selection_resolution(
+        marker: Mapping[str, Any],
+        winner: DurableOperationHandle,
+        group_base: int,
+        group_size: int,
+    ) -> int:
+        expected = {
+            "selection_group_id": winner.selection_group_id,
+            "selection_group_base_sequence": group_base,
+            "selection_group_size": group_size,
+            "member_key": winner.key,
+            "member_index": winner.index,
+            "member_base_sequence": winner.base_sequence,
+            "member_size": winner.size,
+            "operation_kind": winner.kind,
+            "operation_identity": winner.identity,
+        }
+        for field_name, expected_value in expected.items():
+            if marker.get(field_name) != expected_value:
+                raise NonDeterministicReplayError(
+                    winner.base_sequence,
+                    "SelectionResolved matching the authored member and durable identity",
+                    ["SelectionResolved"],
+                    detail=f"winner field {field_name} does not match workflow code/history",
+                )
+
+        outcome = marker.get("outcome")
+        if outcome not in ("completed", "failed"):
+            raise NonDeterministicReplayError(
+                winner.base_sequence,
+                "SelectionResolved outcome completed or failed",
+                ["SelectionResolved"],
+            )
+        resolution_id = marker.get("resolution_event_id")
+        resolution_type = marker.get("resolution_event_type")
+        if not isinstance(resolution_id, str) or not resolution_id or not isinstance(resolution_type, str):
+            raise NonDeterministicReplayError(
+                winner.base_sequence,
+                "SelectionResolved bound to a durable terminal event id/type",
+                ["SelectionResolved"],
+            )
+
+        failure_types = {
+            "ActivityFailed",
+            "ActivityCancelled",
+            "ActivityTimedOut",
+            "ChildRunFailed",
+            "ChildRunCancelled",
+            "ChildRunTerminated",
+        }
+        success_types = {
+            "ActivityCompleted",
+            "ChildRunCompleted",
+            "TimerFired",
+            "SignalApplied",
+            "ConditionWaitSatisfied",
+            "ConditionWaitTimedOut",
+        }
+        terminal_types = failure_types if outcome == "failed" else success_types
+        candidates: list[tuple[str, str, int]] = []
+        for event in events:
+            event_type = _history_event_type(event)
+            payload = event.get("payload") or {}
+            if event_type not in terminal_types or not isinstance(payload, Mapping):
+                continue
+            sequence = _workflow_sequence(payload)
+            if (
+                sequence is None
+                or sequence < winner.base_sequence
+                or sequence >= winner.base_sequence + winner.size
+            ):
+                continue
+            event_id = event.get("id") or event.get("event_id")
+            if not isinstance(event_id, str) or not event_id:
+                raise NonDeterministicReplayError(
+                    winner.base_sequence,
+                    "terminal selection history with a durable event id",
+                    [event_type or "<unknown>"],
+                )
+            candidates.append((event_id, event_type, sequence))
+
+        resolution = candidates[0] if outcome == "failed" and candidates else (
+            candidates[-1] if candidates else None
+        )
+        if resolution is None or resolution[0] != resolution_id or resolution[1] != resolution_type:
+            raise NonDeterministicReplayError(
+                winner.base_sequence,
+                "SelectionResolved referencing the event that made its member terminal",
+                ["SelectionResolved"],
+            )
+        return resolution[2]
+
+    def _annotate_selection(
+        group: SelectGroup,
+        marker: Mapping[str, Any] | None,
+    ) -> tuple[list[Any], dict[int | str, DurableOperationHandle], dict[int | str, list[Any] | None]]:
+        candidates = _unconsumed_recorded_steps()
+        if marker is not None:
+            base_sequence = _parallel_group_integer(marker, "selection_group_base_sequence")
+            if base_sequence is None:
+                raise NonDeterministicReplayError(
+                    0,
+                    "SelectionResolved with a positive group base sequence",
+                    ["SelectionResolved"],
+                )
+        elif candidates:
+            base_sequence = candidates[0].workflow_sequence
+        elif any(sequence not in consumed_selection_sequences for sequence in selection_steps):
+            base_sequence = min(
+                sequence for sequence in selection_steps if sequence not in consumed_selection_sequences
+            )
+        else:
+            recorded_sequences = [
+                step.workflow_sequence for step in recorded_steps + recorded_wait_steps + recorded_pending_steps
+            ]
+            recorded_sequences.extend(consumed_selection_sequences)
+            base_sequence = max(recorded_sequences, default=0) + len(pending) + 1
+
+        member_specs: list[tuple[int | str, int, int, str, Any, list[Any] | None, list[Any]]] = []
+        flat_cursor = 0
+        all_leaves: list[Any] = []
+        for member_index, (key, operation) in enumerate(group.operations):
+            member_base = base_sequence + flat_cursor
+            if isinstance(operation, list):
+                annotated, shape = _annotate_parallel_commands(operation, member_base)
+            else:
+                _parallel_leaf_kind(operation)
+                occurrence = copy(operation)
+                occurrence._parallel_group_path = []
+                annotated = [occurrence]
+                shape = None
+            if not annotated:
+                raise ValueError("durable selection members must contain at least one operation")
+            member_kind = "group" if isinstance(operation, list) else _parallel_leaf_kind(operation)
+            member_specs.append((key, member_index, member_base, member_kind, operation, shape, annotated))
+            all_leaves.extend(annotated)
+            flat_cursor += len(annotated)
+
+        if not all_leaves:
+            raise ValueError("durable selection requires at least one operation")
+        group_kind = _parallel_group_kind([operation for _, operation in group.operations])
+        group_id = f"select-calls:{base_sequence}:{len(all_leaves)}"
+        if marker is not None and marker.get("selection_group_id") != group_id:
+            raise NonDeterministicReplayError(
+                base_sequence,
+                group_id,
+                ["SelectionResolved"],
+                detail=f"history selected group {marker.get('selection_group_id')!r}",
+            )
+
+        handles: dict[int | str, DurableOperationHandle] = {}
+        shapes: dict[int | str, list[Any] | None] = {}
+        annotated_leaves: list[Any] = []
+        flat_cursor = 0
+        for key, member_index, member_base, member_kind, operation, shape, annotated in member_specs:
+            member_size = len(annotated)
+            for offset, leaf in enumerate(annotated):
+                outer = {
+                    "parallel_group_id": group_id,
+                    "parallel_group_kind": group_kind,
+                    "parallel_group_mode": "select",
+                    "parallel_group_base_sequence": base_sequence,
+                    "parallel_group_size": len(all_leaves),
+                    "parallel_group_index": flat_cursor + offset,
+                    "selection_member_key": key,
+                    "selection_member_index": member_index,
+                    "selection_member_base_sequence": member_base,
+                    "selection_member_size": member_size,
+                    "selection_member_kind": member_kind,
+                }
+                leaf._parallel_group_path.insert(0, outer)
+                annotated_leaves.append(leaf)
+            identity = (
+                _selection_identity(member_kind, member_base, member_size)
+                if marker is not None or member_kind == "group"
+                else f"{member_kind}:{member_base}"
+            )
+            handle = DurableOperationHandle(
+                key=key,
+                index=member_index,
+                kind=member_kind,
+                identity=identity,
+                base_sequence=member_base,
+                size=member_size,
+                selection_group_id=group_id,
+                operation=operation,
+            )
+            handles[key] = handle
+            authored_selection_handles[id(handle)] = handle
+            shapes[key] = shape
+            flat_cursor += member_size
+        _validate_selection_cancellations(handles)
+        consumed_selection_sequences.update(range(base_sequence, base_sequence + len(all_leaves)))
+        return annotated_leaves, handles, shapes
 
     def _parallel_result_shape(shape: list[Any], values: Iterable[Any]) -> list[Any]:
         iterator = iter(values)
@@ -4145,7 +4871,113 @@ def _replay_state(
                     return _terminal_state(stop.value, include_pending=True)
                 first = False
             _apply_due_receivers()
+            if isinstance(cmd, SelectGroup):
+                marker = (
+                    selection_markers[selection_marker_cursor]
+                    if selection_marker_cursor < len(selection_markers)
+                    else None
+                )
+                annotated, handles, shapes = _annotate_selection(cmd, marker)
+                group_base = min(handle.base_sequence for handle in handles.values())
+                has_recorded_member_history = False
+                for sequence, leaf in zip(
+                    range(group_base, group_base + len(annotated)),
+                    annotated,
+                    strict=True,
+                ):
+                    steps = selection_steps.get(sequence, [])
+                    if steps:
+                        for selection_step in steps:
+                            _assert_step_matches(leaf, selection_step)
+                        if marker is not None:
+                            _assert_condition_selection_terminal_path(sequence)
+                        _selection_leaf_identity(_parallel_leaf_kind(leaf), sequence)
+                        has_recorded_member_history = True
+                if marker is None:
+                    if has_recorded_member_history:
+                        return _state(pending)
+                    ctx.logger._set_replaying(False)
+                    pending.extend(annotated)
+                    return _state(pending)
+
+                selection_marker_cursor += 1
+                winner_key = marker.get("member_key")
+                winner_index = _parallel_group_integer(marker, "member_index")
+                winner_base = _parallel_group_integer(marker, "member_base_sequence")
+                winner_size = _parallel_group_integer(marker, "member_size")
+                if (
+                    winner_key not in handles
+                    or winner_index is None
+                    or winner_base is None
+                    or winner_size is None
+                ):
+                    raise NonDeterministicReplayError(
+                        winner_base or 0,
+                        "SelectionResolved with a declared member key, index, base, and size",
+                        ["SelectionResolved"],
+                    )
+                winner = handles[winner_key]
+                if (
+                    winner.index != winner_index
+                    or winner.base_sequence != winner_base
+                    or winner.size != winner_size
+                ):
+                    raise NonDeterministicReplayError(
+                        winner_base,
+                        "SelectionResolved member identity matching workflow code",
+                        ["SelectionResolved"],
+                    )
+                resolution_sequence = _validated_selection_resolution(
+                    marker,
+                    winner,
+                    min(handle.base_sequence for handle in handles.values()),
+                    len(annotated),
+                )
+                resolved, value, failure = _selection_member_value(
+                    winner.base_sequence,
+                    winner.size,
+                    shapes[winner_key],
+                    outcome=str(marker.get("outcome")),
+                    resolution_sequence=resolution_sequence,
+                )
+                if marker.get("outcome") == "completed" and failure is not None:
+                    raise NonDeterministicReplayError(
+                        winner.base_sequence,
+                        "completed SelectionResolved with a fully successful durable member",
+                        ["SelectionResolved"],
+                        detail="the completed winner contains a failed durable leaf",
+                    )
+                if not resolved:
+                    raise NonDeterministicReplayError(
+                        winner.base_sequence,
+                        "a resolved selection winner",
+                        ["SelectionResolved"],
+                        detail="the committed winner has no terminal member history",
+                    )
+                for sequence in range(
+                    winner.base_sequence,
+                    winner.base_sequence + winner.size,
+                ):
+                    leaf = annotated[sequence - group_base]
+                    if isinstance(leaf, WaitCondition):
+                        _apply_condition_wait_receivers(_selection_leaf_identity("condition", sequence))
+                next_value = SelectionResult(
+                    key=winner.key,
+                    index=winner.index,
+                    kind=winner.kind,
+                    identity=winner.identity,
+                    value=value,
+                    failure=failure,
+                    winner=winner,
+                    handles=handles,
+                )
+                continue
             if isinstance(cmd, list):
+                if any(isinstance(leaf, WaitCondition) for leaf in _parallel_leaves(cmd)):
+                    raise TypeError(
+                        "ordinary parallel list groups do not support WaitCondition; "
+                        "use WorkflowContext.select() for durable condition selection"
+                    )
                 cmd, result_shape = _annotate_parallel_commands(cmd)
                 needed = len(cmd)
                 if result_cursor + needed <= len(resolved_results):
@@ -4167,6 +4999,61 @@ def _replay_state(
                     _assert_pending_step_matches(child_command, offset)
                 pending.extend(cmd)
                 return _state(pending)
+            if isinstance(cmd, DurableOperationHandle):
+                _assert_authored_selection_handle(cmd)
+                if _selection_cancellation_for_handle(cmd) is not None:
+                    try:
+                        advanced_cmd = gen.throw(
+                            DurableOperationCancelled(
+                                cmd.selection_group_id,
+                                cmd.key,
+                                cmd.index,
+                                cmd.kind,
+                                cmd.identity,
+                            )
+                        )
+                        continue
+                    except StopIteration as stop:
+                        return _terminal_state(stop.value, include_pending=False)
+                selection_shape: list[Any] | None = None
+                selection_leaves: list[Any]
+                if isinstance(cmd.operation, list):
+                    selection_leaves, selection_shape = _annotate_parallel_commands(
+                        cmd.operation,
+                        cmd.base_sequence,
+                    )
+                else:
+                    selection_leaves = [cmd.operation]
+                resolved, value, failure = _selection_member_value(
+                    cmd.base_sequence,
+                    cmd.size,
+                    selection_shape,
+                )
+                if not resolved:
+                    ctx.logger._set_replaying(False)
+                    return _state(pending)
+                if failure is not None:
+                    try:
+                        advanced_cmd = gen.throw(failure)
+                        continue
+                    except StopIteration as stop:
+                        return _terminal_state(stop.value, include_pending=True)
+                for offset, leaf in enumerate(selection_leaves):
+                    if isinstance(leaf, WaitCondition):
+                        _apply_condition_wait_receivers(
+                            _selection_leaf_identity(
+                                "condition",
+                                cmd.base_sequence + offset,
+                            )
+                        )
+                next_value = value
+                continue
+            if isinstance(cmd, CancelDurableOperation):
+                _assert_authored_selection_handle(cmd.handle)
+                if _selection_cancellation_for_handle(cmd.handle) is None:
+                    pending.append(cmd)
+                next_value = None
+                continue
             if isinstance(cmd, ContinueAsNew):
                 return _terminal_state(cmd, include_pending=True)
             if isinstance(cmd, NexusServiceCall):

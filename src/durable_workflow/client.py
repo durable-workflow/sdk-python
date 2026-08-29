@@ -59,7 +59,7 @@ from .metrics import CLIENT_REQUEST_DURATION_SECONDS, CLIENT_REQUESTS, NOOP_METR
 from .nexus import NexusOperationResult, nexus_request_payload
 from .retry_policy import TransportRetryPolicy
 
-PROTOCOL_VERSION = "1.16"
+PROTOCOL_VERSION = "1.19"
 CONTROL_PLANE_VERSION = "2"
 PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST: dict[str, dict[str, str | bool]] = {
     "local_activities": {
@@ -4585,7 +4585,7 @@ class Client:
         sdk_version: str | None = None,
         build_id: str | None = None,
         capabilities: list[str] | None = None,
-        capability_manifest: dict[str, dict[str, Any]] | None = None,
+        capability_manifest: dict[str, dict[str, Any]],
         task_slots: dict[str, int] | None = None,
         process_metrics: dict[str, Any] | None = None,
         heartbeat_interval_seconds: int | None = None,
@@ -4596,6 +4596,8 @@ class Client:
         applications should not call this directly — create a
         :class:`~durable_workflow.Worker` instead.
         """
+        if capability_manifest is None:
+            raise ValueError("capability_manifest is required for worker registration")
         if sdk_version is None:
             sdk_version = DEFAULT_SDK_VERSION
         if max_concurrent_workflow_tasks is not None and max_concurrent_workflow_tasks < 1:
@@ -4616,6 +4618,7 @@ class Client:
             "sdk_version": sdk_version,
             "supported_workflow_types": supported_workflow_types or [],
             "supported_activity_types": supported_activity_types or [],
+            "capability_manifest": capability_manifest,
         }
         if workflow_definition_fingerprints is not None:
             body["workflow_definition_fingerprints"] = workflow_definition_fingerprints
@@ -4623,8 +4626,6 @@ class Client:
             body["workflow_command_contracts"] = workflow_command_contracts
         if capabilities is not None:
             body["capabilities"] = [capability for capability in capabilities if capability]
-        if capability_manifest is not None:
-            body["capability_manifest"] = capability_manifest
         if build_id is not None:
             body["build_id"] = build_id
         if max_concurrent_workflow_tasks is not None:

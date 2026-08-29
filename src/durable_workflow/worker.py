@@ -95,6 +95,7 @@ WORKFLOW_UPDATES_CAPABILITY = "workflow_updates"
 MESSAGE_STREAMS_CAPABILITY = "message_streams"
 MEMO_UPSERTS_CAPABILITY = "memo_upserts"
 TYPED_SEARCH_ATTRIBUTES_CAPABILITY = "typed_search_attributes"
+DURABLE_SELECTION_CAPABILITY = "durable_selection"
 
 # Command capabilities implemented by every high-level Python worker. Keep this
 # advertisement explicit: worker capabilities are not inferred from runtime,
@@ -102,6 +103,7 @@ TYPED_SEARCH_ATTRIBUTES_CAPABILITY = "typed_search_attributes"
 _WORKFLOW_COMMAND_CAPABILITIES = (
     MEMO_UPSERTS_CAPABILITY,
     TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
+    DURABLE_SELECTION_CAPABILITY,
 )
 
 _WORKFLOW_WORK_TASK_KINDS = ("workflow", "update_validation")

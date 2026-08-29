@@ -19,6 +19,7 @@ import uuid
 import pytest
 
 from durable_workflow import Client, activity, workflow
+from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
 from durable_workflow.serializer import decode_envelope
 from durable_workflow.workflow import replay
 
@@ -56,6 +57,7 @@ async def test_greeter_workflow_end_to_end(server_url: str, server_token: str) -
             task_queue=task_queue,
             supported_workflow_types=["smoke_greeter"],
             supported_activity_types=["smoke_greet"],
+            capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
         )
 
         # 2. Start workflow

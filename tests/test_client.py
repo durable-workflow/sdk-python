@@ -12,6 +12,7 @@ import pytest
 from durable_workflow import serializer
 from durable_workflow.client import (
     CONTROL_PLANE_VERSION,
+    PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
     PROTOCOL_VERSION,
     Client,
     NexusOperationResult,
@@ -33,6 +34,24 @@ from durable_workflow.errors import (
     WorkflowAlreadyStarted,
     WorkflowNotFound,
 )
+
+SYNTHETIC_EXTERNAL_CAPABILITY_MANIFEST = {
+    "local_activities": {
+        "supported": False,
+        "minimum_protocol_version": "1.18",
+        "reason": "external_test_worker_does_not_execute_record_local_activity",
+    },
+    "worker_sessions": {
+        "supported": False,
+        "minimum_protocol_version": "1.18",
+        "reason": "external_test_worker_has_no_session_lifecycle",
+    },
+    "sticky_execution": {
+        "supported": False,
+        "minimum_protocol_version": "1.18",
+        "reason": "external_test_worker_uses_complete_durable_history_replay",
+    },
+}
 
 
 def _mock_response(status: int = 200, json_data: dict | None = None, text: str = "") -> httpx.Response:
@@ -144,7 +163,7 @@ class TestHeaders:
 
     def test_worker_headers(self, client: Client) -> None:
         h = client._headers(worker=True)
-        assert PROTOCOL_VERSION == "1.16"
+        assert PROTOCOL_VERSION == "1.19"
         assert h["X-Durable-Workflow-Protocol-Version"] == PROTOCOL_VERSION
         assert "X-Durable-Workflow-Control-Plane-Version" not in h
 
@@ -185,7 +204,11 @@ class TestHeaders:
             patch.object(client._http, "request", new_callable=AsyncMock) as request,
             pytest.raises(ValueError, match="worker_token or the shared token"),
         ):
-            await client.register_worker(worker_id="worker-1", task_queue="orders")
+            await client.register_worker(
+                worker_id="worker-1",
+                task_queue="orders",
+                capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+            )
 
         request.assert_not_awaited()
         await client.aclose()
@@ -3216,6 +3239,30 @@ class TestGetResult:
 
 class TestRegisterWorker:
     @pytest.mark.asyncio
+    async def test_register_requires_capability_manifest_before_transport(self, client: Client) -> None:
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock) as request,
+            pytest.raises(TypeError, match="capability_manifest"),
+        ):
+            await client.register_worker(worker_id="w1", task_queue="q1")  # type: ignore[call-arg]
+
+        request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_register_rejects_none_capability_manifest_before_transport(self, client: Client) -> None:
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock) as request,
+            pytest.raises(ValueError, match="capability_manifest is required"),
+        ):
+            await client.register_worker(
+                worker_id="w1",
+                task_queue="q1",
+                capability_manifest=None,  # type: ignore[arg-type]
+            )
+
+        request.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_register_worker_matches_polyglot_fixture(self, client: Client) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "worker-register-parity.json"
         fixture = json.loads(fixture_path.read_text())
@@ -3246,10 +3293,12 @@ class TestRegisterWorker:
                     }
                 },
                 supported_activity_types=["greet"],
+                capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
             )
             assert result["registered"] is True
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["runtime"] == "python"
+            assert body["capability_manifest"] == PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
             assert body["workflow_definition_fingerprints"] == {"greeter": "sha256:abc"}
             assert body["workflow_command_contracts"] == {
                 "greeter": {
@@ -3266,19 +3315,21 @@ class TestRegisterWorker:
             await client.register_worker(
                 worker_id="w1",
                 task_queue="q1",
-                runtime="custom-runtime",
+                runtime="external",
                 sdk_version="custom-sdk/9.9.9",
                 capabilities=["custom_capability", "typed_search_attributes"],
+                capability_manifest=SYNTHETIC_EXTERNAL_CAPABILITY_MANIFEST,
             )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body == {
                 "worker_id": "w1",
                 "task_queue": "q1",
-                "runtime": "custom-runtime",
+                "runtime": "external",
                 "sdk_version": "custom-sdk/9.9.9",
                 "supported_workflow_types": [],
                 "supported_activity_types": [],
                 "capabilities": ["custom_capability", "typed_search_attributes"],
+                "capability_manifest": SYNTHETIC_EXTERNAL_CAPABILITY_MANIFEST,
             }
 
     @pytest.mark.asyncio
@@ -3290,6 +3341,7 @@ class TestRegisterWorker:
                 task_queue="q1",
                 max_concurrent_workflow_tasks=3,
                 max_concurrent_activity_tasks=7,
+                capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
             )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["max_concurrent_workflow_tasks"] == 3
@@ -3308,6 +3360,7 @@ class TestRegisterWorker:
                     "process_id": 1234,
                     "process_started_at": "2026-05-18T21:00:00Z",
                 },
+                capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
             )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["task_slots"] == {"workflow_available": 2, "activity_available": 5}
@@ -3324,6 +3377,7 @@ class TestRegisterWorker:
                 worker_id="w1",
                 task_queue="q1",
                 max_concurrent_workflow_tasks=0,
+                capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
             )
 
         with pytest.raises(ValueError, match="max_concurrent_activity_tasks"):
@@ -3331,6 +3385,7 @@ class TestRegisterWorker:
                 worker_id="w1",
                 task_queue="q1",
                 max_concurrent_activity_tasks=0,
+                capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
             )
 
     @pytest.mark.asyncio
@@ -3344,7 +3399,11 @@ class TestRegisterWorker:
 
         resp = _mock_response(201, {"worker_id": "w1", "registered": True})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
-            await client.register_worker(worker_id="w1", task_queue="q1")
+            await client.register_worker(
+                worker_id="w1",
+                task_queue="q1",
+                capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+            )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["sdk_version"] == f"durable-workflow-python/{installed}"
 
@@ -3353,7 +3412,10 @@ class TestRegisterWorker:
         resp = _mock_response(201, {"worker_id": "w1", "registered": True})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
             await client.register_worker(
-                worker_id="w1", task_queue="q1", sdk_version="custom-runtime/9.9.9"
+                worker_id="w1",
+                task_queue="q1",
+                sdk_version="custom-runtime/9.9.9",
+                capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
             )
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["sdk_version"] == "custom-runtime/9.9.9"

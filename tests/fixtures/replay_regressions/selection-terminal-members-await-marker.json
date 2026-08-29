@@ -1,0 +1,175 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "selection-terminal-members-await-marker",
+  "protocol_version": "1.19",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.selection-await-marker",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_type": "tests.replay.selection-await-marker"
+      }
+    },
+    {
+      "id": "scheduled-slow",
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "slow-activity",
+        "activity_execution_id": "activity-slow",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "selection_member_key": "slow",
+        "selection_member_index": 0,
+        "selection_member_base_sequence": 1,
+        "selection_member_size": 1,
+        "selection_member_kind": "activity",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "selection_member_key": "slow",
+            "selection_member_index": 0,
+            "selection_member_base_sequence": 1,
+            "selection_member_size": 1,
+            "selection_member_kind": "activity"
+          }
+        ]
+      }
+    },
+    {
+      "id": "scheduled-fast",
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "fast-activity",
+        "activity_execution_id": "activity-fast",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "selection_member_key": "fast",
+        "selection_member_index": 1,
+        "selection_member_base_sequence": 2,
+        "selection_member_size": 1,
+        "selection_member_kind": "activity",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "selection_member_key": "fast",
+            "selection_member_index": 1,
+            "selection_member_base_sequence": 2,
+            "selection_member_size": 1,
+            "selection_member_kind": "activity"
+          }
+        ]
+      }
+    },
+    {
+      "id": "event-slow",
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "slow-activity",
+        "activity_execution_id": "activity-slow",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoUc2xvdy12YWx1ZQ=="
+        },
+        "payload_codec": "avro",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "selection_member_key": "slow",
+        "selection_member_index": 0,
+        "selection_member_base_sequence": 1,
+        "selection_member_size": 1,
+        "selection_member_kind": "activity",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "selection_member_key": "slow",
+            "selection_member_index": 0,
+            "selection_member_base_sequence": 1,
+            "selection_member_size": 1,
+            "selection_member_kind": "activity"
+          }
+        ]
+      }
+    },
+    {
+      "id": "event-fast",
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "fast-activity",
+        "activity_execution_id": "activity-fast",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoUZmFzdC12YWx1ZQ=="
+        },
+        "payload_codec": "avro",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "selection_member_key": "fast",
+        "selection_member_index": 1,
+        "selection_member_base_sequence": 2,
+        "selection_member_size": 1,
+        "selection_member_kind": "activity",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "selection_member_key": "fast",
+            "selection_member_index": 1,
+            "selection_member_base_sequence": 2,
+            "selection_member_size": 1,
+            "selection_member_kind": "activity"
+          }
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": []
+  }
+}

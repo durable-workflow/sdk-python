@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Python SDK advances to prerelease `2.0.0-rc.37`. PyPI displays the normalized
 PEP 440 identity `2.0.0rc37`. This Avro-only SDK release is qualified with Server
-`2.0.0-rc.51`; JSON remains HTTP transport and is no longer a workflow payload
+`2.0.0-rc.53`; JSON remains HTTP transport and is no longer a workflow payload
 codec.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
@@ -17,6 +17,9 @@ Earlier SDK versions remain historical releases and are not alternate supported
 - Worker registration now explicitly refuses local activities, worker
   sessions, and sticky execution at the portable worker-affinity protocol
   floor instead of advertising an unimplemented routing contract.
+- `WorkflowContext.select()` starts independent durable operations and returns
+  the first persisted winner with stable member identity. Non-winning handles
+  remain available to await or cancel explicitly across replay and restart.
 - `WorkflowContext.message_stream()` now consumes named repeated input in
   ordered bounded batches. Runtime-owned cursor and wait metadata survives
   replay, worker replacement, server restart, duplicates, and continue-as-new
@@ -94,7 +97,7 @@ Earlier SDK versions remain historical releases and are not alternate supported
   metadata updates remain consumed exactly once.
 - High-level workers now explicitly advertise memo-upsert and typed-search-
   attribute command support when registering with Server. Worker requests use
-  protocol 1.16, while direct `Client.register_worker()` callers retain full
+  protocol 1.19, while direct `Client.register_worker()` callers retain full
   control of their explicit capability list.
 - Completed parallel activity, child-workflow, timer, and mixed groups now
   replay results and select failures by their durable yielded positions rather

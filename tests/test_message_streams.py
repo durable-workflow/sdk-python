@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from durable_workflow import serializer, workflow
-from durable_workflow.client import Client
+from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST, Client
 from durable_workflow.external_storage import LocalFilesystemExternalStorage
 from durable_workflow.worker import MESSAGE_STREAMS_CAPABILITY, _workflow_command_contract
 from durable_workflow.workflow import (
@@ -218,6 +218,7 @@ async def test_prefeature_worker_protocol_cannot_advertise_message_streams(
             worker_id="worker-1",
             task_queue="queue",
             capabilities=[MESSAGE_STREAMS_CAPABILITY],
+            capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
         )
 
 

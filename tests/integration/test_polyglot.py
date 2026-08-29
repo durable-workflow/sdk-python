@@ -19,6 +19,7 @@ import uuid
 import pytest
 
 from durable_workflow import Client, Worker, serializer, workflow
+from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
 from durable_workflow.serializer import decode_envelope
 from durable_workflow.workflow import replay
 
@@ -26,6 +27,24 @@ from .polyglot_fixtures import (
     PolyglotPythonWorkflow,
     polyglot_python_activity,
 )
+
+SYNTHETIC_PHP_CAPABILITY_MANIFEST = {
+    "local_activities": {
+        "supported": False,
+        "minimum_protocol_version": "1.18",
+        "reason": "php_test_worker_does_not_execute_record_local_activity",
+    },
+    "worker_sessions": {
+        "supported": False,
+        "minimum_protocol_version": "1.18",
+        "reason": "php_test_worker_has_no_session_lifecycle",
+    },
+    "sticky_execution": {
+        "supported": False,
+        "minimum_protocol_version": "1.18",
+        "reason": "php_test_worker_uses_complete_durable_history_replay",
+    },
+}
 
 
 @workflow.defn(name="tests.cli.query-waiting-python")
@@ -155,6 +174,7 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
             task_queue=task_queue,
             supported_workflow_types=["tests.polyglot.python-workflow"],
             supported_activity_types=[],
+            capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
         )
         await client.register_worker(
             worker_id=php_worker_id,
@@ -163,6 +183,7 @@ async def test_python_workflow_calls_php_activity(server_url: str, server_token:
             supported_activity_types=["tests.polyglot.php-activity"],
             runtime="php",
             sdk_version="durable-workflow-php/test",
+            capability_manifest=SYNTHETIC_PHP_CAPABILITY_MANIFEST,
         )
 
         # 2. Start Python workflow
@@ -351,12 +372,14 @@ async def test_python_activity_called_from_php_workflow(server_url: str, server_
             supported_activity_types=[],
             runtime="php",
             sdk_version="durable-workflow-php/test",
+            capability_manifest=SYNTHETIC_PHP_CAPABILITY_MANIFEST,
         )
         await client.register_worker(
             worker_id=py_worker_id,
             task_queue=task_queue,
             supported_workflow_types=[],
             supported_activity_types=["tests.polyglot.python-activity"],
+            capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
         )
 
         # 2. Start PHP workflow through control plane.

@@ -25,6 +25,25 @@ class DurableWorkflowError(Exception):
     """Base class for every exception raised by the SDK."""
 
 
+class DurableOperationCancelled(DurableWorkflowError):
+    """A durable selection member was explicitly cancelled."""
+
+    def __init__(
+        self,
+        selection_group_id: str,
+        member_key: int | str,
+        member_index: int,
+        operation_kind: str,
+        operation_identity: str,
+    ) -> None:
+        super().__init__(f"Selected {operation_kind} operation {operation_identity} was explicitly cancelled.")
+        self.selection_group_id = selection_group_id
+        self.member_key = member_key
+        self.member_index = member_index
+        self.operation_kind = operation_kind
+        self.operation_identity = operation_identity
+
+
 class RuntimeDiscoveryUnavailable(DurableWorkflowError):
     """Runtime discovery could not prove that an operation is available.
 

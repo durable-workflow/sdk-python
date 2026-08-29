@@ -11,6 +11,23 @@
       "runtime": "external",
       "sdk_version": "durable-worker/1.2.3",
       "build_id": "build-231",
+      "capability_manifest": {
+        "local_activities": {
+          "supported": false,
+          "minimum_protocol_version": "1.18",
+          "reason": "external_diagnostic_worker_does_not_execute_record_local_activity"
+        },
+        "worker_sessions": {
+          "supported": false,
+          "minimum_protocol_version": "1.18",
+          "reason": "external_diagnostic_worker_has_no_session_lifecycle"
+        },
+        "sticky_execution": {
+          "supported": false,
+          "minimum_protocol_version": "1.18",
+          "reason": "external_diagnostic_worker_uses_complete_durable_history_replay"
+        }
+      },
       "supported_workflow_types": [
         "orders.fulfillment"
       ],
@@ -60,6 +77,23 @@
       "runtime": "external",
       "sdk_version": "durable-worker/1.2.3",
       "build_id": "build-231",
+      "capability_manifest": {
+        "local_activities": {
+          "supported": false,
+          "minimum_protocol_version": "1.18",
+          "reason": "external_diagnostic_worker_does_not_execute_record_local_activity"
+        },
+        "worker_sessions": {
+          "supported": false,
+          "minimum_protocol_version": "1.18",
+          "reason": "external_diagnostic_worker_has_no_session_lifecycle"
+        },
+        "sticky_execution": {
+          "supported": false,
+          "minimum_protocol_version": "1.18",
+          "reason": "external_diagnostic_worker_uses_complete_durable_history_replay"
+        }
+      },
       "supported_workflow_types": [
         "orders.fulfillment"
       ],

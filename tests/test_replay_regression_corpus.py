@@ -46,6 +46,18 @@ class ParallelResultBindingWorkflow:
         return {"results": results}
 
 
+@workflow.defn(name="tests.replay.selection-await-marker")
+class SelectionAwaitMarkerWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        selected = yield ctx.select(
+            {
+                "slow": ctx.schedule_activity("slow-activity", []),
+                "fast": ctx.schedule_activity("fast-activity", []),
+            }
+        )
+        return {"winner": selected.key, "winner_value": selected.result()}
+
+
 @workflow.defn(name="tests.replay.nested-parallel-path")
 class NestedParallelPathWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -119,6 +131,7 @@ WORKFLOWS = [
     NestedParallelPathWorkflow,
     ParallelMetadataProducerWorkflow,
     ParallelResultBindingWorkflow,
+    SelectionAwaitMarkerWorkflow,
     UpdateSignalConditionTimerWorkflow,
     WorkflowStreamAuthorWorkflow,
     WorkflowMemoAuthorWorkflow,

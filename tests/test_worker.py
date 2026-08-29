@@ -36,6 +36,7 @@ from durable_workflow.interceptors import (
 )
 from durable_workflow.nexus import NEXUS_OPERATION_RESULT_SCHEMA, NexusOperationResult
 from durable_workflow.worker import (
+    DURABLE_SELECTION_CAPABILITY,
     MEMO_UPSERTS_CAPABILITY,
     MESSAGE_STREAMS_CAPABILITY,
     TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
@@ -397,6 +398,7 @@ class TestWorkerRegistration:
             "capabilities": [
                 "memo_upserts",
                 "typed_search_attributes",
+                DURABLE_SELECTION_CAPABILITY,
                 "query_tasks",
                 MESSAGE_STREAMS_CAPABILITY,
             ],
@@ -540,6 +542,7 @@ class TestWorkerRegistration:
         assert mock_client.register_worker.await_args_list[0].kwargs["capabilities"] == [
             MEMO_UPSERTS_CAPABILITY,
             TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
+            DURABLE_SELECTION_CAPABILITY,
             "query_tasks",
             WORKFLOW_UPDATES_CAPABILITY,
             MESSAGE_STREAMS_CAPABILITY,
@@ -624,6 +627,7 @@ class TestWorkerRegistration:
         assert registered["capabilities"] == [
             MEMO_UPSERTS_CAPABILITY,
             TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
+            DURABLE_SELECTION_CAPABILITY,
             "query_tasks",
             UPDATE_VALIDATION_TASKS_CAPABILITY,
             WORKFLOW_UPDATES_CAPABILITY,
@@ -724,6 +728,7 @@ class TestWorkerRegistration:
         assert call_kwargs["capabilities"] == [
             MEMO_UPSERTS_CAPABILITY,
             TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
+            DURABLE_SELECTION_CAPABILITY,
             MESSAGE_STREAMS_CAPABILITY,
         ]
 

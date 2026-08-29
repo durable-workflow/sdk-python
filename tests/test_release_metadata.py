@@ -39,8 +39,10 @@ def test_worker_release_identity_matches_supported_server_and_protocol() -> None
     assert project["version"] == "2.0.0-rc.37"
     assert release["product-train"] == project["version"]
     assert release["registry-version"] == "2.0.0rc37"
-    assert release["supported-server-versions"] == "2.0.0-rc.51"
-    assert release["worker-protocol-version"] == PROTOCOL_VERSION == "1.16"
+    assert release["supported-server-versions"] == "2.0.0-rc.53"
+    assert release["worker-protocol-version"] == PROTOCOL_VERSION == "1.19"
+    assert release["durable-selection"] is True
+    assert release["durable-selection-minimum-worker-protocol-version"] == "1.19"
 
 
 def pypi_json(source: SourceMetadata, **overrides: object) -> bytes:
