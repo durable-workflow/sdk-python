@@ -46,6 +46,30 @@ class ParallelResultBindingWorkflow:
         return {"results": results}
 
 
+@workflow.defn(name="tests.replay.cold-replacement-satisfied-condition")
+class ColdReplacementSatisfiedConditionWorkflow:
+    def __init__(self) -> None:
+        self.approved_by: str | None = None
+
+    @workflow.signal("approve")
+    def approve(self, approver: str) -> None:
+        self.approved_by = approver
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        before_condition = yield ctx.schedule_activity("before-condition", [])
+        yield ctx.wait_condition(
+            lambda: self.approved_by is not None,
+            key="approved",
+        )
+        after_condition = yield ctx.schedule_activity("after-condition", [])
+        return {
+            "status": "completed",
+            "before_condition": before_condition,
+            "approved_by": self.approved_by,
+            "after_condition": after_condition,
+        }
+
+
 @workflow.defn(name="tests.replay.selection-await-marker")
 class SelectionAwaitMarkerWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -122,6 +146,7 @@ class YieldedContinueAfterMetadataWorkflow:
 
 
 WORKFLOWS = [
+    ColdReplacementSatisfiedConditionWorkflow,
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
     GoldenSingleActivityWorkflow,

@@ -6,8 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.40`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc40`. This Avro-only SDK release is qualified with Server
+The Python SDK advances to prerelease `2.0.0-rc.41`. PyPI displays the normalized
+PEP 440 identity `2.0.0rc41`. This Avro-only SDK release is qualified with Server
 `2.0.0-rc.57`; JSON remains HTTP transport and is no longer a workflow payload
 codec.
 Earlier SDK versions remain historical releases and are not alternate supported
@@ -92,6 +92,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Cold replay now classifies an already-satisfied condition before binding the
+  next durable history row. Signals and updates accepted across worker
+  replacement can therefore advance through the transient wait without
+  consuming the following activity or a later condition wait.
 - Yielded continue-as-new commands now preserve pending memo and search-
   attribute upserts in the same order as returned continuations, while replayed
   metadata updates remain consumed exactly once.

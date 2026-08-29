@@ -1,0 +1,89 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "cold-worker-replacement-satisfied-condition-avro",
+  "protocol_version": "1.19",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.cold-replacement-satisfied-condition",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_type": "tests.replay.cold-replacement-satisfied-condition",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "before-condition"
+      }
+    },
+    {
+      "event_type": "ActivityStarted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "before-condition"
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "before-condition",
+        "result": "wwHioz3/VYAiNw4CEGFjdGl2aXR5ChJjb21wbGV0ZWQA"
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "workflow_sequence": 1,
+        "signal_name": "approve",
+        "value": "wwHioz3/VYAiNwwCChBhcHByb3ZlZAA=",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "after-condition"
+      }
+    },
+    {
+      "event_type": "ActivityStarted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "after-condition"
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "after-condition",
+        "result": "wwHioz3/VYAiNw4CEGFjdGl2aXR5ChRhZnRlci13YWl0AA=="
+      }
+    }
+  ],
+  "expected": {
+    "command_type": "CompleteWorkflow",
+    "result": {
+      "status": "completed",
+      "before_condition": {
+        "activity": "completed"
+      },
+      "approved_by": "approved",
+      "after_condition": {
+        "activity": "after-wait"
+      }
+    }
+  }
+}

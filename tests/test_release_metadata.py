@@ -18,8 +18,8 @@ def source_metadata() -> SourceMetadata:
     return SourceMetadata(
         commit="a" * 40,
         name="durable-workflow",
-        version="2.0.0-rc.40",
-        registry_version="2.0.0rc40",
+        version="2.0.0-rc.41",
+        registry_version="2.0.0rc41",
         summary="Release candidate Python SDK for the Durable Workflow 2.0 train",
         classifiers=("Programming Language :: Python :: 3",),
         readme=(
@@ -36,9 +36,9 @@ def test_worker_release_identity_matches_supported_server_and_protocol() -> None
     project = manifest["project"]
     release = manifest["tool"]["durable-workflow"]
 
-    assert project["version"] == "2.0.0-rc.40"
+    assert project["version"] == "2.0.0-rc.41"
     assert release["product-train"] == project["version"]
-    assert release["registry-version"] == "2.0.0rc40"
+    assert release["registry-version"] == "2.0.0rc41"
     assert release["supported-server-versions"] == "2.0.0-rc.57"
     assert release["worker-protocol-version"] == PROTOCOL_VERSION == "1.19"
     assert release["durable-selection"] is True

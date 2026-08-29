@@ -5109,10 +5109,37 @@ def _replay_state(
                 next_value = _version_marker_result(cmd, cmd.version)
                 continue
             if isinstance(cmd, WaitCondition):
-                if wait_yield_count >= len(wait_opened):
+                # A condition that is already true is not persisted. Apply
+                # receivers at the yield boundary before deciding whether the
+                # next durable row belongs to this wait; otherwise a later
+                # activity or condition can be mistaken for the transient
+                # satisfied wait during cold replay.
+                next_opened = wait_opened[wait_yield_count] if wait_yield_count < len(wait_opened) else None
+                next_opened_mismatch = _condition_wait_mismatch(next_opened, cmd) if next_opened is not None else None
+                if next_opened is None or next_opened_mismatch is not None:
+                    try:
+                        already_satisfied = bool(cmd.predicate())
+                    except Exception as exc:
+                        return _state(
+                            [
+                                _fail_workflow_from_exception(
+                                    exc,
+                                    prefix="wait_condition predicate raised",
+                                )
+                            ]
+                        )
+                    if already_satisfied:
+                        terminal_condition_reopen_cmd = None
+                        next_value = True
+                        continue
+                    if next_opened_mismatch is not None:
+                        return _state([next_opened_mismatch])
                     step = _next_unconsumed_recorded_step()
                     if step is not None:
                         _assert_step_matches(cmd, step)
+                    ctx.logger._set_replaying(False)
+                    pending.append(cmd)
+                    return _state(pending)
                 # Terminal cleanup may only skip a later open after this
                 # yielded wait has already replayed at least one false reopen.
                 consumed_reopen_for_current_wait = False

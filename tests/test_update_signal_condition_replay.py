@@ -64,6 +64,12 @@ class UpdateSignalConditionTimerWorkflow:
             key="update-and-signal",
             timeout=1,
         )
+        # Accepted receivers make this condition immediately true. It has no
+        # durable history row and must not consume the following activity.
+        yield ctx.wait_condition(
+            lambda: self.message is not None and self.signal_marker is not None,
+            key="accepted-receivers",
+        )
         after_condition = yield ctx.schedule_activity(
             "after-condition",
             [self.message, self.signal_marker],
@@ -104,6 +110,10 @@ def _history() -> list[dict[str, Any]]:
             {"sequence": 2, "activity_type": "successful"},
         ),
         _event(
+            "ActivityStarted",
+            {"sequence": 2, "activity_type": "successful"},
+        ),
+        _event(
             "ActivityCompleted",
             {
                 "sequence": 2,
@@ -113,6 +123,10 @@ def _history() -> list[dict[str, Any]]:
         ),
         _event(
             "ActivityScheduled",
+            {"sequence": 3, "activity_type": "non-retryable-failure"},
+        ),
+        _event(
+            "ActivityStarted",
             {"sequence": 3, "activity_type": "non-retryable-failure"},
         ),
         _event(
@@ -194,6 +208,10 @@ def _history() -> list[dict[str, Any]]:
         ),
         _event(
             "ActivityScheduled",
+            {"sequence": 10, "activity_type": "after-condition"},
+        ),
+        _event(
+            "ActivityStarted",
             {"sequence": 10, "activity_type": "after-condition"},
         ),
         _event(
@@ -308,7 +326,7 @@ class TestUpdateSignalConditionReplay:
         assert len(ordinary_replay.commands) == 1
         assert isinstance(ordinary_replay.commands[0], WaitCondition)
 
-    def test_every_history_prefix_replays_each_workflow_sequence_once(self) -> None:
+    def test_every_history_prefix_cold_replays_each_workflow_sequence_once(self) -> None:
         history = _history()
         expected_commands = [
             StartTimer,
@@ -318,12 +336,15 @@ class TestUpdateSignalConditionReplay:
             ScheduleActivity,
             ScheduleActivity,
             ScheduleActivity,
+            ScheduleActivity,
+            ScheduleActivity,
             WaitCondition,
             WaitCondition,
             WaitCondition,
             WaitCondition,
             WaitCondition,
             WaitCondition,
+            ScheduleActivity,
             ScheduleActivity,
             ScheduleActivity,
             ScheduleActivity,
@@ -344,7 +365,7 @@ class TestUpdateSignalConditionReplay:
 
             assert len(outcome.commands) == 1, prefix_length
             assert isinstance(outcome.commands[0], expected_command), prefix_length
-            if prefix_length in (13, 14, 15):
+            if prefix_length in (15, 16, 17, 18):
                 assert isinstance(outcome.commands[0], ScheduleActivity)
                 assert outcome.commands[0].activity_type == "after-condition"
                 assert outcome.commands[0].arguments == ["updated", "delivered"]
