@@ -20,6 +20,7 @@ on:
       - 'scripts/ci/validate-release-docs-source.py'
       - 'scripts/api_reference_release.py'
       - 'scripts/check_api_reference_install.py'
+      - 'scripts/release_compatibility.py'
       - 'scripts/check-docs-analytics.py'
       - 'scripts/check-docs-layout.py'
       - 'scripts/docstring_cross_references.py'

@@ -9,6 +9,26 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from scripts.release_compatibility import (
+        WorkerProtocolRequirement,
+        declared_runtime_protocol_version,
+        validate_readme_compatibility,
+        worker_protocol_requirement,
+    )
+except ModuleNotFoundError as error:  # pragma: no cover - direct command-line execution
+    if error.name != "scripts":
+        raise
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.release_compatibility import (
+        WorkerProtocolRequirement,
+        declared_runtime_protocol_version,
+        validate_readme_compatibility,
+        worker_protocol_requirement,
+    )
+
+try:
     import tomllib  # type: ignore[import-not-found]
 except ModuleNotFoundError:  # pragma: no cover - exercised by the Python 3.10 CI cell
     import tomli as tomllib  # type: ignore[import-not-found]
@@ -44,10 +64,16 @@ class ReleaseIdentity:
     version: str
     registry_version: str
     server_version: str
+    worker_protocol_version: str
 
     @property
     def exact_requirement(self) -> str:
         return f"{self.package}=={self.registry_version}"
+
+    @property
+    def server_worker_protocols(self) -> WorkerProtocolRequirement:
+        return worker_protocol_requirement(self.worker_protocol_version)
+
 
 @dataclass(frozen=True)
 class QualifiedOnboarding:
@@ -81,6 +107,7 @@ def load_release_identity(repo_root: Path) -> ReleaseIdentity:
         version=project["version"],
         registry_version=release["registry-version"],
         server_version=release["supported-server-versions"],
+        worker_protocol_version=release["worker-protocol-version"],
     )
 
     if identity.package != "durable-workflow":
@@ -91,6 +118,16 @@ def load_release_identity(repo_root: Path) -> ReleaseIdentity:
         raise ValueError("registry-version must be the PEP 440 form of project.version")
     if "-" not in identity.version:
         raise ValueError("API-reference release identity must remain a prerelease before the 2.0 stable cutover")
+
+    runtime_protocol = declared_runtime_protocol_version(
+        (repo_root / "src" / "durable_workflow" / "client.py").read_text(encoding="utf-8")
+    )
+    if identity.worker_protocol_version != runtime_protocol:
+        raise ValueError("worker-protocol-version must match the runtime PROTOCOL_VERSION")
+    validate_readme_compatibility(
+        (repo_root / "README.md").read_text(encoding="utf-8"),
+        runtime_protocol,
+    )
 
     return identity
 
@@ -146,6 +183,7 @@ def release_evidence(identity: ReleaseIdentity, source_revision: str) -> dict[st
     if re.fullmatch(r"[0-9a-f]{40}", source_revision) is None:
         raise ValueError("API-reference source revision must be an exact Git object ID")
 
+    server_protocols = identity.server_worker_protocols
     return {
         "schema": RELEASE_EVIDENCE_SCHEMA,
         "source_revision": source_revision,
@@ -154,6 +192,13 @@ def release_evidence(identity: ReleaseIdentity, source_revision: str) -> dict[st
         "artifact_versions": {
             "sdk-python": identity.version,
             "server": identity.server_version,
+        },
+        "protocol_compatibility": {
+            "sdk_worker_protocol": identity.worker_protocol_version,
+            "server_worker_protocols": {
+                "minimum_inclusive": server_protocols.minimum_inclusive,
+                "maximum_exclusive": server_protocols.maximum_exclusive,
+            },
         },
     }
 

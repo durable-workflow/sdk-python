@@ -699,7 +699,7 @@ server must advertise these protocol manifests from `GET /api/cluster/info`:
 - `control_plane.version: "2"`
 - `control_plane.request_contract.schema: durable-workflow.v2.control-plane-request.contract` version `1`
 - `auth_composition_contract.schema: durable-workflow.v2.auth-composition.contract` version `1`
-- `worker_protocol.version: "1.1"`
+- <span data-durable-workflow-compatibility="worker-protocol" data-sdk-release-identity="public-quickstart-contract:artifacts.sdk-python.version" data-qualified-server-release-identity="public-quickstart-contract:artifacts.server.version" data-minimum-inclusive="1.19" data-maximum-exclusive="2.0"><code>worker_protocol.version</code>: <code data-compatibility-role="server-worker-protocols">&gt;=1.19,&lt;2.0</code></span>
 - `worker_protocol.external_task_input_contract.schema: durable-workflow.v2.external-task-input.contract` version `1`
 - `worker_protocol.external_task_result_contract.schema: durable-workflow.v2.external-task-result.contract` version `1`
 

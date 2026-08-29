@@ -103,6 +103,16 @@ def test_manifest_change_does_not_change_public_onboarding_resolvers(tmp_path: P
         1,
     )
     (tmp_path / "pyproject.toml").write_text(manifest, encoding="utf-8")
+    (tmp_path / "README.md").write_text(
+        (REPO_ROOT / "README.md").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    runtime_directory = tmp_path / "src" / "durable_workflow"
+    runtime_directory.mkdir(parents=True)
+    (runtime_directory / "client.py").write_text(
+        (REPO_ROOT / "src" / "durable_workflow" / "client.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     load_release_identity(tmp_path)
 
     source = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
@@ -147,9 +157,7 @@ def test_server_resolver_rejects_a_local_manifest_command() -> None:
     identity = load_release_identity(REPO_ROOT)
 
     with pytest.raises(ValueError, match="public quickstart contract resolver"):
-        validate_server_image_command(
-            f"export DW_SERVER_IMAGE='durableworkflow/server:{identity.server_version}'"
-        )
+        validate_server_image_command(f"export DW_SERVER_IMAGE='durableworkflow/server:{identity.server_version}'")
 
 
 def test_direct_pip_install_is_rejected() -> None:
@@ -348,6 +356,13 @@ def test_public_release_evidence_derives_from_manifest(tmp_path: Path) -> None:
         "artifact_versions": {
             "sdk-python": identity.version,
             "server": identity.server_version,
+        },
+        "protocol_compatibility": {
+            "sdk_worker_protocol": identity.worker_protocol_version,
+            "server_worker_protocols": {
+                "minimum_inclusive": identity.server_worker_protocols.minimum_inclusive,
+                "maximum_exclusive": identity.server_worker_protocols.maximum_exclusive,
+            },
         },
     }
 

@@ -22,6 +22,22 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts.release_compatibility import (
+        CompatibilityContractError,
+        declared_runtime_protocol_version,
+        validate_readme_compatibility,
+    )
+except ModuleNotFoundError as error:  # pragma: no cover - direct command-line execution
+    if error.name != "scripts":
+        raise
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.release_compatibility import (
+        CompatibilityContractError,
+        declared_runtime_protocol_version,
+        validate_readme_compatibility,
+    )
+
 
 def _load_toml_parser() -> Any:
     """Load the stdlib TOML parser or the declared Python 3.10 fallback."""
@@ -50,6 +66,8 @@ class SourceMetadata:
     name: str
     version: str
     registry_version: str
+    server_version: str
+    worker_protocol_version: str
     summary: str
     classifiers: tuple[str, ...]
     readme: str
@@ -82,6 +100,7 @@ def load_source_metadata(source_ref: str) -> SourceMetadata:
 
     pyproject_raw = _git("show", f"{commit}:pyproject.toml")
     readme_raw = _git("show", f"{commit}:README.md")
+    runtime_raw = _git("show", f"{commit}:src/durable_workflow/client.py")
     try:
         pyproject = tomllib.loads(pyproject_raw.decode("utf-8"))
         readme = readme_raw.decode("utf-8")
@@ -96,6 +115,8 @@ def load_source_metadata(source_ref: str) -> SourceMetadata:
     version = project.get("version")
     registry_version = tool.get("registry-version")
     product_train = tool.get("product-train")
+    server_version = tool.get("supported-server-versions")
+    worker_protocol_version = tool.get("worker-protocol-version")
     classifiers = project.get("classifiers")
     if not isinstance(version, str) or not re.fullmatch(r"2\.0\.0(?:-rc\.[1-9][0-9]*)?", version):
         raise ReleaseMetadataError("source version is not an exact supported Durable Workflow 2.0 release")
@@ -103,6 +124,17 @@ def load_source_metadata(source_ref: str) -> SourceMetadata:
         raise ReleaseMetadataError("product-train does not match project.version")
     if registry_version != version.replace("-rc.", "rc"):
         raise ReleaseMetadataError("registry-version is not the PEP 440 form of project.version")
+    if not isinstance(server_version, str) or not re.fullmatch(r"2\.0\.0(?:-rc\.[1-9][0-9]*)?", server_version):
+        raise ReleaseMetadataError("supported-server-versions must identify one exact qualified Server release")
+    if not isinstance(worker_protocol_version, str):
+        raise ReleaseMetadataError("worker-protocol-version must be a string")
+    try:
+        runtime_protocol_version = declared_runtime_protocol_version(runtime_raw.decode("utf-8"))
+        validate_readme_compatibility(readme, runtime_protocol_version)
+    except (CompatibilityContractError, UnicodeDecodeError) as error:
+        raise ReleaseMetadataError(str(error)) from error
+    if worker_protocol_version != runtime_protocol_version:
+        raise ReleaseMetadataError("worker-protocol-version does not match the shipped runtime PROTOCOL_VERSION")
     if project.get("readme") != "README.md":
         raise ReleaseMetadataError("project.readme must select README.md")
     if not isinstance(classifiers, list) or not all(isinstance(item, str) for item in classifiers):
@@ -120,6 +152,8 @@ def load_source_metadata(source_ref: str) -> SourceMetadata:
         name=name,
         version=version,
         registry_version=registry_version,
+        server_version=server_version,
+        worker_protocol_version=worker_protocol_version,
         summary=summary,
         classifiers=tuple(classifiers),
         readme=readme,

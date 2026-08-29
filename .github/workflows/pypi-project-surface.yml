@@ -9,6 +9,7 @@ on:
       - 'pyproject.toml'
       - 'scripts/check_pypi_project_surface.py'
       - 'scripts/check_release_metadata.py'
+      - 'scripts/release_compatibility.py'
       - 'tests/test_pypi_project_surface.py'
       - 'tests/test_release_metadata.py'
   schedule:
