@@ -9,8 +9,8 @@ import pytest
 
 from durable_workflow import Replayer, serializer, workflow
 from durable_workflow.client import WorkflowStreamAppendItem
-from durable_workflow.errors import WorkflowPayloadDecodeError
-from durable_workflow.workflow import WorkflowContext, commands_to_server_commands
+from durable_workflow.errors import NonDeterministicReplayError, WorkflowPayloadDecodeError
+from durable_workflow.workflow import WorkflowContext, commands_to_server_commands, query_state
 from tests.test_golden_history_replay import (
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
@@ -80,6 +80,43 @@ class SelectionAwaitMarkerWorkflow:
             }
         )
         return {"winner": selected.key, "winner_value": selected.result()}
+
+
+@workflow.defn(name="tests.replay.selection-missing-nested-opening")
+class SelectionMissingNestedOpeningWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        selected = yield ctx.select(
+            {
+                "nested": [
+                    ctx.schedule_activity("nested-first", []),
+                    ctx.schedule_activity("nested-second", []),
+                ],
+                "winner": ctx.schedule_activity("winner", []),
+            }
+        )
+        yield ctx.schedule_activity("post-winner", [])
+        return selected.result()
+
+
+@workflow.defn(name="tests.replay.selection-cancellation-query")
+class SelectionCancellationQueryWorkflow:
+    def __init__(self) -> None:
+        self.state = "before-cancel"
+
+    @workflow.query("state")
+    def current_state(self) -> str:
+        return self.state
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        selected = yield ctx.select(
+            {
+                "slow": ctx.schedule_activity("slow-activity", []),
+                "fast": ctx.schedule_activity("fast-activity", []),
+            }
+        )
+        yield selected.handles["slow"].cancel()
+        self.state = "after-cancel"
+        return self.state
 
 
 @workflow.defn(name="tests.replay.nested-parallel-path")
@@ -157,6 +194,8 @@ WORKFLOWS = [
     ParallelMetadataProducerWorkflow,
     ParallelResultBindingWorkflow,
     SelectionAwaitMarkerWorkflow,
+    SelectionCancellationQueryWorkflow,
+    SelectionMissingNestedOpeningWorkflow,
     UpdateSignalConditionTimerWorkflow,
     WorkflowStreamAuthorWorkflow,
     WorkflowMemoAuthorWorkflow,
@@ -236,13 +275,35 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     if "history" in fixture:
         assert history
 
-    outcome = Replayer(workflows=[WORKFLOW_TYPES[workflow_type]]).replay(
-        history,
-        start_input,
-        workflow_type=workflow_type,
-        payload_codec=("json" if payload_codec is None else payload_codec),
-    )
-    commands = _command_documents(outcome.commands)
+    query = workflow.get("query")
+    query_result: Any = None
+    if query is None:
+        outcome = Replayer(workflows=[WORKFLOW_TYPES[workflow_type]]).replay(
+            history,
+            start_input,
+            workflow_type=workflow_type,
+            payload_codec=("json" if payload_codec is None else payload_codec),
+        )
+        commands = _command_documents(outcome.commands)
+        message_stream_cursors = outcome.message_stream_cursors
+        message_stream_waits = outcome.message_stream_waits
+    else:
+        assert isinstance(query, dict)
+        query_name = query.get("name")
+        query_args = query.get("arguments", [])
+        assert isinstance(query_name, str) and query_name
+        assert isinstance(query_args, list)
+        query_result = query_state(
+            WORKFLOW_TYPES[workflow_type],
+            history,
+            [] if start_input is None else start_input,
+            query_name,
+            query_args,
+            payload_codec=("json" if payload_codec is None else payload_codec),
+        )
+        commands = []
+        message_stream_cursors = []
+        message_stream_waits = []
 
     declared_commands = fixture.get("command_sequence")
     if declared_commands is not None:
@@ -256,9 +317,11 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     assert isinstance(expected, dict) and expected
     observed: dict[str, Any] = {
         "command_sequence": commands,
-        "message_stream_cursors": outcome.message_stream_cursors,
-        "message_stream_waits": outcome.message_stream_waits,
+        "message_stream_cursors": message_stream_cursors,
+        "message_stream_waits": message_stream_waits,
     }
+    if query is not None:
+        observed["query_result"] = query_result
     if len(commands) == 1:
         observed.update(commands[0])
     _assert_matches(expected, observed, f"{fixture.get('id', '<unnamed>')}.expected")
@@ -281,6 +344,18 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
     expected = fixture.get("expected")
     assert isinstance(expected, dict) and expected
     expected_error = expected.get("error")
+    expected_replay_error = fixture.get("expected_replay_error")
+    if isinstance(expected_replay_error, dict):
+        assert expected_replay_error.get("type") == "NonDeterministicReplayError"
+        message = expected_replay_error.get("message_contains")
+        workflow_sequence = expected_replay_error.get("workflow_sequence")
+        assert isinstance(message, str) and message
+        assert isinstance(workflow_sequence, int)
+        assert expected.get("command_sequence") == []
+        with pytest.raises(NonDeterministicReplayError, match=message) as captured:
+            _execute_fixture(fixture)
+        assert captured.value.workflow_sequence == workflow_sequence
+        return
     if isinstance(expected_error, str):
         with pytest.raises(
             (ValueError, WorkflowPayloadDecodeError),

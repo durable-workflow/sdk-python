@@ -2516,6 +2516,7 @@ def query_state(
             payload_codec=payload_codec,
             external_storage=external_storage,
             external_storage_cache=external_storage_cache,
+            stop_at_uncommitted_cancellation=True,
         )
     except Exception as exc:
         raise QueryFailed(f"workflow replay failed before query: {exc}") from exc
@@ -3425,6 +3426,7 @@ def _replay_state(
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
     cancel_requested: bool = False,
+    stop_at_uncommitted_cancellation: bool = False,
 ) -> _ReplayState:
     if payload_codec is not None and payload_codec != serializer.AVRO_CODEC:
         try:
@@ -4886,6 +4888,13 @@ def _replay_state(
                     strict=True,
                 ):
                     steps = selection_steps.get(sequence, [])
+                    if marker is not None and not steps:
+                        raise NonDeterministicReplayError(
+                            sequence,
+                            f"durable {_parallel_leaf_kind(leaf)} selection member opening history",
+                            ["SelectionResolved"],
+                            detail="selection member is missing scheduled/open history",
+                        )
                     if steps:
                         for selection_step in steps:
                             _assert_step_matches(leaf, selection_step)
@@ -5052,6 +5061,25 @@ def _replay_state(
                 _assert_authored_selection_handle(cmd.handle)
                 if _selection_cancellation_for_handle(cmd.handle) is None:
                     pending.append(cmd)
+                    cancellation_shape: list[Any] | None = None
+                    if isinstance(cmd.handle.operation, list):
+                        _, cancellation_shape = _annotate_parallel_commands(
+                            cmd.handle.operation,
+                            cmd.handle.base_sequence,
+                        )
+                    operation_is_terminal, _, _ = _selection_member_value(
+                        cmd.handle.base_sequence,
+                        cmd.handle.size,
+                        cancellation_shape,
+                    )
+                    # Query replay may expose only state behind durable history.
+                    # A terminal member is already a committed no-op boundary.
+                    if (
+                        stop_at_uncommitted_cancellation
+                        and not operation_is_terminal
+                        and _next_unconsumed_recorded_step() is None
+                    ):
+                        return _state(pending)
                 next_value = None
                 continue
             if isinstance(cmd, ContinueAsNew):

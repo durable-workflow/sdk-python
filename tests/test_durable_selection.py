@@ -19,6 +19,7 @@ from durable_workflow.workflow import (
     SelectionResult,
     WorkflowContext,
     commands_to_server_commands,
+    query_state,
     replay,
 )
 
@@ -445,6 +446,43 @@ class DurableSelectionNestedFailureWorkflow:
         return {"winner": selected.key, "failure": None}
 
 
+@workflow.defn(name="durable-selection-missing-nested-member")
+class DurableSelectionMissingNestedMemberWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        selected: SelectionResult = yield ctx.select(
+            {
+                "nested": [
+                    ctx.schedule_activity("nested-first", []),
+                    ctx.schedule_activity("nested-second", []),
+                ],
+                "winner": ctx.schedule_activity("winner", []),
+            }
+        )
+        yield ctx.schedule_activity("post-winner", [])
+        return selected.result()
+
+
+@workflow.defn(name="durable-selection-cancellation-query")
+class DurableSelectionCancellationQueryWorkflow:
+    def __init__(self) -> None:
+        self.state = "before-cancel"
+
+    @workflow.query("state")
+    def current_state(self) -> str:
+        return self.state
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        selected: SelectionResult = yield ctx.select(
+            {
+                "slow": ctx.schedule_activity("slow-activity", []),
+                "fast": ctx.schedule_activity("fast-activity", []),
+            }
+        )
+        yield selected.handles["slow"].cancel()
+        self.state = "after-cancel"
+        return self.state
+
+
 def test_selection_emits_stable_keys_and_starts_every_member() -> None:
     outcome = replay(DurableSelectionOrderWorkflow, [], [])
 
@@ -614,6 +652,74 @@ def test_cold_reload_with_marker_rejects_corrupt_scheduled_member_history() -> N
             assert expected_detail in str(error)
             continue
         raise AssertionError(f"selection replay accepted {corruption}")
+
+
+def test_cold_reload_rejects_resolved_selection_with_missing_nested_member_history() -> None:
+    winner = {
+        "parallel_group_id": "select-calls:1:3",
+        "parallel_group_kind": "activity",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 3,
+        "parallel_group_index": 2,
+        "selection_member_key": "winner",
+        "selection_member_index": 1,
+        "selection_member_base_sequence": 3,
+        "selection_member_size": 1,
+        "selection_member_kind": "activity",
+    }
+    history = [
+        {
+            "id": "winner-scheduled",
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "sequence": 3,
+                "activity_type": "winner",
+                "activity_execution_id": "activity-winner",
+                **winner,
+                "parallel_group_path": [winner],
+            },
+        },
+        {
+            "id": "winner-completed",
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "sequence": 3,
+                "activity_type": "winner",
+                "activity_execution_id": "activity-winner",
+                "result": serializer.envelope("winner-value"),
+                "payload_codec": serializer.AVRO_CODEC,
+                **winner,
+                "parallel_group_path": [winner],
+            },
+        },
+        {
+            "id": "selection-resolved",
+            "event_type": "SelectionResolved",
+            "payload": {
+                "selection_group_id": "select-calls:1:3",
+                "selection_group_base_sequence": 1,
+                "selection_group_size": 3,
+                "member_key": "winner",
+                "member_index": 1,
+                "member_base_sequence": 3,
+                "member_size": 1,
+                "operation_kind": "activity",
+                "operation_identity": "activity-winner",
+                "outcome": "completed",
+                "resolution_event_id": "winner-completed",
+                "resolution_event_type": "ActivityCompleted",
+            },
+        },
+    ]
+
+    try:
+        replay(DurableSelectionMissingNestedMemberWorkflow, history, [])
+    except NonDeterministicReplayError as error:
+        assert error.workflow_sequence == 1
+        assert "missing scheduled/open history" in str(error)
+    else:
+        raise AssertionError("selection replay accepted a committed winner with an unopened nested member")
 
 
 def _condition_terminal_selection_history(
@@ -1671,6 +1777,43 @@ def test_selection_cancellation_is_explicit_and_idempotent_on_replay() -> None:
     )
     assert len(replayed.commands) == 1
     assert isinstance(replayed.commands[0], CompleteWorkflow)
+
+
+def test_query_does_not_advance_past_uncommitted_selection_cancellation() -> None:
+    history = [
+        _activity_scheduled(0, "slow"),
+        _activity_scheduled(1, "fast"),
+        _activity_completed(1, "fast", "winner-value"),
+        _winner_marker(),
+    ]
+
+    assert query_state(DurableSelectionCancellationQueryWorkflow, history, [], "state") == "before-cancel"
+    assert (
+        query_state(
+            DurableSelectionCancellationQueryWorkflow,
+            [*history, _activity_completed(0, "slow", "completed-first")],
+            [],
+            "state",
+        )
+        == "after-cancel"
+    )
+
+    history.append(
+        {
+            "event_type": "SelectionOperationCancelled",
+            "payload": {
+                "selection_group_id": "select-calls:1:2",
+                "member_key": "slow",
+                "member_index": 0,
+                "member_base_sequence": 1,
+                "member_size": 1,
+                "operation_kind": "activity",
+                "operation_identity": "activity-slow",
+            },
+        }
+    )
+
+    assert query_state(DurableSelectionCancellationQueryWorkflow, history, [], "state") == "after-cancel"
 
 
 def test_completion_before_cancellation_remains_awaitable() -> None:
