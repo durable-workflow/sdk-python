@@ -5,7 +5,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = REPO_ROOT / "scripts" / "ci" / "validate-release-docs-source.py"
-VERSION = "2.0.0-rc.43"
+VERSION = "2.0.0-rc.44"
 
 
 def git(repo: Path, *arguments: str) -> str:

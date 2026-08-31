@@ -23,14 +23,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def source_metadata(*, stable: bool = False) -> SourceMetadata:
-    version = "2.0.0" if stable else "2.0.0-rc.43"
-    registry_version = "2.0.0" if stable else "2.0.0rc43"
+    version = "2.0.0" if stable else "2.0.0-rc.44"
+    registry_version = "2.0.0" if stable else "2.0.0rc44"
     return SourceMetadata(
         commit="a" * 40,
         name="durable-workflow",
         version=version,
         registry_version=registry_version,
-        server_version="2.0.0" if stable else "2.0.0-rc.57",
+        server_version="2.0.0" if stable else "2.0.0-rc.68",
         worker_protocol_version="1.19",
         summary="Python SDK for the Durable Workflow 2.0 train",
         classifiers=("Programming Language :: Python :: 3",),
@@ -228,7 +228,7 @@ def test_exact_pip_semantic_mismatch_fails_without_retrying(monkeypatch: pytest.
     )
     monkeypatch.setattr("scripts.check_pypi_project_surface.time.sleep", sleeps.append)
 
-    with pytest.raises(ProjectSurfaceError, match="pip selected 2.0.0rc24; expected 2.0.0rc43"):
+    with pytest.raises(ProjectSurfaceError, match="pip selected 2.0.0rc24; expected 2.0.0rc44"):
         main(["--source-ref", "release-source", "--attempts", "30", "--interval-seconds", "10"])
 
     assert requirements == [f"{source.name}=={source.registry_version}"]
