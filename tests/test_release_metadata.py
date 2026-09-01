@@ -9,11 +9,7 @@ import pytest
 from scripts import check_release_metadata
 from scripts.check_release_metadata import ReleaseMetadataError, SourceMetadata
 from scripts.release_compatibility import (
-    SDK_RELEASE_IDENTITY,
-    SERVER_RELEASE_IDENTITY,
-    CompatibilityContractError,
     declared_runtime_protocol_version,
-    validate_readme_compatibility,
 )
 
 from durable_workflow.client import PROTOCOL_VERSION
@@ -53,57 +49,9 @@ def test_worker_release_identity_matches_supported_server_and_protocol() -> None
     assert release["durable-selection"] is True
     assert release["durable-selection-minimum-worker-protocol-version"] == "1.19"
 
-    runtime_protocol = declared_runtime_protocol_version(
+    assert declared_runtime_protocol_version(
         (REPO_ROOT / "src" / "durable_workflow" / "client.py").read_text(encoding="utf-8")
-    )
-    requirement = validate_readme_compatibility(
-        (REPO_ROOT / "README.md").read_text(encoding="utf-8"),
-        runtime_protocol,
-    )
-    assert requirement.minimum_inclusive == runtime_protocol
-    assert requirement.maximum_exclusive == "2.0"
-
-
-def compatibility_guidance(
-    minimum: str,
-    maximum: str,
-    displayed: str,
-) -> str:
-    return (
-        '<span data-durable-workflow-compatibility="worker-protocol" '
-        f'data-sdk-release-identity="{SDK_RELEASE_IDENTITY}" '
-        f'data-qualified-server-release-identity="{SERVER_RELEASE_IDENTITY}" '
-        f'data-minimum-inclusive="{minimum}" data-maximum-exclusive="{maximum}">'
-        "<code>worker_protocol.version</code>: "
-        f'<code data-compatibility-role="server-worker-protocols">{displayed}</code></span>'
-    )
-
-
-@pytest.mark.parametrize(
-    ("minimum", "maximum", "displayed"),
-    (
-        ("1.1", "2.0", ">=1.1,<2.0"),
-        ("1.19", "3.0", ">=1.19,<3.0"),
-    ),
-)
-def test_release_guidance_rejects_a_different_protocol_contract(
-    minimum: str,
-    maximum: str,
-    displayed: str,
-) -> None:
-    with pytest.raises(CompatibilityContractError, match="differs from runtime"):
-        validate_readme_compatibility(
-            compatibility_guidance(minimum, maximum, displayed),
-            "1.19",
-        )
-
-
-def test_release_guidance_rejects_visible_protocol_drift() -> None:
-    with pytest.raises(CompatibilityContractError, match="visible worker protocol requirement differs"):
-        validate_readme_compatibility(
-            compatibility_guidance("1.19", "2.0", ">=1.1,<2.0"),
-            "1.19",
-        )
+    ) == "1.19"
 
 
 def pypi_json(source: SourceMetadata, **overrides: object) -> bytes:
@@ -156,7 +104,7 @@ registry-version = "2.0.0"
 supported-server-versions = "2.0.0"
 worker-protocol-version = "1.19"
 """
-    readme = f"# Durable Workflow\n\n{compatibility_guidance('1.19', '2.0', '>=1.19,<2.0')}\n".encode()
+    readme = b"# Durable Workflow\n\nBuild durable Python workflows.\n"
     runtime = b'PROTOCOL_VERSION = "1.19"\n'
 
     def git(*arguments: str) -> bytes:

@@ -5,9 +5,6 @@ repo_url: https://github.com/durable-workflow/sdk-python
 repo_name: durable-workflow/sdk-python
 edit_uri: edit/main/docs/
 
-hooks:
-  - scripts/mkdocs_hooks.py
-
 theme:
   name: material
   custom_dir: overrides
@@ -78,6 +75,7 @@ markdown_extensions:
 
 nav:
   - Start here: index.md
+  - SDK reference: sdk-reference.md
   - SDK guide: https://durable-workflow.com/docs/2.0/polyglot/python/
   - PyPI: https://pypi.org/project/durable-workflow/
   - API reference:

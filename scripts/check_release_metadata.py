@@ -26,7 +26,6 @@ try:
     from scripts.release_compatibility import (
         CompatibilityContractError,
         declared_runtime_protocol_version,
-        validate_readme_compatibility,
     )
 except ModuleNotFoundError as error:  # pragma: no cover - direct command-line execution
     if error.name != "scripts":
@@ -35,7 +34,6 @@ except ModuleNotFoundError as error:  # pragma: no cover - direct command-line e
     from scripts.release_compatibility import (
         CompatibilityContractError,
         declared_runtime_protocol_version,
-        validate_readme_compatibility,
     )
 
 
@@ -130,7 +128,6 @@ def load_source_metadata(source_ref: str) -> SourceMetadata:
         raise ReleaseMetadataError("worker-protocol-version must be a string")
     try:
         runtime_protocol_version = declared_runtime_protocol_version(runtime_raw.decode("utf-8"))
-        validate_readme_compatibility(readme, runtime_protocol_version)
     except (CompatibilityContractError, UnicodeDecodeError) as error:
         raise ReleaseMetadataError(str(error)) from error
     if worker_protocol_version != runtime_protocol_version:

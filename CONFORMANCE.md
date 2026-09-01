@@ -23,7 +23,7 @@ The Python SDK claims two targets from the suite's matrix:
 
 | Category | Source path | Status |
 | --- | --- | --- |
-| `control_plane_request_response` | `tests/fixtures/control-plane/` | stable, parity-shared with `cli` |
+| `control_plane_request_response` | `tests/fixtures/control-plane/` | stable request/response contract coverage |
 | `signal_query_runtime_contract` | `tests/test_signals.py`, `tests/test_queries.py`, `tests/test_worker.py` and the public scenario manifest at <https://durable-workflow.github.io/platform-conformance/signal-query-runtime-scenarios.json> | stable, parity-shared with PHP worker, CLI, and server routes |
 | `search_attribute_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/search-attribute-runtime-scenarios.json> | stable, parity-shared with PHP worker, CLI, Waterline, and server query behavior |
 | `namespace_runtime_contract` | public scenario manifest at <https://durable-workflow.github.io/platform-conformance/namespace-runtime-scenarios.json> | stable, suite v12 runtime coverage for namespace isolation and SDK namespace selection |
@@ -43,13 +43,10 @@ The fixtures in this repo are exercised today by:
 - `tests/test_worker.py`
 - `tests/test_replay.py`
 - `tests/test_golden_history_replay.py`
-- `scripts/check-cli-parity.py`
 - `durable-workflow-python-conformance --manifest`
-- the `cli-parity` job in `.github/workflows/ci.yml`
 
-These are the per-repo gates that already enforce the contract; the
-public conformance harness, when it lands, will read the same fixtures
-from this repo's declared paths.
+These per-repo gates enforce the SDK contract, while the public conformance
+harness exercises cross-SDK behavior against published artifacts.
 
 ## Published-artifact Python parity contract
 
@@ -188,7 +185,5 @@ no test in this repo notices.
   <https://durable-workflow.github.io/platform-conformance/worker-versioning-runtime-scenarios.json>
 - Compatibility authority:
   <https://durable-workflow.github.io/docs/2.0/compatibility>
-- Polyglot parity doc:
-  <https://durable-workflow.github.io/docs/2.0/polyglot/cli-python-parity>
-- Existing per-repo gates: `tests/test_control_plane_parity_fixtures.py`,
-  `tests/test_history_event_contract.py`, `scripts/check-cli-parity.py`.
+- Existing per-repo gates: `tests/test_control_plane_parity_fixtures.py` and
+  `tests/test_history_event_contract.py`.
