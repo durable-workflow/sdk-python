@@ -11,7 +11,7 @@ hide:
 
 <div class="dw-hero__copy" markdown="1">
 
-<p class="dw-eyebrow">First-party Python SDK · 2.0 prerelease</p>
+<p class="dw-eyebrow">First-party Python SDK · 2.0 stable</p>
 
 # Durable workflows in Python.
 
@@ -100,7 +100,7 @@ file containing an activity, workflow, worker, and client.
 ### 1. Start Server
 
 Docker keeps this first run local. Resolve the Server image without copying a
-prerelease sequence number into the page:
+release version into the page:
 
 ```bash
 {{ durable_workflow_server_image_resolver }}

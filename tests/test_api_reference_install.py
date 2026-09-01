@@ -141,6 +141,17 @@ def test_contract_change_alone_changes_the_qualified_sdk_server_pair() -> None:
     assert changed.server_reference != current.server_reference
 
 
+def test_stable_contract_selects_the_stable_sdk_server_pair() -> None:
+    stable = load_qualified_onboarding(quickstart_contract("2.0.0", "2.0.0"))
+
+    assert stable == QualifiedOnboarding(
+        sdk_version="2.0.0",
+        sdk_registry_version="2.0.0",
+        server_version="2.0.0",
+        server_reference="durableworkflow/server:2.0.0",
+    )
+
+
 def test_contract_rejects_a_mismatched_server_reference() -> None:
     contract = quickstart_contract("2.0.0-rc.101", "2.0.0-rc.201")
     artifacts = contract["artifacts"]

@@ -2,8 +2,7 @@
 
 A Python SDK for the [Durable Workflow server](https://github.com/durable-workflow/server). Speaks the server's language-neutral HTTP/JSON worker protocol — no PHP runtime required.
 
-Status: **Release candidate** — this is the Python SDK release candidate in the
-Durable Workflow 2.0 train. Core features include workflows, activities,
+Status: **Stable 2.0**. Core features include workflows, activities,
 schedules, signals, timers, child workflows, continue-as-new, side effects,
 version markers, worker-applied accepted updates, replay verification, the
 in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
