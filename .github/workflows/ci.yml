@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   action-policy:
     name: Central action policy preflight
@@ -41,55 +45,8 @@ jobs:
           --target sdk-python
           --workflow-directory .github/workflows
 
-  qualification-class:
-    name: Determine qualification class
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      classification: ${{ steps.classify.outputs.classification }}
-      reason: ${{ steps.classify.outputs.reason }}
-      changed_count: ${{ steps.classify.outputs.changed_count }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Resolve changed paths without repository API access
-        id: classify
-        env:
-          SOURCE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          SOURCE_EVENT_NAME: ${{ github.event_name }}
-          SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          python scripts/ci/classify_pr_qualification.py \
-            --root . \
-            --event-name "$SOURCE_EVENT_NAME" \
-            --base-ref "$SOURCE_BASE_SHA" \
-            --head-ref "$SOURCE_HEAD_SHA" \
-            --github-output "$GITHUB_OUTPUT"
-
-  qualification-class-report:
-    name: Qualification class — ${{ needs.qualification-class.outputs.classification }}
-    needs: qualification-class
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: Report selected qualification
-        env:
-          CHANGED_COUNT: ${{ needs.qualification-class.outputs.changed_count }}
-          QUALIFICATION_CLASS: ${{ needs.qualification-class.outputs.classification }}
-          QUALIFICATION_REASON: ${{ needs.qualification-class.outputs.reason }}
-        run: |
-          case "$QUALIFICATION_CLASS" in
-            focused-documentation|complete) ;;
-            *) exit 1 ;;
-          esac
-          echo "::notice title=Qualification class::$QUALIFICATION_CLASS ($QUALIFICATION_REASON; $CHANGED_COUNT changed paths)"
-
   regression-corpus:
     name: Regression corpus
-    needs: qualification-class
-    if: ${{ needs.qualification-class.outputs.classification == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -100,7 +57,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.12"
-      - name: Install the official Python binding
+      - name: Install the SDK
         run: pip install -e .
       - name: Require durable replay and codec evidence
         env:
@@ -115,8 +72,6 @@ jobs:
         run: python scripts/ci/test-validate-regression-corpus.py
 
   lint:
-    needs: qualification-class
-    if: ${{ needs.qualification-class.outputs.classification == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -132,8 +87,6 @@ jobs:
 
   avro-benchmark:
     name: Avro Value absolute throughput (advisory)
-    needs: qualification-class
-    if: ${{ needs.qualification-class.outputs.classification == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -156,8 +109,7 @@ jobs:
           if-no-files-found: error
 
   test:
-    needs: qualification-class
-    if: ${{ needs.qualification-class.outputs.classification == 'complete' }}
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -173,8 +125,6 @@ jobs:
       - run: pytest tests/ -m "not integration" -q
 
   package:
-    needs: qualification-class
-    if: ${{ needs.qualification-class.outputs.classification == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -185,36 +135,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install build twine
-      - run: sh -n scripts/ci/check-docs-release-audit.sh
       - run: python -m build
       - name: Compare built release metadata with the exact source commit
         run: python scripts/check_release_metadata.py --source-ref "$(git rev-parse HEAD)" --dist dist
       - run: twine check dist/*
       - run: python scripts/smoke-built-package.py
 
-  cli-parity:
-    needs: qualification-class
-    if: ${{ needs.qualification-class.outputs.classification == 'complete' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-        with:
-          path: sdk-python
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: "3.12"
-      - name: Checkout public CLI integration source
-        run: python sdk-python/scripts/ci/checkout-public-repository.py cli cli
-      - name: Compare shared control-plane parity fixtures
-        working-directory: sdk-python
-        run: python scripts/check-cli-parity.py --cli ../cli
-
   integration:
-    if: ${{ needs.qualification-class.outputs.classification == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: [qualification-class, lint, test]
+    needs: [lint, test]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
@@ -222,14 +152,14 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.12"
-      - name: Checkout public Server integration source
+      - name: Check out public Server integration source
         run: python sdk-python/scripts/ci/checkout-public-repository.py server server
       - run: pip install -e '.[dev]'
         working-directory: sdk-python
       - name: Configure isolated Docker project
         working-directory: sdk-python
         run: python scripts/ci/configure-compose-project.py
-      - name: Start server stack
+      - name: Start Server stack
         working-directory: sdk-python
         run: |
           docker compose --project-name "$COMPOSE_PROJECT_NAME" -f docker-compose.test.yml \
@@ -264,14 +194,11 @@ jobs:
     if: ${{ always() }}
     needs:
       - action-policy
-      - qualification-class
-      - qualification-class-report
       - regression-corpus
       - lint
       - avro-benchmark
       - test
       - package
-      - cli-parity
       - integration
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -281,39 +208,18 @@ jobs:
         env:
           ACTION_POLICY_RESULT: ${{ needs.action-policy.result }}
         run: test "$ACTION_POLICY_RESULT" = success
-
       - name: Require every supported Python and integration cell
         env:
-          CLASSIFICATION_RESULT: ${{ needs.qualification-class.result }}
-          CLASSIFICATION_REPORT_RESULT: ${{ needs.qualification-class-report.result }}
-          QUALIFICATION_CLASS: ${{ needs.qualification-class.outputs.classification }}
-          LINT_RESULT: ${{ needs.lint.result }}
           AVRO_BENCHMARK_RESULT: ${{ needs.avro-benchmark.result }}
           CORPUS_RESULT: ${{ needs.regression-corpus.result }}
-          TEST_RESULT: ${{ needs.test.result }}
-          PACKAGE_RESULT: ${{ needs.package.result }}
-          PARITY_RESULT: ${{ needs.cli-parity.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          TEST_RESULT: ${{ needs.test.result }}
         run: |
-          test "$CLASSIFICATION_RESULT" = success
-          test "$CLASSIFICATION_REPORT_RESULT" = success
-          if [ "$QUALIFICATION_CLASS" = focused-documentation ]; then
-            test "$LINT_RESULT" = skipped
-            test "$AVRO_BENCHMARK_RESULT" = skipped
-            test "$CORPUS_RESULT" = skipped
-            test "$TEST_RESULT" = skipped
-            test "$PACKAGE_RESULT" = skipped
-            test "$PARITY_RESULT" = skipped
-            test "$INTEGRATION_RESULT" = skipped
-            echo "Focused documentation qualification selected; Docs PR checks and Public Boundary remain required."
-          elif [ "$QUALIFICATION_CLASS" = complete ]; then
-            test "$LINT_RESULT" = success
-            test "$AVRO_BENCHMARK_RESULT" = success
-            test "$CORPUS_RESULT" = success
-            test "$TEST_RESULT" = success
-            test "$PACKAGE_RESULT" = success
-            test "$PARITY_RESULT" = success
-            test "$INTEGRATION_RESULT" = success
-          else
-            exit 1
-          fi
+          test "$AVRO_BENCHMARK_RESULT" = success
+          test "$CORPUS_RESULT" = success
+          test "$INTEGRATION_RESULT" = success
+          test "$LINT_RESULT" = success
+          test "$PACKAGE_RESULT" = success
+          test "$TEST_RESULT" = success

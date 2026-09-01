@@ -24,16 +24,15 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts.api_reference_release import SUPPORTED_PRERELEASE_INSTALL_COMMAND
     from scripts.check_release_metadata import ReleaseMetadataError, SourceMetadata, load_source_metadata
 except ModuleNotFoundError as error:  # pragma: no cover - direct command-line execution
     if error.name != "scripts":
         raise
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from scripts.api_reference_release import SUPPORTED_PRERELEASE_INSTALL_COMMAND
     from scripts.check_release_metadata import ReleaseMetadataError, SourceMetadata, load_source_metadata
 
 PUBLIC_PYPI_INDEX = "https://pypi.org/simple"
+SUPPORTED_INSTALL_COMMAND = "pip install durable-workflow"
 LEGACY_STABLE_VERSION = re.compile(r"0(?:\.[0-9]+)+")
 
 
@@ -52,7 +51,7 @@ class ProjectSurfaceEvidence:
     exact_version_json_url: str
     release_channel: str
     exact_install_version: str
-    documented_install_command: str | None
+    documented_install_command: str
     project_json_url: str | None
     default_install_version: str | None
     historical_versions: tuple[str, ...]
@@ -173,7 +172,7 @@ def verify_stable_project_json(
     return tuple(legacy_versions)
 
 
-def supported_prerelease_install_command(source: SourceMetadata) -> str:
+def documented_install_command(source: SourceMetadata) -> str:
     section = re.search(r"(?ms)^## Install\s*$\n(?P<body>.*?)(?=^##\s|\Z)", source.readme)
     if section is None:
         raise ProjectSurfaceError("README has no Install section")
@@ -184,9 +183,9 @@ def supported_prerelease_install_command(source: SourceMetadata) -> str:
     if not commands:
         raise ProjectSurfaceError("README Install section has an empty shell block")
     command = commands[0]
-    if shlex.split(command) != shlex.split(SUPPORTED_PRERELEASE_INSTALL_COMMAND):
-        raise ProjectSurfaceError("README first install command must use the supported prerelease resolver")
-    return SUPPORTED_PRERELEASE_INSTALL_COMMAND
+    if shlex.split(command) != shlex.split(SUPPORTED_INSTALL_COMMAND):
+        raise ProjectSurfaceError("README first install command must use the supported stable package command")
+    return SUPPORTED_INSTALL_COMMAND
 
 
 def _selected_pip_version(report: object, source: SourceMetadata) -> str:
@@ -352,10 +351,12 @@ def main(argv: list[str] | None = None) -> int:
     except ReleaseMetadataError as error:
         raise ProjectSurfaceError(str(error)) from error
     channel = release_channel(source)
-    install_command = supported_prerelease_install_command(source) if channel == "prerelease" else None
+    install_command = documented_install_command(source)
     if args.source_only:
-        detail = f"; documented prerelease install uses {install_command}" if install_command is not None else ""
-        print(f"source metadata declares {source.name} {source.registry_version} ({channel}){detail}")
+        print(
+            f"source metadata declares {source.name} {source.registry_version} ({channel}); "
+            f"documented install uses {install_command}"
+        )
         return 0
 
     exact_version_json_url = f"https://pypi.org/pypi/{source.name}/{source.registry_version}/json"
@@ -428,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
     if channel == "prerelease":
         print(
             f"PyPI exact-version JSON and exact install select {source.name} {source.registry_version}; "
-            f"published metadata documents the supported prerelease resolver; "
+            f"published metadata documents the stable package command; "
             f"project-root/default selection is deferred until stable; "
             f"public metadata: {exact_version_json_url}"
         )

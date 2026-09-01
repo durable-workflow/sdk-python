@@ -34,11 +34,11 @@ namespace.
 ## Install
 
 ```bash
-curl -fsSL https://durable-workflow.com/install-sdk.sh | sh -s -- python
+pip install durable-workflow
 ```
 
-The versionless resolver reads the public quickstart contract and invokes pip
-with its qualified SDK identity.
+Use a virtual environment and lock the resolved package version with the rest
+of your application dependencies.
 
 <p class="dw-install-card__links"><a data-docs-destination="pypi" href="https://pypi.org/project/durable-workflow/">View on PyPI</a><a data-docs-destination="github" href="https://github.com/durable-workflow/sdk-python">Source on GitHub</a></p>
 
@@ -93,17 +93,15 @@ endpoint, credentials, and operating boundary change.
 
 ## Run your first local workflow
 
-This source-free path resolves the compatibility-qualified Server image from
-the same public quickstart contract as the SDK installer, then runs one Python
-file containing an activity, workflow, worker, and client.
+This source-free path runs one Python file containing an activity, workflow,
+worker, and client against the stable Server channel.
 
 ### 1. Start Server
 
-Docker keeps this first run local. Resolve the Server image without copying a
-release version into the page:
+Docker keeps this first run local. Select the stable 2.x Server channel:
 
 ```bash
-{{ durable_workflow_server_image_resolver }}
+export DW_SERVER_IMAGE='durableworkflow/server:2'
 ```
 
 Then bootstrap and start that qualified image:
@@ -257,12 +255,9 @@ python greeter.py
 
 ## Versioning
 
-<span hidden data-release-authority="public-quickstart-contract" data-release-authority-url="https://durable-workflow.com/quickstart-execution-contract.json"></span>
-
-The SDK installer and Server image resolver both read the public quickstart
-contract. Neither command stores a release-candidate sequence number in this
-page. Lock the resolved package and Server image digest in your application
-when you need reproducible builds.
+Stable 2.x SDK releases follow semantic versioning and negotiate runtime
+capabilities with Server at startup. Lock the resolved Python package version
+and Server image digest in production builds.
 
 </section>
 

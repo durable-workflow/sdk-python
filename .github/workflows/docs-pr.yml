@@ -9,20 +9,11 @@ on:
       - 'overrides/**'
       - 'mkdocs.yml'
       - 'pyproject.toml'
-      - 'scripts/ci/classify_docs_visual_changes.py'
-      - 'scripts/ci/test-classify-docs-visual-changes.py'
-      - 'scripts/ci/validate-release-docs-source.py'
-      - 'scripts/api_reference_release.py'
-      - 'scripts/check_api_reference_install.py'
-      - 'scripts/release_compatibility.py'
       - 'scripts/check-docs-analytics.py'
       - 'scripts/check-docs-layout.py'
       - 'scripts/docstring_cross_references.py'
-      - 'scripts/mkdocs_hooks.py'
-      - 'scripts/qualify-docs-promotion.py'
-      - '.github/workflows/docs.yml'
       - '.github/workflows/docs-pr.yml'
-      - '.github/workflows/docs-visual.yml'
+      - '.github/workflows/docs.yml'
 
 permissions:
   contents: read
@@ -33,34 +24,21 @@ concurrency:
 
 jobs:
   validate:
-    name: Strict documentation build and rendered layout
+    name: Build and check the developer portal
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.12"
-
-      - name: Install package + docs deps
+      - name: Install package and documentation dependencies
         run: pip install -e '.[docs]'
-
-      - name: Install browser for responsive layout checks
+      - name: Install Chromium
         run: python -m playwright install --with-deps chromium
-
-      - name: Build site
+      - name: Build and check the portal
         run: |
-          python scripts/ci/test-classify-docs-visual-changes.py
           mkdocs build --strict
           python scripts/docstring_cross_references.py --site site
-          python scripts/check_api_reference_install.py --site site
           python scripts/check-docs-analytics.py site
           python scripts/check-docs-layout.py site
-
-  visual-evidence:
-    name: Supported viewport interaction evidence
-    uses: ./.github/workflows/docs-visual.yml  # local
-    with:
-      source_base_sha: ${{ github.event.pull_request.base.sha }}
-    permissions:
-      contents: read

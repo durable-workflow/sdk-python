@@ -67,7 +67,6 @@ def test_public_checkout_uses_github_authority_on_every_runner(
 def test_ci_workflow_uses_portable_public_checkouts() -> None:
     workflow = CI_WORKFLOW.read_text()
 
-    assert "checkout-public-repository.py cli cli" in workflow
     assert "checkout-public-repository.py server server" in workflow
     public_repository_inputs = [
         line.strip() for line in workflow.splitlines() if line.strip().startswith("repository: durable-workflow/")

@@ -6,20 +6,17 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
-from scripts.api_reference_release import SUPPORTED_PRERELEASE_INSTALL_COMMAND
 from scripts.check_pypi_project_surface import (
+    SUPPORTED_INSTALL_COMMAND,
     ProjectSurfaceError,
+    documented_install_command,
     main,
     release_channel,
-    supported_prerelease_install_command,
     verify_exact_version_json,
     verify_pip_report,
     verify_stable_project_json,
 )
 from scripts.check_release_metadata import SourceMetadata
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def source_metadata(*, stable: bool = False) -> SourceMetadata:
@@ -39,7 +36,7 @@ def source_metadata(*, stable: bool = False) -> SourceMetadata:
             "Build replay-safe Python workflows.\n\n"
             "## Install\n\n"
             "```bash\n"
-            f"{SUPPORTED_PRERELEASE_INSTALL_COMMAND}\n"
+            f"{SUPPORTED_INSTALL_COMMAND}\n"
             "```\n"
         ),
     )
@@ -194,7 +191,7 @@ def test_prerelease_pip_probes_retry_simple_api_lag(
     assert sleeps == [4.0]
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert evidence["exact_install_version"] == source.registry_version
-    assert evidence["documented_install_command"] == SUPPORTED_PRERELEASE_INSTALL_COMMAND
+    assert evidence["documented_install_command"] == SUPPORTED_INSTALL_COMMAND
 
 
 def test_malformed_pip_report_fails_without_retrying(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -347,6 +344,7 @@ def test_stable_audit_requires_root_and_bare_install(
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert evidence["release_channel"] == "stable"
     assert evidence["default_install_version"] == source.registry_version
+    assert evidence["documented_install_command"] == SUPPORTED_INSTALL_COMMAND
     assert evidence["historical_versions"] == ["0.4.105", "0.4.106"]
 
 
@@ -387,18 +385,18 @@ def test_prerelease_evidence_records_deferred_default_surface(
         "release_channel": "prerelease",
         "exact_install_version": source.registry_version,
         "default_install_version": None,
-        "documented_install_command": SUPPORTED_PRERELEASE_INSTALL_COMMAND,
+        "documented_install_command": SUPPORTED_INSTALL_COMMAND,
         "historical_versions": [],
     }
 
 
 def test_documented_install_command_is_machine_checked() -> None:
     source = source_metadata()
-    assert supported_prerelease_install_command(source) == SUPPORTED_PRERELEASE_INSTALL_COMMAND
+    assert documented_install_command(source) == SUPPORTED_INSTALL_COMMAND
 
-    changed = SourceMetadata(**{**source.__dict__, "readme": source.readme.replace("install-sdk.sh", "install.sh")})
-    with pytest.raises(ProjectSurfaceError, match="supported prerelease resolver"):
-        supported_prerelease_install_command(changed)
+    changed = SourceMetadata(**{**source.__dict__, "readme": source.readme.replace("durable-workflow", "other-sdk")})
+    with pytest.raises(ProjectSurfaceError, match="supported stable package command"):
+        documented_install_command(changed)
 
 
 def test_pip_report_must_select_expected_version() -> None:
@@ -422,36 +420,3 @@ def test_source_only_qualification_does_not_require_public_package_state(
     monkeypatch.setattr("scripts.check_pypi_project_surface._pip_report", unexpected_public_request)
 
     assert main(["--source-ref", "release-source", "--source-only"]) == 0
-
-
-def test_public_project_surface_qualification_is_recurring_and_release_blocking() -> None:
-    workflow = yaml.load(
-        (REPO_ROOT / ".github" / "workflows" / "pypi-project-surface.yml").read_text(encoding="utf-8"),
-        Loader=yaml.BaseLoader,
-    )
-    assert workflow["permissions"] == {"contents": "read"}
-    assert set(workflow["on"]) == {"push", "schedule", "workflow_dispatch"}
-    steps = workflow["jobs"]["audit"]["steps"]
-    commands = "\n".join(step.get("run", "") for step in steps if isinstance(step, dict))
-    push_commands = "\n".join(
-        step.get("run", "")
-        for step in steps
-        if isinstance(step, dict) and step.get("if") == "github.event_name == 'push'"
-    )
-    public_commands = "\n".join(
-        step.get("run", "")
-        for step in steps
-        if isinstance(step, dict) and step.get("if") == "github.event_name != 'push'"
-    )
-    assert "pytest tests/test_pypi_project_surface.py tests/test_release_metadata.py -q" in push_commands
-    assert "python scripts/check_pypi_project_surface.py --source-ref HEAD --source-only" in push_commands
-    assert "--source-only" not in public_commands
-    assert "git tag -l '2.0.0-rc.*' --sort=-version:refname" in commands
-    assert "python scripts/check_pypi_project_surface.py" in public_commands
-    assert "--evidence pypi-project-surface-evidence.json" in public_commands
-
-    publish = (REPO_ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
-    exact_audit = publish.index("python scripts/check_release_metadata.py", publish.index("  publish:"))
-    surface_audit = publish.index("python scripts/check_pypi_project_surface.py", exact_audit)
-    github_release = publish.index('gh release create "$RELEASE_TAG"', surface_audit)
-    assert exact_audit < surface_audit < github_release

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "durable-workflow"
 version = "2.0.0"
-description = "Python SDK for the Durable Workflow 2.0 platform"
+description = "Python client and worker SDK for Durable Workflow Cloud and self-hosted Server"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -14,10 +14,13 @@ authors = [
     { name = "Durable Workflow Contributors" },
 ]
 keywords = [
+    "cloud",
+    "durable-execution",
     "workflow",
     "durable",
     "orchestration",
-    "temporal",
+    "python",
+    "sdk",
     "saga",
 ]
 classifiers = [
@@ -55,8 +58,8 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/durable-workflow/sdk-python"
-Documentation = "https://durable-workflow.github.io/docs/2.0/polyglot/python"
+Homepage = "https://python.durable-workflow.com/"
+Documentation = "https://python.durable-workflow.com/"
 Repository = "https://github.com/durable-workflow/sdk-python"
 Issues = "https://github.com/durable-workflow/sdk-python/issues"
 
