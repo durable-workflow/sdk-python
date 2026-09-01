@@ -186,19 +186,6 @@ jobs:
           python-version: "3.12"
       - run: pip install build twine
       - run: sh -n scripts/ci/check-docs-release-audit.sh
-      - name: Verify release recovery source contracts
-        env:
-          CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          arguments=()
-          if [ -n "$CONFORMANCE_BASE_REF" ]; then
-            arguments+=(--previous-ref "$CONFORMANCE_BASE_REF")
-          fi
-          python scripts/ci/release_recovery_consumer_conformance.py \
-            --contract scripts/ci/release-recovery-consumer-contract.json \
-            --adapter scripts/ci/release-recovery-consumer-adapter.json \
-            "${arguments[@]}"
-          python scripts/ci/test-component-release-recovery.py ConsumerContractIdentityRegressionTest
       - run: python -m build
       - name: Compare built release metadata with the exact source commit
         run: python scripts/check_release_metadata.py --source-ref "$(git rev-parse HEAD)" --dist dist

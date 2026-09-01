@@ -3,7 +3,6 @@ name: Publish to PyPI
 run-name: >-
   ${{ (github.event_name == 'push' || inputs.publish) && 'Publish' || 'Build' }}
   ${{ inputs.release_tag || github.ref_name }}@${{ inputs.release_commit || github.sha }}
-  from ${{ inputs.release_plan || 'direct' }}
 
 on:
   push:
@@ -17,15 +16,10 @@ on:
         type: string
         default: ''
       release_commit:
-        description: 'Expected commit for a release-plan publication'
+        description: 'Expected commit for publication'
         required: false
         type: string
         default: ''
-      release_plan:
-        description: 'Immutable release-plan tag initiating this recovery run'
-        required: false
-        type: string
-        default: 'direct'
       publish:
         description: 'Publish the exact release tag to PyPI'
         required: false
