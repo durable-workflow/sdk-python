@@ -39,6 +39,7 @@ RELEASE_EVIDENCE_FILENAME = "release-audit.json"
 RELEASE_EVIDENCE_SCHEMA = "durable-workflow.python-api-reference.release"
 QUICKSTART_CONTRACT_SCHEMA = "durable-workflow.docs.v2.quickstart-execution-contract"
 QUICKSTART_CONTRACT_URL = "https://durable-workflow.com/quickstart-execution-contract.json"
+RELEASE_VERSION_PATTERN = r"[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|beta|rc)\.[0-9]+)?"
 SUPPORTED_PRERELEASE_INSTALL_COMMAND = "curl -fsSL https://durable-workflow.com/install-sdk.sh | sh -s -- python"
 SUPPORTED_SERVER_IMAGE_RESOLVER_COMMAND = rf'''export DW_SERVER_IMAGE="$(
   curl -fsSL "${{DURABLE_WORKFLOW_QUICKSTART_CONTRACT_URL:-{QUICKSTART_CONTRACT_URL}}}" |
@@ -50,8 +51,8 @@ server = contract.get("artifacts", {{}}).get("server", {{}})
 version = server.get("version")
 image = server.get("image")
 reference = server.get("reference")
-if not isinstance(version, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+", version) is None:
-    raise SystemExit("The public quickstart contract has an invalid Server prerelease.")
+if not isinstance(version, str) or re.fullmatch(r"{RELEASE_VERSION_PATTERN}", version) is None:
+    raise SystemExit("The public quickstart contract has an invalid Server release.")
 if not isinstance(image, str) or reference != f"{{image}}:{{version}}":
     raise SystemExit("The public quickstart contract has an invalid Server reference.")
 print(reference)'
@@ -116,9 +117,6 @@ def load_release_identity(repo_root: Path) -> ReleaseIdentity:
         raise ValueError("project.version and tool.durable-workflow.product-train must match")
     if normalize_registry_version(identity.version) != identity.registry_version:
         raise ValueError("registry-version must be the PEP 440 form of project.version")
-    if "-" not in identity.version:
-        raise ValueError("API-reference release identity must remain a prerelease before the 2.0 stable cutover")
-
     runtime_protocol = declared_runtime_protocol_version(
         (repo_root / "src" / "durable_workflow" / "client.py").read_text(encoding="utf-8")
     )
@@ -160,11 +158,11 @@ def load_qualified_onboarding(payload: object) -> QualifiedOnboarding:
     server_version = server.get("version")
     server_image = server.get("image")
     server_reference = server.get("reference")
-    prerelease = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta|rc)\.[0-9]+")
-    if not isinstance(sdk_version, str) or prerelease.fullmatch(sdk_version) is None:
-        raise ValueError("Public quickstart contract has an invalid Python SDK prerelease")
-    if not isinstance(server_version, str) or prerelease.fullmatch(server_version) is None:
-        raise ValueError("Public quickstart contract has an invalid Server prerelease")
+    release = re.compile(RELEASE_VERSION_PATTERN)
+    if not isinstance(sdk_version, str) or release.fullmatch(sdk_version) is None:
+        raise ValueError("Public quickstart contract has an invalid Python SDK release")
+    if not isinstance(server_version, str) or release.fullmatch(server_version) is None:
+        raise ValueError("Public quickstart contract has an invalid Server release")
     if not isinstance(server_image, str) or not server_image:
         raise ValueError("Public quickstart contract has an invalid Server image")
     if server_reference != f"{server_image}:{server_version}":

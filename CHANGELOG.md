@@ -6,10 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The Python SDK advances to prerelease `2.0.0-rc.44`. PyPI displays the normalized
-PEP 440 identity `2.0.0rc44`. This Avro-only SDK release is qualified with Server
-`2.0.0-rc.68`; JSON remains HTTP transport and is no longer a workflow payload
-codec.
+The Python SDK `2.0.0` promotes the qualified release candidate to the stable
+2.0 line. This Avro-only SDK release is supported with Server `2.0.0`; JSON
+remains HTTP transport and is not a workflow payload codec.
 Earlier SDK versions remain historical releases and are not alternate supported
 2.0 baselines; no prerelease compatibility shim is provided.
 
