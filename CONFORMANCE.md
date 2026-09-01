@@ -2,7 +2,7 @@
 
 The `durable_workflow` Python SDK participates in the platform
 conformance suite specified in
-[`workflow/docs/architecture/platform-conformance-suite.md`](https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/platform-conformance-suite.md)
+[`workflow/docs/architecture/platform-conformance-suite.md`](https://github.com/durable-workflow/workflow/blob/main/docs/architecture/platform-conformance-suite.md)
 and mirrored by `Workflow\V2\Support\PlatformConformanceSuite`. This
 document is the per-repo claim: it lists the conformance targets the
 SDK claims, the fixtures it serves, and the release gate that blocks
