@@ -92,6 +92,40 @@ class UpdateSignalConditionTimerWorkflow:
         }
 
 
+@workflow.defn(name="tests.replay.post-condition-receivers")
+class PostConditionReceiversWorkflow:
+    def __init__(self) -> None:
+        self.gate_open = False
+        self.note: str | None = None
+        self.finished = False
+
+    @workflow.signal("open-gate")
+    def open_gate(self) -> None:
+        self.gate_open = True
+
+    @workflow.update("set-note")
+    def set_note(self, note: str) -> str:
+        self.note = note
+        return note
+
+    @workflow.signal("finish")
+    def finish(self) -> None:
+        self.finished = True
+
+    def run(self, ctx: WorkflowContext) -> Generator[Any, Any, dict[str, Any]]:
+        yield ctx.wait_condition(lambda: self.gate_open, key="gate")
+        activity_result = yield ctx.schedule_activity("after-condition", [])
+        yield ctx.wait_condition(
+            lambda: self.note is not None and self.finished,
+            key="post-activity-receivers",
+        )
+        return {
+            "activity_result": activity_result,
+            "note": self.note,
+            "finished": self.finished,
+        }
+
+
 def _event(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {"event_type": event_type, "payload": payload}
 
@@ -273,7 +307,102 @@ def _legacy_history() -> list[dict[str, Any]]:
     return history
 
 
+def _post_condition_receiver_history() -> list[dict[str, Any]]:
+    return [
+        _event("WorkflowStarted", {"workflow_type": "tests.replay.post-condition-receivers"}),
+        _event(
+            "ConditionWaitOpened",
+            {
+                "sequence": 1,
+                "condition_wait_id": "condition:1",
+                "condition_key": "gate",
+            },
+        ),
+        _event(
+            "SignalReceived",
+            {
+                "workflow_sequence": 1,
+                "signal_name": "open-gate",
+                "value": _payload([]),
+            },
+        ),
+        _event(
+            "ConditionWaitSatisfied",
+            {
+                "sequence": 1,
+                "condition_wait_id": "condition:1",
+                "condition_key": "gate",
+            },
+        ),
+        _event(
+            "ActivityScheduled",
+            {"sequence": 2, "activity_type": "after-condition"},
+        ),
+        _event(
+            "ActivityStarted",
+            {"sequence": 2, "activity_type": "after-condition"},
+        ),
+        _event(
+            "UpdateApplied",
+            {
+                "sequence": 1,
+                "update_id": "update-after-condition",
+                "update_name": "set-note",
+                "arguments": _payload(["accepted"]),
+            },
+        ),
+        _event(
+            "UpdateCompleted",
+            {
+                "sequence": 1,
+                "update_id": "update-after-condition",
+                "update_name": "set-note",
+                "result": _payload("accepted"),
+            },
+        ),
+        _event(
+            "SignalReceived",
+            {
+                "workflow_sequence": 1,
+                "signal_name": "finish",
+                "value": _payload([]),
+            },
+        ),
+        _event(
+            "ActivityCompleted",
+            {
+                "sequence": 2,
+                "activity_type": "after-condition",
+                "result": _payload("completed"),
+            },
+        ),
+        _event(
+            "WorkflowCompleted",
+            {
+                "result": _payload(
+                    {
+                        "activity_result": "completed",
+                        "note": "accepted",
+                        "finished": True,
+                    }
+                )
+            },
+        ),
+    ]
+
+
 class TestUpdateSignalConditionReplay:
+    def test_post_condition_step_boundary_overrides_stale_receiver_sequences(self) -> None:
+        outcome = replay(PostConditionReceiversWorkflow, _post_condition_receiver_history(), [])
+
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == {
+            "activity_result": "completed",
+            "note": "accepted",
+            "finished": True,
+        }
+
     def test_current_history_uses_explicit_timeout_identity_without_legacy_classification(self) -> None:
         with patch(
             "durable_workflow.workflow._legacy_condition_timeout_timer_sequence_aliases",

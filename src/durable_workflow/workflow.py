@@ -3925,6 +3925,11 @@ def _replay_state(
                 if current_wait_id is None:
                     if prefix_can_bind_to_first_wait or explicit_sequence is None:
                         prefix_receivers.append(index)
+                    else:
+                        # A durable step separated this receiver from the last
+                        # condition. Record that boundary so a stale sequence
+                        # cannot bind it back to the completed wait.
+                        bindings[index] = None
                     continue
 
                 receivers_since_wait.append(index)

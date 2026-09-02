@@ -91,6 +91,10 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
+- Cold replay now treats an intervening durable step as the authoritative
+  boundary for later signals and updates, even when they retain an older
+  condition sequence. Post-condition activities can therefore complete before
+  those receivers advance the workflow without rebinding them to a closed wait.
 - The README and PyPI project description now require Server worker protocol
   `>=1.19,<2.0`. Package and API-reference release validation derive that
   interval from the shipped SDK protocol and reject semantic guidance drift.
