@@ -18,7 +18,10 @@ from tests.test_golden_history_replay import (
     GoldenTimeoutWaitWorkflow,
     GoldenVersionMarkerWorkflow,
 )
-from tests.test_update_signal_condition_replay import UpdateSignalConditionTimerWorkflow
+from tests.test_update_signal_condition_replay import (
+    PostConditionReceiversWorkflow,
+    UpdateSignalConditionTimerWorkflow,
+)
 
 FIXTURE_SCHEMA = "durable-workflow.replay-regression/v1"
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "replay_regressions"
@@ -193,6 +196,7 @@ WORKFLOWS = [
     NestedParallelPathWorkflow,
     ParallelMetadataProducerWorkflow,
     ParallelResultBindingWorkflow,
+    PostConditionReceiversWorkflow,
     SelectionAwaitMarkerWorkflow,
     SelectionCancellationQueryWorkflow,
     SelectionMissingNestedOpeningWorkflow,

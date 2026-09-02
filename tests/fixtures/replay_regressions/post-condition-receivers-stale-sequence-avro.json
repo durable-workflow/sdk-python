@@ -1,0 +1,113 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "post-condition-receivers-stale-sequence-avro",
+  "protocol_version": "1.19",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.post-condition-receivers",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_type": "tests.replay.post-condition-receivers",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "condition:1",
+        "condition_key": "gate"
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "workflow_sequence": 1,
+        "signal_name": "open-gate",
+        "value": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "event_type": "ConditionWaitSatisfied",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "condition:1",
+        "condition_key": "gate"
+      }
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "after-condition"
+      }
+    },
+    {
+      "event_type": "ActivityStarted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "after-condition"
+      }
+    },
+    {
+      "event_type": "UpdateApplied",
+      "payload": {
+        "sequence": 1,
+        "update_id": "update-after-condition",
+        "update_name": "set-note",
+        "arguments": "wwHioz3/VYAiNwwCChBhY2NlcHRlZAA=",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "event_type": "UpdateCompleted",
+      "payload": {
+        "sequence": 1,
+        "update_id": "update-after-condition",
+        "update_name": "set-note",
+        "result": "wwHioz3/VYAiNwoQYWNjZXB0ZWQ=",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "workflow_sequence": 1,
+        "signal_name": "finish",
+        "value": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "after-condition",
+        "result": "wwHioz3/VYAiNwoSY29tcGxldGVk"
+      }
+    },
+    {
+      "event_type": "WorkflowCompleted",
+      "payload": {
+        "result": "wwHioz3/VYAiNw4GHmFjdGl2aXR5X3Jlc3VsdAoSY29tcGxldGVkCG5vdGUKEGFjY2VwdGVkEGZpbmlzaGVkAgEA"
+      }
+    }
+  ],
+  "expected": {
+    "command_type": "CompleteWorkflow",
+    "result": {
+      "activity_result": "completed",
+      "note": "accepted",
+      "finished": true
+    }
+  }
+}
