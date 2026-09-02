@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-09-02
+
+### Fixed
+- Cold replay now treats an intervening durable step as the authoritative
+  boundary for later signals and updates, even when they retain an older
+  condition sequence. Post-condition activities can therefore complete before
+  those receivers advance the workflow without rebinding them to a closed wait.
+
+## [2.0.0] - 2026-09-01
+
 The Python SDK `2.0.0` promotes the qualified release candidate to the stable
 2.0 line. This Avro-only SDK release is supported with Server `2.0.0`; JSON
 remains HTTP transport and is not a workflow payload codec.
@@ -91,10 +101,6 @@ Earlier SDK versions remain historical releases and are not alternate supported
   `NamespaceDescription.deleted`.
 
 ### Fixed
-- Cold replay now treats an intervening durable step as the authoritative
-  boundary for later signals and updates, even when they retain an older
-  condition sequence. Post-condition activities can therefore complete before
-  those receivers advance the workflow without rebinding them to a closed wait.
 - The README and PyPI project description now require Server worker protocol
   `>=1.19,<2.0`. Package and API-reference release validation derive that
   interval from the shipped SDK protocol and reject semantic guidance drift.

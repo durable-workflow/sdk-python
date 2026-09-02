@@ -77,7 +77,7 @@ def release_channel(source: SourceMetadata) -> str:
 
     if re.fullmatch(r"2\.0\.0rc[1-9][0-9]*", source.registry_version):
         return "prerelease"
-    if source.registry_version == "2.0.0":
+    if re.fullmatch(r"2\.0\.(?:0|[1-9][0-9]*)", source.registry_version):
         return "stable"
     raise ProjectSurfaceError(f"unsupported PyPI release identity: {source.registry_version}")
 
