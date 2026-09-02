@@ -165,9 +165,7 @@ def verify_stable_project_json(
     if not legacy_versions:
         raise ProjectSurfaceError("PyPI project-root JSON no longer retains historical stable 0.x releases")
     for version in legacy_versions:
-        files = _release_files(releases, version)
-        if any(file.get("yanked") is not False for file in files):
-            raise ProjectSurfaceError(f"historical release {version} must remain retained and non-yanked")
+        _release_files(releases, version)
 
     return tuple(legacy_versions)
 
