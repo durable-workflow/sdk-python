@@ -20,8 +20,8 @@ from scripts.check_release_metadata import SourceMetadata
 
 
 def source_metadata(*, stable: bool = False) -> SourceMetadata:
-    version = "2.0.0" if stable else "2.0.0-rc.44"
-    registry_version = "2.0.0" if stable else "2.0.0rc44"
+    version = "2.0.1" if stable else "2.0.0-rc.44"
+    registry_version = "2.0.1" if stable else "2.0.0rc44"
     return SourceMetadata(
         commit="a" * 40,
         name="durable-workflow",
@@ -305,7 +305,7 @@ def test_stable_project_root_mismatch_remains_release_blocking(
         "scripts.check_pypi_project_surface._request_json",
         lambda url: exact_version_payload(source) if url.endswith(f"/{source.registry_version}/json") else root,
     )
-    monkeypatch.setattr("scripts.check_pypi_project_surface._pip_report", lambda *_args, **_kwargs: pip_report("2.0.0"))
+    monkeypatch.setattr("scripts.check_pypi_project_surface._pip_report", lambda *_args, **_kwargs: pip_report("2.0.1"))
 
     with pytest.raises(ProjectSurfaceError, match="stable project-root metadata did not converge.*field version"):
         main(["--source-ref", "release-source"])

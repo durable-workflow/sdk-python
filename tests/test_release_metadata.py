@@ -21,8 +21,8 @@ def source_metadata() -> SourceMetadata:
     return SourceMetadata(
         commit="a" * 40,
         name="durable-workflow",
-        version="2.0.0",
-        registry_version="2.0.0",
+        version="2.0.1",
+        registry_version="2.0.1",
         server_version="2.0.0",
         worker_protocol_version="1.19",
         summary="Python SDK for the Durable Workflow 2.0 platform",
@@ -41,9 +41,9 @@ def test_worker_release_identity_matches_supported_server_and_protocol() -> None
     project = manifest["project"]
     release = manifest["tool"]["durable-workflow"]
 
-    assert project["version"] == "2.0.0"
+    assert project["version"] == "2.0.1"
     assert release["product-train"] == project["version"]
-    assert release["registry-version"] == "2.0.0"
+    assert release["registry-version"] == "2.0.1"
     assert release["supported-server-versions"] == "2.0.0"
     assert release["worker-protocol-version"] == PROTOCOL_VERSION == "1.19"
     assert release["durable-selection"] is True
@@ -93,14 +93,14 @@ def test_release_metadata_loader_accepts_the_authorized_stable_identity(
     pyproject = b"""
 [project]
 name = "durable-workflow"
-version = "2.0.0"
+version = "2.0.1"
 description = "Python SDK for Durable Workflow 2.0"
 readme = "README.md"
 classifiers = ["Programming Language :: Python :: 3"]
 
 [tool.durable-workflow]
-product-train = "2.0.0"
-registry-version = "2.0.0"
+product-train = "2.0.1"
+registry-version = "2.0.1"
 supported-server-versions = "2.0.0"
 worker-protocol-version = "1.19"
 """
@@ -120,9 +120,9 @@ worker-protocol-version = "1.19"
 
     monkeypatch.setattr(check_release_metadata, "_git", git)
 
-    source = check_release_metadata.load_source_metadata("2.0.0")
-    assert source.version == "2.0.0"
-    assert source.registry_version == "2.0.0"
+    source = check_release_metadata.load_source_metadata("2.0.1")
+    assert source.version == "2.0.1"
+    assert source.registry_version == "2.0.1"
 
 
 def test_normal_project_page_is_retained_as_rendered_evidence(monkeypatch: pytest.MonkeyPatch) -> None:

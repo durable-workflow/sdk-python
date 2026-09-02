@@ -116,13 +116,19 @@ def load_source_metadata(source_ref: str) -> SourceMetadata:
     server_version = tool.get("supported-server-versions")
     worker_protocol_version = tool.get("worker-protocol-version")
     classifiers = project.get("classifiers")
-    if not isinstance(version, str) or not re.fullmatch(r"2\.0\.0(?:-rc\.[1-9][0-9]*)?", version):
+    if not isinstance(version, str) or not re.fullmatch(
+        r"2\.0\.(?:0-rc\.[1-9][0-9]*|0|[1-9][0-9]*)",
+        version,
+    ):
         raise ReleaseMetadataError("source version is not an exact supported Durable Workflow 2.0 release")
     if product_train != version:
         raise ReleaseMetadataError("product-train does not match project.version")
     if registry_version != version.replace("-rc.", "rc"):
         raise ReleaseMetadataError("registry-version is not the PEP 440 form of project.version")
-    if not isinstance(server_version, str) or not re.fullmatch(r"2\.0\.0(?:-rc\.[1-9][0-9]*)?", server_version):
+    if not isinstance(server_version, str) or not re.fullmatch(
+        r"2\.0\.(?:0-rc\.[1-9][0-9]*|0|[1-9][0-9]*)",
+        server_version,
+    ):
         raise ReleaseMetadataError("supported-server-versions must identify one exact qualified Server release")
     if not isinstance(worker_protocol_version, str):
         raise ReleaseMetadataError("worker-protocol-version must be a string")
