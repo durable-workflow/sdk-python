@@ -348,7 +348,7 @@ def test_stable_audit_requires_root_and_bare_install(
     assert evidence["historical_versions"] == ["0.4.105", "0.4.106"]
 
 
-def test_stable_root_preserves_non_yanked_historical_files() -> None:
+def test_stable_root_preserves_historical_files_without_overriding_yanks() -> None:
     source = source_metadata(stable=True)
     exact_urls = verify_exact_version_json(exact_version_payload(source), source)
 
@@ -356,8 +356,7 @@ def test_stable_root_preserves_non_yanked_historical_files() -> None:
 
     payload = stable_project_payload()
     payload["releases"]["0.4.106"][0]["yanked"] = True
-    with pytest.raises(ProjectSurfaceError, match="historical release 0.4.106 must remain retained and non-yanked"):
-        verify_stable_project_json(payload, source, exact_urls)
+    assert verify_stable_project_json(payload, source, exact_urls) == ("0.4.105", "0.4.106")
 
 
 def test_prerelease_evidence_records_deferred_default_surface(
