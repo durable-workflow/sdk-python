@@ -46,6 +46,7 @@ from .errors import (
     WorkflowCancelled,
     WorkflowFailed,
     WorkflowTerminated,
+    WorkflowTimedOut,
     _raise_for_status,
 )
 from .external_storage import (
@@ -4141,8 +4142,9 @@ class Client:
         Raises :class:`~durable_workflow.errors.WorkflowFailed`,
         :class:`~durable_workflow.errors.WorkflowCancelled`, or
         :class:`~durable_workflow.errors.WorkflowTerminated` if the workflow
-        ended in a non-success state, or :class:`TimeoutError` if ``timeout``
-        seconds elapse before the workflow terminates.
+        ended in a non-success state. A persisted execution or run deadline
+        raises :class:`~durable_workflow.errors.WorkflowTimedOut`; a caller's
+        :class:`TimeoutError` means ``timeout`` seconds elapsed while waiting.
         """
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
@@ -4177,6 +4179,8 @@ class Client:
                         raise WorkflowCancelled(
                             payload.get("reason", "workflow was cancelled")
                         )
+                    if etype == "WorkflowTimedOut":
+                        raise WorkflowTimedOut()
                 return None
             if asyncio.get_running_loop().time() > deadline:
                 raise TimeoutError(
