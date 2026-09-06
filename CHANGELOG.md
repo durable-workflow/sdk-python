@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-09-06
+
+### Fixed
+- Persisted execution and run deadlines now raise the exported
+  `WorkflowTimedOut` exception instead of returning `None` from workflow results.
+  This terminal runtime outcome is distinct from the caller's polling
+  `TimeoutError`; selected history and other terminal exceptions are unchanged.
+
 ## [2.0.1] - 2026-09-02
 
 ### Fixed
