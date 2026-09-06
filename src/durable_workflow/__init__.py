@@ -95,6 +95,7 @@ from .errors import (
     WorkflowNotFound,
     WorkflowPayloadDecodeError,
     WorkflowTerminated,
+    WorkflowTimedOut,
 )
 from .external_storage import (
     EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
@@ -374,6 +375,7 @@ __all__ = [
     "WorkflowFailed",
     "WorkflowNotFound",
     "WorkflowTerminated",
+    "WorkflowTimedOut",
     "EXTERNAL_TASK_INPUT_CONTRACT_SCHEMA",
     "EXTERNAL_TASK_INPUT_MEDIA_TYPE",
     "EXTERNAL_TASK_INPUT_SCHEMA",
