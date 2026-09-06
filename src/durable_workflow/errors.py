@@ -560,6 +560,17 @@ class WorkflowTerminated(DurableWorkflowError):
         super().__init__(message)
 
 
+class WorkflowTimedOut(DurableWorkflowError):
+    """A persisted workflow execution or run deadline expired.
+
+    Unlike a caller's :class:`TimeoutError` while polling, this is a terminal
+    workflow outcome recorded by the runtime.
+    """
+
+    def __init__(self, message: str = "workflow execution timed out") -> None:
+        super().__init__(message)
+
+
 class SagaCompensationFailed(DurableWorkflowError):
     """A saga compensation failed after an earlier workflow failure.
 
