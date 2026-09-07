@@ -171,6 +171,32 @@ class ServerError(DurableWorkflowError):
             return self.body.get("reason")
         return None
 
+    def is_storage_admission_failure(self, poll_request_id: str | None = None) -> bool:
+        """Whether the runtime explicitly refused admission and requested an identity-preserving retry."""
+        body = self.body
+        if (
+            self.status != 503
+            or not isinstance(body, dict)
+            or self.reason() not in ("storage_pressure", "storage_admission_unavailable")
+            or body.get("retryable") is not True
+            or type(body.get("retry_after_seconds")) is not int
+            or body["retry_after_seconds"] <= 0
+            or body.get("storage_state") not in ("draining", "fenced")
+            or (self.reason() == "storage_admission_unavailable" and body["storage_state"] != "fenced")
+            or ("request_admitted" in body and body["request_admitted"] is not False)
+        ):
+            return False
+        if poll_request_id is None:
+            return body.get("request_admitted") is False
+        return (
+            bool(poll_request_id)
+            and "task" in body and body["task"] is None
+            and body.get("poll_status") == self.reason()
+            and body.get("poll_request_id") == poll_request_id
+            and body.get("retry_same_poll_request_id") is True
+            and body.get("claim_admitted") is False
+        )
+
 
 class NexusOperationFailed(DurableWorkflowError):
     """A Nexus service operation completed with a typed service failure."""
