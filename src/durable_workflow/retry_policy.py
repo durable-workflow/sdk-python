@@ -13,6 +13,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import json
+import logging
 import random
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -20,7 +23,40 @@ from typing import TypeVar
 
 import httpx
 
+from .errors import ServerError
+
 T = TypeVar("T")
+log = logging.getLogger("durable_workflow.worker")
+
+# Task-local so sharing a Client never changes unrelated client/control requests.
+_worker_storage_admission_stop: contextvars.ContextVar[Callable[[], bool] | None] = contextvars.ContextVar(
+    "worker_storage_admission_stop", default=None,
+)
+
+
+def _storage_refusal(exc: Exception) -> tuple[ServerError, str | None] | None:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    if "X-Durable-Workflow-Protocol-Version" not in exc.request.headers:
+        return None
+    try:
+        body = exc.response.json()
+    except ValueError:
+        return None
+    error = ServerError(exc.response.status_code, body)
+    if error.reason() not in ("storage_pressure", "storage_admission_unavailable"):
+        return None
+    poll_id = None
+    if exc.request.url.path.endswith("/poll"):
+        try:
+            request = json.loads(exc.request.content)
+            poll_id = request.get("poll_request_id") if isinstance(request, dict) else None
+        except ValueError:
+            pass
+        # An invalid submitted ID must not fall through to the non-poll contract.
+        if not isinstance(poll_id, str) or not poll_id:
+            poll_id = ""
+    return error, poll_id
 
 
 @dataclass
@@ -81,6 +117,7 @@ class TransportRetryPolicy:
         Raises the last exception if all retries are exhausted.
         """
         attempt = 0
+        storage_attempt = 0
         last_exc: Exception | None = None
 
         while attempt < self.max_attempts:
@@ -89,6 +126,32 @@ class TransportRetryPolicy:
                 return result
             except Exception as exc:
                 last_exc = exc
+                stop = _worker_storage_admission_stop.get()
+                refusal = _storage_refusal(exc) if stop is not None else None
+                if refusal is not None and stop is not None:
+                    error, poll_id = refusal
+                    if not error.is_storage_admission_failure(poll_id) or stop():
+                        raise
+                    storage_attempt += 1
+                    assert isinstance(error.body, dict)
+                    delay = min(
+                        5.0,
+                        max(
+                            self.backoff_seconds(min(storage_attempt - 1, 6)),
+                            error.body["retry_after_seconds"],
+                        ),
+                    )
+                    log.warning("storage admission paused; retrying the same worker request in %.2fs", delay)
+                    # Do not consume the finite transport budget or repeat serialization/uploads.
+                    while delay > 0:
+                        if stop():
+                            raise
+                        interval = min(0.1, delay)
+                        await asyncio.sleep(interval)
+                        delay -= interval
+                    if stop():
+                        raise
+                    continue
                 if not self.should_retry(exc, attempt):
                     raise
 

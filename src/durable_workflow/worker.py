@@ -27,10 +27,11 @@ import time
 import traceback
 import types
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping
 from datetime import datetime, timezone
+from functools import wraps
 from types import FunctionType
-from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from . import serializer
 from .activity import ActivityContext, ActivityInfo, _set_context
@@ -75,6 +76,7 @@ from .metrics import (
     WORKER_TASKS,
     MetricsRecorder,
 )
+from .retry_policy import _worker_storage_admission_stop
 from .workflow import (
     Command,
     NexusServiceCall,
@@ -137,6 +139,27 @@ _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS = 3
 _WORKFLOW_TASK_COMPLETION_RETRY_DELAYS = (0.05, 0.2)
 _WORKFLOW_TASK_NEXUS_RESOLUTION_LIMIT = 100
 _WORKER_WORKFLOW_FINGERPRINTS: dict[tuple[str, str], str] = {}
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _with_storage_admission_retries(
+    fn: Callable[Concatenate[Worker, _P], Coroutine[Any, Any, _R]],
+) -> Callable[Concatenate[Worker, _P], Coroutine[Any, Any, _R]]:
+    @wraps(fn)
+    async def run(self: Worker, /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        token = _worker_storage_admission_stop.set(self._stop.is_set)
+        try:
+            return await fn(self, *args, **kwargs)
+        finally:
+            _worker_storage_admission_stop.reset(token)
+    return run
+
+
+def _is_storage_admission_error(error: BaseException) -> bool:
+    return isinstance(error, ServerError) and error.reason() in (
+        "storage_pressure", "storage_admission_unavailable",
+    )
 
 
 def _command_payload_codec(codec: object) -> str:
@@ -208,6 +231,8 @@ def _should_fail_workflow_task_after_completion_error(error: BaseException) -> b
 
 
 def _should_retry_workflow_task_completion_error(error: BaseException) -> bool:
+    if _is_storage_admission_error(error):
+        return False
     if isinstance(error, ServerError):
         return error.status >= 500 or error.status == 429
 
@@ -1424,6 +1449,8 @@ class Worker:
                 )
             except Exception as e:
                 log.warning("failed to complete workflow update task %s: %s", task_id, e)
+                if _is_storage_admission_error(e):
+                    return None
                 if _should_fail_workflow_task_after_completion_error(e):
                     await self._report_workflow_task_after_completion_error(task_id, attempt, e)
                     return None
@@ -1550,6 +1577,8 @@ class Worker:
             )
         except Exception as e:
             log.warning("failed to complete workflow task %s: %s", task_id, e)
+            if _is_storage_admission_error(e):
+                return None
             if _should_fail_workflow_task_after_completion_error(e):
                 await self._report_workflow_task_after_completion_error(task_id, attempt, e)
                 return None
@@ -1736,6 +1765,8 @@ class Worker:
                 log.warning("failed to report activity failure: %s", fe)
             return "failed_non_retryable"
         except Exception as e:
+            if _is_storage_admission_error(e):
+                raise
             log.exception("activity failed")
             try:
                 await self.client.fail_activity_task(
@@ -1971,6 +2002,9 @@ class Worker:
                 **self._external_storage_completion_kwargs(),
             )
         except ServerError as e:
+            if _is_storage_admission_error(e):
+                log.warning("query task %s acknowledgement paused: %s", query_task_id, e)
+                return "complete_error"
             if _is_final_query_task_rejection(e):
                 log.info(
                     "query task %s completion was rejected after the task ended server-side: %s",
@@ -2147,6 +2181,8 @@ class Worker:
                 self._release_workflow_capacity()
                 if self._stop.is_set():
                     return
+                if _is_storage_admission_error(e):
+                    raise
                 self._record_poll_metrics("workflow", "error", time.perf_counter() - poll_start)
                 log.warning("workflow poll error: %s", e)
                 await asyncio.sleep(1.0)
@@ -2236,10 +2272,15 @@ class Worker:
                     timeout=self._poll_http_timeout,
                     build_id=self.build_id,
                 )
+            except asyncio.CancelledError:
+                self._act_semaphore.release()
+                raise
             except Exception as e:
                 self._act_semaphore.release()
                 if self._stop.is_set():
                     return
+                if _is_storage_admission_error(e):
+                    raise
                 self._record_poll_metrics("activity", "error", time.perf_counter() - poll_start)
                 log.warning("activity poll error: %s", e)
                 await asyncio.sleep(1.0)
@@ -2289,6 +2330,8 @@ class Worker:
                     query_thread_stop is not None and query_thread_stop.is_set()
                 ):
                     return
+                if _is_storage_admission_error(e):
+                    raise
                 self._record_poll_metrics("query", "error", time.perf_counter() - poll_start)
                 log.warning("query poll error: %s", e)
                 await asyncio.sleep(1.0)
@@ -2525,6 +2568,7 @@ class Worker:
         except Exception:
             log.exception("query task poller thread stopped unexpectedly")
 
+    @_with_storage_admission_retries
     async def _query_task_thread_main(self) -> None:
         loop = asyncio.get_running_loop()
         task = asyncio.current_task()
@@ -2562,6 +2606,7 @@ class Worker:
                 "the worker registration remains active"
             )
 
+    @_with_storage_admission_retries
     async def run(self) -> None:
         """Register the worker and poll until `stop()` is called or the task is cancelled."""
         self._begin_run()
@@ -2622,6 +2667,8 @@ class Worker:
                     process_metrics=self._current_process_metrics(),
                 )
             except Exception as e:
+                if _is_storage_admission_error(e) and not self._stop.is_set():
+                    raise
                 log.warning("worker heartbeat failed: %s", e)
                 continue
             if isinstance(ack, dict):
@@ -2703,6 +2750,7 @@ class Worker:
 
         return metrics
 
+    @_with_storage_admission_retries
     async def run_until(
         self,
         *,
@@ -2714,17 +2762,19 @@ class Worker:
 
         This is intended for examples, smoke tests, and single-workflow scripts.
         Long-running workers should call :meth:`run` and coordinate shutdown from
-        their process supervisor.
+        their process supervisor. ``timeout`` includes registration and runtime
+        admission pauses; shutdown retains its separate drain timeout.
         """
         background_tasks: list[asyncio.Task[Any]] = []
+        deadline = asyncio.get_running_loop().time() + timeout
 
         self._begin_run()
         try:
-            await self._register()
-        finally:
-            self._registration_done.set()
+            try:
+                await asyncio.wait_for(self._register(), timeout=timeout)
+            finally:
+                self._registration_done.set()
 
-        try:
             if self._stop.is_set():
                 raise asyncio.CancelledError
             background_tasks.append(asyncio.create_task(self._heartbeat_loop()))
@@ -2742,7 +2792,11 @@ class Worker:
                 )
             )
             self._poller_tasks.add(run_until_loop)
-            return await run_until_loop
+            return await asyncio.wait_for(
+                run_until_loop, timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+            )
+        except asyncio.TimeoutError as error:
+            raise TimeoutError(f"workflow {workflow_id} not terminal after {timeout}s") from error
         finally:
             primary_error = sys.exc_info()[1]
             primary_traceback = primary_error.__traceback__ if primary_error is not None else None

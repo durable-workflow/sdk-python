@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "storage-paused-cold-completion",
+  "protocol_version": "1.19",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "golden.single-activity",
+    "input": ["Ada"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"event_type": "WorkflowStarted", "payload": {"payload_codec": "avro"}},
+    {"event_type": "ActivityScheduled", "payload": {"sequence": 1, "activity_type": "golden.greet"}},
+    {"event_type": "ActivityCompleted", "payload": {"sequence": 1, "result": "wwHioz3/VYAiNwoSaGVsbG8gQWRh"}}
+  ],
+  "expected": {"command_type": "CompleteWorkflow", "result": "hello Ada"}
+}
