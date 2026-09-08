@@ -225,8 +225,9 @@ async def test_shutdown_interrupts_pressure_without_another_mutation(monkeypatch
 
 
 @pytest.mark.parametrize("kind", ["activity", "query", "workflow"])
+@pytest.mark.parametrize("late_upload_refusal", [False, True])
 async def test_runtime_payload_upload_and_acknowledgement_are_not_repeated(
-    kind: str, retry_sleeps: list[float],
+    kind: str, retry_sleeps: list[float], late_upload_refusal: bool,
 ) -> None:
     server = FakeRuntimePayloadServer()
     uploads: list[bytes] = []
@@ -236,7 +237,10 @@ async def test_runtime_payload_upload_and_acknowledgement_are_not_repeated(
         if request.method == "POST" and request.url.path == "/api/external-payloads/v1":
             uploads.append(request.content)
             if len(uploads) <= 3:
-                return httpx.Response(503, json=pressure())
+                refusal = pressure()
+                if late_upload_refusal:
+                    refusal.pop("request_admitted")
+                return httpx.Response(503, json=refusal)
         if request.url.path.endswith("/complete"):
             acknowledgements.append(request.content)
             if len(acknowledgements) <= 4:

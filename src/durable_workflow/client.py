@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json as json_module
 import math
 import os
+import re
 import time
 import uuid
 import warnings
@@ -30,7 +32,7 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from typing import Any
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import httpx
 
@@ -101,6 +103,26 @@ _RUNTIME_EXTERNAL_PAYLOAD_FETCH_PATH_TEMPLATE = (
     "/external-payloads/v1/{referenceId}"
 )
 _RUNTIME_EXTERNAL_PAYLOAD_ERROR_BODY_LIMIT = 64 * 1024
+_PAYLOAD_COMPLETION_SCHEMA = "durable-workflow.v2.payload-completion-context.v1"
+_PAYLOAD_COMPLETION_HEADER = "X-Durable-Workflow-Payload-Completion"
+
+
+def _payload_completion_context(path: str, body: Any) -> dict[str, Any] | None:
+    match = re.fullmatch(r"/worker/(activity|workflow|query)-tasks/([^/]+)/(complete|fail)", path.split("?")[0])
+    if match is None or not isinstance(body, dict):
+        return None
+    kind, task_id, operation = match.groups()
+    attempt = body.get("activity_attempt_id" if kind == "activity" else f"{kind}_task_attempt")
+    owner = body.get("lease_owner")
+    if not isinstance(owner, str) or not owner:
+        return None
+    if kind == "activity":
+        if not isinstance(attempt, str) or not attempt:
+            return None
+    elif type(attempt) is not int or attempt < 1:
+        return None
+    return {"schema": _PAYLOAD_COMPLETION_SCHEMA, "kind": kind, "task_id": unquote(task_id),
+            "attempt": attempt, "lease_owner": owner, "operation": operation}
 
 
 def _default_sdk_version() -> str:
@@ -277,6 +299,7 @@ class _RuntimeExternalPayloadTransport:
     max_payload_bytes: int
     request_timeout_seconds: float
     status: str
+    completion_context: bool = False
 
 
 @dataclass
@@ -1734,6 +1757,9 @@ class Client:
                     worker=worker,
                     transport=transport,
                     uploaded={},
+                    completion=(
+                        _payload_completion_context(path, json) if worker and transport.completion_context else None
+                    ),
                 )
 
         start = time.perf_counter()
@@ -1904,11 +1930,15 @@ class Client:
             )
 
         status = policy.get("status")
+        completion = upload.get("completion_context")
         transport = _RuntimeExternalPayloadTransport(
             threshold_bytes=threshold_bytes,
             max_payload_bytes=max_payload_bytes,
             request_timeout_seconds=float(request_timeout_seconds),
             status=status if isinstance(status, str) else "unknown",
+            completion_context=isinstance(completion, dict)
+            and completion.get("schema") == _PAYLOAD_COMPLETION_SCHEMA
+            and completion.get("header") == _PAYLOAD_COMPLETION_HEADER,
         )
         self._runtime_external_payload_transport_cache = transport
         self._runtime_external_payload_transport_resolved = True
@@ -1972,6 +2002,8 @@ class Client:
         worker: bool,
         transport: _RuntimeExternalPayloadTransport,
         uploaded: dict[tuple[str, str, int], RuntimeExternalPayloadReference],
+        completion: dict[str, Any] | None = None,
+        slot: tuple[str | int, ...] = (),
     ) -> Any:
         if isinstance(value, dict):
             if (
@@ -1984,6 +2016,8 @@ class Client:
                     worker=worker,
                     transport=transport,
                     uploaded=uploaded,
+                    completion=completion,
+                    slot=(*slot, "result"),
                 )
                 if "external_payload" in externalized_result:
                     normalized_command["result"] = externalized_result
@@ -2014,6 +2048,7 @@ class Client:
                         sha256=sha256,
                         worker=worker,
                         transport=transport,
+                        completion={**completion, "slot": list(slot)} if completion is not None else None,
                     )
                     uploaded[identity] = reference
                 return {"codec": codec, "external_payload": reference.to_dict()}
@@ -2024,6 +2059,8 @@ class Client:
                     worker=worker,
                     transport=transport,
                     uploaded=uploaded,
+                    completion=completion,
+                    slot=(*slot, key),
                 )
                 for key, item in value.items()
             }
@@ -2045,8 +2082,10 @@ class Client:
                     worker=worker,
                     transport=transport,
                     uploaded=uploaded,
+                    completion=completion,
+                    slot=(*slot, index),
                 )
-                for item in value
+                for index, item in enumerate(value)
             ]
         return value
 
@@ -2058,6 +2097,7 @@ class Client:
         sha256: str,
         worker: bool,
         transport: _RuntimeExternalPayloadTransport,
+        completion: dict[str, Any] | None = None,
     ) -> RuntimeExternalPayloadReference:
         headers = self._headers(worker=worker)
         headers.update({
@@ -2069,13 +2109,30 @@ class Client:
         })
 
         async def _do_request() -> httpx.Response:
+            attempt_headers = dict(headers)
             response = await self._http.request(
                 "POST",
                 f"/api{_RUNTIME_EXTERNAL_PAYLOAD_UPLOAD_PATH}",
-                headers=headers,
+                headers=attempt_headers,
                 content=data,
                 timeout=transport.request_timeout_seconds,
             )
+            if (response.status_code == 503 and completion is not None
+                    and len(response.content) <= _RUNTIME_EXTERNAL_PAYLOAD_ERROR_BODY_LIMIT):
+                try:
+                    refusal = response.json()
+                except ValueError:
+                    refusal = None
+                context = json_module.dumps(completion, separators=(",", ":"))
+                if (isinstance(refusal, dict) and refusal.get("reason") == "storage_pressure"
+                        and refusal.get("storage_state") == "draining" and len(context.encode("utf-8")) <= 4096):
+                    # Keep the same identity if the ordinary transport policy retries
+                    # an ambiguous response; never rerun application activity code.
+                    attempt_headers[_PAYLOAD_COMPLETION_HEADER] = context
+                    response = await self._http.request(
+                        "POST", f"/api{_RUNTIME_EXTERNAL_PAYLOAD_UPLOAD_PATH}", headers=attempt_headers,
+                        content=data, timeout=transport.request_timeout_seconds,
+                    )
             response.raise_for_status()
             return response
 

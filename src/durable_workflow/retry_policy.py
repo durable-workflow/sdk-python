@@ -43,6 +43,12 @@ def _storage_refusal(exc: Exception) -> tuple[ServerError, str | None] | None:
         body = exc.response.json()
     except ValueError:
         return None
+    # A payload upload is content-addressed and precedes completion submission.
+    # Even a late pressure refusal can retry those same bytes. This local retry
+    # classification does not alter the original response exposed to callers.
+    if (isinstance(body, dict) and "request_admitted" not in body and exc.request.method == "POST"
+            and exc.request.url.path.endswith("/api/external-payloads/v1")):
+        body = {**body, "request_admitted": False}
     error = ServerError(exc.response.status_code, body)
     if error.reason() not in ("storage_pressure", "storage_admission_unavailable"):
         return None
