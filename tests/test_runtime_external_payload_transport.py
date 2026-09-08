@@ -223,6 +223,10 @@ def completion_cases() -> list[tuple[str, str, dict[str, Any], list[str | int]]]
     cases.append(("workflow", "complete", {"lease_owner": "worker", "workflow_task_attempt": 2,
         "commands": [{"type": "record_side_effect", "result": serializer.encode("x" * 100)}]},
         ["commands", 0, "result"]))
+    cases.append(("workflow", "complete", {"lease_owner": "worker", "workflow_task_attempt": 2,
+        "commands": [{"type": "record_side_effect", "workflow_stream": {"items": [
+            {"payload": envelope, "payload_codec": "avro"}]}}]},
+        ["commands", 0, "workflow_stream", "items", 0, "payload"]))
     return cases
 
 
