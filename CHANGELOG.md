@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-09-08
+
+### Fixed
+- Workers now retry retryable storage-admission refusals without re-executing
+  handlers or changing task identities. Completed outcomes and prepared payload
+  uploads survive acknowledgement retries; successful uploads are not repeated.
+- Registration, polling, heartbeat, and completion retries remain interruptible
+  during shutdown. Authentication and stale-lease failures remain terminal.
+
 ## [2.0.2] - 2026-09-06
 
 ### Fixed
