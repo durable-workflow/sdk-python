@@ -19,6 +19,7 @@ from durable_workflow.errors import (
     ExternalPayloadUnavailable,
     ExternalPayloadUnsupported,
     RuntimeCapabilityUnsupported,
+    ServerError,
 )
 from durable_workflow.external_storage import (
     RUNTIME_EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
@@ -172,6 +173,115 @@ class FakeRuntimePayloadServer:
         if callable(response):
             response = response(request)
         return httpx.Response(200, json=response)
+
+
+class CompletionPayloadServer(FakeRuntimePayloadServer):
+    def __init__(self, *, supported: bool = True, state: str = "draining", reject_bound: bool = False) -> None:
+        super().__init__()
+        self.supported = supported
+        self.state = state
+        self.reject_bound = reject_bound
+        self.upload_requests: list[httpx.Request] = []
+
+    def cluster_info(self) -> dict[str, Any]:
+        info = super().cluster_info()
+        if self.supported:
+            info["namespace"]["external_payload_storage"]["transport"]["upload"]["completion_context"] = {
+                "schema": "durable-workflow.v2.payload-completion-context.v1",
+                "header": "X-Durable-Workflow-Payload-Completion",
+            }
+        return info
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/external-payloads/v1":
+            self.upload_requests.append(request)
+            if self.state != "normal" and "X-Durable-Workflow-Payload-Completion" not in request.headers:
+                return httpx.Response(503, json={"reason": "storage_pressure", "storage_state": self.state,
+                    "request_admitted": False, "retryable": True, "retry_after_seconds": 1})
+            if self.reject_bound:
+                return httpx.Response(409, json={"reason": "external_payload_completion_lease_rejected",
+                    "retryable": False, "message": "Lease rejected."})
+        return super().handler(request)
+
+
+def completion_cases() -> list[tuple[str, str, dict[str, Any], list[str | int]]]:
+    envelope = serializer.envelope("x" * 100)
+    activity = {"lease_owner": "worker", "activity_attempt_id": "attempt"}
+    cases = [
+        ("activity", "complete", {**activity, "result": envelope}, ["result"]),
+        ("activity", "fail", {**activity, "failure": {"details": envelope}}, ["failure", "details"]),
+        ("query", "complete", {"lease_owner": "worker", "query_task_attempt": 2, "result_envelope": envelope},
+            ["result_envelope"]),
+    ]
+    for kind, field in [("complete_workflow", "result"), ("schedule_activity", "arguments"),
+                        ("upsert_memo", "entries"), ("start_service_operation", "request_payload")]:
+        cases.append(("workflow", "complete", {"lease_owner": "worker", "workflow_task_attempt": 2,
+            "commands": [{"type": kind, field: envelope}]}, ["commands", 0, field]))
+    cases.append(("workflow", "complete", {"lease_owner": "worker", "workflow_task_attempt": 2,
+        "commands": [{"type": "fail_workflow", "exception": {"details": envelope}}]},
+        ["commands", 0, "exception", "details"]))
+    cases.append(("workflow", "complete", {"lease_owner": "worker", "workflow_task_attempt": 2,
+        "commands": [{"type": "record_side_effect", "result": serializer.encode("x" * 100)}]},
+        ["commands", 0, "result"]))
+    cases.append(("workflow", "complete", {"lease_owner": "worker", "workflow_task_attempt": 2,
+        "commands": [{"type": "record_side_effect", "workflow_stream": {"items": [
+            {"payload": envelope, "payload_codec": "avro"}]}}]},
+        ["commands", 0, "workflow_stream", "items", 0, "payload"]))
+    return cases
+
+
+@pytest.mark.parametrize("kind,operation,body,slot", completion_cases())
+async def test_draining_upload_retry_carries_current_completion_identity(
+    kind: str, operation: str, body: dict[str, Any], slot: list[str | int],
+) -> None:
+    server = CompletionPayloadServer()
+    async with runtime_client(server, retry_policy=TransportRetryPolicy(max_attempts=1)) as client:
+        await client._request("POST", f"/worker/{kind}-tasks/task/{operation}", worker=True, json=body)
+    first, bound = server.upload_requests
+    assert "X-Durable-Workflow-Payload-Completion" not in first.headers
+    assert json.loads(bound.headers["X-Durable-Workflow-Payload-Completion"]) == {
+        "schema": "durable-workflow.v2.payload-completion-context.v1", "kind": kind,
+        "task_id": "task", "attempt": "attempt" if kind == "activity" else 2,
+        "lease_owner": "worker", "operation": operation, "slot": slot,
+    }
+    assert first.content == bound.content
+    assert first.headers["authorization"] == bound.headers["authorization"]
+    assert first.headers["x-namespace"] == bound.headers["x-namespace"]
+    assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize("supported,worker,state", [(False, True, "draining"), (True, False, "draining"),
+                                                    (True, True, "fenced")])
+async def test_completion_upload_does_not_bypass_unsupported_client_or_fenced_admission(
+    supported: bool, worker: bool, state: str,
+) -> None:
+    server = CompletionPayloadServer(supported=supported, state=state)
+    async with runtime_client(server, retry_policy=TransportRetryPolicy(max_attempts=1)) as client:
+        with pytest.raises((ServerError, ExternalPayloadError)):
+            await client._request("POST", "/worker/activity-tasks/task/complete" if worker else "/workflows",
+                worker=worker, json={"lease_owner": "worker", "activity_attempt_id": "attempt",
+                    "result" if worker else "input": serializer.envelope("x" * 100)})
+    assert len(server.upload_requests) == 1
+    assert server.requests == []
+
+
+async def test_rejected_bound_upload_does_not_loop_or_submit_completion() -> None:
+    server = CompletionPayloadServer(reject_bound=True)
+    async with runtime_client(server, retry_policy=TransportRetryPolicy(max_attempts=3)) as client:
+        with pytest.raises((ServerError, ExternalPayloadError)):
+            await client.complete_activity_task(task_id="task", activity_attempt_id="attempt", lease_owner="worker",
+                result="x" * 100)
+    assert len(server.upload_requests) == 2
+    assert server.requests == []
+
+
+async def test_normal_payload_upload_is_unchanged_when_completion_capability_exists() -> None:
+    server = CompletionPayloadServer(state="normal")
+    async with runtime_client(server) as client:
+        await client.complete_activity_task(task_id="task", activity_attempt_id="attempt", lease_owner="worker",
+            result="x" * 100)
+    assert len(server.upload_requests) == 1
+    assert "X-Durable-Workflow-Payload-Completion" not in server.upload_requests[0].headers
 
 
 def runtime_client(
