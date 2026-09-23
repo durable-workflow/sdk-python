@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-23
+
+### Added
+- Async and sync clients and selected workflow handles can redrive a failed run
+  by source run ID, with an optional idempotency request ID. This requires a
+  Server that exposes the run-targeted redrive operation.
+
+### Fixed
+- Cold replay reuses completed activities copied into a redrive successor
+  without scheduling them again. An uncaught recorded activity failure carries
+  its failed-step identity; handled or translated failures do not claim one.
+
 ## [2.0.4] - 2026-09-08
 
 ### Fixed
