@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +92,10 @@ def pip_report(version: str) -> dict[str, object]:
 def test_release_channel_distinguishes_prerelease_and_stable() -> None:
     assert release_channel(source_metadata()) == "prerelease"
     assert release_channel(source_metadata(stable=True)) == "stable"
+    stable_minor = replace(source_metadata(stable=True), version="2.1.0", registry_version="2.1.0")
+    prerelease_minor = replace(source_metadata(), version="2.1.0-rc.1", registry_version="2.1.0rc1")
+    assert release_channel(stable_minor) == "stable"
+    assert release_channel(prerelease_minor) == "prerelease"
 
 
 def test_prerelease_with_existing_final_skips_project_root_and_bare_install(
