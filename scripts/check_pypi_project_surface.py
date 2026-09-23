@@ -75,9 +75,9 @@ def _legacy_version_key(version: str) -> tuple[int, ...]:
 def release_channel(source: SourceMetadata) -> str:
     """Classify the only release identities this audit is allowed to qualify."""
 
-    if re.fullmatch(r"2\.0\.0rc[1-9][0-9]*", source.registry_version):
+    if re.fullmatch(r"2\.(?:0|[1-9][0-9]*)\.0rc[1-9][0-9]*", source.registry_version):
         return "prerelease"
-    if re.fullmatch(r"2\.0\.(?:0|[1-9][0-9]*)", source.registry_version):
+    if re.fullmatch(r"2\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", source.registry_version):
         return "stable"
     raise ProjectSurfaceError(f"unsupported PyPI release identity: {source.registry_version}")
 
@@ -131,7 +131,7 @@ def verify_stable_project_json(
     """Verify the strict project-root contract for an authorized stable release."""
 
     if release_channel(source) != "stable":
-        raise ProjectSurfaceError("PyPI project-root selection is release-blocking only for stable 2.0")
+        raise ProjectSurfaceError("PyPI project-root selection is release-blocking only for stable 2.x")
 
     if not isinstance(payload, dict):
         raise ProjectSurfaceError("PyPI project-root JSON must be an object")
