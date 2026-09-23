@@ -600,6 +600,7 @@ class WorkflowCommandResult:
     command_status: str | None = None
     command_id: str | None = None
     raw: dict[str, Any] | None = None
+    run_id: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], *, workflow_id: str | None = None) -> WorkflowCommandResult:
@@ -609,6 +610,7 @@ class WorkflowCommandResult:
             command_status=data.get("command_status"),
             command_id=data.get("command_id"),
             raw=data,
+            run_id=data.get("run_id"),
         )
 
 
@@ -1324,6 +1326,12 @@ class WorkflowHandle:
     async def repair(self) -> WorkflowCommandResult:
         """Ask the server to repair this workflow. See :meth:`Client.repair_workflow`."""
         return await self._client.repair_workflow(self.workflow_id)
+
+    async def redrive(self, *, request_id: str | None = None) -> WorkflowCommandResult:
+        """Continue this failed run from its recorded activity failure boundary."""
+        if self.run_id is None:
+            raise ValueError("run_id is required to redrive a workflow from a handle")
+        return await self._client.redrive_workflow(self.workflow_id, self.run_id, request_id=request_id)
 
     async def archive(self, *, reason: str | None = None) -> WorkflowCommandResult:
         """Move this terminal workflow into the archive tier. See :meth:`Client.archive_workflow`."""
@@ -4131,6 +4139,23 @@ class Client:
     async def repair_workflow(self, workflow_id: str) -> WorkflowCommandResult:
         """Ask the server to repair a stalled workflow, returning the command outcome."""
         data = await self._request("POST", f"/workflows/{workflow_id}/repair", json={}, context=workflow_id)
+        return WorkflowCommandResult.from_dict(data, workflow_id=workflow_id)
+
+    async def redrive_workflow(
+        self,
+        workflow_id: str,
+        failed_run_id: str,
+        *,
+        request_id: str | None = None,
+    ) -> WorkflowCommandResult:
+        """Continue a failed run, reusing its completed activity results."""
+        body = {"request_id": request_id} if request_id is not None else {}
+        data = await self._request(
+            "POST",
+            f"/workflows/{workflow_id}/runs/{failed_run_id}/redrive",
+            json=body,
+            context=workflow_id,
+        )
         return WorkflowCommandResult.from_dict(data, workflow_id=workflow_id)
 
     async def archive_workflow(self, workflow_id: str, *, reason: str | None = None) -> WorkflowCommandResult:

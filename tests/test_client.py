@@ -832,13 +832,19 @@ class TestWorkflowHandleControlPlane:
     async def test_maintenance_delegates_to_client(self, client: Client) -> None:
         handle = WorkflowHandle(client, workflow_id="wf-1", run_id="r1", workflow_type="greeter")
         client.repair_workflow = AsyncMock(return_value="repair")
+        client.redrive_workflow = AsyncMock(return_value="redrive")
         client.archive_workflow = AsyncMock(return_value="archive")
 
         assert await handle.repair() == "repair"
+        assert await handle.redrive(request_id="retry-1") == "redrive"
         assert await handle.archive(reason="retention") == "archive"
 
         client.repair_workflow.assert_awaited_once_with("wf-1")
+        client.redrive_workflow.assert_awaited_once_with("wf-1", "r1", request_id="retry-1")
         client.archive_workflow.assert_awaited_once_with("wf-1", reason="retention")
+
+        with pytest.raises(ValueError, match="run_id is required"):
+            await WorkflowHandle(client, workflow_id="wf-1").redrive()
 
 
 class TestSignalWorkflow:
@@ -1065,6 +1071,38 @@ class TestTerminateWorkflow:
 
 
 class TestWorkflowMaintenanceCommands:
+    @pytest.mark.asyncio
+    async def test_redrive_returns_successor_and_sends_optional_request_id(self, client: Client) -> None:
+        resp = _mock_response(202, {
+            "workflow_id": "wf-1",
+            "run_id": "run-2",
+            "outcome": "redriven",
+            "command_status": "accepted",
+            "resume_step_sequence": 2,
+        })
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.redrive_workflow("wf-1", "run-1", request_id="retry-1")
+
+        assert mock.call_args.args == ("POST", "/api/workflows/wf-1/runs/run-1/redrive")
+        assert mock.call_args.kwargs["json"] == {"request_id": "retry-1"}
+        assert result.workflow_id == "wf-1"
+        assert result.run_id == "run-2"
+        assert result.outcome == "redriven"
+        assert result.raw is not None and result.raw["resume_step_sequence"] == 2
+
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            await client.redrive_workflow("wf-1", "run-1")
+        assert mock.call_args.kwargs["json"] == {}
+
+    @pytest.mark.asyncio
+    async def test_redrive_rejection_is_not_reported_as_success(self, client: Client) -> None:
+        resp = _mock_response(409, {"reason": "run_not_failed", "message": "Run is not failed."})
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp),
+            pytest.raises(ServerError),
+        ):
+            await client.redrive_workflow("wf-1", "run-1")
+
     @pytest.mark.asyncio
     async def test_repair_request_matches_polyglot_fixture(self, client: Client) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-repair-parity.json"
