@@ -621,6 +621,8 @@ class FailWorkflow:
     exception_class: str | None = None
     exception: dict[str, Any] | None = None
     non_retryable: bool = False
+    failed_step_sequence: int | None = None
+    failed_activity_execution_id: str | None = None
 
     def to_server_command(
         self,
@@ -642,6 +644,9 @@ class FailWorkflow:
             cmd["exception"] = self.exception
         if self.non_retryable:
             cmd["non_retryable"] = True
+        if self.failed_step_sequence is not None and self.failed_activity_execution_id is not None:
+            cmd["failed_step_sequence"] = self.failed_step_sequence
+            cmd["failed_activity_execution_id"] = self.failed_activity_execution_id
         return cmd
 
 
@@ -2795,11 +2800,25 @@ def _fail_workflow_from_exception(exc: BaseException, *, prefix: str | None = No
         if activity_failure.activity_attempt_id is not None:
             exception["activity_attempt_id"] = activity_failure.activity_attempt_id
 
+    failed_step_sequence = None
+    failed_activity_execution_id = None
+    if (
+        isinstance(exc, ActivityFailed)
+        and type(exc.step_sequence) is int
+        and exc.step_sequence > 0
+        and isinstance(exc.activity_execution_id, str)
+        and exc.activity_execution_id
+    ):
+        failed_step_sequence = exc.step_sequence
+        failed_activity_execution_id = exc.activity_execution_id
+
     return FailWorkflow(
         message=message,
         exception_type=exception_type,
         exception_class=exception_class,
         exception=exception,
+        failed_step_sequence=failed_step_sequence,
+        failed_activity_execution_id=failed_activity_execution_id,
     )
 
 
@@ -3345,6 +3364,11 @@ def _activity_failed_from_payload(payload: Mapping[str, Any]) -> ActivityFailed:
     return ActivityFailed(
         message or "activity failed",
         activity_type=_activity_type_from_payload(payload),
+        step_sequence=(
+            payload["sequence"]
+            if type(payload.get("sequence")) is int and payload["sequence"] > 0
+            else None
+        ),
         activity_execution_id=_optional_str(payload.get("activity_execution_id")),
         activity_attempt_id=_optional_str(payload.get("activity_attempt_id")),
         failure_id=_optional_str(payload.get("failure_id")),

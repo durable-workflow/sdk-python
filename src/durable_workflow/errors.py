@@ -551,6 +551,7 @@ class ActivityFailed(DurableWorkflowError):
         message: str,
         *,
         activity_type: str | None = None,
+        step_sequence: int | None = None,
         activity_execution_id: str | None = None,
         activity_attempt_id: str | None = None,
         failure_id: str | None = None,
@@ -564,6 +565,7 @@ class ActivityFailed(DurableWorkflowError):
     ) -> None:
         super().__init__(message)
         self.activity_type = activity_type
+        self.step_sequence = step_sequence
         self.activity_execution_id = activity_execution_id
         self.activity_attempt_id = activity_attempt_id
         self.failure_id = failure_id
