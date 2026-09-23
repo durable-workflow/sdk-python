@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "recorded-side-effect-skips-callable",
+  "protocol_version": "1.19",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.recorded-side-effect",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "SideEffectRecorded",
+      "payload": {
+        "sequence": 1,
+        "payload_codec": "avro",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwTGAQ=="
+        }
+      }
+    }
+  ],
+  "expected": {
+    "type": "complete_workflow",
+    "result": 99
+  }
+}
