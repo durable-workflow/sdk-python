@@ -1124,6 +1124,33 @@ class TestWorkflowTaskExecution:
         assert serializer.decode(commands[0]["arguments"]["blob"], codec="avro") == ["hello"]
 
     @pytest.mark.asyncio
+    async def test_uncaught_recorded_activity_failure_sends_redrive_boundary(
+        self, mock_client: AsyncMock
+    ) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        await worker._run_workflow_task({
+            "task_id": "failed-activity-task",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [{
+                "event_type": "ActivityFailed",
+                "payload": {
+                    "sequence": 1,
+                    "activity_type": "test-act",
+                    "activity_execution_id": "activity-execution-1",
+                    "message": "failed",
+                },
+            }],
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
+        })
+
+        commands = mock_client.complete_workflow_task.await_args.kwargs["commands"]
+        assert commands[0]["type"] == "fail_workflow"
+        assert commands[0]["failed_step_sequence"] == 1
+        assert commands[0]["failed_activity_execution_id"] == "activity-execution-1"
+
+    @pytest.mark.asyncio
     async def test_workflow_task_ambiguous_completion_error_preserves_commands(
         self, mock_client: AsyncMock
     ) -> None:

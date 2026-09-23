@@ -60,6 +60,15 @@ class OneActivity:
         return {"greeting": result}
 
 
+@workflow.defn(name="translated-activity-failure")
+class TranslatedActivityFailure:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.schedule_activity("greet", [])
+        except ActivityFailed as exc:
+            raise RuntimeError("translated failure") from exc
+
+
 @workflow.defn(name="activity-failed-saga")
 class ActivityFailedSaga:
     def run(self, ctx: WorkflowContext, order_id: str):  # type: ignore[no-untyped-def]
@@ -442,6 +451,48 @@ class TestPublicReplayer:
 
 
 class TestOneActivity:
+    def test_uncaught_recorded_activity_failure_claims_only_its_persisted_boundary(self) -> None:
+        history = [{
+            "event_type": "ActivityFailed",
+            "payload": {
+                "sequence": 1,
+                "activity_type": "greet",
+                "activity_execution_id": "activity-1",
+                "message": "failed",
+            },
+        }]
+
+        outcome = replay(OneActivity, history, ["Ada"])
+        command = outcome.commands[0].to_server_command("workers")
+
+        assert command["type"] == "fail_workflow"
+        assert command["failed_step_sequence"] == 1
+        assert command["failed_activity_execution_id"] == "activity-1"
+
+        translated = replay(TranslatedActivityFailure, history, [])
+        translated_command = translated.commands[0].to_server_command("workers")
+        assert translated_command["type"] == "fail_workflow"
+        assert "failed_step_sequence" not in translated_command
+        assert "failed_activity_execution_id" not in translated_command
+
+        handled_history = [{
+            "event_type": "ActivityFailed",
+            "payload": {**history[0]["payload"], "activity_type": "charge-card"},
+        }]
+        handled = replay(ActivityFailedSaga, handled_history, ["order-1"])
+        assert isinstance(handled.commands[0], ScheduleActivity)
+
+    def test_activity_failure_without_complete_recorded_identity_does_not_claim_redrive(self) -> None:
+        for payload in (
+            {"sequence": 1, "activity_type": "greet", "message": "failed"},
+            {"activity_execution_id": "activity-1", "activity_type": "greet", "message": "failed"},
+        ):
+            outcome = replay(OneActivity, [{"event_type": "ActivityFailed", "payload": payload}], ["Ada"])
+            command = outcome.commands[0].to_server_command("workers")
+            assert command["type"] == "fail_workflow"
+            assert "failed_step_sequence" not in command
+            assert "failed_activity_execution_id" not in command
+
     def test_first_replay_schedules(self) -> None:
         outcome = replay(OneActivity, [], ["world"])
         assert len(outcome.commands) == 1

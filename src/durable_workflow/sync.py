@@ -134,6 +134,10 @@ class SyncWorkflowHandle:
         result: WorkflowCommandResult = self._runner.run(self._handle.repair())
         return result
 
+    def redrive(self, *, request_id: str | None = None) -> WorkflowCommandResult:
+        result: WorkflowCommandResult = self._runner.run(self._handle.redrive(request_id=request_id))
+        return result
+
     def archive(self, *, reason: str | None = None) -> WorkflowCommandResult:
         result: WorkflowCommandResult = self._runner.run(self._handle.archive(reason=reason))
         return result
@@ -523,6 +527,18 @@ class Client:
 
     def repair_workflow(self, workflow_id: str) -> WorkflowCommandResult:
         result: WorkflowCommandResult = self._runner.run(self._async.repair_workflow(workflow_id))
+        return result
+
+    def redrive_workflow(
+        self,
+        workflow_id: str,
+        failed_run_id: str,
+        *,
+        request_id: str | None = None,
+    ) -> WorkflowCommandResult:
+        result: WorkflowCommandResult = self._runner.run(
+            self._async.redrive_workflow(workflow_id, failed_run_id, request_id=request_id)
+        )
         return result
 
     def archive_workflow(self, workflow_id: str, *, reason: str | None = None) -> WorkflowCommandResult:

@@ -519,6 +519,25 @@ class TestSyncClientRunVisibility:
 
 
 class TestSyncClientMaintenance:
+    def test_redrive_workflow(self) -> None:
+        client = Client("http://localhost:8080")
+        resp = _mock_response(
+            202,
+            {
+                "workflow_id": "wf-1",
+                "run_id": "run-2",
+                "outcome": "redriven",
+                "command_status": "accepted",
+            },
+        )
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = client.redrive_workflow("wf-1", "run-1", request_id="retry-1")
+
+        assert result.run_id == "run-2"
+        assert result.outcome == "redriven"
+        assert mock.call_args.args[:2] == ("POST", "/api/workflows/wf-1/runs/run-1/redrive")
+        assert mock.call_args.kwargs["json"] == {"request_id": "retry-1"}
+
     def test_repair_workflow(self) -> None:
         client = Client("http://localhost:8080")
         resp = _mock_response(
@@ -786,6 +805,7 @@ class TestSyncWorkflowHandleControlPlane:
         async_handle.export_history = AsyncMock(return_value={"schema": "durable.workflow.history.v2"})  # type: ignore[method-assign]
         async_handle.list_runs = AsyncMock(return_value=[])  # type: ignore[method-assign]
         async_handle.describe_run = AsyncMock(return_value={"run_id": "r1"})  # type: ignore[method-assign]
+        async_handle.redrive = AsyncMock(return_value={"run_id": "r2"})  # type: ignore[method-assign]
         async_handle.repair = AsyncMock(return_value={"outcome": "accepted"})  # type: ignore[method-assign]
         async_handle.archive = AsyncMock(return_value={"outcome": "completed"})  # type: ignore[method-assign]
         with Client("http://localhost:8080") as client:
@@ -796,7 +816,9 @@ class TestSyncWorkflowHandleControlPlane:
             assert handle.list_runs() == []
             assert handle.describe_run() == {"run_id": "r1"}
             assert handle.repair() == {"outcome": "accepted"}
+            assert handle.redrive(request_id="retry-1") == {"run_id": "r2"}
             assert handle.archive(reason="retention") == {"outcome": "completed"}
+            async_handle.redrive.assert_awaited_once_with(request_id="retry-1")
             async_handle.archive.assert_awaited_once_with(reason="retention")
 
 
