@@ -1158,6 +1158,57 @@ class TestContinueAsNew:
 
 
 class TestSideEffect:
+    def test_user_callable_runs_only_for_an_unrecorded_side_effect(self) -> None:
+        calls: list[str] = []
+
+        @workflow.defn(name="side-effect-call-count-wf")
+        class CountedSideEffectWorkflow:
+            def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+                value = yield ctx.side_effect(lambda: calls.append("called") or 42)
+                return value
+
+        first = replay(CountedSideEffectWorkflow, [], [])
+        assert calls == ["called"]
+        assert isinstance(first.commands[0], RecordSideEffect)
+        assert first.commands[0].result == 42
+
+        history = [{"event_type": "SideEffectRecorded", "payload": {"result": _avro(99)}}]
+        replayed = replay(CountedSideEffectWorkflow, history, [])
+        assert calls == ["called"]
+        assert isinstance(replayed.commands[0], CompleteWorkflow)
+        assert replayed.commands[0].result == 99
+
+    def test_user_callable_is_not_run_when_history_shape_mismatches(self) -> None:
+        calls: list[str] = []
+
+        @workflow.defn(name="side-effect-mismatch-wf")
+        class MismatchedSideEffectWorkflow:
+            def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+                return (yield ctx.side_effect(lambda: calls.append("called") or 42))
+
+        history = [{"event_type": "TimerScheduled", "payload": {"sequence": 1, "timer_kind": "durable_timer"}}]
+        with pytest.raises(NonDeterministicReplayError):
+            replay(MismatchedSideEffectWorkflow, history, [])
+        assert calls == []
+
+    def test_user_callable_error_can_be_handled_by_workflow(self) -> None:
+        @workflow.defn(name="side-effect-error-wf")
+        class HandledSideEffectWorkflow:
+            def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+                def fail() -> int:
+                    raise ValueError("expected failure")
+
+                try:
+                    yield ctx.side_effect(fail)
+                except ValueError:
+                    return "handled"
+                return "unexpected"
+
+        outcome = replay(HandledSideEffectWorkflow, [], [])
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == "handled"
+
     def test_first_replay_records_and_continues(self) -> None:
         outcome = replay(SideEffectWorkflow, [], [])
         assert len(outcome.commands) == 2

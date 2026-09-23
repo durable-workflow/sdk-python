@@ -147,6 +147,15 @@ class WorkflowStreamAuthorWorkflow:
         return "done"
 
 
+@workflow.defn(name="tests.replay.recorded-side-effect")
+class RecordedSideEffectWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        def unexpected_execution() -> int:
+            raise AssertionError("recorded side effect callable ran during replay")
+
+        return (yield ctx.side_effect(unexpected_execution))
+
+
 @workflow.defn(name="tests.replay.message-stream-consumer")
 class MessageStreamConsumerWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -197,6 +206,7 @@ WORKFLOWS = [
     ParallelMetadataProducerWorkflow,
     ParallelResultBindingWorkflow,
     PostConditionReceiversWorkflow,
+    RecordedSideEffectWorkflow,
     SelectionAwaitMarkerWorkflow,
     SelectionCancellationQueryWorkflow,
     SelectionMissingNestedOpeningWorkflow,

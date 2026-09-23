@@ -762,6 +762,7 @@ class RecordSideEffect:
 
     result: Any
     workflow_stream: dict[str, Any] | None = None
+    _effect: Callable[[], Any] | None = field(default=None, repr=False, compare=False)
 
     def to_server_command(
         self,
@@ -1799,8 +1800,7 @@ class WorkflowContext:
         return SelectGroup(entries)
 
     def side_effect(self, fn: Callable[[], Any]) -> RecordSideEffect:
-        result = fn()
-        return RecordSideEffect(result=result)
+        return RecordSideEffect(result=None, _effect=fn)
 
     def append_workflow_stream(
         self,
@@ -5139,6 +5139,16 @@ def _replay_state(
                     continue
                 ctx.logger._set_replaying(False)
                 _assert_pending_step_matches(cmd)
+                if cmd._effect is not None:
+                    try:
+                        cmd.result = cmd._effect()
+                    except Exception as exc:
+                        try:
+                            advanced_cmd = gen.throw(exc)
+                            continue
+                        except StopIteration as stop:
+                            return _terminal_state(stop.value, include_pending=True)
+                    cmd._effect = None
                 pending.append(cmd)
                 next_value = cmd.result
                 continue
