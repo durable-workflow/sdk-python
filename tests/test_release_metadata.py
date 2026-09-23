@@ -86,24 +86,30 @@ def test_release_metadata_loader_uses_tomli_without_stdlib_tomllib(
     assert imports == ["tomllib", "tomli"]
 
 
+@pytest.mark.parametrize(
+    ("version", "server_version"),
+    [("2.0.1", "2.0.0"), ("2.1.0", "2.4.0")],
+)
 def test_release_metadata_loader_accepts_the_authorized_stable_identity(
     monkeypatch: pytest.MonkeyPatch,
+    version: str,
+    server_version: str,
 ) -> None:
     commit = "b" * 40
-    pyproject = b"""
+    pyproject = f"""
 [project]
 name = "durable-workflow"
-version = "2.0.1"
+version = "{version}"
 description = "Python SDK for Durable Workflow 2.0"
 readme = "README.md"
 classifiers = ["Programming Language :: Python :: 3"]
 
 [tool.durable-workflow]
-product-train = "2.0.1"
-registry-version = "2.0.1"
-supported-server-versions = "2.0.0"
+product-train = "{version}"
+registry-version = "{version}"
+supported-server-versions = "{server_version}"
 worker-protocol-version = "1.19"
-"""
+""".encode()
     readme = b"# Durable Workflow\n\nBuild durable Python workflows.\n"
     runtime = b'PROTOCOL_VERSION = "1.19"\n'
 
@@ -120,9 +126,10 @@ worker-protocol-version = "1.19"
 
     monkeypatch.setattr(check_release_metadata, "_git", git)
 
-    source = check_release_metadata.load_source_metadata("2.0.1")
-    assert source.version == "2.0.1"
-    assert source.registry_version == "2.0.1"
+    source = check_release_metadata.load_source_metadata(version)
+    assert source.version == version
+    assert source.registry_version == version
+    assert source.server_version == server_version
 
 
 def test_normal_project_page_is_retained_as_rendered_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
