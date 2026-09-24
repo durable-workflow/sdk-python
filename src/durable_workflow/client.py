@@ -4964,6 +4964,24 @@ class Client:
             "POST", f"/worker/workflow-tasks/{task_id}/fail", worker=True, json=body
         )
 
+    async def heartbeat_workflow_task(
+        self,
+        *,
+        task_id: str,
+        lease_owner: str,
+        workflow_task_attempt: int,
+    ) -> Any:
+        """Renew a leased workflow task while in-process work is running."""
+        return await self._request(
+            "POST",
+            f"/worker/workflow-tasks/{task_id}/heartbeat",
+            worker=True,
+            json={
+                "lease_owner": lease_owner,
+                "workflow_task_attempt": workflow_task_attempt,
+            },
+        )
+
     async def workflow_task_history(
         self,
         *,
