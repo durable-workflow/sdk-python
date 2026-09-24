@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 
 from durable_workflow import Client, Worker, WorkerSessionOptions, activity, workflow
-from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
 from durable_workflow.errors import ServerError
 
 
@@ -39,12 +38,8 @@ class SessionWorkflow:
 
 @pytest.mark.asyncio
 async def test_session_lifecycle_routes_activity_and_closes_on_shutdown(
-    server_url: str, server_token: str, monkeypatch: pytest.MonkeyPatch
+    server_url: str, server_token: str
 ) -> None:
-    manifest = PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST["worker_sessions"]
-    monkeypatch.setitem(manifest, "supported", True)
-    monkeypatch.setitem(manifest, "implementation", "typed_worker_session")
-    monkeypatch.delitem(manifest, "reason", raising=False)
     suffix = uuid.uuid4().hex[:8]
     queue = f"py-session-{suffix}"
     session_id = f"py-session-{suffix}"
@@ -87,21 +82,60 @@ async def test_session_lifecycle_routes_activity_and_closes_on_shutdown(
 
 
 @pytest.mark.asyncio
-async def test_expired_holder_can_be_reacquired_without_reusing_process_state(
-    server_url: str, server_token: str, monkeypatch: pytest.MonkeyPatch
+async def test_session_is_created_on_first_activity_without_explicit_create(
+    server_url: str, server_token: str
 ) -> None:
-    manifest = PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST["worker_sessions"]
-    monkeypatch.setitem(manifest, "supported", True)
-    monkeypatch.setitem(manifest, "implementation", "typed_worker_session")
-    monkeypatch.delitem(manifest, "reason", raising=False)
+    suffix = uuid.uuid4().hex[:8]
+    queue = f"py-session-auto-{suffix}"
+    options = WorkerSessionOptions(
+        f"py-session-auto-{suffix}", queue=queue, requirements=("gpu:l4",), lease_seconds=5, ttl_seconds=60
+    )
+
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        worker = Worker(
+            client,
+            task_queue=queue,
+            workflows=[SessionWorkflow],
+            activities=[session_greet],
+            capabilities=["gpu:l4"],
+            worker_id=f"py-session-auto-worker-{suffix}",
+        )
+        session = worker.worker_session(options)
+        runner = asyncio.create_task(worker.run())
+        try:
+            await asyncio.wait_for(worker._registration_done.wait(), timeout=20)
+            if runner.done():
+                await runner
+            handle = await client.start_workflow(
+                workflow_type="tests.python-session-workflow",
+                task_queue=queue,
+                workflow_id=f"py-session-auto-run-{suffix}",
+                input=["Grace", queue, options.session_id],
+            )
+            assert await handle.result(timeout=30) == {"greeting": "hello, Grace"}
+            assert session.active
+            assert (await session.renew())["outcome"] == "heartbeat_recorded"
+        finally:
+            await worker.stop()
+            await asyncio.wait_for(runner, timeout=15)
+        assert (await session.close())["outcome"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_expired_holder_can_be_reacquired_without_reusing_process_state(
+    server_url: str, server_token: str
+) -> None:
     suffix = uuid.uuid4().hex[:8]
     queue = f"py-session-reclaim-{suffix}"
     options = WorkerSessionOptions(f"py-session-reclaim-{suffix}", queue=queue, lease_seconds=3, ttl_seconds=30)
 
-    async with Client(server_url, token=server_token, namespace="default") as client:
+    async with (
+        Client(server_url, token=server_token, namespace="default") as client,
+        Client(server_url, token=server_token, namespace="default") as replacement_client,
+    ):
         first = Worker(client, task_queue=queue, worker_id=f"py-holder-first-{suffix}")
         await first._register()
-        replacement = Worker(client, task_queue=queue, worker_id=f"py-holder-replacement-{suffix}")
+        replacement = Worker(replacement_client, task_queue=queue, worker_id=f"py-holder-replacement-{suffix}")
         await replacement._register()
         first_session = first.worker_session(options)
         assert (await first_session.create())["outcome"] == "created"

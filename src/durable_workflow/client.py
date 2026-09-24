@@ -72,9 +72,9 @@ PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST: dict[str, dict[str, str | bool]] =
         "implementation": "record_local_activity",
     },
     "worker_sessions": {
-        "supported": False,
+        "supported": True,
         "minimum_protocol_version": "1.18",
-        "reason": "python_worker_has_no_typed_session_lifecycle",
+        "implementation": "typed_worker_session",
     },
     "sticky_execution": {
         "supported": False,
