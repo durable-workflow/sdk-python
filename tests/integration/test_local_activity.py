@@ -177,6 +177,100 @@ async def test_local_activity_completion_survives_cold_replay(
 
 
 @pytest.mark.asyncio
+async def test_local_activity_completion_survives_lost_acknowledgement(
+    server_url: str,
+    server_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global _executions
+    _executions = 0
+    suffix = uuid.uuid4().hex[:8]
+    queue = f"py-local-uncertain-{suffix}"
+    workflow_id = f"py-local-uncertain-{suffix}"
+    manifest = {
+        **PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+        "local_activities": {
+            "supported": True,
+            "minimum_protocol_version": "1.18",
+            "implementation": "record_local_activity",
+        },
+    }
+
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        worker = Worker(
+            client,
+            task_queue=queue,
+            workflows=[LocalActivityWorkflow],
+            activities=[local_greet],
+            worker_id=f"py-local-uncertain-worker-{suffix}",
+        )
+        await client.register_worker(
+            worker_id=worker.worker_id,
+            task_queue=queue,
+            supported_workflow_types=list(worker.workflows),
+            supported_activity_types=list(worker.activities),
+            workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
+            workflow_command_contracts=worker.workflow_command_contracts,
+            capabilities=["local_activities"],
+            capability_manifest=manifest,
+        )
+        try:
+            handle = await client.start_workflow(
+                workflow_type="tests.python-local-activity",
+                task_queue=queue,
+                workflow_id=workflow_id,
+                input=["Ada"],
+            )
+            task = await client.poll_workflow_task(
+                worker_id=worker.worker_id,
+                task_queue=queue,
+                timeout=10.0,
+            )
+            assert task is not None
+
+            original_complete = client.complete_workflow_task
+            complete_attempts = 0
+            fail_attempts = 0
+
+            async def lose_first_acknowledgement(*args: Any, **kwargs: Any) -> Any:
+                nonlocal complete_attempts
+                complete_attempts += 1
+                response = await original_complete(*args, **kwargs)
+                if complete_attempts == 1:
+                    raise TimeoutError("completion response lost after Server committed it")
+                return response
+
+            original_fail = client.fail_workflow_task
+
+            async def record_failure(*args: Any, **kwargs: Any) -> Any:
+                nonlocal fail_attempts
+                fail_attempts += 1
+                return await original_fail(*args, **kwargs)
+
+            monkeypatch.setattr(client, "complete_workflow_task", lose_first_acknowledgement)
+            monkeypatch.setattr(client, "fail_workflow_task", record_failure)
+            commands = await worker._run_workflow_task(task)
+            assert commands is not None
+            assert [command["type"] for command in commands] == [
+                "record_local_activity",
+                "complete_workflow",
+            ]
+            assert complete_attempts == 2
+            assert fail_attempts == 0
+            assert await handle.result(timeout=10.0) == {"greeting": "hello, Ada"}
+            assert _executions == 1
+
+            history = await handle.get_history()
+            events = history.get("events", history.get("history_events", []))
+            event_types = [event["event_type"] for event in events]
+            assert event_types.count("ActivityCompleted") == 1
+            assert event_types.count("WorkflowCompleted") == 1
+            assert event_types.count("WorkflowTaskFailed") == 0
+        finally:
+            await client.deregister_worker_registration(worker.worker_id)
+
+
+@pytest.mark.asyncio
 async def test_replacement_worker_replays_local_activity_before_signal(
     server_url: str,
     server_token: str,
