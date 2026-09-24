@@ -66,9 +66,9 @@ PROTOCOL_VERSION = "1.19"
 CONTROL_PLANE_VERSION = "2"
 PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST: dict[str, dict[str, str | bool]] = {
     "local_activities": {
-        "supported": False,
+        "supported": True,
         "minimum_protocol_version": "1.18",
-        "reason": "python_worker_does_not_execute_record_local_activity",
+        "implementation": "record_local_activity",
     },
     "worker_sessions": {
         "supported": False,

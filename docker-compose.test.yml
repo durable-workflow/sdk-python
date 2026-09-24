@@ -29,6 +29,7 @@ services:
       CACHE_STORE: redis
       WORKFLOW_SERVER_AUTH_DRIVER: token
       WORKFLOW_SERVER_AUTH_TOKEN: "test-token"
+      DW_WORKFLOW_TASK_TIMEOUT: 10
     depends_on:
       mysql:
         condition: service_healthy

@@ -185,6 +185,72 @@ receipt = yield ctx.start_child_workflow(
 )
 ```
 
+## Local activities
+
+Use a local activity for short work that should run in the workflow worker
+process without a separate activity task. Register it as an activity on the
+same `Worker`, then yield `ctx.local_activity(...)` from the workflow:
+
+```python
+import asyncio
+import os
+from uuid import uuid4
+
+from durable_workflow import Client, Worker, activity, workflow
+
+
+@activity.defn(name="orders.normalize")
+def normalize(order_id: str) -> str:
+    return order_id.strip().upper()
+
+
+@workflow.defn(name="orders.prepare")
+class PrepareOrder:
+    def run(self, ctx, order_id):
+        normalized = yield ctx.local_activity(
+            "orders.normalize",
+            [order_id],
+            retry_policy={"max_attempts": 2, "backoff_seconds": [1]},
+            start_to_close_timeout=5,
+        )
+        return {"order_id": normalized}
+
+
+async def main():
+    async with Client(
+        os.getenv("DURABLE_WORKFLOW_RUNTIME_URL", "http://127.0.0.1:8080"),
+        token=os.getenv("DURABLE_WORKFLOW_TOKEN", "dev-token-123"),
+        namespace="default",
+    ) as client:
+        worker = Worker(
+            client,
+            task_queue="orders",
+            workflows=[PrepareOrder],
+            activities=[normalize],
+        )
+        handle = await client.start_workflow(
+            workflow_type="orders.prepare",
+            workflow_id=f"order-{uuid4().hex}",
+            task_queue="orders",
+            input=["  a-123  "],
+        )
+        await worker.run_until(workflow_id=handle.workflow_id, timeout=30.0)
+        print(await handle.result(timeout=10.0))
+
+
+asyncio.run(main())
+```
+
+Use the Server setup from the [quickstart](index.md#first-workflow), or replace
+the URL and credentials with those of a provisioned Cloud namespace. The worker
+records the local result with its workflow task. Once Server accepts that
+record, replay reads the result instead of running the handler again. If the
+worker loses its lease or crashes before the record is committed, the handler
+may run again on a replacement worker. Make side effects idempotent and keep
+local attempts short; use `ctx.schedule_activity(...)` for separately queued
+work. Local activities are yielded one at a time; they are not members of a
+parallel workflow group.
+
 ## Deterministic parallel groups
 
 Yield a list to schedule one durable parallel barrier. Lists can nest and mix

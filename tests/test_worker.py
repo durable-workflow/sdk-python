@@ -24,7 +24,7 @@ from durable_workflow.client import (
     Client,
     WorkflowExecution,
 )
-from durable_workflow.errors import InvalidArgument, ServerError, Unauthorized, WorkflowNotFound
+from durable_workflow.errors import InvalidArgument, NonRetryableError, ServerError, Unauthorized, WorkflowNotFound
 from durable_workflow.interceptors import (
     ActivityHandler,
     ActivityInterceptorContext,
@@ -57,6 +57,34 @@ class TestWorkflow:
     def run(self, ctx, *args):  # type: ignore[no-untyped-def]
         result = yield ctx.schedule_activity("test-act", list(args))
         return result
+
+
+@workflow.defn(name="local-worker-wf")
+class LocalWorkerWorkflow:
+    def run(self, ctx, name):  # type: ignore[no-untyped-def]
+        return (yield ctx.local_activity(
+            "local.echo", [name], retry_policy={"max_attempts": 2, "backoff_seconds": [0]},
+        ))
+
+
+@workflow.defn(name="local-unencodable-wf")
+class LocalUnencodableWorkflow:
+    def run(self, ctx, name):  # type: ignore[no-untyped-def]
+        yield ctx.local_activity("local.echo", [name])
+        return object()
+
+
+@workflow.defn(name="local-then-nexus-wf")
+class LocalThenNexusWorkflow:
+    def run(self, ctx, name):  # type: ignore[no-untyped-def]
+        yield ctx.local_activity("local.echo", [name])
+        return (yield ctx.call_nexus_service("greeter", "shared", "greet", [name]))
+
+
+@activity.defn(name="local.echo")
+async def local_echo(name: str) -> str:
+    await activity.context().heartbeat({"phase": "running"})
+    return f"hello, {name}"
 
 
 @workflow.defn(name="memo-wf")
@@ -399,14 +427,15 @@ class TestWorkerRegistration:
                 "memo_upserts",
                 "typed_search_attributes",
                 DURABLE_SELECTION_CAPABILITY,
+                "local_activities",
                 "query_tasks",
                 MESSAGE_STREAMS_CAPABILITY,
             ],
             "capability_manifest": {
                 "local_activities": {
-                    "supported": False,
+                    "supported": True,
                     "minimum_protocol_version": "1.18",
-                    "reason": "python_worker_does_not_execute_record_local_activity",
+                    "implementation": "record_local_activity",
                 },
                 "worker_sessions": {
                     "supported": False,
@@ -543,6 +572,7 @@ class TestWorkerRegistration:
             MEMO_UPSERTS_CAPABILITY,
             TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
             DURABLE_SELECTION_CAPABILITY,
+            "local_activities",
             "query_tasks",
             WORKFLOW_UPDATES_CAPABILITY,
             MESSAGE_STREAMS_CAPABILITY,
@@ -628,6 +658,7 @@ class TestWorkerRegistration:
             MEMO_UPSERTS_CAPABILITY,
             TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
             DURABLE_SELECTION_CAPABILITY,
+            "local_activities",
             "query_tasks",
             UPDATE_VALIDATION_TASKS_CAPABILITY,
             WORKFLOW_UPDATES_CAPABILITY,
@@ -729,6 +760,7 @@ class TestWorkerRegistration:
             MEMO_UPSERTS_CAPABILITY,
             TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
             DURABLE_SELECTION_CAPABILITY,
+            "local_activities",
             MESSAGE_STREAMS_CAPABILITY,
         ]
 
@@ -1098,6 +1130,226 @@ class TestWorkerRegistration:
 
 
 class TestWorkflowTaskExecution:
+    @pytest.mark.asyncio
+    async def test_local_activity_runs_in_workflow_worker_and_records_heartbeats(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.heartbeat_workflow_task.return_value = {
+            "task_id": "local-task",
+            "lease_owner": "local-worker",
+            "workflow_task_attempt": 1,
+            "renewed": True,
+        }
+        worker = Worker(
+            mock_client, task_queue="q1", worker_id="local-worker",
+            workflows=[LocalWorkerWorkflow], activities=[local_echo],
+        )
+        task = {
+            "task_id": "local-task",
+            "workflow_type": "local-worker-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": serializer.encode(["Ada"], codec="avro"),
+            "payload_codec": "avro",
+        }
+
+        commands = await worker._run_workflow_task(task)
+
+        assert commands is not None
+        assert [command["type"] for command in commands] == ["record_local_activity", "complete_workflow"]
+        assert commands[0]["outcome"] == "completed"
+        assert commands[0]["attempts"][0]["outcome"] == "completed"
+        assert commands[0]["attempts"][0]["heartbeats"][0]["details"] == {"phase": "running"}
+        assert serializer.decode_envelope(commands[0]["result"]) == "hello, Ada"
+        assert serializer.decode_envelope(commands[1]["result"]) == "hello, Ada"
+        assert mock_client.heartbeat_workflow_task.await_count == 2
+
+        mock_client.heartbeat_workflow_task.reset_mock()
+        replayed = await worker._run_workflow_task({
+            **task,
+            "history_events": [{
+                "event_type": "ActivityCompleted",
+                "payload": {
+                    "workflow_sequence": 1,
+                    "activity_type": "local.echo",
+                    "execution_mode": "local",
+                    "result": commands[0]["result"],
+                },
+            }],
+        })
+        assert replayed is not None
+        assert [command["type"] for command in replayed] == ["complete_workflow"]
+        mock_client.heartbeat_workflow_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_local_activity_lease_refusal_never_completes_task(self, mock_client: AsyncMock) -> None:
+        mock_client.heartbeat_workflow_task.return_value = {
+            "task_id": "local-task",
+            "lease_owner": "local-worker",
+            "workflow_task_attempt": 1,
+            "renewed": False,
+        }
+        worker = Worker(
+            mock_client, task_queue="q1", worker_id="local-worker",
+            workflows=[LocalWorkerWorkflow], activities=[local_echo],
+        )
+        result = await worker._run_workflow_task({
+            "task_id": "local-task",
+            "workflow_type": "local-worker-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [],
+            "arguments": serializer.encode(["Ada"], codec="avro"),
+            "payload_codec": "avro",
+        })
+        assert result is None
+        mock_client.complete_workflow_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_local_activity_retries_are_recorded_in_order(self, mock_client: AsyncMock) -> None:
+        mock_client.heartbeat_workflow_task.return_value = {
+            "task_id": "local-task", "lease_owner": "local-worker",
+            "workflow_task_attempt": 1, "renewed": True,
+        }
+        worker = Worker(
+            mock_client, task_queue="q1", worker_id="local-worker",
+            workflows=[LocalWorkerWorkflow], activities=[local_echo],
+        )
+        invocations = 0
+
+        async def fail_once(name: str) -> str:
+            nonlocal invocations
+            invocations += 1
+            if invocations == 1:
+                raise RuntimeError("transient")
+            return f"hello, {name}"
+
+        worker.activities["local.echo"] = fail_once
+        commands = await worker._run_workflow_task({
+            "task_id": "local-task", "workflow_type": "local-worker-wf",
+            "workflow_task_attempt": 1, "history_events": [],
+            "arguments": serializer.encode(["Ada"], codec="avro"), "payload_codec": "avro",
+        })
+
+        assert commands is not None
+        assert invocations == 2
+        assert commands[0]["outcome"] == "completed"
+        assert [attempt["outcome"] for attempt in commands[0]["attempts"]] == ["failed", "completed"]
+        assert commands[0]["attempts"][0]["retry_reason"] == "failure"
+        assert commands[0]["attempts"][0]["backoff_seconds"] == 0
+        assert commands[0]["attempts"][0]["attempt_id"] != commands[0]["attempts"][1]["attempt_id"]
+
+    @pytest.mark.asyncio
+    async def test_local_activity_failure_record_precedes_workflow_failure(self, mock_client: AsyncMock) -> None:
+        mock_client.heartbeat_workflow_task.return_value = {
+            "task_id": "local-task", "lease_owner": "local-worker",
+            "workflow_task_attempt": 1, "renewed": True,
+        }
+        worker = Worker(
+            mock_client, task_queue="q1", worker_id="local-worker",
+            workflows=[LocalWorkerWorkflow], activities=[local_echo],
+        )
+
+        async def fail(_: str) -> str:
+            raise NonRetryableError("permanent")
+
+        worker.activities["local.echo"] = fail
+        commands = await worker._run_workflow_task({
+            "task_id": "local-task", "workflow_type": "local-worker-wf",
+            "workflow_task_attempt": 1, "history_events": [],
+            "arguments": serializer.encode(["Ada"], codec="avro"), "payload_codec": "avro",
+        })
+        assert commands is not None
+        assert [command["type"] for command in commands] == ["record_local_activity", "fail_workflow"]
+        assert commands[0]["outcome"] == "failed"
+        assert commands[0]["non_retryable"] is True
+        assert commands[0]["attempts"][0]["exception_type"] == "NonRetryableError"
+
+    @pytest.mark.asyncio
+    async def test_local_record_survives_unencodable_workflow_result(self, mock_client: AsyncMock) -> None:
+        mock_client.heartbeat_workflow_task.return_value = {
+            "task_id": "local-task", "lease_owner": "local-worker",
+            "workflow_task_attempt": 1, "renewed": True,
+        }
+        worker = Worker(
+            mock_client, task_queue="q1", worker_id="local-worker",
+            workflows=[LocalUnencodableWorkflow], activities=[local_echo],
+        )
+        commands = await worker._run_workflow_task({
+            "task_id": "local-task", "workflow_type": "local-unencodable-wf",
+            "workflow_task_attempt": 1, "history_events": [],
+            "arguments": serializer.encode(["Ada"], codec="avro"), "payload_codec": "avro",
+        })
+        assert commands is not None
+        assert [command["type"] for command in commands] == ["record_local_activity", "fail_workflow"]
+        assert commands[0]["outcome"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_local_record_is_committed_when_following_nexus_call_cannot_resolve(
+        self, mock_client: AsyncMock,
+    ) -> None:
+        mock_client.heartbeat_workflow_task.return_value = {
+            "task_id": "local-task", "lease_owner": "local-worker",
+            "workflow_task_attempt": 1, "renewed": True,
+        }
+        worker = Worker(
+            mock_client, task_queue="q1", worker_id="local-worker",
+            workflows=[LocalThenNexusWorkflow], activities=[local_echo],
+        )
+        commands = await worker._run_workflow_task({
+            "task_id": "local-task", "workflow_type": "local-then-nexus-wf",
+            "workflow_task_attempt": 1, "history_events": [],
+            "arguments": serializer.encode(["Ada"], codec="avro"), "payload_codec": "avro",
+        })
+        assert commands is not None
+        assert [command["type"] for command in commands] == ["record_local_activity", "fail_workflow"]
+        assert commands[0]["outcome"] == "completed"
+        assert "Nexus resolution after local activity failed" in commands[1]["message"]
+        mock_client.execute_nexus_operation.assert_not_awaited()
+        mock_client.fail_workflow_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_local_heartbeat_refusal_during_handler_abandons_task(self, mock_client: AsyncMock) -> None:
+        mock_client.heartbeat_workflow_task.side_effect = [
+            {"task_id": "local-task", "lease_owner": "local-worker", "workflow_task_attempt": 1, "renewed": True},
+            {"task_id": "local-task", "lease_owner": "local-worker", "workflow_task_attempt": 1, "renewed": False},
+        ]
+        worker = Worker(
+            mock_client, task_queue="q1", worker_id="local-worker",
+            workflows=[LocalWorkerWorkflow], activities=[local_echo],
+        )
+        result = await worker._run_workflow_task({
+            "task_id": "local-task", "workflow_type": "local-worker-wf",
+            "workflow_task_attempt": 1, "history_events": [],
+            "arguments": serializer.encode(["Ada"], codec="avro"), "payload_codec": "avro",
+        })
+        assert result is None
+        mock_client.complete_workflow_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_local_handler_cannot_swallow_lease_loss(self, mock_client: AsyncMock) -> None:
+        mock_client.heartbeat_workflow_task.side_effect = [
+            {"task_id": "local-task", "lease_owner": "local-worker", "workflow_task_attempt": 1, "renewed": True},
+            {"task_id": "local-task", "lease_owner": "local-worker", "workflow_task_attempt": 1, "renewed": False},
+        ]
+        worker = Worker(
+            mock_client, task_queue="q1", worker_id="local-worker",
+            workflows=[LocalWorkerWorkflow], activities=[local_echo],
+        )
+
+        async def swallow(_: str) -> str:
+            with contextlib.suppress(Exception):
+                await activity.context().heartbeat({"phase": "running"})
+            return "would be unsafe to commit"
+
+        worker.activities["local.echo"] = swallow
+        result = await worker._run_workflow_task({
+            "task_id": "local-task", "workflow_type": "local-worker-wf",
+            "workflow_task_attempt": 1, "history_events": [],
+            "arguments": serializer.encode(["Ada"], codec="avro"), "payload_codec": "avro",
+        })
+        assert result is None
+        mock_client.complete_workflow_task.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_memo_command_uses_discovered_runtime_capability(self, mock_client: AsyncMock) -> None:
         info = compatible_cluster_info()

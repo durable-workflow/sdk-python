@@ -194,6 +194,12 @@ class YieldedContinueAfterMetadataWorkflow:
         yield ctx.continue_as_new("successor")
 
 
+@workflow.defn(name="tests.replay.local-activity-cold-result")
+class LocalActivityColdResultWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return (yield ctx.local_activity("golden.local", []))
+
+
 WORKFLOWS = [
     ColdReplacementSatisfiedConditionWorkflow,
     GoldenSagaCompensationWorkflow,
@@ -201,6 +207,7 @@ WORKFLOWS = [
     GoldenSingleActivityWorkflow,
     GoldenTimeoutWaitWorkflow,
     GoldenVersionMarkerWorkflow,
+    LocalActivityColdResultWorkflow,
     MessageStreamConsumerWorkflow,
     NestedParallelPathWorkflow,
     ParallelMetadataProducerWorkflow,

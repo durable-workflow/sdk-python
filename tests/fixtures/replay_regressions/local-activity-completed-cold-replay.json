@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "local-activity-completed-cold-replay",
+  "protocol_version": "1.19",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "tests.replay.local-activity-cold-result",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {"workflow_sequence": 1, "activity_type": "golden.local", "execution_mode": "local"}
+    },
+    {
+      "event_type": "ActivityStarted",
+      "payload": {"workflow_sequence": 1, "activity_type": "golden.local", "execution_mode": "local"}
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "workflow_sequence": 1,
+        "activity_type": "golden.local",
+        "execution_mode": "local",
+        "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoUZmFzdC12YWx1ZQ=="}
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {"type": "complete_workflow", "command_type": "CompleteWorkflow", "result": "fast-value"}
+    ]
+  }
+}

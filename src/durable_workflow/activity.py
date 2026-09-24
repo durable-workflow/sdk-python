@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import contextvars
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -38,9 +38,11 @@ class ActivityContext:
         *,
         info: ActivityInfo,
         client: Client,
+        heartbeat_callback: Callable[[dict[str, Any] | None], Awaitable[None]] | None = None,
     ) -> None:
         self._info = info
         self._client = client
+        self._heartbeat_callback = heartbeat_callback
         self._cancel_requested = False
 
     @property
@@ -65,6 +67,13 @@ class ActivityContext:
         owning workflow has requested cancellation, so the activity can exit
         cleanly at its next natural break point.
         """
+        if self._heartbeat_callback is not None:
+            try:
+                await self._heartbeat_callback(details)
+            except ActivityCancelled:
+                self._cancel_requested = True
+                raise
+            return
         resp = await self._client.heartbeat_activity_task(
             task_id=self._info.task_id,
             activity_attempt_id=self._info.activity_attempt_id,

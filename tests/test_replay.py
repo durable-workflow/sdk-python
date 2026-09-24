@@ -23,6 +23,7 @@ from durable_workflow.workflow import (
     ContinueAsNew,
     FailWorkflow,
     NexusServiceCall,
+    RecordLocalActivity,
     RecordSideEffect,
     RecordVersionMarker,
     ScheduleActivity,
@@ -58,6 +59,13 @@ class OneActivity:
     def run(self, ctx: WorkflowContext, name: str):  # type: ignore[no-untyped-def]
         result = yield ctx.schedule_activity("greet", [name])
         return {"greeting": result}
+
+
+@workflow.defn(name="one-local-activity")
+class OneLocalActivity:
+    def run(self, ctx: WorkflowContext, name: str):  # type: ignore[no-untyped-def]
+        greeting = yield ctx.local_activity("greet", [name])
+        return {"greeting": greeting}
 
 
 @workflow.defn(name="translated-activity-failure")
@@ -846,6 +854,65 @@ class TestOneActivity:
 
         with pytest.raises(ValueError, match=message):
             cmd.to_server_command("default-queue")
+
+
+class TestLocalActivity:
+    def test_completed_local_activity_is_recorded_before_workflow_completion(self) -> None:
+        calls = 0
+
+        def execute(command: RecordLocalActivity) -> str:
+            nonlocal calls
+            calls += 1
+            command.arguments_envelope = _avro(command.arguments)
+            command.result_envelope = _avro("hello, Ada")
+            command.outcome = {
+                "outcome": "completed",
+                "attempts": [{"attempt_number": 1, "outcome": "completed", "duration_ms": 1, "heartbeats": []}],
+            }
+            return "hello, Ada"
+
+        outcome = replay(OneLocalActivity, [], ["Ada"], local_activity_executor=execute)
+        assert calls == 1
+        wire = commands_to_server_commands(outcome.commands, "workers")
+        assert [command["type"] for command in wire] == ["record_local_activity", "complete_workflow"]
+        assert wire[0]["execution_mode"] == "local"
+        assert wire[0]["activity_type"] == "greet"
+        assert wire[0]["arguments"] == _avro(["Ada"])
+        assert wire[0]["result"] == _avro("hello, Ada")
+        assert wire[0]["attempts"][0]["outcome"] == "completed"
+
+    def test_cold_replay_consumes_local_result_without_reexecuting(self) -> None:
+        history = [{
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "workflow_sequence": 1,
+                "activity_type": "greet",
+                "execution_mode": "local",
+                "result": _avro("hello, Ada"),
+            },
+        }]
+
+        def unexpected(_: RecordLocalActivity) -> None:
+            pytest.fail("committed local activity must not execute again")
+
+        outcome = replay(OneLocalActivity, history, ["Ada"], local_activity_executor=unexpected)
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == {"greeting": "hello, Ada"}
+
+    def test_remote_history_cannot_replay_as_local_activity(self) -> None:
+        history = [{
+            "event_type": "ActivityCompleted",
+            "payload": {"workflow_sequence": 1, "activity_type": "greet", "result": _avro("hello")},
+        }]
+        with pytest.raises(NonDeterministicReplayError, match="remote activity"):
+            replay(OneLocalActivity, history, ["Ada"])
+
+    def test_invalid_local_options_are_rejected(self) -> None:
+        with pytest.raises(ValueError, match="max_attempts"):
+            RecordLocalActivity("greet", [], retry_policy={"max_attempts": 101})
+        with pytest.raises(ValueError, match="heartbeat_timeout"):
+            RecordLocalActivity("greet", [], start_to_close_timeout=1, heartbeat_timeout=2)
 
 
 class TestReverseCompensationSaga:
