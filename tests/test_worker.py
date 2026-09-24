@@ -422,6 +422,7 @@ class TestWorkerRegistration:
             "supported_activity_types": ["test-act"],
             "max_concurrent_workflow_tasks": 10,
             "max_concurrent_activity_tasks": 10,
+            "max_concurrent_worker_sessions": 10,
             "build_id": None,
             "capabilities": [
                 "memo_upserts",
@@ -430,6 +431,7 @@ class TestWorkerRegistration:
                 "local_activities",
                 "query_tasks",
                 MESSAGE_STREAMS_CAPABILITY,
+                "worker_sessions",
             ],
             "capability_manifest": {
                 "local_activities": {
@@ -438,9 +440,9 @@ class TestWorkerRegistration:
                     "implementation": "record_local_activity",
                 },
                 "worker_sessions": {
-                    "supported": False,
+                    "supported": True,
                     "minimum_protocol_version": "1.18",
-                    "reason": "python_worker_has_no_typed_session_lifecycle",
+                    "implementation": "typed_worker_session",
                 },
                 "sticky_execution": {
                     "supported": False,
@@ -451,6 +453,7 @@ class TestWorkerRegistration:
             "task_slots": {
                 "workflow_available": 10,
                 "activity_available": 10,
+                "session_available": 10,
             },
             "process_metrics": process_metrics,
         }
@@ -576,6 +579,7 @@ class TestWorkerRegistration:
             "query_tasks",
             WORKFLOW_UPDATES_CAPABILITY,
             MESSAGE_STREAMS_CAPABILITY,
+            "worker_sessions",
         ]
 
     @pytest.mark.asyncio
@@ -663,6 +667,7 @@ class TestWorkerRegistration:
             UPDATE_VALIDATION_TASKS_CAPABILITY,
             WORKFLOW_UPDATES_CAPABILITY,
             MESSAGE_STREAMS_CAPABILITY,
+            "worker_sessions",
         ]
 
     @pytest.mark.asyncio
@@ -762,6 +767,7 @@ class TestWorkerRegistration:
             DURABLE_SELECTION_CAPABILITY,
             "local_activities",
             MESSAGE_STREAMS_CAPABILITY,
+            "worker_sessions",
         ]
 
     @pytest.mark.asyncio

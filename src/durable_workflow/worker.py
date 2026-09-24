@@ -79,6 +79,7 @@ from .metrics import (
     MetricsRecorder,
 )
 from .retry_policy import _worker_storage_admission_stop
+from .worker_session import WorkerSession, WorkerSessionOptions
 from .workflow import (
     Command,
     FailWorkflow,
@@ -985,11 +986,13 @@ class Worker:
         task_queue: str,
         workflows: Iterable[type] = (),
         activities: Iterable[Callable[..., Any]] = (),
+        capabilities: Iterable[str] = (),
         worker_id: str | None = None,
         build_id: str | None = None,
         poll_timeout: float = 35.0,
         max_concurrent_workflow_tasks: int = 10,
         max_concurrent_activity_tasks: int = 10,
+        max_concurrent_worker_sessions: int = 10,
         shutdown_timeout: float = 30.0,
         heartbeat_interval: float = 60.0,
         metrics: MetricsRecorder | None = None,
@@ -1010,6 +1013,9 @@ class Worker:
             for workflow_type, workflow_cls in self.workflows.items()
         }
         self.activities = {_activity_name(a): a for a in activities}
+        self.capabilities = tuple(dict.fromkeys(capability.strip() for capability in capabilities))
+        if any(not capability for capability in self.capabilities):
+            raise ValueError("worker capabilities must be non-empty strings")
         self.worker_id = worker_id or f"py-worker-{uuid.uuid4().hex[:8]}"
         if build_id is not None:
             if not isinstance(build_id, str) or build_id.strip() == "":
@@ -1022,6 +1028,8 @@ class Worker:
             raise ValueError("max_concurrent_workflow_tasks must be at least 1")
         if max_concurrent_activity_tasks < 1:
             raise ValueError("max_concurrent_activity_tasks must be at least 1")
+        if max_concurrent_worker_sessions < 1:
+            raise ValueError("max_concurrent_worker_sessions must be at least 1")
         if heartbeat_interval <= 0:
             raise ValueError("heartbeat_interval must be positive")
 
@@ -1029,6 +1037,8 @@ class Worker:
         self._poll_http_timeout = poll_timeout
         self.max_concurrent_workflow_tasks = max_concurrent_workflow_tasks
         self.max_concurrent_activity_tasks = max_concurrent_activity_tasks
+        self.max_concurrent_worker_sessions = max_concurrent_worker_sessions
+        self._worker_sessions: dict[str, WorkerSession] = {}
         self._stop = asyncio.Event()
         self._wf_semaphore = asyncio.Semaphore(max_concurrent_workflow_tasks)
         self._act_semaphore = asyncio.Semaphore(max_concurrent_activity_tasks)
@@ -1192,6 +1202,9 @@ class Worker:
         if any(contract["updates"] for contract in self.workflow_command_contracts.values()):
             capabilities.append(WORKFLOW_UPDATES_CAPABILITY)
         capabilities.append(MESSAGE_STREAMS_CAPABILITY)
+        capabilities.extend(self.capabilities)
+        if PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST["worker_sessions"]["supported"]:
+            capabilities.append("worker_sessions")
 
         ack = await self.client.register_worker(
             worker_id=self.worker_id,
@@ -1202,6 +1215,7 @@ class Worker:
             supported_activity_types=list(self.activities),
             max_concurrent_workflow_tasks=self.max_concurrent_workflow_tasks,
             max_concurrent_activity_tasks=self.max_concurrent_activity_tasks,
+            max_concurrent_worker_sessions=self.max_concurrent_worker_sessions,
             build_id=self.build_id,
             capabilities=capabilities,
             capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
@@ -1988,6 +2002,7 @@ class Worker:
             )
 
     async def _run_activity_task(self, task: dict[str, Any]) -> str:
+        self._track_worker_session_from_task(task)
         task_id: str = task["task_id"]
         attempt_id: str = task.get("activity_attempt_id") or task.get("attempt_id", "")
         activity_type: str = task.get("activity_type", "")
@@ -3025,6 +3040,10 @@ class Worker:
             "activity_available": max(
                 0, self.max_concurrent_activity_tasks - self._activity_inflight
             ),
+            "session_available": max(
+                0, self.max_concurrent_worker_sessions
+                - sum(session.active for session in self._worker_sessions.values())
+            ),
         }
 
     def _current_process_metrics(self) -> dict[str, Any]:
@@ -3263,6 +3282,30 @@ class Worker:
             raise RuntimeError("worker cannot run after stop() has been called")
         self._run_started = True
 
+    def worker_session(self, options: WorkerSessionOptions) -> WorkerSession:
+        """Return a typed lease handle held by this worker until shutdown."""
+        existing = self._worker_sessions.get(options.session_id)
+        if existing is not None:
+            if existing.options != options:
+                raise ValueError("worker session id already has different options")
+            return existing
+        session = WorkerSession(self.client, self.worker_id, options)
+        self._worker_sessions[options.session_id] = session
+        return session
+
+    def _track_worker_session_from_task(self, task: dict[str, Any]) -> None:
+        raw = task.get("worker_session")
+        if not isinstance(raw, dict) or not isinstance(raw.get("session_id"), str):
+            return
+        try:
+            options = WorkerSessionOptions.from_wire(raw)
+            session = self._worker_sessions.get(options.session_id)
+            if session is None:
+                session = self.worker_session(options)
+            session._track_leased_task()
+        except (ValueError, TypeError) as error:
+            log.warning("worker session metadata is invalid: %s", error)
+
     async def stop(self) -> None:
         """Stop polling, drain tasks, and remove the worker registration.
 
@@ -3320,6 +3363,17 @@ class Worker:
                     "the worker registration remains active"
                 )
             await asyncio.gather(*in_flight, return_exceptions=True)
+
+        for session in self._worker_sessions.values():
+            if not session.active:
+                continue
+            try:
+                await asyncio.wait_for(
+                    session.close("worker_shutdown"),
+                    timeout=self._remaining_shutdown_time(deadline),
+                )
+            except Exception as error:
+                log.warning("worker session %s close failed: %s", session.options.session_id, error)
 
         if self._registered:
             await self.client.deregister_worker_registration(self.worker_id)

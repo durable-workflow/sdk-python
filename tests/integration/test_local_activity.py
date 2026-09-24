@@ -13,6 +13,12 @@ from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
 from durable_workflow.errors import NonRetryableError, ServerError, WorkflowCancelled, WorkflowFailed
 from durable_workflow.workflow import replay
 
+PORTABLE_CAPABILITIES = [
+    name
+    for name, details in PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST.items()
+    if details["supported"]
+]
+
 
 @workflow.defn(name="tests.python-local-activity")
 class LocalActivityWorkflow:
@@ -216,7 +222,7 @@ async def test_local_activity_runtime_external_payloads_survive_cold_replay(
                     supported_activity_types=list(worker.activities),
                     workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
                     workflow_command_contracts=worker.workflow_command_contracts,
-                    capabilities=["local_activities"],
+                    capabilities=PORTABLE_CAPABILITIES,
                     capability_manifest=manifest,
                 )
                 try:
@@ -301,7 +307,7 @@ async def test_local_activity_commits_with_remote_activity_command(
             supported_activity_types=list(worker.activities),
             workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
             workflow_command_contracts=worker.workflow_command_contracts,
-            capabilities=["local_activities"],
+            capabilities=PORTABLE_CAPABILITIES,
             capability_manifest=manifest,
         )
         try:
@@ -387,7 +393,7 @@ async def test_local_activity_completion_survives_lost_acknowledgement(
             supported_activity_types=list(worker.activities),
             workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
             workflow_command_contracts=worker.workflow_command_contracts,
-            capabilities=["local_activities"],
+            capabilities=PORTABLE_CAPABILITIES,
             capability_manifest=manifest,
         )
         try:
@@ -482,7 +488,7 @@ async def test_uncommitted_local_activity_is_reexecuted_after_worker_replacement
             supported_activity_types=list(first_worker.activities),
             workflow_definition_fingerprints=first_worker.workflow_definition_fingerprints,
             workflow_command_contracts=first_worker.workflow_command_contracts,
-            capabilities=["local_activities"],
+            capabilities=PORTABLE_CAPABILITIES,
             capability_manifest=manifest,
         )
         handle = await first_client.start_workflow(
@@ -528,7 +534,7 @@ async def test_uncommitted_local_activity_is_reexecuted_after_worker_replacement
             supported_activity_types=list(replacement_worker.activities),
             workflow_definition_fingerprints=replacement_worker.workflow_definition_fingerprints,
             workflow_command_contracts=replacement_worker.workflow_command_contracts,
-            capabilities=["local_activities"],
+            capabilities=PORTABLE_CAPABILITIES,
             capability_manifest=manifest,
         )
         try:
@@ -604,7 +610,7 @@ async def test_uncommitted_local_activity_is_reexecuted_after_lease_expiry(
             supported_activity_types=list(first_worker.activities),
             workflow_definition_fingerprints=first_worker.workflow_definition_fingerprints,
             workflow_command_contracts=first_worker.workflow_command_contracts,
-            capabilities=["local_activities"],
+            capabilities=PORTABLE_CAPABILITIES,
             capability_manifest=manifest,
         )
         handle = await first_client.start_workflow(
@@ -643,7 +649,7 @@ async def test_uncommitted_local_activity_is_reexecuted_after_lease_expiry(
                 supported_activity_types=list(replacement_worker.activities),
                 workflow_definition_fingerprints=replacement_worker.workflow_definition_fingerprints,
                 workflow_command_contracts=replacement_worker.workflow_command_contracts,
-                capabilities=["local_activities"],
+                capabilities=PORTABLE_CAPABILITIES,
                 capability_manifest=manifest,
             )
             replacement_task = await replacement_client.poll_workflow_task(
@@ -722,7 +728,7 @@ async def test_cancelled_run_fences_in_flight_local_activity(
             supported_activity_types=list(worker.activities),
             workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
             workflow_command_contracts=worker.workflow_command_contracts,
-            capabilities=["local_activities"],
+            capabilities=PORTABLE_CAPABILITIES,
             capability_manifest=manifest,
         )
         try:
@@ -791,7 +797,7 @@ async def test_replacement_worker_replays_local_activity_before_signal(
             supported_activity_types=list(first_worker.activities),
             workflow_definition_fingerprints=first_worker.workflow_definition_fingerprints,
             workflow_command_contracts=first_worker.workflow_command_contracts,
-            capabilities=["local_activities"],
+            capabilities=PORTABLE_CAPABILITIES,
             capability_manifest=manifest,
         )
         try:
@@ -835,7 +841,7 @@ async def test_replacement_worker_replays_local_activity_before_signal(
             supported_activity_types=list(replacement_worker.activities),
             workflow_definition_fingerprints=replacement_worker.workflow_definition_fingerprints,
             workflow_command_contracts=replacement_worker.workflow_command_contracts,
-            capabilities=["local_activities"],
+            capabilities=PORTABLE_CAPABILITIES,
             capability_manifest=manifest,
         )
         try:
@@ -896,7 +902,7 @@ async def test_local_activity_terminal_failure_is_recorded_and_replayed(
             supported_activity_types=list(worker.activities),
             workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
             workflow_command_contracts=worker.workflow_command_contracts,
-            capabilities=["local_activities"],
+            capabilities=PORTABLE_CAPABILITIES,
             capability_manifest=manifest,
         )
         try:
@@ -975,7 +981,7 @@ async def test_local_activity_retries_commit_one_terminal_record_and_replay(
             supported_activity_types=list(worker.activities),
             workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
             workflow_command_contracts=worker.workflow_command_contracts,
-            capabilities=["local_activities"],
+            capabilities=PORTABLE_CAPABILITIES,
             capability_manifest=manifest,
         )
         try:
@@ -1057,7 +1063,7 @@ async def test_local_activity_timeout_is_recorded_and_replayed(
             supported_activity_types=list(worker.activities),
             workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
             workflow_command_contracts=worker.workflow_command_contracts,
-            capabilities=["local_activities"],
+            capabilities=PORTABLE_CAPABILITIES,
             capability_manifest=manifest,
         )
         try:

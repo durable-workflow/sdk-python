@@ -49,6 +49,7 @@ from .errors import (
 )
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .nexus import NexusOperationResult, stable_nexus_idempotency_key
+from .worker_session import WorkerSessionOptions
 
 _WorkflowT = TypeVar("_WorkflowT")
 
@@ -467,6 +468,7 @@ class ScheduleActivity:
     schedule_to_start_timeout: int | None = None
     schedule_to_close_timeout: int | None = None
     heartbeat_timeout: int | None = None
+    worker_session: WorkerSessionOptions | None = None
     _parallel_group_path: list[dict[str, Any]] | None = field(
         default=None,
         init=False,
@@ -518,6 +520,8 @@ class ScheduleActivity:
             command["schedule_to_close_timeout"] = self.schedule_to_close_timeout
         if self.heartbeat_timeout is not None:
             command["heartbeat_timeout"] = self.heartbeat_timeout
+        if self.worker_session is not None:
+            command["worker_session"] = self.worker_session.to_wire()
         return command
 
     def _validate_timeouts(self) -> None:
@@ -1400,6 +1404,8 @@ def commands_to_server_commands(
                 server_command["schedule_to_close_timeout"] = command.schedule_to_close_timeout
             if command.heartbeat_timeout is not None:
                 server_command["heartbeat_timeout"] = command.heartbeat_timeout
+            if command.worker_session is not None:
+                server_command["worker_session"] = command.worker_session.to_wire()
             server_commands.append(server_command)
             continue
 
@@ -1831,6 +1837,7 @@ class WorkflowContext:
         schedule_to_start_timeout: int | None = None,
         schedule_to_close_timeout: int | None = None,
         heartbeat_timeout: int | None = None,
+        worker_session: WorkerSessionOptions | None = None,
     ) -> ScheduleActivity:
         return ScheduleActivity(
             activity_type=activity_type,
@@ -1841,6 +1848,7 @@ class WorkflowContext:
             schedule_to_start_timeout=schedule_to_start_timeout,
             schedule_to_close_timeout=schedule_to_close_timeout,
             heartbeat_timeout=heartbeat_timeout,
+            worker_session=worker_session,
         )
 
     def local_activity(

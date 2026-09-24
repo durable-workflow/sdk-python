@@ -251,6 +251,75 @@ local attempts short; use `ctx.schedule_activity(...)` for separately queued
 work. Local activities are yielded one at a time; they are not members of a
 parallel workflow group.
 
+## Worker sessions
+
+A worker session routes related activities to one capable worker while its
+lease is active. Give the activity a `WorkerSessionOptions` value and register
+the matching capability on the worker. This path was qualified against Server
+2.4.2; use that version or a later qualified release for worker sessions:
+
+```python
+import asyncio
+import os
+from uuid import uuid4
+
+from durable_workflow import Client, Worker, WorkerSessionOptions, activity, workflow
+
+
+@activity.defn(name="example.session-greet")
+async def greet(name: str) -> str:
+    return f"Hello, {name}"
+
+
+@workflow.defn(name="example.session-greeting")
+class Greeting:
+    def run(self, ctx, name: str, session_id: str):
+        return (yield ctx.schedule_activity(
+            "example.session-greet",
+            [name],
+            queue="greetings",
+            worker_session=WorkerSessionOptions(
+                session_id,
+                queue="greetings",
+                requirements=("greeting:cpu",),
+            ),
+        ))
+
+
+async def main():
+    async with Client(
+        os.getenv("DURABLE_WORKFLOW_RUNTIME_URL", "http://127.0.0.1:8080"),
+        token=os.getenv("DURABLE_WORKFLOW_TOKEN", "dev-token-123"),
+        namespace="default",
+    ) as client:
+        session_id = f"greeting-{uuid4().hex}"
+        handle = await client.start_workflow(
+            workflow_type="example.session-greeting",
+            workflow_id=f"workflow-{uuid4().hex}",
+            task_queue="greetings",
+            input=["Ada", session_id],
+        )
+        worker = Worker(
+            client,
+            task_queue="greetings",
+            workflows=[Greeting],
+            activities=[greet],
+            capabilities=["greeting:cpu"],
+        )
+        await worker.run_until(workflow_id=handle.workflow_id, timeout=30)
+        print(await handle.result(timeout=10))
+
+
+asyncio.run(main())
+```
+
+Server creates the session when the first matching activity is admitted. Use
+`worker.worker_session(options)` for explicit `create()`, `renew()`, or
+`close()` calls after worker registration. A lease must be renewed to remain
+held across an idle period. Worker shutdown closes its active sessions. After
+holder loss, a replacement worker must rebuild process-local state before
+reacquiring the session; the session ID does not make memory durable.
+
 ## Deterministic parallel groups
 
 Yield a list to schedule one durable parallel barrier. Lists can nest and mix
