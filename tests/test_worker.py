@@ -820,6 +820,65 @@ class TestWorkerRegistration:
         assert query_called.is_set()
         assert query_kwargs["build_id"] == "release-2026.04.22-a1"
 
+    @pytest.mark.parametrize(
+        ("poll_method", "loop_method", "task_kind"),
+        [
+            ("poll_workflow_task", "_poll_workflow_tasks", "workflow"),
+            ("poll_activity_task", "_poll_activity_tasks", "activity"),
+            ("poll_query_task", "_poll_query_tasks", "query"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_poll_warning_omits_large_server_response(
+        self,
+        mock_client: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        poll_method: str,
+        loop_method: str,
+        task_kind: str,
+    ) -> None:
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+        )
+        getattr(mock_client, poll_method).side_effect = ServerError(
+            429,
+            {
+                "reason": "long_poll_capacity_exhausted",
+                "server_capabilities": {"large": "x" * 10_000},
+            },
+        )
+
+        async def stop_after_backoff(seconds: float) -> None:
+            assert seconds == 1.0
+            worker._stop.set()
+
+        monkeypatch.setattr(worker_module.asyncio, "sleep", stop_after_backoff)
+        with caplog.at_level(logging.WARNING, logger="durable_workflow.worker"):
+            await getattr(worker, loop_method)()
+
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "durable_workflow.worker"
+        ]
+        assert warnings == [
+            f"{task_kind} poll error: server returned 429 "
+            "reason='long_poll_capacity_exhausted'"
+        ]
+        assert "server_capabilities" not in caplog.text
+
+    def test_poll_error_summary_bounds_reason(self) -> None:
+        summary = worker_module._poll_error_summary(
+            ServerError(429, {"reason": "x" * 10_000})
+        )
+        assert summary == f"server returned 429 reason={'x' * 64!r}"
+        assert worker_module._poll_error_summary(ServerError(503, {})) == "server returned 503"
+        assert worker_module._poll_error_summary(ValueError("transport failed")) == "transport failed"
+
     @pytest.mark.asyncio
     async def test_register_omits_build_id_when_not_configured(
         self, mock_client: AsyncMock
