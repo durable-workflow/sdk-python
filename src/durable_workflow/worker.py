@@ -62,7 +62,7 @@ from .errors import (
     UpdateRejected,
     UpdateValidationFailed,
 )
-from .external_storage import ExternalPayloadCache, ExternalStorageDriver
+from .external_storage import ExternalPayloadCache, ExternalStorageDriver, store_external_payload
 from .interceptors import (
     ActivityInterceptorContext,
     QueryTaskInterceptorContext,
@@ -1362,6 +1362,17 @@ class Worker:
         )):
             raise LocalActivityExecutionAborted("workflow task lease renewal was not fenced and acknowledged")
 
+    def _maybe_externalize_local_payload(self, envelope: dict[str, str]) -> dict[str, Any]:
+        storage = self.external_storage
+        threshold = self.external_storage_threshold_bytes
+        if storage is None or threshold is None:
+            return envelope
+        data = envelope["blob"].encode("utf-8")
+        if len(data) <= threshold:
+            return envelope
+        reference = store_external_payload(storage, data, codec=envelope["codec"])
+        return {"codec": envelope["codec"], "external_storage": reference.to_dict()}
+
     async def _execute_local_activity(
         self,
         task: dict[str, Any],
@@ -1369,7 +1380,8 @@ class Worker:
         *,
         payload_codec: str,
     ) -> Any:
-        arguments_envelope = serializer.envelope(command.arguments, codec=payload_codec)
+        inline_arguments = serializer.envelope(command.arguments, codec=payload_codec)
+        arguments_envelope = self._maybe_externalize_local_payload(inline_arguments)
         pre_execution = {
             "type": "record_local_activity",
             "activity_type": command.activity_type,
@@ -1428,7 +1440,7 @@ class Worker:
                 str(task["task_id"]),
                 command.activity_type,
                 str(attempt_number),
-                str(arguments_envelope["blob"]),
+                inline_arguments["blob"],
             )).encode("utf-8")).hexdigest()
 
             def check_boundary(
@@ -1515,7 +1527,7 @@ class Worker:
                     "heartbeats": heartbeats,
                 })
                 try:
-                    result_envelope = serializer.envelope(result, codec=payload_codec)
+                    inline_result = serializer.envelope(result, codec=payload_codec)
                 except Exception:
                     message = "local activity result could not be encoded with the avro payload codec"
                     attempts[-1].update({
@@ -1525,7 +1537,10 @@ class Worker:
                         "non_retryable": True,
                     })
                     return terminal_failure("failed", message, "InvalidLocalActivityReport", non_retryable=True)
-                command.result_envelope = result_envelope
+                try:
+                    command.result_envelope = self._maybe_externalize_local_payload(inline_result)
+                except Exception as exc:
+                    raise LocalActivityExecutionAborted("local activity result upload failed before commit") from exc
                 command.outcome = {"outcome": "completed", "attempts": attempts}
                 return result
             except LocalActivityExecutionAborted:
@@ -1751,7 +1766,7 @@ class Worker:
                 local_activity_executor=execute_local,
             )
         except LocalActivityExecutionAborted as e:
-            log.warning("abandoning workflow task %s after local activity lease loss: %s", task_id, e)
+            log.warning("abandoning workflow task %s before local activity commit: %s", task_id, e)
             return None
         except AvroNotInstalledError as e:
             log.exception("replay failed: Avro dependency unavailable")

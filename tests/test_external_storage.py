@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from durable_workflow import Replayer, serializer, workflow
+from durable_workflow import Replayer, activity, serializer, workflow
 from durable_workflow.client import Client
 from durable_workflow.external_storage import (
     EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
@@ -62,6 +62,17 @@ class ExternalStorageQueryWorkflow:
 class ExternalStorageCompleteWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
         return {"message": "x" * 64}
+
+
+@workflow.defn(name="external-storage-local")
+class ExternalStorageLocalWorkflow:
+    def run(self, ctx: WorkflowContext, name: str):  # type: ignore[no-untyped-def]
+        return (yield ctx.local_activity("external-storage-local-activity", [name]))
+
+
+@activity.defn(name="external-storage-local-activity")
+def external_storage_local_activity(name: str) -> dict[str, str]:
+    return {"message": name * 64}
 
 
 def external_storage_activity_result() -> dict[str, str]:
@@ -210,6 +221,42 @@ def test_replayer_fetches_external_start_and_activity_payloads(tmp_path: Path) -
 
     assert isinstance(completed.commands[0], CompleteWorkflow)
     assert completed.commands[0].result == {"message": "x" * 64}
+
+
+def test_replayer_fetches_external_local_activity_result(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    result = serializer.external_storage_envelope(
+        {"message": "Ada" * 64},
+        external_storage=storage,
+        threshold_bytes=1,
+    )
+
+    completed = Replayer(workflows=[ExternalStorageLocalWorkflow]).replay(
+        {
+            "events": [
+                {
+                    "event_type": "WorkflowStarted",
+                    "payload": {
+                        "workflow_type": "external-storage-local",
+                        "arguments": serializer.envelope(["Ada"]),
+                    },
+                },
+                {
+                    "event_type": "ActivityCompleted",
+                    "payload": {
+                        "workflow_sequence": 1,
+                        "activity_type": "external-storage-local-activity",
+                        "execution_mode": "local",
+                        "result": result,
+                    },
+                },
+            ],
+        },
+        external_storage=storage,
+    )
+
+    assert isinstance(completed.commands[0], CompleteWorkflow)
+    assert completed.commands[0].result == {"message": "Ada" * 64}
 
 
 @pytest.mark.asyncio
@@ -419,6 +466,95 @@ def test_workflow_command_serialization_offloads_configured_payloads(tmp_path: P
         external_storage_threshold_bytes=1,
     )
     assert serializer.decode_envelope(direct_update["result"], external_storage=storage) == {"direct": large}
+
+
+@pytest.mark.asyncio
+async def test_worker_local_activity_offloads_arguments_and_result(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    client = _mock_worker_client(storage)
+    client.heartbeat_workflow_task.return_value = {
+        "task_id": "local-external",
+        "lease_owner": "local-worker",
+        "workflow_task_attempt": 1,
+        "renewed": True,
+    }
+    worker = Worker(
+        client,
+        task_queue="q1",
+        worker_id="local-worker",
+        workflows=[ExternalStorageLocalWorkflow],
+        activities=[external_storage_local_activity],
+    )
+    task = {
+        "task_id": "local-external",
+        "workflow_type": "external-storage-local",
+        "workflow_task_attempt": 1,
+        "history_events": [],
+        "arguments": serializer.envelope(["Ada"]),
+        "payload_codec": "avro",
+    }
+
+    commands = await worker._run_workflow_task(task)
+
+    assert commands is not None
+    assert [command["type"] for command in commands] == ["record_local_activity", "complete_workflow"]
+    for field in ("arguments", "result"):
+        assert "external_storage" in commands[0][field]
+        assert "blob" not in commands[0][field]
+    assert serializer.decode_envelope(commands[0]["arguments"], external_storage=storage) == ["Ada"]
+    assert serializer.decode_envelope(commands[0]["result"], external_storage=storage) == {
+        "message": "Ada" * 64
+    }
+    assert serializer.decode_envelope(commands[1]["result"], external_storage=storage) == {
+        "message": "Ada" * 64
+    }
+
+
+@pytest.mark.asyncio
+async def test_local_activity_result_storage_failure_does_not_commit_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    client = _mock_worker_client(storage, threshold=50)
+    client.heartbeat_workflow_task.return_value = {
+        "task_id": "local-storage-failure",
+        "lease_owner": "local-worker",
+        "workflow_task_attempt": 1,
+        "renewed": True,
+    }
+    executions = 0
+
+    def run_activity(name: str) -> dict[str, str]:
+        nonlocal executions
+        executions += 1
+        return external_storage_local_activity(name)
+
+    worker = Worker(
+        client,
+        task_queue="q1",
+        worker_id="local-worker",
+        workflows=[ExternalStorageLocalWorkflow],
+        activities=[external_storage_local_activity],
+    )
+    worker.activities["external-storage-local-activity"] = run_activity
+
+    def reject_upload(*args: object, **kwargs: object) -> None:
+        raise OSError("external storage unavailable")
+
+    monkeypatch.setattr(storage, "put", reject_upload)
+    commands = await worker._run_workflow_task({
+        "task_id": "local-storage-failure",
+        "workflow_type": "external-storage-local",
+        "workflow_task_attempt": 1,
+        "history_events": [],
+        "arguments": serializer.envelope(["A"]),
+        "payload_codec": "avro",
+    })
+
+    assert commands is None
+    assert executions == 1
+    client.complete_workflow_task.assert_not_awaited()
+    client.fail_workflow_task.assert_not_awaited()
 
 
 def test_external_storage_envelope_keeps_small_payload_inline(tmp_path: Path) -> None:
