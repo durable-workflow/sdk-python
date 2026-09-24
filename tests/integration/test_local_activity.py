@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -53,6 +54,28 @@ async def local_retry_greet(name: str) -> str:
         raise NonRetryableError("permanent")
     if _retry_executions == 1:
         raise RuntimeError("transient")
+    return f"hello, {name}"
+
+
+@workflow.defn(name="tests.python-local-timeout")
+class LocalTimeoutWorkflow:
+    def run(self, ctx: Any, name: str) -> Any:
+        result = yield ctx.local_activity(
+            "tests.python-local-slow-greet",
+            [name],
+            start_to_close_timeout=1,
+        )
+        return {"greeting": result}
+
+
+_slow_executions = 0
+
+
+@activity.defn(name="tests.python-local-slow-greet")
+async def local_slow_greet(name: str) -> str:
+    global _slow_executions
+    _slow_executions += 1
+    await asyncio.sleep(1.2)
     return f"hello, {name}"
 
 
@@ -292,5 +315,84 @@ async def test_local_activity_retries_commit_one_terminal_record_and_replay(
             )
             assert [command.__class__.__name__ for command in outcome.commands] == ["CompleteWorkflow"]
             assert _retry_executions == 2
+        finally:
+            await client.deregister_worker_registration(worker.worker_id)
+
+
+@pytest.mark.asyncio
+async def test_local_activity_start_to_close_timeout_is_recorded_and_replayed(
+    server_url: str,
+    server_token: str,
+) -> None:
+    global _slow_executions
+    _slow_executions = 0
+    suffix = uuid.uuid4().hex[:8]
+    queue = f"py-local-timeout-{suffix}"
+    workflow_id = f"py-local-timeout-{suffix}"
+    manifest = {
+        **PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+        "local_activities": {
+            "supported": True,
+            "minimum_protocol_version": "1.18",
+            "implementation": "record_local_activity",
+        },
+    }
+
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        worker = Worker(
+            client,
+            task_queue=queue,
+            workflows=[LocalTimeoutWorkflow],
+            activities=[local_slow_greet],
+            worker_id=f"py-local-timeout-worker-{suffix}",
+        )
+        await client.register_worker(
+            worker_id=worker.worker_id,
+            task_queue=queue,
+            supported_workflow_types=list(worker.workflows),
+            supported_activity_types=list(worker.activities),
+            workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
+            workflow_command_contracts=worker.workflow_command_contracts,
+            capabilities=["local_activities"],
+            capability_manifest=manifest,
+        )
+        try:
+            handle = await client.start_workflow(
+                workflow_type="tests.python-local-timeout",
+                task_queue=queue,
+                workflow_id=workflow_id,
+                input=["Ada"],
+            )
+            task = await client.poll_workflow_task(
+                worker_id=worker.worker_id,
+                task_queue=queue,
+                timeout=10.0,
+            )
+            assert task is not None
+            commands = await worker._run_workflow_task(task)
+            assert commands is not None
+            assert [command["type"] for command in commands] == ["record_local_activity", "fail_workflow"]
+            assert commands[0]["outcome"] == "timed_out"
+            assert commands[0]["timeout_kind"] == "start_to_close"
+            assert len(commands[0]["attempts"]) == 1
+            assert _slow_executions == 1
+            with pytest.raises(WorkflowFailed):
+                await handle.result(timeout=10.0)
+
+            history = await handle.get_history()
+            events = history.get("events", history.get("history_events", []))
+            event_types = [event["event_type"] for event in events]
+            assert event_types.count("ActivityTimedOut") == 1
+            assert event_types.count("WorkflowFailed") == 1
+
+            outcome = replay(
+                LocalTimeoutWorkflow,
+                events,
+                ["Ada"],
+                workflow_id=workflow_id,
+                run_id=handle.run_id or "",
+            )
+            assert [command.__class__.__name__ for command in outcome.commands] == ["FailWorkflow"]
+            assert _slow_executions == 1
         finally:
             await client.deregister_worker_registration(worker.worker_id)
