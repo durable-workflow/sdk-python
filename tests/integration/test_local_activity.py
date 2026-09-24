@@ -585,6 +585,120 @@ async def test_uncommitted_local_activity_is_reexecuted_after_worker_replacement
 
 
 @pytest.mark.asyncio
+async def test_uncommitted_local_activity_is_reexecuted_after_lease_expiry(
+    server_url: str,
+    server_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global _executions
+    _executions = 0
+    suffix = uuid.uuid4().hex[:8]
+    queue = f"py-local-expired-{suffix}"
+    workflow_id = f"py-local-expired-{suffix}"
+    first_worker_id = f"py-local-expired-first-{suffix}"
+    replacement_worker_id = f"py-local-expired-second-{suffix}"
+    manifest = {
+        **PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+        "local_activities": {
+            "supported": True,
+            "minimum_protocol_version": "1.18",
+            "implementation": "record_local_activity",
+        },
+    }
+
+    async with Client(server_url, token=server_token, namespace="default") as first_client:
+        first_worker = Worker(
+            first_client,
+            task_queue=queue,
+            workflows=[LocalActivityWorkflow],
+            activities=[local_greet],
+            worker_id=first_worker_id,
+        )
+        await first_client.register_worker(
+            worker_id=first_worker_id,
+            task_queue=queue,
+            supported_workflow_types=list(first_worker.workflows),
+            supported_activity_types=list(first_worker.activities),
+            workflow_definition_fingerprints=first_worker.workflow_definition_fingerprints,
+            workflow_command_contracts=first_worker.workflow_command_contracts,
+            capabilities=["local_activities"],
+            capability_manifest=manifest,
+        )
+        handle = await first_client.start_workflow(
+            workflow_type="tests.python-local-activity",
+            task_queue=queue,
+            workflow_id=workflow_id,
+            input=["Ada"],
+        )
+        first_task = await first_client.poll_workflow_task(
+            worker_id=first_worker_id, task_queue=queue, timeout=10.0,
+        )
+        assert first_task is not None
+
+        async def drop_completion(*args: Any, **kwargs: Any) -> None:
+            raise TimeoutError("completion request never reached Server")
+
+        monkeypatch.setattr(first_client, "complete_workflow_task", drop_completion)
+        uncommitted = await first_worker._run_workflow_task(first_task)
+        assert uncommitted is not None
+        assert _executions == 1
+
+    try:
+        await asyncio.sleep(12)
+        async with Client(server_url, token=server_token, namespace="default") as replacement_client:
+            replacement_worker = Worker(
+                replacement_client,
+                task_queue=queue,
+                workflows=[LocalActivityWorkflow],
+                activities=[local_greet],
+                worker_id=replacement_worker_id,
+            )
+            await replacement_client.register_worker(
+                worker_id=replacement_worker_id,
+                task_queue=queue,
+                supported_workflow_types=list(replacement_worker.workflows),
+                supported_activity_types=list(replacement_worker.activities),
+                workflow_definition_fingerprints=replacement_worker.workflow_definition_fingerprints,
+                workflow_command_contracts=replacement_worker.workflow_command_contracts,
+                capabilities=["local_activities"],
+                capability_manifest=manifest,
+            )
+            replacement_task = await replacement_client.poll_workflow_task(
+                worker_id=replacement_worker_id, task_queue=queue, timeout=10.0,
+            )
+            assert replacement_task is not None
+            assert replacement_task["workflow_task_attempt"] > first_task["workflow_task_attempt"]
+            assert replacement_task["task_id"] == first_task["task_id"]
+
+            with pytest.raises(ServerError) as stale_completion:
+                await replacement_client.complete_workflow_task(
+                    task_id=first_task["task_id"],
+                    lease_owner=first_worker_id,
+                    workflow_task_attempt=first_task["workflow_task_attempt"],
+                    commands=uncommitted,
+                )
+            assert stale_completion.value.status == 409
+
+            committed = await replacement_worker._run_workflow_task(replacement_task)
+            assert committed is not None
+            assert await replacement_client.get_workflow_handle(workflow_id).result(timeout=10.0) == {
+                "greeting": "hello, Ada"
+            }
+            assert _executions == 2
+            history = await replacement_client.get_workflow_handle(
+                workflow_id, run_id=handle.run_id,
+            ).get_history()
+            events = history.get("events", history.get("history_events", []))
+            event_types = [event["event_type"] for event in events]
+            assert event_types.count("ActivityCompleted") == 1
+            assert event_types.count("WorkflowCompleted") == 1
+    finally:
+        async with Client(server_url, token=server_token, namespace="default") as cleanup_client:
+            await cleanup_client.deregister_worker_registration(first_worker_id)
+            await cleanup_client.deregister_worker_registration(replacement_worker_id)
+
+
+@pytest.mark.asyncio
 async def test_cancelled_run_fences_in_flight_local_activity(
     server_url: str,
     server_token: str,
