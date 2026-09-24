@@ -55,6 +55,7 @@ from .errors import (
     ActivityFailed,
     AvroNotInstalledError,
     DurableWorkflowError,
+    ExternalPayloadError,
     InvalidArgument,
     NonRetryableError,
     QueryFailed,
@@ -242,6 +243,8 @@ def _is_final_query_task_rejection(error: BaseException) -> bool:
 
 
 def _should_fail_workflow_task_after_completion_error(error: BaseException) -> bool:
+    if isinstance(error, ExternalPayloadError):
+        return False
     if isinstance(error, InvalidArgument):
         return True
 
@@ -257,6 +260,8 @@ def _should_fail_workflow_task_after_completion_error(error: BaseException) -> b
 def _should_retry_workflow_task_completion_error(error: BaseException) -> bool:
     if _is_storage_admission_error(error):
         return False
+    if isinstance(error, ExternalPayloadError):
+        return error.retryable
     if isinstance(error, ServerError):
         return error.status >= 500 or error.status == 429
 
@@ -1876,6 +1881,9 @@ class Worker:
 
         try:
             commands = serialize_commands(workflow_commands)
+        except ExternalPayloadError as error:
+            log.warning("abandoning workflow task %s before commit: %s", task_id, error)
+            return None
         except Exception as error:
             last_local = max(
                 (index for index, command in enumerate(workflow_commands)

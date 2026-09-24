@@ -6,6 +6,7 @@ import pytest
 
 from durable_workflow import Replayer, activity, serializer, workflow
 from durable_workflow.client import Client
+from durable_workflow.errors import ExternalPayloadUnavailable
 from durable_workflow.external_storage import (
     EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
     AzureBlobExternalStorage,
@@ -554,6 +555,87 @@ async def test_local_activity_result_storage_failure_does_not_commit_failure(
     assert commands is None
     assert executions == 1
     client.complete_workflow_task.assert_not_awaited()
+    client.fail_workflow_task.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_command_storage_failure_after_local_activity_does_not_fail_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    client = _mock_worker_client(storage)
+    client.heartbeat_workflow_task.return_value = {
+        "task_id": "local-command-storage-failure",
+        "lease_owner": "local-worker",
+        "workflow_task_attempt": 1,
+        "renewed": True,
+    }
+    worker = Worker(
+        client,
+        task_queue="q1",
+        worker_id="local-worker",
+        workflows=[ExternalStorageLocalWorkflow],
+        activities=[external_storage_local_activity],
+    )
+    original_put = storage.put
+    uploads = 0
+
+    def fail_completion_upload(*args: object, **kwargs: object) -> str:
+        nonlocal uploads
+        uploads += 1
+        if uploads == 3:
+            raise OSError("external storage unavailable")
+        return original_put(*args, **kwargs)
+
+    monkeypatch.setattr(storage, "put", fail_completion_upload)
+    commands = await worker._run_workflow_task({
+        "task_id": "local-command-storage-failure",
+        "workflow_type": "external-storage-local",
+        "workflow_task_attempt": 1,
+        "history_events": [],
+        "arguments": serializer.envelope(["Ada"]),
+        "payload_codec": "avro",
+    })
+
+    assert uploads == 3
+    assert commands is None
+    client.complete_workflow_task.assert_not_awaited()
+    client.fail_workflow_task.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_completion_payload_upload_failure_after_local_activity_leaves_task_uncommitted(
+    tmp_path: Path,
+) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    client = _mock_worker_client(storage)
+    client.heartbeat_workflow_task.return_value = {
+        "task_id": "local-runtime-upload-failure",
+        "lease_owner": "local-worker",
+        "workflow_task_attempt": 1,
+        "renewed": True,
+    }
+    client.complete_workflow_task.side_effect = ExternalPayloadUnavailable("runtime upload failed")
+    worker = Worker(
+        client,
+        task_queue="q1",
+        worker_id="local-worker",
+        workflows=[ExternalStorageLocalWorkflow],
+        activities=[external_storage_local_activity],
+    )
+
+    commands = await worker._run_workflow_task({
+        "task_id": "local-runtime-upload-failure",
+        "workflow_type": "external-storage-local",
+        "workflow_task_attempt": 1,
+        "history_events": [],
+        "arguments": serializer.envelope(["Ada"]),
+        "payload_codec": "avro",
+    })
+
+    assert commands is not None
+    assert [command["type"] for command in commands] == ["record_local_activity", "complete_workflow"]
+    assert client.complete_workflow_task.await_count == 3
     client.fail_workflow_task.assert_not_awaited()
 
 

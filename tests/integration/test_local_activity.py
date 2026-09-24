@@ -32,6 +32,19 @@ async def local_greet(name: str) -> str:
     return f"hello, {name}"
 
 
+@workflow.defn(name="tests.python-local-mixed")
+class LocalMixedWorkflow:
+    def run(self, ctx: Any, name: str) -> Any:
+        greeting = yield ctx.local_activity("tests.python-local-greet", [name])
+        result = yield ctx.schedule_activity("tests.python-remote-tail", [greeting])
+        return {"greeting": result}
+
+
+@activity.defn(name="tests.python-remote-tail")
+async def remote_tail(greeting: str) -> str:
+    return f"{greeting}!"
+
+
 @workflow.defn(name="tests.python-local-restart")
 class LocalRestartWorkflow:
     def __init__(self) -> None:
@@ -269,6 +282,91 @@ async def test_local_activity_runtime_external_payloads_survive_cold_replay(
                     await client.deregister_worker_registration(worker.worker_id)
         finally:
             await admin.delete_namespace(namespace)
+
+
+@pytest.mark.asyncio
+async def test_local_activity_commits_with_remote_activity_command(
+    server_url: str,
+    server_token: str,
+) -> None:
+    global _executions
+    _executions = 0
+    suffix = uuid.uuid4().hex[:8]
+    queue = f"py-local-mixed-{suffix}"
+    workflow_id = f"py-local-mixed-{suffix}"
+    manifest = {
+        **PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+        "local_activities": {
+            "supported": True,
+            "minimum_protocol_version": "1.18",
+            "implementation": "record_local_activity",
+        },
+    }
+
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        worker = Worker(
+            client,
+            task_queue=queue,
+            workflows=[LocalMixedWorkflow],
+            activities=[local_greet, remote_tail],
+            worker_id=f"py-local-mixed-worker-{suffix}",
+        )
+        await client.register_worker(
+            worker_id=worker.worker_id,
+            task_queue=queue,
+            supported_workflow_types=list(worker.workflows),
+            supported_activity_types=list(worker.activities),
+            workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
+            workflow_command_contracts=worker.workflow_command_contracts,
+            capabilities=["local_activities"],
+            capability_manifest=manifest,
+        )
+        try:
+            handle = await client.start_workflow(
+                workflow_type="tests.python-local-mixed",
+                task_queue=queue,
+                workflow_id=workflow_id,
+                input=["Ada"],
+            )
+            first_task = await client.poll_workflow_task(
+                worker_id=worker.worker_id, task_queue=queue, timeout=10.0,
+            )
+            assert first_task is not None
+            first_commands = await worker._run_workflow_task(first_task)
+            assert first_commands is not None
+            assert [command["type"] for command in first_commands] == [
+                "record_local_activity", "schedule_activity",
+            ]
+
+            activity_task = await client.poll_activity_task(
+                worker_id=worker.worker_id, task_queue=queue, timeout=10.0,
+            )
+            assert activity_task is not None
+            assert await worker._run_activity_task(activity_task) == "completed"
+
+            final_task = await client.poll_workflow_task(
+                worker_id=worker.worker_id, task_queue=queue, timeout=10.0,
+            )
+            assert final_task is not None
+            final_commands = await worker._run_workflow_task(final_task)
+            assert final_commands is not None
+            assert [command["type"] for command in final_commands] == ["complete_workflow"]
+            assert await handle.result(timeout=10.0) == {"greeting": "hello, Ada!"}
+            assert _executions == 1
+
+            history = await handle.get_history()
+            events = history.get("events", history.get("history_events", []))
+            event_types = [event["event_type"] for event in events]
+            assert event_types.count("ActivityCompleted") == 2
+            assert event_types.count("WorkflowCompleted") == 1
+            outcome = replay(
+                LocalMixedWorkflow, events, ["Ada"],
+                workflow_id=workflow_id, run_id=handle.run_id or "",
+            )
+            assert [command.__class__.__name__ for command in outcome.commands] == ["CompleteWorkflow"]
+            assert _executions == 1
+        finally:
+            await client.deregister_worker_registration(worker.worker_id)
 
 
 @pytest.mark.asyncio

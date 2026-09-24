@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote, unquote, urlparse
 
-from .errors import ExternalPayloadIntegrityMismatch, ExternalPayloadUnsupported
+from .errors import (
+    ExternalPayloadError,
+    ExternalPayloadIntegrityMismatch,
+    ExternalPayloadUnavailable,
+    ExternalPayloadUnsupported,
+)
 
 EXTERNAL_PAYLOAD_REFERENCE_SCHEMA = "durable-workflow.v2.external-payload-reference.v1"
 RUNTIME_EXTERNAL_PAYLOAD_REFERENCE_SCHEMA = (
@@ -556,7 +561,12 @@ def store_external_payload(
     if expires_at is not None:
         _validate_rfc3339(expires_at)
     sha256 = hashlib.sha256(data).hexdigest()
-    uri = driver.put(data, sha256=sha256, codec=codec)
+    try:
+        uri = driver.put(data, sha256=sha256, codec=codec)
+    except ExternalPayloadError:
+        raise
+    except Exception as exc:
+        raise ExternalPayloadUnavailable("external payload storage upload failed") from exc
     return ExternalPayloadReference(
         uri=uri,
         sha256=sha256,
