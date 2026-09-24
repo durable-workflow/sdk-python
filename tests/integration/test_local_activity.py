@@ -177,6 +177,101 @@ async def test_local_activity_completion_survives_cold_replay(
 
 
 @pytest.mark.asyncio
+async def test_local_activity_runtime_external_payloads_survive_cold_replay(
+    server_url: str,
+    server_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global _executions
+    _executions = 0
+    suffix = uuid.uuid4().hex[:8]
+    namespace = f"py-local-ext-{suffix}"
+    queue = f"py-local-ext-{suffix}"
+    workflow_id = f"py-local-ext-{suffix}"
+    manifest = {
+        **PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+        "local_activities": {
+            "supported": True,
+            "minimum_protocol_version": "1.18",
+            "implementation": "record_local_activity",
+        },
+    }
+
+    async with Client(server_url, token=server_token, namespace="default") as admin:
+        await admin.create_namespace(namespace)
+        try:
+            await admin.set_namespace_external_storage(
+                namespace, driver="local", threshold_bytes=1,
+            )
+            async with Client(server_url, token=server_token, namespace=namespace) as client:
+                transport = await client._runtime_external_payload_transport()
+                assert transport is not None and transport.status == "available"
+                worker = Worker(
+                    client,
+                    task_queue=queue,
+                    workflows=[LocalActivityWorkflow],
+                    activities=[local_greet],
+                    worker_id=f"py-local-ext-worker-{suffix}",
+                )
+                await client.register_worker(
+                    worker_id=worker.worker_id,
+                    task_queue=queue,
+                    supported_workflow_types=list(worker.workflows),
+                    supported_activity_types=list(worker.activities),
+                    workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
+                    workflow_command_contracts=worker.workflow_command_contracts,
+                    capabilities=["local_activities"],
+                    capability_manifest=manifest,
+                )
+                try:
+                    completed_bodies: list[dict[str, Any]] = []
+                    original_externalize = client._externalize_runtime_payloads
+
+                    async def capture_completion(*args: Any, **kwargs: Any) -> Any:
+                        result = await original_externalize(*args, **kwargs)
+                        if isinstance(result, dict) and "commands" in result:
+                            completed_bodies.append(result)
+                        return result
+
+                    monkeypatch.setattr(client, "_externalize_runtime_payloads", capture_completion)
+                    handle = await client.start_workflow(
+                        workflow_type="tests.python-local-activity",
+                        task_queue=queue,
+                        workflow_id=workflow_id,
+                        input=["Ada"],
+                    )
+                    task = await client.poll_workflow_task(
+                        worker_id=worker.worker_id, task_queue=queue, timeout=10.0,
+                    )
+                    assert task is not None
+                    await worker._run_workflow_task(task)
+                    assert _executions == 1
+                    assert await handle.result(timeout=10.0) == {"greeting": "hello, Ada"}
+
+                    assert len(completed_bodies) == 1
+                    recorded = completed_bodies[0]["commands"][0]
+                    assert recorded["type"] == "record_local_activity"
+                    assert "external_payload" in recorded["arguments"]
+                    assert "external_payload" in recorded["result"]
+
+                    history = await handle.get_history()
+                    events = history.get("events", history.get("history_events", []))
+                    outcome = replay(
+                        LocalActivityWorkflow,
+                        events,
+                        ["Ada"],
+                        workflow_id=workflow_id,
+                        run_id=handle.run_id or "",
+                    )
+                    assert [command.__class__.__name__ for command in outcome.commands] == ["CompleteWorkflow"]
+                    assert _executions == 1
+                finally:
+                    await client.deregister_worker_registration(worker.worker_id)
+        finally:
+            await admin.delete_namespace(namespace)
+
+
+@pytest.mark.asyncio
 async def test_local_activity_completion_survives_lost_acknowledgement(
     server_url: str,
     server_token: str,
