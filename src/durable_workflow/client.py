@@ -1316,7 +1316,7 @@ class WorkflowHandle:
         return await self._client.query_workflow(self.workflow_id, query_name, args=args)
 
     async def cancel(self, *, reason: str | None = None) -> None:
-        """Request graceful cancellation of this workflow. See :meth:`Client.cancel_workflow`."""
+        """Close this workflow's current run as cancelled. See :meth:`Client.cancel_workflow`."""
         await self._client.cancel_workflow(self.workflow_id, reason=reason)
 
     async def terminate(self, *, reason: str | None = None) -> None:
@@ -4114,11 +4114,13 @@ class Client:
         )
 
     async def cancel_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
-        """Request graceful cancellation of a workflow's current run.
+        """Close the current run as cancelled immediately.
 
-        Cancellation is cooperative: the server delivers a cancellation signal
-        that the workflow can observe and handle (e.g. to roll back via a
-        saga). Compare with :meth:`terminate_workflow`, which is forceful.
+        Server cancels open tasks and timers; it does not resume workflow code
+        to run saga or ``finally`` cleanup. :meth:`terminate_workflow` also
+        closes immediately, with a distinct terminal outcome. Embedded
+        Laravel's cooperative ``requestCancellation()`` is not yet available
+        through this service-mode API.
         """
         body: dict[str, Any] = {}
         if reason is not None:
@@ -4126,10 +4128,11 @@ class Client:
         await self._request("POST", f"/workflows/{workflow_id}/cancel", json=body, context=workflow_id)
 
     async def terminate_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
-        """Forcefully stop a workflow without giving it a chance to clean up.
+        """Close the current run as terminated immediately.
 
-        Prefer :meth:`cancel_workflow` when the workflow code can implement
-        graceful shutdown. Termination is an operator escape hatch.
+        Like :meth:`cancel_workflow`, this does not resume workflow code for
+        cleanup. Use the distinct terminal outcome when termination is the
+        appropriate operator action.
         """
         body: dict[str, Any] = {}
         if reason is not None:

@@ -581,7 +581,8 @@ class ActivityFailed(DurableWorkflowError):
 class WorkflowTerminated(DurableWorkflowError):
     """A workflow was terminated by operator action.
 
-    Termination is non-gracious and skips normal cleanup, unlike cancellation.
+    Like terminal cancellation, termination does not resume workflow cleanup.
+    It records a distinct terminal outcome.
     """
 
     def __init__(self, message: str = "workflow was terminated") -> None:
@@ -643,8 +644,9 @@ class ActivityCancelled(BaseException):
     """An in-flight activity was cancelled.
 
     Raised inside :meth:`durable_workflow.ActivityContext.heartbeat` when the
-    server reports that the owning workflow has asked for cancellation, so the
-    activity can exit cleanly on its next heartbeat.
+    server reports that the task was revoked or its run was cancelled, so the
+    activity can exit on its next heartbeat. This permits local activity cleanup,
+    not durable workflow compensation after the run closes.
 
     Inherits from :class:`BaseException` — not :class:`Exception` — so that a
     user ``except Exception:`` block inside the activity function cannot

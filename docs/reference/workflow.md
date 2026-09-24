@@ -17,7 +17,8 @@ same nested shape and input order. Every leaf emits the shared
 
 Use `ctx.saga().run(forward)` for sequential reverse-order compensation.
 Register each compensation only after its forward activity completes. The
-helper compensates on failure or cooperative cancellation and raises
+helper compensates on failure and raises
 `SagaCompensationFailed` if compensation itself fails.
+Terminal `Client.cancel_workflow` does not resume workflow code to run it.
 
 ::: durable_workflow.workflow
