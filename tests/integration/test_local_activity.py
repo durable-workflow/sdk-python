@@ -9,6 +9,7 @@ import pytest
 
 from durable_workflow import Client, Worker, activity, workflow
 from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
+from durable_workflow.errors import NonRetryableError, WorkflowFailed
 from durable_workflow.workflow import replay
 
 
@@ -48,6 +49,8 @@ _retry_executions = 0
 async def local_retry_greet(name: str) -> str:
     global _retry_executions
     _retry_executions += 1
+    if name == "Permanent":
+        raise NonRetryableError("permanent")
     if _retry_executions == 1:
         raise RuntimeError("transient")
     return f"hello, {name}"
@@ -130,6 +133,85 @@ async def test_local_activity_completion_survives_cold_replay(
             )
             assert [command.__class__.__name__ for command in outcome.commands] == ["CompleteWorkflow"]
             assert _executions == 1
+        finally:
+            await client.deregister_worker_registration(worker.worker_id)
+
+
+@pytest.mark.asyncio
+async def test_local_activity_terminal_failure_is_recorded_and_replayed(
+    server_url: str,
+    server_token: str,
+) -> None:
+    global _retry_executions
+    _retry_executions = 0
+    suffix = uuid.uuid4().hex[:8]
+    queue = f"py-local-failure-{suffix}"
+    workflow_id = f"py-local-failure-{suffix}"
+    manifest = {
+        **PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+        "local_activities": {
+            "supported": True,
+            "minimum_protocol_version": "1.18",
+            "implementation": "record_local_activity",
+        },
+    }
+
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        worker = Worker(
+            client,
+            task_queue=queue,
+            workflows=[LocalRetryWorkflow],
+            activities=[local_retry_greet],
+            worker_id=f"py-local-failure-worker-{suffix}",
+        )
+        await client.register_worker(
+            worker_id=worker.worker_id,
+            task_queue=queue,
+            supported_workflow_types=list(worker.workflows),
+            supported_activity_types=list(worker.activities),
+            workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
+            workflow_command_contracts=worker.workflow_command_contracts,
+            capabilities=["local_activities"],
+            capability_manifest=manifest,
+        )
+        try:
+            handle = await client.start_workflow(
+                workflow_type="tests.python-local-retry",
+                task_queue=queue,
+                workflow_id=workflow_id,
+                input=["Permanent"],
+            )
+            task = await client.poll_workflow_task(
+                worker_id=worker.worker_id,
+                task_queue=queue,
+                timeout=10.0,
+            )
+            assert task is not None
+            commands = await worker._run_workflow_task(task)
+            assert commands is not None
+            assert [command["type"] for command in commands] == ["record_local_activity", "fail_workflow"]
+            assert commands[0]["outcome"] == "failed"
+            assert commands[0]["non_retryable"] is True
+            assert len(commands[0]["attempts"]) == 1
+            assert _retry_executions == 1
+            with pytest.raises(WorkflowFailed):
+                await handle.result(timeout=10.0)
+
+            history = await handle.get_history()
+            events = history.get("events", history.get("history_events", []))
+            event_types = [event["event_type"] for event in events]
+            assert event_types.count("ActivityFailed") == 1
+            assert event_types.count("WorkflowFailed") == 1
+
+            outcome = replay(
+                LocalRetryWorkflow,
+                events,
+                ["Permanent"],
+                workflow_id=workflow_id,
+                run_id=handle.run_id or "",
+            )
+            assert [command.__class__.__name__ for command in outcome.commands] == ["FailWorkflow"]
+            assert _retry_executions == 1
         finally:
             await client.deregister_worker_registration(worker.worker_id)
 
