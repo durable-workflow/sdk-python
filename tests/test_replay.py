@@ -524,6 +524,20 @@ class TestOneActivity:
         assert isinstance(cmd, CompleteWorkflow)
         assert cmd.result == {"greeting": "hello, world"}
 
+    @pytest.mark.parametrize("event_type", ["ActivityScheduled", "ActivityCompleted"])
+    def test_recorded_local_activity_cannot_replay_as_remote_activity(self, event_type: str) -> None:
+        payload: dict[str, Any] = {
+            "workflow_sequence": 1,
+            "activity_type": "greet",
+            "execution_mode": "local",
+            "local_activity": True,
+        }
+        if event_type == "ActivityCompleted":
+            payload["result"] = _avro("hello, world")
+
+        with pytest.raises(NonDeterministicReplayError, match="local activity"):
+            replay(OneActivity, [{"event_type": event_type, "payload": payload}], ["world"])
+
     def test_completed_activity_uses_event_payload_codec(self) -> None:
         history = [
             {

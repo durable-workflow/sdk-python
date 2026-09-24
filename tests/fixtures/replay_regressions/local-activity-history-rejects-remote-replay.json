@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "local-activity-history-rejects-remote-replay",
+  "protocol_version": "1.19",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "golden.single-activity",
+    "input": ["Ada"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "workflow_sequence": 1,
+        "activity_type": "golden.greet",
+        "execution_mode": "local",
+        "local_activity": true
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": []
+  },
+  "expected_replay_error": {
+    "type": "NonDeterministicReplayError",
+    "message_contains": "local activity",
+    "workflow_sequence": 1
+  }
+}

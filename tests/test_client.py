@@ -2879,6 +2879,30 @@ class TestFailWorkflowTask:
         assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
 
     @pytest.mark.asyncio
+    async def test_heartbeat_workflow_task_uses_worker_credential_and_lease_fence(self) -> None:
+        client = Client(
+            "http://localhost:8080",
+            control_token="control-token",
+            worker_token="worker-token",
+        )
+        resp = _mock_response(200, {"renewed": True})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            result = await client.heartbeat_workflow_task(
+                task_id="task-1",
+                lease_owner="worker-1",
+                workflow_task_attempt=2,
+            )
+
+        assert result == {"renewed": True}
+        assert mock.call_args.args[:2] == ("POST", "/api/worker/workflow-tasks/task-1/heartbeat")
+        assert mock.call_args.kwargs["headers"]["Authorization"] == "Bearer worker-token"
+        assert mock.call_args.kwargs["json"] == {
+            "lease_owner": "worker-1",
+            "workflow_task_attempt": 2,
+        }
+        await client.aclose()
+
+    @pytest.mark.asyncio
     async def test_workflow_task_history_matches_polyglot_fixture(self, client: Client) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-task-history-parity.json"
         fixture = json.loads(fixture_path.read_text())

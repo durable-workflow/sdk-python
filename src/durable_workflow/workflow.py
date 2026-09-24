@@ -3160,6 +3160,8 @@ def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
     activity_type = _activity_type_from_payload(payload)
     if activity_type is not None:
         details["activity_type"] = activity_type
+    if payload.get("execution_mode") == "local" or payload.get("local_activity") is True:
+        details["execution_mode"] = "local"
 
     for key in (
         "workflow_type",
@@ -3286,6 +3288,8 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
             f"yielded {expected_parallel_path!r}."
         )
     if isinstance(command, ScheduleActivity):
+        if step.details.get("execution_mode") == "local":
+            return "Recorded local activity cannot replay as a scheduled activity."
         recorded = step.details.get("activity_type")
         if isinstance(recorded, str) and recorded != command.activity_type:
             return (
