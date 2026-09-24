@@ -162,6 +162,15 @@ def _is_storage_admission_error(error: BaseException) -> bool:
     )
 
 
+def _poll_error_summary(error: BaseException) -> str:
+    if not isinstance(error, ServerError):
+        return str(error)
+    reason = error.reason()
+    if not isinstance(reason, str) or not reason:
+        return f"server returned {error.status}"
+    return f"server returned {error.status} reason={reason[:64]!r}"
+
+
 def _command_payload_codec(codec: object) -> str:
     if codec is None:
         return serializer.AVRO_CODEC
@@ -2184,7 +2193,7 @@ class Worker:
                 if _is_storage_admission_error(e):
                     raise
                 self._record_poll_metrics("workflow", "error", time.perf_counter() - poll_start)
-                log.warning("workflow poll error: %s", e)
+                log.warning("workflow poll error: %s", _poll_error_summary(e))
                 await asyncio.sleep(1.0)
                 continue
             if task is None:
@@ -2282,7 +2291,7 @@ class Worker:
                 if _is_storage_admission_error(e):
                     raise
                 self._record_poll_metrics("activity", "error", time.perf_counter() - poll_start)
-                log.warning("activity poll error: %s", e)
+                log.warning("activity poll error: %s", _poll_error_summary(e))
                 await asyncio.sleep(1.0)
                 continue
             if task is None:
@@ -2333,7 +2342,7 @@ class Worker:
                 if _is_storage_admission_error(e):
                     raise
                 self._record_poll_metrics("query", "error", time.perf_counter() - poll_start)
-                log.warning("query poll error: %s", e)
+                log.warning("query poll error: %s", _poll_error_summary(e))
                 await asyncio.sleep(1.0)
                 continue
             if task is None:
