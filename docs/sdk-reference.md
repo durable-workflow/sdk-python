@@ -255,7 +255,8 @@ parallel workflow group.
 
 A worker session routes related activities to one capable worker while its
 lease is active. Give the activity a `WorkerSessionOptions` value and register
-the matching capability on the worker:
+the matching capability on the worker. This path was qualified against Server
+2.4.2; use that version or a later qualified release for worker sessions:
 
 ```python
 import asyncio
