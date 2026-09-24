@@ -74,6 +74,13 @@ class LocalUnencodableWorkflow:
         return object()
 
 
+@workflow.defn(name="local-then-nexus-wf")
+class LocalThenNexusWorkflow:
+    def run(self, ctx, name):  # type: ignore[no-untyped-def]
+        yield ctx.local_activity("local.echo", [name])
+        return (yield ctx.call_nexus_service("greeter", "shared", "greet", [name]))
+
+
 @activity.defn(name="local.echo")
 async def local_echo(name: str) -> str:
     await activity.context().heartbeat({"phase": "running"})
@@ -1271,6 +1278,30 @@ class TestWorkflowTaskExecution:
         assert commands is not None
         assert [command["type"] for command in commands] == ["record_local_activity", "fail_workflow"]
         assert commands[0]["outcome"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_local_record_is_committed_when_following_nexus_call_cannot_resolve(
+        self, mock_client: AsyncMock,
+    ) -> None:
+        mock_client.heartbeat_workflow_task.return_value = {
+            "task_id": "local-task", "lease_owner": "local-worker",
+            "workflow_task_attempt": 1, "renewed": True,
+        }
+        worker = Worker(
+            mock_client, task_queue="q1", worker_id="local-worker",
+            workflows=[LocalThenNexusWorkflow], activities=[local_echo],
+        )
+        commands = await worker._run_workflow_task({
+            "task_id": "local-task", "workflow_type": "local-then-nexus-wf",
+            "workflow_task_attempt": 1, "history_events": [],
+            "arguments": serializer.encode(["Ada"], codec="avro"), "payload_codec": "avro",
+        })
+        assert commands is not None
+        assert [command["type"] for command in commands] == ["record_local_activity", "fail_workflow"]
+        assert commands[0]["outcome"] == "completed"
+        assert "Nexus resolution after local activity failed" in commands[1]["message"]
+        mock_client.execute_nexus_operation.assert_not_awaited()
+        mock_client.fail_workflow_task.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_local_heartbeat_refusal_during_handler_abandons_task(self, mock_client: AsyncMock) -> None:

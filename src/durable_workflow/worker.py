@@ -1797,18 +1797,33 @@ class Worker:
             )
         except Exception as e:
             log.exception("workflow Nexus service call resolution failed")
-            try:
-                await self.client.fail_workflow_task(
-                    task_id=task_id,
-                    lease_owner=self.worker_id,
-                    workflow_task_attempt=attempt,
-                    message=f"workflow Nexus service call resolution failed: {e}",
-                    failure_type=type(e).__name__,
-                    stack_trace=traceback.format_exc(),
-                )
-            except Exception as fe:
-                log.warning("failed to report workflow Nexus resolution failure: %s", fe)
-            return None
+            last_local = max(
+                (index for index, command in enumerate(outcome.commands)
+                 if isinstance(command, RecordLocalActivity) and command.outcome is not None),
+                default=-1,
+            )
+            if last_local >= 0:
+                workflow_commands = [
+                    *outcome.commands[:last_local + 1],
+                    FailWorkflow(
+                        f"Nexus resolution after local activity failed: {e}",
+                        exception_type=type(e).__name__,
+                        non_retryable=True,
+                    ),
+                ]
+            else:
+                try:
+                    await self.client.fail_workflow_task(
+                        task_id=task_id,
+                        lease_owner=self.worker_id,
+                        workflow_task_attempt=attempt,
+                        message=f"workflow Nexus service call resolution failed: {e}",
+                        failure_type=type(e).__name__,
+                        stack_trace=traceback.format_exc(),
+                    )
+                except Exception as fe:
+                    log.warning("failed to report workflow Nexus resolution failure: %s", fe)
+                return None
 
         if (
             any(isinstance(command, UpsertMemo) for command in workflow_commands)
