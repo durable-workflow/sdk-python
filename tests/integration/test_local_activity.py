@@ -59,11 +59,11 @@ async def local_retry_greet(name: str) -> str:
 
 @workflow.defn(name="tests.python-local-timeout")
 class LocalTimeoutWorkflow:
-    def run(self, ctx: Any, name: str) -> Any:
+    def run(self, ctx: Any, name: str, timeout_kind: str) -> Any:
         result = yield ctx.local_activity(
             "tests.python-local-slow-greet",
             [name],
-            start_to_close_timeout=1,
+            **{f"{timeout_kind}_timeout": 1},
         )
         return {"greeting": result}
 
@@ -75,6 +75,7 @@ _slow_executions = 0
 async def local_slow_greet(name: str) -> str:
     global _slow_executions
     _slow_executions += 1
+    await activity.context().heartbeat({"phase": "before-wait"})
     await asyncio.sleep(1.2)
     return f"hello, {name}"
 
@@ -319,16 +320,18 @@ async def test_local_activity_retries_commit_one_terminal_record_and_replay(
             await client.deregister_worker_registration(worker.worker_id)
 
 
+@pytest.mark.parametrize("timeout_kind", ["start_to_close", "heartbeat", "schedule_to_close"])
 @pytest.mark.asyncio
-async def test_local_activity_start_to_close_timeout_is_recorded_and_replayed(
+async def test_local_activity_timeout_is_recorded_and_replayed(
     server_url: str,
     server_token: str,
+    timeout_kind: str,
 ) -> None:
     global _slow_executions
     _slow_executions = 0
     suffix = uuid.uuid4().hex[:8]
-    queue = f"py-local-timeout-{suffix}"
-    workflow_id = f"py-local-timeout-{suffix}"
+    queue = f"py-local-{timeout_kind}-{suffix}"
+    workflow_id = f"py-local-{timeout_kind}-{suffix}"
     manifest = {
         **PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
         "local_activities": {
@@ -361,7 +364,7 @@ async def test_local_activity_start_to_close_timeout_is_recorded_and_replayed(
                 workflow_type="tests.python-local-timeout",
                 task_queue=queue,
                 workflow_id=workflow_id,
-                input=["Ada"],
+                input=["Ada", timeout_kind],
             )
             task = await client.poll_workflow_task(
                 worker_id=worker.worker_id,
@@ -373,7 +376,7 @@ async def test_local_activity_start_to_close_timeout_is_recorded_and_replayed(
             assert commands is not None
             assert [command["type"] for command in commands] == ["record_local_activity", "fail_workflow"]
             assert commands[0]["outcome"] == "timed_out"
-            assert commands[0]["timeout_kind"] == "start_to_close"
+            assert commands[0]["timeout_kind"] == timeout_kind
             assert len(commands[0]["attempts"]) == 1
             assert _slow_executions == 1
             with pytest.raises(WorkflowFailed):
@@ -382,13 +385,14 @@ async def test_local_activity_start_to_close_timeout_is_recorded_and_replayed(
             history = await handle.get_history()
             events = history.get("events", history.get("history_events", []))
             event_types = [event["event_type"] for event in events]
+            assert event_types.count("ActivityHeartbeatRecorded") == 1
             assert event_types.count("ActivityTimedOut") == 1
             assert event_types.count("WorkflowFailed") == 1
 
             outcome = replay(
                 LocalTimeoutWorkflow,
                 events,
-                ["Ada"],
+                ["Ada", timeout_kind],
                 workflow_id=workflow_id,
                 run_id=handle.run_id or "",
             )
