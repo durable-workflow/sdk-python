@@ -31,7 +31,7 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import httpx
@@ -61,6 +61,7 @@ from .external_storage import (
 from .metrics import CLIENT_REQUEST_DURATION_SECONDS, CLIENT_REQUESTS, NOOP_METRICS, MetricsRecorder
 from .nexus import NexusOperationResult, nexus_request_payload
 from .retry_policy import TransportRetryPolicy
+from .worker_session import WorkerSessionOptions
 
 PROTOCOL_VERSION = "1.19"
 CONTROL_PLANE_VERSION = "2"
@@ -4670,6 +4671,7 @@ class Client:
         supported_activity_types: list[str] | None = None,
         max_concurrent_workflow_tasks: int | None = None,
         max_concurrent_activity_tasks: int | None = None,
+        max_concurrent_worker_sessions: int | None = None,
         runtime: str = "python",
         sdk_version: str | None = None,
         build_id: str | None = None,
@@ -4693,6 +4695,8 @@ class Client:
             raise ValueError("max_concurrent_workflow_tasks must be at least 1")
         if max_concurrent_activity_tasks is not None and max_concurrent_activity_tasks < 1:
             raise ValueError("max_concurrent_activity_tasks must be at least 1")
+        if max_concurrent_worker_sessions is not None and max_concurrent_worker_sessions < 1:
+            raise ValueError("max_concurrent_worker_sessions must be at least 1")
         if (
             capabilities
             and _MESSAGE_STREAMS_CAPABILITY in capabilities
@@ -4721,6 +4725,8 @@ class Client:
             body["max_concurrent_workflow_tasks"] = max_concurrent_workflow_tasks
         if max_concurrent_activity_tasks is not None:
             body["max_concurrent_activity_tasks"] = max_concurrent_activity_tasks
+        if max_concurrent_worker_sessions is not None:
+            body["max_concurrent_worker_sessions"] = max_concurrent_worker_sessions
         if task_slots is not None:
             body["task_slots"] = task_slots
         if process_metrics is not None:
@@ -4728,6 +4734,32 @@ class Client:
         if heartbeat_interval_seconds is not None:
             body["heartbeat_interval_seconds"] = heartbeat_interval_seconds
         return await self._request("POST", "/worker/register", worker=True, json=body)
+
+    async def create_worker_session(
+        self, worker_id: str, options: WorkerSessionOptions
+    ) -> dict[str, Any]:
+        return cast(dict[str, Any], await self._request(
+            "POST", "/worker/sessions", worker=True,
+            json={"worker_id": worker_id, **options.to_wire()},
+        ))
+
+    async def renew_worker_session(
+        self, worker_id: str, session_id: str, lease_seconds: int
+    ) -> dict[str, Any]:
+        if lease_seconds < 1:
+            raise ValueError("worker session lease_seconds must be positive")
+        return cast(dict[str, Any], await self._request(
+            "POST", f"/worker/sessions/{quote(session_id, safe='')}/heartbeat", worker=True,
+            json={"worker_id": worker_id, "lease_seconds": lease_seconds},
+        ))
+
+    async def close_worker_session(
+        self, worker_id: str, session_id: str, reason: str = "worker_shutdown"
+    ) -> dict[str, Any]:
+        return cast(dict[str, Any], await self._request(
+            "DELETE", f"/worker/sessions/{quote(session_id, safe='')}", worker=True,
+            json={"worker_id": worker_id, "reason": reason},
+        ))
 
     async def deregister_worker_registration(self, worker_id: str) -> dict[str, Any]:
         """Remove this runtime's successful worker-plane registration.

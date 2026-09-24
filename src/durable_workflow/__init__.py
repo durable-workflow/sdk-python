@@ -210,6 +210,7 @@ from .serializer import (
     to_avro_payload_values,
 )
 from .worker import Worker
+from .worker_session import WorkerSession, WorkerSessionOptions
 from .workflow import (
     ActivityRetryPolicy,
     ChildWorkflowRetryPolicy,
@@ -290,6 +291,8 @@ __all__ = [
     "TaskQueueQueryAdmission",
     "TaskQueueTaskAdmission",
     "Worker",
+    "WorkerSession",
+    "WorkerSessionOptions",
     "WorkerInterceptor",
     "WorkflowCommandResult",
     "WorkflowExecution",
