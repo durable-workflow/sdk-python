@@ -422,6 +422,7 @@ class TestWorkerRegistration:
             "supported_activity_types": ["test-act"],
             "max_concurrent_workflow_tasks": 10,
             "max_concurrent_activity_tasks": 10,
+            "max_concurrent_worker_sessions": 10,
             "build_id": None,
             "capabilities": [
                 "memo_upserts",
@@ -451,6 +452,7 @@ class TestWorkerRegistration:
             "task_slots": {
                 "workflow_available": 10,
                 "activity_available": 10,
+                "session_available": 10,
             },
             "process_metrics": process_metrics,
         }

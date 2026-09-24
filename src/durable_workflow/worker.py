@@ -986,6 +986,7 @@ class Worker:
         task_queue: str,
         workflows: Iterable[type] = (),
         activities: Iterable[Callable[..., Any]] = (),
+        capabilities: Iterable[str] = (),
         worker_id: str | None = None,
         build_id: str | None = None,
         poll_timeout: float = 35.0,
@@ -1012,6 +1013,9 @@ class Worker:
             for workflow_type, workflow_cls in self.workflows.items()
         }
         self.activities = {_activity_name(a): a for a in activities}
+        self.capabilities = tuple(dict.fromkeys(capability.strip() for capability in capabilities))
+        if any(not capability for capability in self.capabilities):
+            raise ValueError("worker capabilities must be non-empty strings")
         self.worker_id = worker_id or f"py-worker-{uuid.uuid4().hex[:8]}"
         if build_id is not None:
             if not isinstance(build_id, str) or build_id.strip() == "":
@@ -1198,6 +1202,9 @@ class Worker:
         if any(contract["updates"] for contract in self.workflow_command_contracts.values()):
             capabilities.append(WORKFLOW_UPDATES_CAPABILITY)
         capabilities.append(MESSAGE_STREAMS_CAPABILITY)
+        capabilities.extend(self.capabilities)
+        if PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST["worker_sessions"]["supported"]:
+            capabilities.append("worker_sessions")
 
         ack = await self.client.register_worker(
             worker_id=self.worker_id,
