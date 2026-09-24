@@ -10,7 +10,7 @@ import pytest
 
 from durable_workflow import Client, Worker, activity, workflow
 from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
-from durable_workflow.errors import NonRetryableError, WorkflowFailed
+from durable_workflow.errors import NonRetryableError, WorkflowCancelled, WorkflowFailed
 from durable_workflow.workflow import replay
 
 
@@ -266,6 +266,82 @@ async def test_local_activity_completion_survives_lost_acknowledgement(
             assert event_types.count("ActivityCompleted") == 1
             assert event_types.count("WorkflowCompleted") == 1
             assert event_types.count("WorkflowTaskFailed") == 0
+        finally:
+            await client.deregister_worker_registration(worker.worker_id)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_run_fences_in_flight_local_activity(
+    server_url: str,
+    server_token: str,
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    queue = f"py-local-cancel-{suffix}"
+    workflow_id = f"py-local-cancel-{suffix}"
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    manifest = {
+        **PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+        "local_activities": {
+            "supported": True,
+            "minimum_protocol_version": "1.18",
+            "implementation": "record_local_activity",
+        },
+    }
+
+    async def blocked_greet(name: str) -> str:
+        entered.set()
+        await release.wait()
+        await activity.context().heartbeat({"phase": "after-cancel"})
+        return f"hello, {name}"
+
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        worker = Worker(
+            client,
+            task_queue=queue,
+            workflows=[LocalActivityWorkflow],
+            activities=[local_greet],
+            worker_id=f"py-local-cancel-worker-{suffix}",
+        )
+        worker.activities["tests.python-local-greet"] = blocked_greet
+        await client.register_worker(
+            worker_id=worker.worker_id,
+            task_queue=queue,
+            supported_workflow_types=list(worker.workflows),
+            supported_activity_types=list(worker.activities),
+            workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
+            workflow_command_contracts=worker.workflow_command_contracts,
+            capabilities=["local_activities"],
+            capability_manifest=manifest,
+        )
+        try:
+            handle = await client.start_workflow(
+                workflow_type="tests.python-local-activity",
+                task_queue=queue,
+                workflow_id=workflow_id,
+                input=["Ada"],
+            )
+            task = await client.poll_workflow_task(
+                worker_id=worker.worker_id,
+                task_queue=queue,
+                timeout=10.0,
+            )
+            assert task is not None
+            execution = asyncio.create_task(worker._run_workflow_task(task))
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=10.0)
+                await handle.cancel(reason="cancel during local activity")
+            finally:
+                release.set()
+            assert await asyncio.wait_for(execution, timeout=10.0) is None
+            with pytest.raises(WorkflowCancelled):
+                await handle.result(timeout=10.0)
+
+            history = await handle.get_history()
+            events = history.get("events", history.get("history_events", []))
+            event_types = [event["event_type"] for event in events]
+            assert event_types.count("WorkflowCancelled") == 1
+            assert event_types.count("ActivityCompleted") == 0
         finally:
             await client.deregister_worker_registration(worker.worker_id)
 
