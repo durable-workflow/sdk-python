@@ -1698,7 +1698,11 @@ class WorkflowContext:
 
     @property
     def is_cancellation_requested(self) -> bool:
-        """Whether this workflow task requests cooperative cancellation."""
+        """Whether this task carries a cooperative cancellation request.
+
+        Server's current ``/cancel`` route is terminal and does not set this
+        flag. Service-mode cooperative cancellation is not yet available.
+        """
         return self._cancel_requested
 
     def throw_if_cancellation_requested(self) -> None:
