@@ -32,6 +32,21 @@ async def local_greet(name: str) -> str:
     return f"hello, {name}"
 
 
+@workflow.defn(name="tests.python-local-restart")
+class LocalRestartWorkflow:
+    def __init__(self) -> None:
+        self.finished = False
+
+    @workflow.signal("finish")
+    def finish(self) -> None:
+        self.finished = True
+
+    def run(self, ctx: Any, name: str) -> Any:
+        greeting = yield ctx.local_activity("tests.python-local-greet", [name])
+        yield ctx.wait_condition(lambda: self.finished, key="local-activity-finished")
+        return {"greeting": greeting}
+
+
 @workflow.defn(name="tests.python-local-retry")
 class LocalRetryWorkflow:
     def run(self, ctx: Any, name: str) -> Any:
@@ -159,6 +174,109 @@ async def test_local_activity_completion_survives_cold_replay(
             assert _executions == 1
         finally:
             await client.deregister_worker_registration(worker.worker_id)
+
+
+@pytest.mark.asyncio
+async def test_replacement_worker_replays_local_activity_before_signal(
+    server_url: str,
+    server_token: str,
+) -> None:
+    global _executions
+    _executions = 0
+    suffix = uuid.uuid4().hex[:8]
+    queue = f"py-local-restart-{suffix}"
+    workflow_id = f"py-local-restart-{suffix}"
+    manifest = {
+        **PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+        "local_activities": {
+            "supported": True,
+            "minimum_protocol_version": "1.18",
+            "implementation": "record_local_activity",
+        },
+    }
+
+    async with Client(server_url, token=server_token, namespace="default") as first_client:
+        first_worker = Worker(
+            first_client,
+            task_queue=queue,
+            workflows=[LocalRestartWorkflow],
+            activities=[local_greet],
+            worker_id=f"py-local-before-{suffix}",
+        )
+        await first_client.register_worker(
+            worker_id=first_worker.worker_id,
+            task_queue=queue,
+            supported_workflow_types=list(first_worker.workflows),
+            supported_activity_types=list(first_worker.activities),
+            workflow_definition_fingerprints=first_worker.workflow_definition_fingerprints,
+            workflow_command_contracts=first_worker.workflow_command_contracts,
+            capabilities=["local_activities"],
+            capability_manifest=manifest,
+        )
+        try:
+            handle = await first_client.start_workflow(
+                workflow_type="tests.python-local-restart",
+                task_queue=queue,
+                workflow_id=workflow_id,
+                input=["Ada"],
+            )
+            first_task = await first_client.poll_workflow_task(
+                worker_id=first_worker.worker_id,
+                task_queue=queue,
+                timeout=10.0,
+            )
+            assert first_task is not None
+            commands = await first_worker._run_workflow_task(first_task)
+            assert commands is not None
+            assert [command["type"] for command in commands] == [
+                "record_local_activity",
+                "open_condition_wait",
+            ]
+            assert _executions == 1
+            assert (await handle.describe()).status.lower() == "waiting"
+        finally:
+            await first_client.deregister_worker_registration(first_worker.worker_id)
+
+    async with Client(server_url, token=server_token, namespace="default") as replacement_client:
+        replacement_worker = Worker(
+            replacement_client,
+            task_queue=queue,
+            workflows=[LocalRestartWorkflow],
+            activities=[local_greet],
+            worker_id=f"py-local-after-{suffix}",
+        )
+        await replacement_client.register_worker(
+            worker_id=replacement_worker.worker_id,
+            task_queue=queue,
+            supported_workflow_types=list(replacement_worker.workflows),
+            supported_activity_types=list(replacement_worker.activities),
+            workflow_definition_fingerprints=replacement_worker.workflow_definition_fingerprints,
+            workflow_command_contracts=replacement_worker.workflow_command_contracts,
+            capabilities=["local_activities"],
+            capability_manifest=manifest,
+        )
+        try:
+            handle = replacement_client.get_workflow_handle(workflow_id)
+            await handle.signal("finish")
+            replacement_task = await replacement_client.poll_workflow_task(
+                worker_id=replacement_worker.worker_id,
+                task_queue=queue,
+                timeout=10.0,
+            )
+            assert replacement_task is not None
+            commands = await replacement_worker._run_workflow_task(replacement_task)
+            assert commands is not None
+            assert [command["type"] for command in commands] == ["complete_workflow"]
+            assert await handle.result(timeout=10.0) == {"greeting": "hello, Ada"}
+            assert _executions == 1
+
+            history = await handle.get_history()
+            events = history.get("events", history.get("history_events", []))
+            event_types = [event["event_type"] for event in events]
+            assert event_types.count("ActivityCompleted") == 1
+            assert event_types.count("WorkflowCompleted") == 1
+        finally:
+            await replacement_client.deregister_worker_registration(replacement_worker.worker_id)
 
 
 @pytest.mark.asyncio
