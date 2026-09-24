@@ -554,6 +554,112 @@ class ScheduleActivity:
 
 
 @dataclass
+class RecordLocalActivity:
+    """Run an activity in the workflow worker and record its terminal outcome."""
+
+    activity_type: str
+    arguments: list[Any]
+    retry_policy: Mapping[str, Any] | None = None
+    start_to_close_timeout: int | None = None
+    schedule_to_close_timeout: int | None = None
+    heartbeat_timeout: int | None = None
+    outcome: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    arguments_envelope: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    result_envelope: dict[str, Any] | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.activity_type, str):
+            raise TypeError("local activity type must be a string")
+        self.activity_type = self.activity_type.strip()
+        if not self.activity_type:
+            raise ValueError("local activity type must be a non-empty string")
+        self.arguments = list(self.arguments)
+        for name in ("start_to_close_timeout", "schedule_to_close_timeout", "heartbeat_timeout"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or value < 1):
+                raise ValueError(f"local activity {name} must be a positive integer")
+        if (
+            self.start_to_close_timeout is not None
+            and self.schedule_to_close_timeout is not None
+            and self.start_to_close_timeout > self.schedule_to_close_timeout
+        ):
+            raise ValueError("local activity schedule_to_close_timeout must be >= start_to_close_timeout")
+        if (
+            self.start_to_close_timeout is not None
+            and self.heartbeat_timeout is not None
+            and self.heartbeat_timeout > self.start_to_close_timeout
+        ):
+            raise ValueError("local activity heartbeat_timeout must be <= start_to_close_timeout")
+        if self.retry_policy is not None:
+            self.retry_policy = _canonical_local_retry_policy(self.retry_policy)
+
+    def to_server_command(
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
+    ) -> dict[str, Any]:
+        if self.outcome is None or self.arguments_envelope is None:
+            raise ValueError("local activity has no recorded terminal outcome")
+        status = self.outcome.get("outcome")
+        if status == "completed" and self.result_envelope is None:
+            raise ValueError("completed local activity has no encoded result")
+        command: dict[str, Any] = {
+            "type": "record_local_activity",
+            "activity_type": self.activity_type,
+            "execution_mode": "local",
+            "arguments": self.arguments_envelope,
+            **self.outcome,
+        }
+        command.pop("result", None)
+        if status == "completed":
+            command["result"] = self.result_envelope
+        if self.retry_policy is not None:
+            command["retry_policy"] = dict(self.retry_policy)
+        for name in ("start_to_close_timeout", "schedule_to_close_timeout", "heartbeat_timeout"):
+            value = getattr(self, name)
+            if value is not None:
+                command[name] = value
+        return command
+
+
+class LocalActivityExecutionAborted(Exception):
+    """The workflow task lease could not be trusted after local execution began."""
+
+
+def _canonical_local_retry_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(policy, Mapping):
+        raise TypeError("local activity retry_policy must be an object")
+    allowed = {"max_attempts", "backoff_seconds", "non_retryable_error_types"}
+    unknown = {str(key) for key in policy if not isinstance(key, str) or key not in allowed}
+    if unknown:
+        raise ValueError(f"local activity retry_policy does not accept {sorted(unknown)!r}")
+    max_attempts = policy.get("max_attempts", 1)
+    if type(max_attempts) is not int or not 1 <= max_attempts <= 100:
+        raise ValueError("local activity max_attempts must be an integer from 1 to 100")
+    backoff = policy.get("backoff_seconds", [])
+    if not isinstance(backoff, list) or any(type(value) is not int or value < 0 for value in backoff):
+        raise ValueError("local activity backoff_seconds must be a list of non-negative integers")
+    if len(backoff) > max_attempts - 1:
+        raise ValueError("local activity backoff_seconds exceeds possible retries")
+    error_types = policy.get("non_retryable_error_types", [])
+    if not isinstance(error_types, list) or any(
+        not isinstance(value, str) or not value.strip() for value in error_types
+    ):
+        raise ValueError("local activity non_retryable_error_types must be a list of non-empty strings")
+    canonical: dict[str, Any] = {}
+    if "max_attempts" in policy:
+        canonical["max_attempts"] = max_attempts
+    if "backoff_seconds" in policy:
+        canonical["backoff_seconds"] = list(backoff)
+    if "non_retryable_error_types" in policy:
+        canonical["non_retryable_error_types"] = list(dict.fromkeys(value.strip() for value in error_types))
+    return canonical
+
+
+@dataclass
 class StartTimer:
     """Command requesting a durable timer."""
 
@@ -1227,7 +1333,7 @@ def _condition_predicate_fingerprint(predicate: Callable[[], bool]) -> str:
 
 
 Command = (
-    ScheduleActivity | StartTimer | CompleteWorkflow | FailWorkflow
+    ScheduleActivity | RecordLocalActivity | StartTimer | CompleteWorkflow | FailWorkflow
     | CompleteUpdate | FailUpdate | ContinueAsNew | RecordSideEffect | StartChildWorkflow
     | NexusServiceCall | RecordVersionMarker | UpsertMemo | UpsertSearchAttributes | WaitCondition
     | CancelDurableOperation
@@ -1729,6 +1835,26 @@ class WorkflowContext:
             retry_policy=retry_policy,
             start_to_close_timeout=start_to_close_timeout,
             schedule_to_start_timeout=schedule_to_start_timeout,
+            schedule_to_close_timeout=schedule_to_close_timeout,
+            heartbeat_timeout=heartbeat_timeout,
+        )
+
+    def local_activity(
+        self,
+        activity_type: str,
+        arguments: list[Any],
+        *,
+        retry_policy: Mapping[str, Any] | None = None,
+        start_to_close_timeout: int | None = None,
+        schedule_to_close_timeout: int | None = None,
+        heartbeat_timeout: int | None = None,
+    ) -> RecordLocalActivity:
+        """Yield an activity executed in this workflow worker process."""
+        return RecordLocalActivity(
+            activity_type,
+            list(arguments),
+            retry_policy=retry_policy,
+            start_to_close_timeout=start_to_close_timeout,
             schedule_to_close_timeout=schedule_to_close_timeout,
             heartbeat_timeout=heartbeat_timeout,
         )
@@ -2473,6 +2599,7 @@ def replay(
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
     cancel_requested: bool = False,
+    local_activity_executor: Callable[[RecordLocalActivity], Any] | None = None,
 ) -> ReplayOutcome:
     return _replay_state(
         workflow_cls,
@@ -2485,6 +2612,7 @@ def replay(
         external_storage=external_storage,
         external_storage_cache=external_storage_cache,
         cancel_requested=cancel_requested,
+        local_activity_executor=local_activity_executor,
     ).outcome
 
 
@@ -3225,6 +3353,7 @@ def _is_resolved_step_event(
         "ActivityCompleted",
         "ActivityFailed",
         "ActivityTimedOut",
+        "ActivityCancelled",
         "ChildRunCompleted",
         "ChildRunFailed",
         "ChildRunCancelled",
@@ -3241,7 +3370,7 @@ def _is_resolved_step_event(
 
 
 def _command_history_shape(command: Any) -> str | None:
-    if isinstance(command, ScheduleActivity):
+    if isinstance(command, ScheduleActivity | RecordLocalActivity):
         return "activity"
     if isinstance(command, StartTimer):
         return "timer"
@@ -3266,6 +3395,8 @@ def _command_diagnostic_shape(command: Any) -> str:
     shape = _command_history_shape(command) or type(command).__name__
     if isinstance(command, ScheduleActivity):
         return f"{shape}:{command.activity_type}"
+    if isinstance(command, RecordLocalActivity):
+        return f"{shape}:local:{command.activity_type}"
     if isinstance(command, StartChildWorkflow):
         return f"{shape}:{command.workflow_type}"
     if isinstance(command, NexusServiceCall):
@@ -3295,6 +3426,15 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
             return (
                 f"Recorded activity_type {recorded!r}, but current workflow "
                 f"scheduled {command.activity_type!r}."
+            )
+    elif isinstance(command, RecordLocalActivity):
+        if step.details.get("execution_mode") != "local":
+            return "Recorded remote activity cannot replay as a local activity."
+        recorded = step.details.get("activity_type")
+        if isinstance(recorded, str) and recorded != command.activity_type:
+            return (
+                f"Recorded local activity_type {recorded!r}, but current workflow "
+                f"requested {command.activity_type!r}."
             )
     elif isinstance(command, StartChildWorkflow):
         recorded = step.details.get("workflow_type") or step.details.get("child_workflow_type")
@@ -3454,6 +3594,7 @@ def _replay_state(
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
     cancel_requested: bool = False,
+    local_activity_executor: Callable[[RecordLocalActivity], Any] | None = None,
     stop_at_uncommitted_cancellation: bool = False,
 ) -> _ReplayState:
     if payload_codec is not None and payload_codec != serializer.AVRO_CODEC:
@@ -4007,6 +4148,7 @@ def _replay_state(
                 "ActivityCompleted",
                 "ActivityFailed",
                 "ActivityTimedOut",
+                "ActivityCancelled",
                 "TimerFired",
                 "ChildRunCompleted",
                 "ChildRunFailed",
@@ -4031,7 +4173,7 @@ def _replay_state(
                 "activity",
                 ev,
             )
-        elif etype in ("ActivityFailed", "ActivityTimedOut"):
+        elif etype in ("ActivityFailed", "ActivityTimedOut", "ActivityCancelled"):
             _append_resolved_result(_activity_failed_from_payload(payload), "activity", ev)
         elif etype in ("ActivityScheduled", "ActivityStarted"):
             _append_pending_step(
@@ -4369,6 +4511,8 @@ def _replay_state(
     try:
         gen = instance.run(ctx, *start_input)
     except NonDeterministicReplayError:
+        raise
+    except LocalActivityExecutionAborted:
         raise
     except WorkflowCancelled as exc:
         return _state([_fail_workflow_from_exception(exc)])
@@ -5285,7 +5429,7 @@ def _replay_state(
                     wait_yield_count = next_wait_index
                     return _state(pending)
                 continue
-            if isinstance(cmd, ScheduleActivity | StartTimer | StartChildWorkflow):
+            if isinstance(cmd, ScheduleActivity | RecordLocalActivity | StartTimer | StartChildWorkflow):
                 if result_cursor < len(resolved_results):
                     _assert_next_step_matches(cmd)
                     val = resolved_results[result_cursor]
@@ -5300,6 +5444,19 @@ def _replay_state(
                     continue
                 ctx.logger._set_replaying(False)
                 _assert_pending_step_matches(cmd)
+                if isinstance(cmd, RecordLocalActivity) and local_activity_executor is not None:
+                    local_result = local_activity_executor(cmd)
+                    if cmd.outcome is None or cmd.arguments_envelope is None:
+                        raise ValueError("local activity executor did not produce a durable outcome")
+                    pending.append(cmd)
+                    if isinstance(local_result, ActivityFailed):
+                        try:
+                            advanced_cmd = gen.throw(local_result)
+                            continue
+                        except StopIteration as stop:
+                            return _terminal_state(stop.value, include_pending=True)
+                    next_value = local_result
+                    continue
                 pending.append(cmd)
                 return _state(pending)
             raise TypeError(f"workflow yielded unsupported command: {cmd!r}")
@@ -5309,10 +5466,12 @@ def _replay_state(
         except Exception as exc:
             if isinstance(exc, NonDeterministicReplayError):
                 raise
-            return _state([_fail_workflow_from_exception(exc)])
+            return _state(pending + [_fail_workflow_from_exception(exc)])
     except NonDeterministicReplayError:
         raise
+    except LocalActivityExecutionAborted:
+        raise
     except WorkflowCancelled as exc:
-        return _state([_fail_workflow_from_exception(exc)])
+        return _state(pending + [_fail_workflow_from_exception(exc)])
     except Exception as exc:
-        return _state([_fail_workflow_from_exception(exc)])
+        return _state(pending + [_fail_workflow_from_exception(exc)])

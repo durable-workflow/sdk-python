@@ -52,6 +52,7 @@ from .client import (
 )
 from .errors import (
     ActivityCancelled,
+    ActivityFailed,
     AvroNotInstalledError,
     DurableWorkflowError,
     InvalidArgument,
@@ -79,7 +80,10 @@ from .metrics import (
 from .retry_policy import _worker_storage_admission_stop
 from .workflow import (
     Command,
+    FailWorkflow,
+    LocalActivityExecutionAborted,
     NexusServiceCall,
+    RecordLocalActivity,
     RecordSideEffect,
     UpsertMemo,
     apply_update,
@@ -138,9 +142,20 @@ _WORKFLOW_TASK_COMPLETION_AMBIGUOUS_REJECTION_REASONS = {
 _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS = 3
 _WORKFLOW_TASK_COMPLETION_RETRY_DELAYS = (0.05, 0.2)
 _WORKFLOW_TASK_NEXUS_RESOLUTION_LIMIT = 100
+_LOCAL_ACTIVITY_REPORT_LIMIT = 1000
 _WORKER_WORKFLOW_FINGERPRINTS: dict[tuple[str, str], str] = {}
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
+
+
+class _LocalActivityTimedOut(Exception):
+    def __init__(self, kind: str) -> None:
+        super().__init__(f"local activity {kind} timeout elapsed")
+        self.kind = kind
+
+
+class _InvalidLocalActivityReport(NonRetryableError):
+    pass
 
 
 def _with_storage_admission_retries(
@@ -1328,6 +1343,249 @@ class Worker:
 
         raise RuntimeError("workflow yielded too many consecutive Nexus service calls")
 
+    async def _renew_local_workflow_lease(self, task: dict[str, Any]) -> None:
+        task_id = str(task["task_id"])
+        attempt = int(task.get("workflow_task_attempt", 1))
+        try:
+            response = await self.client.heartbeat_workflow_task(
+                task_id=task_id,
+                lease_owner=self.worker_id,
+                workflow_task_attempt=attempt,
+            )
+        except Exception as exc:
+            raise LocalActivityExecutionAborted("workflow task lease renewal failed") from exc
+        if not isinstance(response, Mapping) or any((
+            response.get("task_id") != task_id,
+            response.get("lease_owner") != self.worker_id,
+            response.get("workflow_task_attempt") != attempt,
+            response.get("renewed") is not True,
+        )):
+            raise LocalActivityExecutionAborted("workflow task lease renewal was not fenced and acknowledged")
+
+    async def _execute_local_activity(
+        self,
+        task: dict[str, Any],
+        command: RecordLocalActivity,
+        *,
+        payload_codec: str,
+    ) -> Any:
+        arguments_envelope = serializer.envelope(command.arguments, codec=payload_codec)
+        pre_execution = {
+            "type": "record_local_activity",
+            "activity_type": command.activity_type,
+            "execution_mode": "local",
+            "arguments": arguments_envelope,
+            "retry_policy": command.retry_policy,
+            "start_to_close_timeout": command.start_to_close_timeout,
+            "schedule_to_close_timeout": command.schedule_to_close_timeout,
+            "heartbeat_timeout": command.heartbeat_timeout,
+        }
+        json.dumps(pre_execution, allow_nan=False).encode("utf-8")
+        command.arguments_envelope = arguments_envelope
+
+        retry_policy = command.retry_policy or {}
+        max_attempts = int(retry_policy.get("max_attempts", 1))
+        backoff = retry_policy.get("backoff_seconds", [])
+        non_retryable_types = set(retry_policy.get("non_retryable_error_types", []))
+        started_at = time.monotonic()
+        attempts: list[dict[str, Any]] = []
+        total_heartbeats = 0
+
+        def terminal_failure(
+            status: str,
+            message: str,
+            exception_type: str,
+            *,
+            non_retryable: bool,
+            timeout_kind: str | None = None,
+        ) -> ActivityFailed:
+            command.outcome = {
+                "outcome": status,
+                "message": message,
+                "exception_type": exception_type,
+                "non_retryable": non_retryable,
+                "attempts": attempts,
+            }
+            if timeout_kind is not None:
+                command.outcome["timeout_kind"] = timeout_kind
+            return ActivityFailed(
+                message,
+                activity_type=command.activity_type,
+                exception_type=exception_type,
+                non_retryable=non_retryable,
+            )
+
+        for attempt_number in range(1, max_attempts + 1):
+            await self._renew_local_workflow_lease(task)
+            attempt_started_at = time.monotonic()
+            heartbeats: list[dict[str, Any]] = []
+            attempt_state: dict[str, Any] = {
+                "last_heartbeat_at": attempt_started_at,
+                "heartbeats": heartbeats,
+                "lease_aborted": False,
+            }
+            attempt_id = hashlib.sha256("\0".join((
+                str(task["task_id"]),
+                command.activity_type,
+                str(attempt_number),
+                str(arguments_envelope["blob"]),
+            )).encode("utf-8")).hexdigest()
+
+            def check_boundary(
+                state: dict[str, Any] = attempt_state,
+                started: float = attempt_started_at,
+            ) -> None:
+                now = time.monotonic()
+                if state["lease_aborted"]:
+                    raise LocalActivityExecutionAborted("local activity lost its workflow task lease")
+                if self._stop.is_set() or task.get("cancel_requested") is True:
+                    raise ActivityCancelled("local activity cancelled")
+                if (
+                    command.heartbeat_timeout is not None
+                    and now - state["last_heartbeat_at"] > command.heartbeat_timeout
+                ):
+                    raise _LocalActivityTimedOut("heartbeat")
+                if command.start_to_close_timeout is not None and now - started > command.start_to_close_timeout:
+                    raise _LocalActivityTimedOut("start_to_close")
+                if (
+                    command.schedule_to_close_timeout is not None
+                    and now - started_at > command.schedule_to_close_timeout
+                ):
+                    raise _LocalActivityTimedOut("schedule_to_close")
+
+            async def heartbeat(
+                details: dict[str, Any] | None,
+                state: dict[str, Any] = attempt_state,
+                started: float = attempt_started_at,
+                boundary: Callable[[], None] = check_boundary,
+            ) -> None:
+                nonlocal total_heartbeats
+                boundary()
+                reports: list[dict[str, Any]] = state["heartbeats"]
+                if len(reports) >= _LOCAL_ACTIVITY_REPORT_LIMIT or total_heartbeats >= _LOCAL_ACTIVITY_REPORT_LIMIT:
+                    raise _InvalidLocalActivityReport("local activity heartbeat report limit exceeded")
+                if details is not None:
+                    if not isinstance(details, dict):
+                        raise _InvalidLocalActivityReport("local activity heartbeat details must be an object")
+                    try:
+                        serializer.encode(details, codec=payload_codec)
+                        json.dumps(details, allow_nan=False).encode("utf-8")
+                    except (TypeError, ValueError, UnicodeError) as exc:
+                        raise _InvalidLocalActivityReport("local activity heartbeat details are not portable") from exc
+                try:
+                    await self._renew_local_workflow_lease(task)
+                except LocalActivityExecutionAborted:
+                    state["lease_aborted"] = True
+                    raise
+                now = time.monotonic()
+                elapsed_ms = max(0, round((now - started) * 1000))
+                reports.append({
+                    "elapsed_ms": max(elapsed_ms, reports[-1]["elapsed_ms"] if reports else 0),
+                    **({"details": details} if details is not None else {}),
+                })
+                total_heartbeats += 1
+                state["last_heartbeat_at"] = now
+
+            try:
+                check_boundary()
+                handler = self.activities.get(command.activity_type)
+                if handler is None:
+                    raise NonRetryableError(f"no local activity handler registered for {command.activity_type!r}")
+                info = ActivityInfo(
+                    task_id=str(task["task_id"]),
+                    activity_type=command.activity_type,
+                    activity_attempt_id=attempt_id,
+                    attempt_number=attempt_number,
+                    task_queue=self.task_queue,
+                    worker_id=self.worker_id,
+                )
+                _set_context(ActivityContext(info=info, client=self.client, heartbeat_callback=heartbeat))
+                try:
+                    result = await self._execute_activity_callable(
+                        task, command.activity_type, tuple(command.arguments), handler,
+                    )
+                finally:
+                    _set_context(None)
+                check_boundary()
+                attempts.append({
+                    "attempt_id": attempt_id,
+                    "attempt_number": attempt_number,
+                    "outcome": "completed",
+                    "duration_ms": max(0, round((time.monotonic() - attempt_started_at) * 1000)),
+                    "heartbeats": heartbeats,
+                })
+                try:
+                    result_envelope = serializer.envelope(result, codec=payload_codec)
+                except Exception:
+                    message = "local activity result could not be encoded with the avro payload codec"
+                    attempts[-1].update({
+                        "outcome": "failed",
+                        "message": message,
+                        "exception_type": "InvalidLocalActivityReport",
+                        "non_retryable": True,
+                    })
+                    return terminal_failure("failed", message, "InvalidLocalActivityReport", non_retryable=True)
+                command.result_envelope = result_envelope
+                command.outcome = {"outcome": "completed", "attempts": attempts}
+                return result
+            except LocalActivityExecutionAborted:
+                raise
+            except (Exception, ActivityCancelled) as exc:
+                timed_out = isinstance(exc, _LocalActivityTimedOut)
+                cancelled = isinstance(exc, ActivityCancelled)
+                exception_type = type(exc).__name__
+                message = str(exc).strip() or f"local activity failed with {exception_type}"
+                invalid_report = len(exception_type.encode("utf-8")) > 255
+                try:
+                    json.dumps({"message": message, "exception_type": exception_type}, allow_nan=False).encode("utf-8")
+                except (TypeError, ValueError, UnicodeError):
+                    invalid_report = True
+                if invalid_report:
+                    exception_type = "InvalidLocalActivityReport"
+                    message = "local activity failure metadata cannot cross the HTTP JSON boundary"
+                    timed_out = False
+                    cancelled = False
+                non_retryable = (
+                    cancelled or invalid_report or isinstance(exc, NonRetryableError)
+                    or exception_type in non_retryable_types
+                )
+                retry = not non_retryable and attempt_number < max_attempts
+                backoff_seconds = backoff[attempt_number - 1] if retry and len(backoff) >= attempt_number else 0
+                if (
+                    retry and command.schedule_to_close_timeout is not None
+                    and time.monotonic() - started_at + backoff_seconds >= command.schedule_to_close_timeout
+                ):
+                    retry = False
+                    backoff_seconds = 0
+                status = "cancelled" if cancelled else "timed_out" if timed_out else "failed"
+                attempt_report: dict[str, Any] = {
+                    "attempt_id": attempt_id,
+                    "attempt_number": attempt_number,
+                    "outcome": status,
+                    "duration_ms": max(0, round((time.monotonic() - attempt_started_at) * 1000)),
+                    "message": message,
+                    "exception_type": exception_type,
+                    "non_retryable": non_retryable,
+                    "heartbeats": heartbeats,
+                }
+                timeout_kind = exc.kind if isinstance(exc, _LocalActivityTimedOut) else None
+                if timeout_kind is not None:
+                    attempt_report["timeout_kind"] = timeout_kind
+                if retry:
+                    attempt_report["retry_reason"] = "timeout" if timed_out else "failure"
+                    attempt_report["backoff_seconds"] = backoff_seconds
+                attempts.append(attempt_report)
+                if retry:
+                    if backoff_seconds:
+                        await asyncio.sleep(backoff_seconds)
+                    continue
+                return terminal_failure(
+                    status, message, exception_type,
+                    non_retryable=non_retryable, timeout_kind=timeout_kind,
+                )
+
+        raise AssertionError("local activity retry loop has no terminal outcome")
+
     async def _run_workflow_task_core(self, task: dict[str, Any]) -> list[dict[str, Any]] | None:
         import json as _json
 
@@ -1465,8 +1723,18 @@ class Worker:
                     return None
             return [command]
 
+        loop = asyncio.get_running_loop()
+
+        def execute_local(command: RecordLocalActivity) -> Any:
+            future = asyncio.run_coroutine_threadsafe(
+                self._execute_local_activity(task, command, payload_codec=command_codec),
+                loop,
+            )
+            return future.result()
+
         try:
-            outcome = replay(
+            outcome = await asyncio.to_thread(
+                replay,
                 cls,
                 history,
                 start_input,
@@ -1480,7 +1748,11 @@ class Worker:
                 external_storage=self.external_storage,
                 external_storage_cache=self.external_storage_cache,
                 cancel_requested=bool(task.get("cancel_requested", False)),
+                local_activity_executor=execute_local,
             )
+        except LocalActivityExecutionAborted as e:
+            log.warning("abandoning workflow task %s after local activity lease loss: %s", task_id, e)
+            return None
         except AvroNotInstalledError as e:
             log.exception("replay failed: Avro dependency unavailable")
             try:
@@ -1558,18 +1830,38 @@ class Worker:
                 log.warning("failed to report workflow memo capability failure: %s", failure_error)
             return None
 
-        commands = commands_to_server_commands(
-            workflow_commands,
-            self.task_queue,
-            payload_codec=command_codec,
-            size_warning=self._payload_size_warning_config(),
-            warning_context=self._workflow_payload_warning_context(
-                task,
-                kind="workflow_command",
-            ),
-            external_storage=self.external_storage,
-            external_storage_threshold_bytes=self.external_storage_threshold_bytes,
-        )
+        def serialize_commands(source: list[Command]) -> list[dict[str, Any]]:
+            return commands_to_server_commands(
+                source,
+                self.task_queue,
+                payload_codec=command_codec,
+                size_warning=self._payload_size_warning_config(),
+                warning_context=self._workflow_payload_warning_context(
+                    task,
+                    kind="workflow_command",
+                ),
+                external_storage=self.external_storage,
+                external_storage_threshold_bytes=self.external_storage_threshold_bytes,
+            )
+
+        try:
+            commands = serialize_commands(workflow_commands)
+        except Exception as error:
+            last_local = max(
+                (index for index, command in enumerate(workflow_commands)
+                 if isinstance(command, RecordLocalActivity) and command.outcome is not None),
+                default=-1,
+            )
+            if last_local < 0:
+                raise
+            commands = serialize_commands([
+                *workflow_commands[:last_local + 1],
+                FailWorkflow(
+                    "workflow command after local activity could not be encoded",
+                    exception_type=type(error).__name__,
+                    non_retryable=True,
+                ),
+            ])
         log.info(
             "completing workflow task %s with %d command(s): %s",
             task_id,
