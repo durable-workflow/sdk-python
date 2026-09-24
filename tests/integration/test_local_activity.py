@@ -220,6 +220,8 @@ async def test_replacement_worker_replays_local_activity_before_signal(
                 workflow_id=workflow_id,
                 input=["Ada"],
             )
+            first_run_id = handle.run_id
+            assert first_run_id is not None
             first_task = await first_client.poll_workflow_task(
                 worker_id=first_worker.worker_id,
                 task_queue=queue,
@@ -256,7 +258,7 @@ async def test_replacement_worker_replays_local_activity_before_signal(
             capability_manifest=manifest,
         )
         try:
-            handle = replacement_client.get_workflow_handle(workflow_id)
+            handle = replacement_client.get_workflow_handle(workflow_id, run_id=first_run_id)
             await handle.signal("finish")
             replacement_task = await replacement_client.poll_workflow_task(
                 worker_id=replacement_worker.worker_id,
