@@ -427,14 +427,15 @@ class TestWorkerRegistration:
                 "memo_upserts",
                 "typed_search_attributes",
                 DURABLE_SELECTION_CAPABILITY,
+                "local_activities",
                 "query_tasks",
                 MESSAGE_STREAMS_CAPABILITY,
             ],
             "capability_manifest": {
                 "local_activities": {
-                    "supported": False,
+                    "supported": True,
                     "minimum_protocol_version": "1.18",
-                    "reason": "python_worker_does_not_execute_record_local_activity",
+                    "implementation": "record_local_activity",
                 },
                 "worker_sessions": {
                     "supported": False,
@@ -571,6 +572,7 @@ class TestWorkerRegistration:
             MEMO_UPSERTS_CAPABILITY,
             TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
             DURABLE_SELECTION_CAPABILITY,
+            "local_activities",
             "query_tasks",
             WORKFLOW_UPDATES_CAPABILITY,
             MESSAGE_STREAMS_CAPABILITY,
@@ -656,6 +658,7 @@ class TestWorkerRegistration:
             MEMO_UPSERTS_CAPABILITY,
             TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
             DURABLE_SELECTION_CAPABILITY,
+            "local_activities",
             "query_tasks",
             UPDATE_VALIDATION_TASKS_CAPABILITY,
             WORKFLOW_UPDATES_CAPABILITY,
@@ -757,6 +760,7 @@ class TestWorkerRegistration:
             MEMO_UPSERTS_CAPABILITY,
             TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
             DURABLE_SELECTION_CAPABILITY,
+            "local_activities",
             MESSAGE_STREAMS_CAPABILITY,
         ]
 

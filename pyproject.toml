@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "durable-workflow"
-version = "2.1.2"
+version = "2.1.3"
 description = "Python client and worker SDK for Durable Workflow Cloud and self-hosted Server"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -71,8 +71,8 @@ durable-workflow-replay-conformance = "durable_workflow.replay_conformance:main"
 durable-workflow-workflow-updates-conformance = "durable_workflow.workflow_updates_conformance:main"
 
 [tool.durable-workflow]
-product-train = "2.1.2"
-registry-version = "2.1.2"
+product-train = "2.1.3"
+registry-version = "2.1.3"
 supported-server-versions = "2.4.0"
 worker-protocol-version = "1.19"
 control-plane-version = "2"

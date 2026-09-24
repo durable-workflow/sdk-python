@@ -118,14 +118,6 @@ async def test_local_activity_completion_survives_cold_replay(
     suffix = uuid.uuid4().hex[:8]
     queue = f"py-local-{suffix}"
     workflow_id = f"py-local-{suffix}"
-    manifest = {
-        **PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
-        "local_activities": {
-            "supported": True,
-            "minimum_protocol_version": "1.18",
-            "implementation": "record_local_activity",
-        },
-    }
 
     async with Client(server_url, token=server_token, namespace="default") as client:
         worker = Worker(
@@ -135,16 +127,7 @@ async def test_local_activity_completion_survives_cold_replay(
             activities=[local_greet],
             worker_id=f"py-local-worker-{suffix}",
         )
-        await client.register_worker(
-            worker_id=worker.worker_id,
-            task_queue=queue,
-            supported_workflow_types=list(worker.workflows),
-            supported_activity_types=list(worker.activities),
-            workflow_definition_fingerprints=worker.workflow_definition_fingerprints,
-            workflow_command_contracts=worker.workflow_command_contracts,
-            capabilities=["local_activities"],
-            capability_manifest=manifest,
-        )
+        await worker._register()
         try:
             handle = await client.start_workflow(
                 workflow_type="tests.python-local-activity",

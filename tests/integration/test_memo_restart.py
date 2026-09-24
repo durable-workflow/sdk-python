@@ -8,8 +8,9 @@ from typing import Any
 import pytest
 
 from durable_workflow import Client, Worker, serializer, workflow
-from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
 from durable_workflow.workflow import commands_to_server_commands, replay
+
+from .manual_worker import MANUAL_WORKER_CAPABILITY_MANIFEST
 
 MEMO_ENTRIES: dict[str, Any] = {
     "binary": b"same",
@@ -122,7 +123,7 @@ async def _seed_worker_contract(client: Client, worker: Worker) -> None:
         workflow_command_contracts=worker.workflow_command_contracts,
         supported_activity_types=[],
         capabilities=["memo_upserts"],
-        capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+        capability_manifest=MANUAL_WORKER_CAPABILITY_MANIFEST,
     )
 
 
