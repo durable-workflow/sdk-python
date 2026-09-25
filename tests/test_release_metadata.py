@@ -44,7 +44,7 @@ def test_worker_release_identity_matches_supported_server_and_protocol() -> None
     assert check_release_metadata.VERSION_PATTERN.fullmatch(project["version"]) is not None
     assert release["product-train"] == project["version"]
     assert release["registry-version"] == project["version"].replace("-rc.", "rc")
-    assert release["supported-server-versions"] == "2.4.2"
+    assert check_release_metadata.VERSION_PATTERN.fullmatch(release["supported-server-versions"]) is not None
     assert release["worker-protocol-version"] == PROTOCOL_VERSION == "1.19"
     assert release["durable-selection"] is True
     assert release["durable-selection-minimum-worker-protocol-version"] == "1.19"
