@@ -68,25 +68,26 @@ def _storage_refusal(exc: Exception) -> tuple[ServerError, str | None] | None:
 def _backend_unavailable_refusal(exc: Exception) -> tuple[bool, int | None]:
     if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code != 503:
         return False, None
+    request = exc.request
+    if request.method != "POST" or "X-Durable-Workflow-Protocol-Version" not in request.headers:
+        return False, None
+    operations = {
+        "/api/worker/workflow-tasks/poll": "poll_workflow_task",
+        "/api/worker/activity-tasks/poll": "poll_activity_task",
+        "/api/worker/query-tasks/poll": "poll_query_task",
+        "/api/worker/update-validation-tasks/poll": "poll_update_validation_task",
+        "/api/worker/register": "register_worker",
+        "/api/worker/heartbeat": "heartbeat_worker",
+    }
+    operation = next((name for path, name in operations.items() if request.url.path.endswith(path)), None)
+    if operation is None:
+        return False, None
     try:
         body = exc.response.json()
     except ValueError:
         return False, None
     if not isinstance(body, dict) or body.get("reason") != "backend_unavailable":
         return False, None
-    request = exc.request
-    if request.method != "POST" or "X-Durable-Workflow-Protocol-Version" not in request.headers:
-        return True, None
-    operations = {
-        "/api/worker/workflow-tasks/poll": "poll_workflow_task",
-        "/api/worker/activity-tasks/poll": "poll_activity_task",
-        "/api/worker/query-tasks/poll": "poll_query_task",
-        "/api/worker/register": "register_worker",
-        "/api/worker/heartbeat": "heartbeat_worker",
-    }
-    operation = next((name for path, name in operations.items() if request.url.path.endswith(path)), None)
-    if operation is None:
-        return True, None
     try:
         submitted = json.loads(request.content)
     except ValueError:

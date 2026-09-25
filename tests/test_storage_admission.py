@@ -249,6 +249,20 @@ async def test_direct_backend_outage_poll_remains_bounded(retry_sleeps: list[flo
     assert calls == 2
 
 
+async def test_control_backend_error_keeps_finite_transport_retries(retry_sleeps: list[float]) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, json={"reason": "backend_unavailable", "retryable": True})
+
+    async with client_for(handler) as client:
+        with worker_scope(), pytest.raises(ServerError):
+            await client._request("POST", "/workflows", json={})
+    assert calls == 2
+
+
 async def test_shutdown_interrupts_backend_outage_without_new_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = 0
     stopped = False
