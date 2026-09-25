@@ -65,6 +65,57 @@ def _storage_refusal(exc: Exception) -> tuple[ServerError, str | None] | None:
     return error, poll_id
 
 
+def _backend_unavailable_retry_after(exc: Exception) -> int | None:
+    if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code != 503:
+        return None
+    request = exc.request
+    if request.method != "POST" or "X-Durable-Workflow-Protocol-Version" not in request.headers:
+        return None
+    operations = {
+        "/api/worker/workflow-tasks/poll": "poll_workflow_task",
+        "/api/worker/activity-tasks/poll": "poll_activity_task",
+        "/api/worker/query-tasks/poll": "poll_query_task",
+        "/api/worker/register": "register_worker",
+        "/api/worker/heartbeat": "heartbeat_worker",
+    }
+    operation = next((name for path, name in operations.items() if request.url.path.endswith(path)), None)
+    if operation is None:
+        return None
+    try:
+        submitted = json.loads(request.content)
+        body = exc.response.json()
+    except ValueError:
+        return None
+    if not isinstance(submitted, dict) or not isinstance(body, dict):
+        return None
+    worker_id = submitted.get("worker_id")
+    queue = submitted.get("task_queue")
+    delay = body.get("retry_after_seconds")
+    if (
+        not isinstance(worker_id, str) or not worker_id
+        or body.get("reason") != "backend_unavailable"
+        or body.get("operation") != operation
+        or body.get("outcome") != "unknown"
+        or body.get("worker_id") != worker_id
+        or body.get("task_queue") != queue
+        or body.get("retryable") is not True
+        or type(delay) is not int or delay <= 0
+        or (operation != "heartbeat_worker" and (not isinstance(queue, str) or not queue))
+    ):
+        return None
+    if operation.startswith("poll_"):
+        poll_id = submitted.get("poll_request_id")
+        if (
+            not isinstance(poll_id, str) or not poll_id
+            or "task" not in body or body["task"] is not None
+            or body.get("poll_status") != "backend_unavailable"
+            or body.get("poll_request_id") != poll_id
+            or body.get("retry_same_poll_request_id") is not True
+        ):
+            return None
+    return delay
+
+
 @dataclass
 class TransportRetryPolicy:
     """
@@ -123,7 +174,7 @@ class TransportRetryPolicy:
         Raises the last exception if all retries are exhausted.
         """
         attempt = 0
-        storage_attempt = 0
+        worker_pause_attempt = 0
         last_exc: Exception | None = None
 
         while attempt < self.max_attempts:
@@ -134,20 +185,28 @@ class TransportRetryPolicy:
                 last_exc = exc
                 stop = _worker_storage_admission_stop.get()
                 refusal = _storage_refusal(exc) if stop is not None else None
-                if refusal is not None and stop is not None:
+                backend_delay = _backend_unavailable_retry_after(exc) if stop is not None else None
+                pause: tuple[str, int] | None = None
+                if refusal is not None:
                     error, poll_id = refusal
-                    if not error.is_storage_admission_failure(poll_id) or stop():
+                    if not error.is_storage_admission_failure(poll_id):
                         raise
-                    storage_attempt += 1
                     assert isinstance(error.body, dict)
+                    pause = ("storage admission paused", error.body["retry_after_seconds"])
+                elif backend_delay is not None:
+                    pause = ("worker backend unavailable", backend_delay)
+                if pause is not None and stop is not None:
+                    if stop():
+                        raise
+                    worker_pause_attempt += 1
                     delay = min(
                         5.0,
                         max(
-                            self.backoff_seconds(min(storage_attempt - 1, 6)),
-                            error.body["retry_after_seconds"],
+                            self.backoff_seconds(min(worker_pause_attempt - 1, 6)),
+                            pause[1],
                         ),
                     )
-                    log.warning("storage admission paused; retrying the same worker request in %.2fs", delay)
+                    log.warning("%s; retrying the same worker request in %.2fs", pause[0], delay)
                     # Do not consume the finite transport budget or repeat serialization/uploads.
                     while delay > 0:
                         if stop():

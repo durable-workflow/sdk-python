@@ -39,6 +39,30 @@ def pressure(poll_id: str | None = None, *, reason: str = "storage_pressure", en
     return body
 
 
+def backend_unavailable(request: httpx.Request) -> dict[str, Any]:
+    submitted = json.loads(request.content)
+    path = request.url.path
+    operation = {
+        "/api/worker/workflow-tasks/poll": "poll_workflow_task",
+        "/api/worker/activity-tasks/poll": "poll_activity_task",
+        "/api/worker/query-tasks/poll": "poll_query_task",
+        "/api/worker/register": "register_worker",
+        "/api/worker/heartbeat": "heartbeat_worker",
+    }[path]
+    body: dict[str, Any] = {
+        "reason": "backend_unavailable", "operation": operation, "outcome": "unknown",
+        "worker_id": submitted["worker_id"], "task_queue": submitted.get("task_queue"),
+        "retryable": True, "retry_after_seconds": 1,
+    }
+    if path.endswith("/poll"):
+        body.update({
+            "task": None, "poll_status": "backend_unavailable",
+            "poll_request_id": submitted["poll_request_id"],
+            "retry_same_poll_request_id": True,
+        })
+    return body
+
+
 @contextmanager
 def worker_scope(stop: Callable[[], bool] = lambda: False) -> Iterator[None]:
     token = _worker_storage_admission_stop.set(stop)
@@ -102,6 +126,124 @@ async def test_poll_keeps_identity_after_ambiguous_response_and_pressure(
     assert len(requests) == 7
     assert len(set(requests)) == 1
     assert sum(retry_sleeps) == pytest.approx(5)
+
+
+@pytest.mark.parametrize("kind", ["workflow", "activity", "query", "multiplexed"])
+async def test_backend_outage_preserves_logical_poll_after_transport_budget(
+    kind: str, retry_sleeps: list[float],
+) -> None:
+    requests: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.content)
+        if len(requests) == 1:
+            raise httpx.ReadTimeout("Response lost after a possible claim.", request=request)
+        if len(requests) <= 5:
+            return httpx.Response(503, json=backend_unavailable(request))
+        return httpx.Response(200, json={"task": {"task_id": "reconciled-claim"}})
+
+    async with client_for(handler) as client:
+        with worker_scope():
+            if kind == "multiplexed":
+                task = await client.poll_workflow_task(
+                    worker_id="backend-worker", task_queue="orders",
+                    task_kinds=("workflow", "update_validation"),
+                )
+            else:
+                task = await getattr(client, f"poll_{kind}_task")(
+                    worker_id="backend-worker", task_queue="orders",
+                )
+    assert task == {"task_id": "reconciled-claim"}
+    assert len(requests) == 6
+    assert len(set(requests)) == 1
+    assert sum(retry_sleeps) == pytest.approx(4)
+
+
+@pytest.mark.parametrize("method,kwargs", [
+    ("register_worker", {
+        "worker_id": "backend-worker", "task_queue": "orders",
+        "capability_manifest": PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+    }),
+    ("heartbeat_worker", {"worker_id": "backend-worker"}),
+])
+async def test_backend_outage_retries_worker_registration_and_heartbeat(
+    method: str, kwargs: dict[str, Any], retry_sleeps: list[float],
+) -> None:
+    requests: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.content)
+        if len(requests) <= 4:
+            return httpx.Response(503, json=backend_unavailable(request))
+        return httpx.Response(200, json={"recorded": True})
+
+    async with client_for(handler) as client:
+        with worker_scope():
+            result = await getattr(client, method)(**kwargs)
+    assert result == {"recorded": True}
+    assert len(requests) == 5
+    assert len(set(requests)) == 1
+    assert sum(retry_sleeps) == pytest.approx(4)
+
+
+@pytest.mark.parametrize("override", [
+    {"reason": "other"}, {"operation": "poll_activity_task"},
+    {"outcome": "failed"}, {"worker_id": "other-worker"},
+    {"task_queue": "other-queue"}, {"retryable": False},
+    {"retry_after_seconds": 0}, {"retry_after_seconds": True},
+    {"retry_after_seconds": "1"}, {"task": {"task_id": "claimed"}},
+    {"poll_status": "empty"}, {"poll_request_id": "another-poll"},
+    {"retry_same_poll_request_id": False},
+])
+async def test_invalid_backend_outage_contract_remains_bounded(
+    override: dict[str, Any], retry_sleeps: list[float],
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, json={**backend_unavailable(request), **override})
+
+    async with client_for(handler) as client:
+        with worker_scope(lambda: calls > 2), pytest.raises(ServerError):
+            await client.poll_workflow_task(worker_id="backend-worker", task_queue="orders")
+    assert calls == 2
+    assert not retry_sleeps or sum(retry_sleeps) == 0
+
+
+async def test_direct_backend_outage_poll_remains_bounded(retry_sleeps: list[float]) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, json=backend_unavailable(request))
+
+    async with client_for(handler) as client:
+        with pytest.raises(ServerError):
+            await client.poll_workflow_task(worker_id="backend-worker", task_queue="orders")
+    assert calls == 2
+
+
+async def test_shutdown_interrupts_backend_outage_without_new_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    stopped = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, json=backend_unavailable(request))
+
+    async def stop_on_sleep(delay: float) -> None:
+        nonlocal stopped
+        stopped = True
+
+    monkeypatch.setattr(retry_module, "asyncio", SimpleNamespace(sleep=stop_on_sleep))
+    async with client_for(handler) as client:
+        with worker_scope(lambda: stopped), pytest.raises(ServerError):
+            await client.poll_workflow_task(worker_id="backend-worker", task_queue="orders")
+    assert calls == 1
 
 
 @pytest.mark.parametrize("method,kwargs", [
