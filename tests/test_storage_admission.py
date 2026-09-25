@@ -187,7 +187,7 @@ async def test_backend_outage_retries_worker_registration_and_heartbeat(
 
 
 @pytest.mark.parametrize("override", [
-    {"reason": "other"}, {"operation": "poll_activity_task"},
+    {"operation": "poll_activity_task"},
     {"outcome": "failed"}, {"worker_id": "other-worker"},
     {"task_queue": "other-queue"}, {"retryable": False},
     {"retry_after_seconds": 0}, {"retry_after_seconds": True},
@@ -206,10 +206,33 @@ async def test_invalid_backend_outage_contract_remains_bounded(
         return httpx.Response(503, json={**backend_unavailable(request), **override})
 
     async with client_for(handler) as client:
-        with worker_scope(lambda: calls > 2), pytest.raises(ServerError):
+        with worker_scope(), pytest.raises(ServerError):
             await client.poll_workflow_task(worker_id="backend-worker", task_queue="orders")
-    assert calls == 2
-    assert not retry_sleeps or sum(retry_sleeps) == 0
+    assert calls == 1
+    assert not retry_sleeps
+
+
+async def test_legacy_validation_backend_refusal_does_not_repeat_ambiguous_poll(
+    retry_sleeps: list[float],
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, json={
+            "reason": "backend_unavailable", "operation": "poll_update_validation_task",
+            "outcome": "unknown", "worker_id": "backend-worker", "task_queue": "orders",
+            "retryable": False, "retry_after_seconds": 1, "task": None,
+            "poll_status": "backend_unavailable", "poll_request_id": None,
+            "retry_same_poll_request_id": True,
+        })
+
+    async with client_for(handler) as client:
+        with worker_scope(), pytest.raises(ServerError):
+            await client.poll_update_validation_task(worker_id="backend-worker", task_queue="orders")
+    assert calls == 1
+    assert not retry_sleeps
 
 
 async def test_direct_backend_outage_poll_remains_bounded(retry_sleeps: list[float]) -> None:

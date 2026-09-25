@@ -65,12 +65,18 @@ def _storage_refusal(exc: Exception) -> tuple[ServerError, str | None] | None:
     return error, poll_id
 
 
-def _backend_unavailable_retry_after(exc: Exception) -> int | None:
+def _backend_unavailable_refusal(exc: Exception) -> tuple[bool, int | None]:
     if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code != 503:
-        return None
+        return False, None
+    try:
+        body = exc.response.json()
+    except ValueError:
+        return False, None
+    if not isinstance(body, dict) or body.get("reason") != "backend_unavailable":
+        return False, None
     request = exc.request
     if request.method != "POST" or "X-Durable-Workflow-Protocol-Version" not in request.headers:
-        return None
+        return True, None
     operations = {
         "/api/worker/workflow-tasks/poll": "poll_workflow_task",
         "/api/worker/activity-tasks/poll": "poll_activity_task",
@@ -80,20 +86,18 @@ def _backend_unavailable_retry_after(exc: Exception) -> int | None:
     }
     operation = next((name for path, name in operations.items() if request.url.path.endswith(path)), None)
     if operation is None:
-        return None
+        return True, None
     try:
         submitted = json.loads(request.content)
-        body = exc.response.json()
     except ValueError:
-        return None
-    if not isinstance(submitted, dict) or not isinstance(body, dict):
-        return None
+        return True, None
+    if not isinstance(submitted, dict):
+        return True, None
     worker_id = submitted.get("worker_id")
     queue = submitted.get("task_queue")
     delay = body.get("retry_after_seconds")
     if (
         not isinstance(worker_id, str) or not worker_id
-        or body.get("reason") != "backend_unavailable"
         or body.get("operation") != operation
         or body.get("outcome") != "unknown"
         or body.get("worker_id") != worker_id
@@ -102,7 +106,7 @@ def _backend_unavailable_retry_after(exc: Exception) -> int | None:
         or type(delay) is not int or delay <= 0
         or (operation != "heartbeat_worker" and (not isinstance(queue, str) or not queue))
     ):
-        return None
+        return True, None
     if operation.startswith("poll_"):
         poll_id = submitted.get("poll_request_id")
         if (
@@ -112,8 +116,8 @@ def _backend_unavailable_retry_after(exc: Exception) -> int | None:
             or body.get("poll_request_id") != poll_id
             or body.get("retry_same_poll_request_id") is not True
         ):
-            return None
-    return delay
+            return True, None
+    return True, delay
 
 
 @dataclass
@@ -185,7 +189,9 @@ class TransportRetryPolicy:
                 last_exc = exc
                 stop = _worker_storage_admission_stop.get()
                 refusal = _storage_refusal(exc) if stop is not None else None
-                backend_delay = _backend_unavailable_retry_after(exc) if stop is not None else None
+                backend_refusal, backend_delay = _backend_unavailable_refusal(exc)
+                if backend_refusal and backend_delay is None:
+                    raise
                 pause: tuple[str, int] | None = None
                 if refusal is not None:
                     error, poll_id = refusal
