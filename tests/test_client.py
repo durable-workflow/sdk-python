@@ -2698,7 +2698,7 @@ class TestFailWorkflowTask:
                 "task": None,
                 "poll_status": "long_poll_capacity_exhausted",
                 "reason": "long_poll_capacity_exhausted",
-                "task_kind": "workflow",
+                "task_kind": "workflow_task",
                 "task_queue": "q1",
                 "retryable": True,
                 "retry_after_seconds": 2,
@@ -2708,7 +2708,7 @@ class TestFailWorkflowTask:
             await client.poll_workflow_task(worker_id="worker-1", task_queue="q1")
 
         assert len(requests) == 1
-        assert refusal.value.poll_capacity_backpressure_delay("workflow", "q1") == 2
+        assert refusal.value.poll_capacity_backpressure_delay("workflow_task", "q1") == 2
 
     @pytest.mark.asyncio
     async def test_poll_workflow_task_response_preserves_no_compatible_status(self, client: Client) -> None:

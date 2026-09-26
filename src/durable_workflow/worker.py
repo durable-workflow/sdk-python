@@ -2545,7 +2545,7 @@ class Worker:
                     return
                 if _is_storage_admission_error(e):
                     raise
-                delay = _poll_capacity_delay(e, "workflow", self.task_queue)
+                delay = _poll_capacity_delay(e, "workflow_task", self.task_queue)
                 if delay is not None:
                     self._record_poll_metrics("workflow", "backpressure", time.perf_counter() - poll_start)
                     log.debug("workflow poll capacity backpressure; retrying in %d s", delay)
@@ -2649,7 +2649,7 @@ class Worker:
                     return
                 if _is_storage_admission_error(e):
                     raise
-                delay = _poll_capacity_delay(e, "activity", self.task_queue)
+                delay = _poll_capacity_delay(e, "activity_task", self.task_queue)
                 if delay is not None:
                     self._record_poll_metrics("activity", "backpressure", time.perf_counter() - poll_start)
                     log.debug("activity poll capacity backpressure; retrying in %d s", delay)
@@ -2706,7 +2706,7 @@ class Worker:
                     return
                 if _is_storage_admission_error(e):
                     raise
-                delay = _poll_capacity_delay(e, "query", self.task_queue)
+                delay = _poll_capacity_delay(e, "query_task", self.task_queue)
                 if delay is not None:
                     self._record_poll_metrics("query", "backpressure", time.perf_counter() - poll_start)
                     log.debug("query poll capacity backpressure; retrying in %d s", delay)

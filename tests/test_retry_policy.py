@@ -43,10 +43,10 @@ class TestRetryPolicy:
     @pytest.mark.parametrize(
         ("path", "task_kind"),
         [
-            ("/api/worker/workflow-tasks/poll", "workflow"),
-            ("/api/runtime/v1/namespaces/acme/api/worker/workflow-tasks/poll", "workflow"),
-            ("/api/worker/activity-tasks/poll", "activity"),
-            ("/api/worker/query-tasks/poll", "query"),
+            ("/api/worker/workflow-tasks/poll", "workflow_task"),
+            ("/api/runtime/v1/namespaces/acme/api/worker/workflow-tasks/poll", "workflow_task"),
+            ("/api/worker/activity-tasks/poll", "activity_task"),
+            ("/api/worker/query-tasks/poll", "query_task"),
         ],
     )
     @pytest.mark.asyncio
@@ -79,6 +79,13 @@ class TestRetryPolicy:
         with pytest.raises(httpx.HTTPStatusError):
             await policy.execute(refused)
         assert calls == 1
+
+        wrong_kind = httpx.Response(429, request=request, json={
+            **response.json(), "task_kind": task_kind.removesuffix("_task"),
+        })
+        assert policy.should_retry(
+            httpx.HTTPStatusError("wrong kind", request=request, response=wrong_kind), attempt=0,
+        ) is True
 
         malformed = httpx.Response(429, request=request, json={
             "reason": "long_poll_capacity_exhausted", "retry_after_seconds": 2,

@@ -888,7 +888,7 @@ class TestWorkerRegistration:
                 "task": None,
                 "poll_status": "long_poll_capacity_exhausted",
                 "reason": "long_poll_capacity_exhausted",
-                "task_kind": task_kind,
+                "task_kind": f"{task_kind}_task",
                 "task_queue": "q1",
                 "retryable": True,
                 "retry_after_seconds": 2,

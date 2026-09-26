@@ -128,9 +128,9 @@ def _poll_capacity_refusal(exc: Exception) -> bool:
     if request.method != "POST" or "X-Durable-Workflow-Protocol-Version" not in request.headers:
         return False
     task_kinds = {
-        "/api/worker/workflow-tasks/poll": "workflow",
-        "/api/worker/activity-tasks/poll": "activity",
-        "/api/worker/query-tasks/poll": "query",
+        "/api/worker/workflow-tasks/poll": "workflow_task",
+        "/api/worker/activity-tasks/poll": "activity_task",
+        "/api/worker/query-tasks/poll": "query_task",
     }
     task_kind = next((kind for path, kind in task_kinds.items() if request.url.path.endswith(path)), None)
     if task_kind is None:
