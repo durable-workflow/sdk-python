@@ -42,7 +42,8 @@ def pressure(poll_id: str | None = None, *, reason: str = "storage_pressure", en
 def backend_unavailable(request: httpx.Request) -> dict[str, Any]:
     submitted = json.loads(request.content)
     path = request.url.path
-    operation = {
+    task_heartbeat = "/api/worker/workflow-tasks/" in path and path.endswith("/heartbeat")
+    operation = "heartbeat_workflow_task" if task_heartbeat else {
         "/api/worker/workflow-tasks/poll": "poll_workflow_task",
         "/api/worker/activity-tasks/poll": "poll_activity_task",
         "/api/worker/query-tasks/poll": "poll_query_task",
@@ -51,9 +52,16 @@ def backend_unavailable(request: httpx.Request) -> dict[str, Any]:
     }[path]
     body: dict[str, Any] = {
         "reason": "backend_unavailable", "operation": operation, "outcome": "unknown",
-        "worker_id": submitted["worker_id"], "task_queue": submitted.get("task_queue"),
+        "worker_id": submitted.get("lease_owner") if task_heartbeat else submitted["worker_id"],
+        "task_queue": submitted.get("task_queue"),
         "retryable": True, "retry_after_seconds": 1,
     }
+    if task_heartbeat:
+        body.update({
+            "task_id": path.rpartition("/api/worker/workflow-tasks/")[2].removesuffix("/heartbeat"),
+            "lease_owner": submitted["lease_owner"],
+            "workflow_task_attempt": submitted["workflow_task_attempt"],
+        })
     if path.endswith("/poll"):
         body.update({
             "task": None, "poll_status": "backend_unavailable",
@@ -85,9 +93,9 @@ def retry_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     return sleeps
 
 
-def client_for(handler: Callable[..., Any]) -> Client:
+def client_for(handler: Callable[..., Any], base_url: str = "https://runtime.example") -> Client:
     client = Client(
-        "https://runtime.example", token="test-runtime-token",
+        base_url, token="test-runtime-token",
         retry_policy=TransportRetryPolicy(max_attempts=2, initial_backoff_seconds=0, jitter=False),
     )
     client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(handler))
@@ -184,6 +192,57 @@ async def test_backend_outage_retries_worker_registration_and_heartbeat(
     assert len(requests) == 5
     assert len(set(requests)) == 1
     assert sum(retry_sleeps) == pytest.approx(4)
+
+
+@pytest.mark.parametrize("base_url", ["https://runtime.example", "https://runtime.example/managed/namespace"])
+async def test_backend_outage_retries_workflow_task_heartbeat_with_same_fence(
+    base_url: str, retry_sleeps: list[float],
+) -> None:
+    requests: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.content)
+        if len(requests) <= 4:
+            return httpx.Response(503, json=backend_unavailable(request))
+        return httpx.Response(200, json={
+            "task_id": "task-1", "lease_owner": "worker-1",
+            "workflow_task_attempt": 3, "renewed": True,
+        })
+
+    async with client_for(handler, base_url) as client:
+        with worker_scope():
+            result = await client.heartbeat_workflow_task(
+                task_id="task-1", lease_owner="worker-1", workflow_task_attempt=3,
+            )
+    assert result["renewed"] is True
+    assert len(requests) == 5
+    assert len(set(requests)) == 1
+    assert sum(retry_sleeps) == pytest.approx(4)
+
+
+@pytest.mark.parametrize("override", [
+    {"task_id": "other-task"}, {"lease_owner": "other-worker"},
+    {"worker_id": "other-worker"}, {"workflow_task_attempt": 4},
+    {"operation": "heartbeat_worker"}, {"outcome": "failed"},
+    {"retryable": False}, {"retry_after_seconds": 0},
+])
+async def test_invalid_workflow_task_heartbeat_backend_response_is_not_retried(
+    override: dict[str, Any], retry_sleeps: list[float],
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, json={**backend_unavailable(request), **override})
+
+    async with client_for(handler) as client:
+        with worker_scope(), pytest.raises(ServerError):
+            await client.heartbeat_workflow_task(
+                task_id="task-1", lease_owner="worker-1", workflow_task_attempt=3,
+            )
+    assert calls == 1
+    assert not retry_sleeps
 
 
 @pytest.mark.parametrize("override", [
