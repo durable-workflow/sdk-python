@@ -2683,6 +2683,34 @@ class TestFailWorkflowTask:
         assert request_body["poll_request_id"] != ""
 
     @pytest.mark.asyncio
+    async def test_typed_poll_capacity_refusal_reaches_worker_after_one_http_request(
+        self, client: Client,
+    ) -> None:
+        requests: list[httpx.Request] = []
+
+        async def refused(method: str, path: str, **kwargs: object) -> httpx.Response:
+            request = httpx.Request(
+                method, "http://localhost:8080" + path,
+                headers=kwargs["headers"], json=kwargs["json"],
+            )
+            requests.append(request)
+            return httpx.Response(429, request=request, json={
+                "task": None,
+                "poll_status": "long_poll_capacity_exhausted",
+                "reason": "long_poll_capacity_exhausted",
+                "task_kind": "workflow",
+                "task_queue": "q1",
+                "retryable": True,
+                "retry_after_seconds": 2,
+            })
+
+        with patch.object(client._http, "request", side_effect=refused), pytest.raises(ServerError) as refusal:
+            await client.poll_workflow_task(worker_id="worker-1", task_queue="q1")
+
+        assert len(requests) == 1
+        assert refusal.value.poll_capacity_backpressure_delay("workflow", "q1") == 2
+
+    @pytest.mark.asyncio
     async def test_poll_workflow_task_response_preserves_no_compatible_status(self, client: Client) -> None:
         response = {
             "task": None,

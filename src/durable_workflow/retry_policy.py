@@ -121,6 +121,32 @@ def _backend_unavailable_refusal(exc: Exception) -> tuple[bool, int | None]:
     return True, delay
 
 
+def _poll_capacity_refusal(exc: Exception) -> bool:
+    if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code != 429:
+        return False
+    request = exc.request
+    if request.method != "POST" or "X-Durable-Workflow-Protocol-Version" not in request.headers:
+        return False
+    task_kinds = {
+        "/api/worker/workflow-tasks/poll": "workflow",
+        "/api/worker/activity-tasks/poll": "activity",
+        "/api/worker/query-tasks/poll": "query",
+    }
+    task_kind = next((kind for path, kind in task_kinds.items() if request.url.path.endswith(path)), None)
+    if task_kind is None:
+        return False
+    try:
+        body = exc.response.json()
+        submitted = json.loads(request.content)
+    except ValueError:
+        return False
+    if not isinstance(submitted, dict) or not isinstance(submitted.get("task_queue"), str):
+        return False
+    return ServerError(429, body).poll_capacity_backpressure_delay(
+        task_kind, submitted["task_queue"],
+    ) is not None
+
+
 @dataclass
 class TransportRetryPolicy:
     """
@@ -157,6 +183,8 @@ class TransportRetryPolicy:
 
         # Retry 5xx server errors and 429 rate limit
         if isinstance(exc, httpx.HTTPStatusError):
+            if _poll_capacity_refusal(exc):
+                return False
             return exc.response.status_code >= 500 or exc.response.status_code == 429
 
         return False
