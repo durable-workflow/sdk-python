@@ -80,6 +80,18 @@ def _backend_unavailable_refusal(exc: Exception) -> tuple[bool, int | None]:
         "/api/worker/heartbeat": "heartbeat_worker",
     }
     operation = next((name for path, name in operations.items() if request.url.path.endswith(path)), None)
+    _, task_heartbeat_marker, task_heartbeat_tail = request.url.path.rpartition(
+        "/api/worker/workflow-tasks/"
+    )
+    task_id = task_heartbeat_tail.removesuffix("/heartbeat")
+    task_heartbeat = (
+        bool(task_heartbeat_marker)
+        and task_heartbeat_tail.endswith("/heartbeat")
+        and bool(task_id)
+        and "/" not in task_id
+    )
+    if task_heartbeat:
+        operation = "heartbeat_workflow_task"
     if operation is None:
         return False, None
     try:
@@ -97,6 +109,24 @@ def _backend_unavailable_refusal(exc: Exception) -> tuple[bool, int | None]:
     worker_id = submitted.get("worker_id")
     queue = submitted.get("task_queue")
     delay = body.get("retry_after_seconds")
+    if task_heartbeat:
+        lease_owner = submitted.get("lease_owner")
+        attempt = submitted.get("workflow_task_attempt")
+        if (
+            not isinstance(lease_owner, str) or not lease_owner
+            or type(attempt) is not int or attempt <= 0
+            or body.get("operation") != operation
+            or body.get("outcome") != "unknown"
+            or body.get("worker_id") != lease_owner
+            or body.get("task_queue") is not None
+            or body.get("task_id") != task_id
+            or body.get("lease_owner") != lease_owner
+            or body.get("workflow_task_attempt") != attempt
+            or body.get("retryable") is not True
+            or type(delay) is not int or delay <= 0
+        ):
+            return True, None
+        return True, delay
     if (
         not isinstance(worker_id, str) or not worker_id
         or body.get("operation") != operation
