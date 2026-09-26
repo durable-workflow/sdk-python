@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-09-26
+
+### Fixed
+- Workers recognize Server's typed long-poll capacity response for workflow,
+  activity, and query polls. They release the poll reservation and wait for the
+  advertised retry delay without duplicate transport retries or an error warning.
+  Unrelated or malformed rate-limit responses keep their existing error path.
+
 ## [2.1.0] - 2026-09-23
 
 ### Added
