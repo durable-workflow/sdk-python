@@ -6,7 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.3.2] - 2026-09-26
+## [2.3.3] - 2026-09-26
 
 ### Fixed
 - Workers recognize Server's typed long-poll capacity response for workflow,
