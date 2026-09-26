@@ -171,6 +171,25 @@ class ServerError(DurableWorkflowError):
             return self.body.get("reason")
         return None
 
+    def poll_capacity_backpressure_delay(self, task_kind: str, task_queue: str) -> int | None:
+        """Return the advertised wait only for a complete poll-capacity refusal."""
+        body = self.body
+        if (
+            self.status != 429
+            or not isinstance(body, dict)
+            or body.get("reason") != "long_poll_capacity_exhausted"
+            or body.get("poll_status") != "long_poll_capacity_exhausted"
+            or "task" not in body or body["task"] is not None
+            or body.get("task_kind") != task_kind
+            or body.get("task_queue") != task_queue
+            or body.get("retryable") is not True
+            or type(body.get("retry_after_seconds")) is not int
+            or body["retry_after_seconds"] <= 0
+            or body["retry_after_seconds"] > 60
+        ):
+            return None
+        return int(body["retry_after_seconds"])
+
     def is_storage_admission_failure(self, poll_request_id: str | None = None) -> bool:
         """Whether the runtime explicitly refused admission and requested an identity-preserving retry."""
         body = self.body

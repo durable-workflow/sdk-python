@@ -40,6 +40,53 @@ class TestRetryPolicy:
         exc = httpx.HTTPStatusError("rate limited", request=response.request, response=response)
         assert policy.should_retry(exc, attempt=0) is True
 
+    @pytest.mark.parametrize(
+        ("path", "task_kind"),
+        [
+            ("/api/worker/workflow-tasks/poll", "workflow"),
+            ("/api/runtime/v1/namespaces/acme/api/worker/workflow-tasks/poll", "workflow"),
+            ("/api/worker/activity-tasks/poll", "activity"),
+            ("/api/worker/query-tasks/poll", "query"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_typed_poll_capacity_refusal_does_not_repeat_transport_request(
+        self, path: str, task_kind: str,
+    ) -> None:
+        policy = RetryPolicy(max_attempts=3, jitter=False)
+        request = httpx.Request(
+            "POST", "http://test" + path,
+            headers={"X-Durable-Workflow-Protocol-Version": "1.19"},
+            json={"task_queue": "q1", "worker_id": "worker-1"},
+        )
+        response = httpx.Response(429, request=request, json={
+            "task": None,
+            "poll_status": "long_poll_capacity_exhausted",
+            "reason": "long_poll_capacity_exhausted",
+            "task_kind": task_kind,
+            "task_queue": "q1",
+            "retryable": True,
+            "retry_after_seconds": 2,
+        })
+        error = httpx.HTTPStatusError("capacity", request=request, response=response)
+        calls = 0
+
+        async def refused() -> None:
+            nonlocal calls
+            calls += 1
+            raise error
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await policy.execute(refused)
+        assert calls == 1
+
+        malformed = httpx.Response(429, request=request, json={
+            "reason": "long_poll_capacity_exhausted", "retry_after_seconds": 2,
+        })
+        assert policy.should_retry(
+            httpx.HTTPStatusError("malformed", request=request, response=malformed), attempt=0,
+        ) is True
+
     def test_should_not_retry_4xx_client_error(self) -> None:
         policy = RetryPolicy(max_attempts=3)
         response = httpx.Response(status_code=404, request=httpx.Request("GET", "http://test"))

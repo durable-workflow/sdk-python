@@ -190,6 +190,12 @@ def _poll_error_summary(error: BaseException) -> str:
     return f"server returned {error.status} reason={reason[:64]!r}"
 
 
+def _poll_capacity_delay(error: BaseException, task_kind: str, task_queue: str) -> int | None:
+    if not isinstance(error, ServerError):
+        return None
+    return error.poll_capacity_backpressure_delay(task_kind, task_queue)
+
+
 def _command_payload_codec(codec: object) -> str:
     if codec is None:
         return serializer.AVRO_CODEC
@@ -2539,6 +2545,12 @@ class Worker:
                     return
                 if _is_storage_admission_error(e):
                     raise
+                delay = _poll_capacity_delay(e, "workflow", self.task_queue)
+                if delay is not None:
+                    self._record_poll_metrics("workflow", "backpressure", time.perf_counter() - poll_start)
+                    log.debug("workflow poll capacity backpressure; retrying in %d s", delay)
+                    await asyncio.sleep(delay)
+                    continue
                 self._record_poll_metrics("workflow", "error", time.perf_counter() - poll_start)
                 log.warning("workflow poll error: %s", _poll_error_summary(e))
                 await asyncio.sleep(1.0)
@@ -2637,6 +2649,12 @@ class Worker:
                     return
                 if _is_storage_admission_error(e):
                     raise
+                delay = _poll_capacity_delay(e, "activity", self.task_queue)
+                if delay is not None:
+                    self._record_poll_metrics("activity", "backpressure", time.perf_counter() - poll_start)
+                    log.debug("activity poll capacity backpressure; retrying in %d s", delay)
+                    await asyncio.sleep(delay)
+                    continue
                 self._record_poll_metrics("activity", "error", time.perf_counter() - poll_start)
                 log.warning("activity poll error: %s", _poll_error_summary(e))
                 await asyncio.sleep(1.0)
@@ -2688,6 +2706,12 @@ class Worker:
                     return
                 if _is_storage_admission_error(e):
                     raise
+                delay = _poll_capacity_delay(e, "query", self.task_queue)
+                if delay is not None:
+                    self._record_poll_metrics("query", "backpressure", time.perf_counter() - poll_start)
+                    log.debug("query poll capacity backpressure; retrying in %d s", delay)
+                    await asyncio.sleep(delay)
+                    continue
                 self._record_poll_metrics("query", "error", time.perf_counter() - poll_start)
                 log.warning("query poll error: %s", _poll_error_summary(e))
                 await asyncio.sleep(1.0)

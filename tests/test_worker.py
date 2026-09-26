@@ -867,7 +867,60 @@ class TestWorkerRegistration:
         ],
     )
     @pytest.mark.asyncio
-    async def test_poll_warning_omits_large_server_response(
+    async def test_typed_poll_backpressure_waits_without_warning(
+        self,
+        mock_client: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        poll_method: str,
+        loop_method: str,
+        task_kind: str,
+    ) -> None:
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow],
+            activities=[echo_activity],
+        )
+        getattr(mock_client, poll_method).side_effect = ServerError(
+            429,
+            {
+                "task": None,
+                "poll_status": "long_poll_capacity_exhausted",
+                "reason": "long_poll_capacity_exhausted",
+                "task_kind": task_kind,
+                "task_queue": "q1",
+                "retryable": True,
+                "retry_after_seconds": 2,
+            },
+        )
+        outcomes: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            worker, "_record_poll_metrics",
+            lambda kind, outcome, _duration: outcomes.append((kind, outcome)),
+        )
+
+        async def stop_after_backoff(seconds: float) -> None:
+            assert seconds == 2
+            worker._stop.set()
+
+        monkeypatch.setattr(worker_module.asyncio, "sleep", stop_after_backoff)
+        with caplog.at_level(logging.WARNING, logger="durable_workflow.worker"):
+            await getattr(worker, loop_method)()
+
+        assert outcomes == [(task_kind, "backpressure")]
+        assert not [record for record in caplog.records if record.name == "durable_workflow.worker"]
+
+    @pytest.mark.parametrize(
+        ("poll_method", "loop_method", "task_kind"),
+        [
+            ("poll_workflow_task", "_poll_workflow_tasks", "workflow"),
+            ("poll_activity_task", "_poll_activity_tasks", "activity"),
+            ("poll_query_task", "_poll_query_tasks", "query"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_malformed_poll_warning_omits_large_server_response(
         self,
         mock_client: AsyncMock,
         monkeypatch: pytest.MonkeyPatch,
