@@ -28,7 +28,9 @@ async def test_persisted_deadline_raises_typed_timeout_for_selected_history(kind
     try:
         with pytest.raises(WorkflowTimedOut, match="workflow execution timed out"):
             await client.get_result(handle, timeout=0)
-        client.get_history.assert_awaited_once_with("order", "selected-run")
+        client.get_history.assert_awaited_once_with(
+            "order", "selected-run", page_size=1000, next_page_token=None
+        )
     finally:
         await client.aclose()
 

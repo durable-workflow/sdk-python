@@ -792,6 +792,17 @@ class TestWorkflowRunVisibility:
 
 class TestWorkflowHandleControlPlane:
     @pytest.mark.asyncio
+    async def test_history_page_token_is_encoded(self, client: Client) -> None:
+        response = _mock_response(200, {"events": [], "next_page_token": None})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=response) as request:
+            page = await client.get_history("wf-1", "run-1", page_size=1000, next_page_token="opaque+/=")
+
+        assert page["events"] == []
+        assert request.call_args.args[1] == (
+            "/api/workflows/wf-1/runs/run-1/history?page_size=1000&next_page_token=opaque%2B%2F%3D"
+        )
+
+    @pytest.mark.asyncio
     async def test_run_visibility_delegates_to_client(self, client: Client) -> None:
         handle = WorkflowHandle(client, workflow_id="wf-1", run_id="r1", workflow_type="greeter")
         client.get_history = AsyncMock(return_value={"events": []})
@@ -3181,6 +3192,42 @@ class TestUpdateWorkflow:
 
 
 class TestGetResult:
+    @pytest.mark.asyncio
+    async def test_completed_result_on_later_history_page(self, client: Client) -> None:
+        handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
+        client.describe_workflow = AsyncMock(
+            return_value=WorkflowExecution(
+                workflow_id="wf-1", run_id="run-1", workflow_type="greeter", status="completed",
+            )
+        )
+        client.get_history = AsyncMock(side_effect=[
+            {"events": [{"event_type": "WorkflowStarted"}], "next_page_token": "page two"},
+            {"events": [{"event_type": "WorkflowCompleted", "payload": {
+                "output": serializer.encode(42, codec="avro"), "payload_codec": "avro",
+            }}], "next_page_token": None},
+        ])
+
+        assert await client.get_result(handle) == 42
+        assert client.get_history.await_args_list[0].args == ("wf-1", "run-1")
+        assert client.get_history.await_args_list[0].kwargs == {"page_size": 1000, "next_page_token": None}
+        assert client.get_history.await_args_list[1].kwargs == {
+            "page_size": 1000, "next_page_token": "page two",
+        }
+
+    @pytest.mark.asyncio
+    async def test_repeated_history_page_token_fails(self, client: Client) -> None:
+        handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
+        client.describe_workflow = AsyncMock(
+            return_value=WorkflowExecution(
+                workflow_id="wf-1", run_id="run-1", workflow_type="greeter", status="completed",
+            )
+        )
+        client.get_history = AsyncMock(return_value={"events": [], "next_page_token": "same"})
+
+        with pytest.raises(RuntimeError, match="repeated a page token"):
+            await client.get_result(handle)
+        assert client.get_history.await_count == 2
+
     @pytest.mark.asyncio
     async def test_completed_result_uses_event_payload_codec(self, client: Client) -> None:
         handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
