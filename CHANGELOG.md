@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.5] - 2026-09-27
+
+### Fixed
+- Return completed workflow results and typed failures when their terminal
+  event is beyond the first Server history page. Clients and workflow handles
+  can request further pages with the Server's opaque page token.
+
 ## [2.3.4] - 2026-09-26
 
 ### Fixed
