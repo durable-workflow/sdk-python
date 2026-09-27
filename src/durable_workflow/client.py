@@ -1271,11 +1271,21 @@ class WorkflowHandle:
         """Return the server's current view of this workflow. See :meth:`Client.describe_workflow`."""
         return await self._client.describe_workflow(self.workflow_id)
 
-    async def get_history(self) -> Any:
-        """Fetch this run's durable history. See :meth:`Client.get_history`."""
+    async def get_history(
+        self,
+        *,
+        page_size: int | None = None,
+        next_page_token: str | None = None,
+    ) -> Any:
+        """Fetch one page of this run's history. See :meth:`Client.get_history`."""
         if self.run_id is None:
             raise ValueError("run_id is required to fetch workflow history from a handle")
-        return await self._client.get_history(self.workflow_id, self.run_id)
+        options: dict[str, Any] = {}
+        if page_size is not None:
+            options["page_size"] = page_size
+        if next_page_token is not None:
+            options["next_page_token"] = next_page_token
+        return await self._client.get_history(self.workflow_id, self.run_id, **options)
 
     async def export_history(self) -> Any:
         """Export this run's history as a replay bundle. See :meth:`Client.export_history`."""
@@ -3462,10 +3472,26 @@ class Client:
             next_page_token=data.get("next_page_token"),
         )
 
-    async def get_history(self, workflow_id: str, run_id: str) -> Any:
-        """Fetch the full durable history for one specific run of a workflow."""
+    async def get_history(
+        self,
+        workflow_id: str,
+        run_id: str,
+        *,
+        page_size: int | None = None,
+        next_page_token: str | None = None,
+    ) -> Any:
+        """Fetch one history page; pass its opaque next_page_token for the next page."""
+        params: dict[str, str] = {}
+        if page_size is not None:
+            params["page_size"] = str(page_size)
+        if next_page_token is not None:
+            params["next_page_token"] = next_page_token
+        query = urlencode(params)
+        path = f"/workflows/{workflow_id}/runs/{run_id}/history"
+        if query:
+            path += f"?{query}"
         return await self._request(
-            "GET", f"/workflows/{workflow_id}/runs/{run_id}/history", context=workflow_id
+            "GET", path, context=workflow_id
         )
 
     async def export_history(self, workflow_id: str, run_id: str) -> Any:
@@ -4240,34 +4266,44 @@ class Client:
                 run_id = handle.run_id or desc.run_id
                 if run_id is None:
                     raise WorkflowFailed("no run_id available to fetch history")
-                history = await self.get_history(handle.workflow_id, run_id)
-                events = history.get("events", [])
-                for ev in reversed(events):
-                    etype = ev.get("event_type")
-                    payload = ev.get("payload") or {}
-                    if etype == "WorkflowCompleted":
-                        return serializer.decode_envelope(
-                            payload.get("output"),
-                            codec=payload.get("payload_codec") or desc.payload_codec,
-                            external_storage=self.external_storage,
-                            external_storage_cache=self.external_storage_cache,
-                        )
-                    if etype == "WorkflowFailed":
-                        raise WorkflowFailed(
-                            payload.get("message", "workflow failed"),
-                            payload.get("exception_class"),
-                        )
-                    if etype == "WorkflowTerminated":
-                        raise WorkflowTerminated(
-                            payload.get("reason", "workflow was terminated")
-                        )
-                    if etype == "WorkflowCancelled":
-                        raise WorkflowCancelled(
-                            payload.get("reason", "workflow was cancelled")
-                        )
-                    if etype == "WorkflowTimedOut":
-                        raise WorkflowTimedOut()
-                return None
+                page_token: str | None = None
+                seen_tokens: set[str] = set()
+                while True:
+                    history = await self.get_history(
+                        handle.workflow_id, run_id, page_size=1000, next_page_token=page_token
+                    )
+                    events = history.get("events", [])
+                    for ev in reversed(events):
+                        etype = ev.get("event_type")
+                        payload = ev.get("payload") or {}
+                        if etype == "WorkflowCompleted":
+                            return serializer.decode_envelope(
+                                payload.get("output"),
+                                codec=payload.get("payload_codec") or desc.payload_codec,
+                                external_storage=self.external_storage,
+                                external_storage_cache=self.external_storage_cache,
+                            )
+                        if etype == "WorkflowFailed":
+                            raise WorkflowFailed(
+                                payload.get("message", "workflow failed"),
+                                payload.get("exception_class"),
+                            )
+                        if etype == "WorkflowTerminated":
+                            raise WorkflowTerminated(
+                                payload.get("reason", "workflow was terminated")
+                            )
+                        if etype == "WorkflowCancelled":
+                            raise WorkflowCancelled(
+                                payload.get("reason", "workflow was cancelled")
+                            )
+                        if etype == "WorkflowTimedOut":
+                            raise WorkflowTimedOut()
+                    page_token = history.get("next_page_token")
+                    if not page_token:
+                        return None
+                    if page_token in seen_tokens:
+                        raise RuntimeError("history pagination repeated a page token")
+                    seen_tokens.add(page_token)
             if asyncio.get_running_loop().time() > deadline:
                 raise TimeoutError(
                     f"workflow {handle.workflow_id} not terminal after {timeout}s (status={status})"
