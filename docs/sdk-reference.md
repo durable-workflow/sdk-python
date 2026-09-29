@@ -586,6 +586,26 @@ namespace and role credential, then size and SHA-256 are verified before Avro
 decode. The bounded verified-byte cache reduces repeated replay fetches and
 never deletes runtime-owned objects.
 
+The default cache holds up to 1,024 verified references or 16 MiB of payload
+bytes per `Client`, whichever limit it reaches first. A worker uses its client's
+cache by default. Applications can choose a different bound for their history
+and memory budget:
+
+```python
+from durable_workflow import Client, ExternalPayloadCache
+
+client = Client(
+    "https://runtime.example",
+    token=runtime_role_credential,
+    namespace="billing",
+    external_storage_cache=ExternalPayloadCache(max_entries=2048, max_bytes=16 * 1024 * 1024),
+)
+```
+
+Only verified bytes are cached. The byte limit still applies when a history has
+fewer references than the entry limit, and a fresh worker starts with an empty
+cache.
+
 Managed Cloud applications do not configure a bucket, container, provider SDK,
 provider credential, or provider URI parser. The ordinary client configuration
 is sufficient for client operations and workers:
