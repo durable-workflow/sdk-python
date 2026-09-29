@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.6] - 2026-09-29
+
+### Fixed
+- Keep up to 1,024 verified external payload references in the default worker
+  replay cache while retaining the 16 MiB byte limit. This avoids repeated
+  downloads for histories with many distinct external payloads.
+
 ## [2.3.5] - 2026-09-27
 
 ### Fixed
