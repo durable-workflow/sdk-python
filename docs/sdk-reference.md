@@ -588,8 +588,8 @@ never deletes runtime-owned objects.
 
 The default cache holds up to 1,024 verified references or 16 MiB of payload
 bytes per `Client`, whichever limit it reaches first. A worker uses its client's
-cache by default. Self-hosted workers can choose a different bound for their
-history and memory budget:
+cache by default. Applications can choose a different bound for their history
+and memory budget:
 
 ```python
 from durable_workflow import Client, ExternalPayloadCache
