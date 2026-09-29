@@ -836,6 +836,7 @@ class TestWorkerRegistration:
         workflow_kwargs = mock_client.poll_workflow_task.call_args.kwargs
         assert workflow_called.is_set()
         assert workflow_kwargs["build_id"] == "release-2026.04.22-a1"
+        assert workflow_kwargs["history_page_size"] == 500
 
         worker._stop.clear()
         mock_client.poll_activity_task.side_effect = activity_poll_once
@@ -1189,6 +1190,31 @@ class TestWorkerRegistration:
 
 
 class TestWorkflowTaskExecution:
+    @pytest.mark.asyncio
+    async def test_history_page_failure_does_not_replay_partial_history(
+        self, mock_client: AsyncMock
+    ) -> None:
+        mock_client.workflow_task_history.side_effect = RuntimeError("history page unavailable")
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow])
+        task = {
+            "task_id": "t-paged-history",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 1,
+            "history_events": [{"event_id": "first-page"}],
+            "next_history_page_token": "next-page",
+        }
+
+        with pytest.raises(RuntimeError, match="history page unavailable"):
+            await worker._run_workflow_task_core(task)
+
+        mock_client.workflow_task_history.assert_awaited_once_with(
+            task_id="t-paged-history",
+            next_history_page_token="next-page",
+            lease_owner=worker.worker_id,
+            workflow_task_attempt=1,
+        )
+        mock_client.complete_workflow_task.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_local_activity_runs_in_workflow_worker_and_records_heartbeats(
         self, mock_client: AsyncMock
@@ -4948,6 +4974,7 @@ class TestRunUntil:
         assert worker._stop.is_set()
         mock_client.register_worker.assert_awaited_once()
         assert mock_client.describe_workflow.await_count == 2
+        assert mock_client.poll_workflow_task.call_args.kwargs["history_page_size"] == 500
 
     @pytest.mark.asyncio
     async def test_run_until_times_out_and_stops_worker(self, mock_client: AsyncMock) -> None:

@@ -98,6 +98,7 @@ from .workflow import (
 log = logging.getLogger("durable_workflow.worker")
 
 QUERY_TASKS_CAPABILITY = "query_tasks"
+WORKFLOW_HISTORY_PAGE_SIZE = 500
 UPDATE_VALIDATION_TASKS_CAPABILITY = "update_validation_tasks"
 WORKFLOW_UPDATES_CAPABILITY = "workflow_updates"
 MESSAGE_STREAMS_CAPABILITY = "message_streams"
@@ -1637,22 +1638,19 @@ class Worker:
         wf_type: str = task.get("workflow_type", "")
         history = task.get("history_events", [])
 
-        # Paginate history if needed
+        # The worker requests bounded history pages when polling. Do not replay
+        # an incomplete history if fetching a later page fails.
         next_page_token = task.get("next_history_page_token")
         while next_page_token:
-            try:
-                page_data = await self.client.workflow_task_history(
-                    task_id=task_id,
-                    next_history_page_token=next_page_token,
-                    lease_owner=self.worker_id,
-                    workflow_task_attempt=attempt,
-                )
-                if page_data and page_data.get("history_events"):
-                    history.extend(page_data["history_events"])
-                next_page_token = page_data.get("next_history_page_token") if page_data else None
-            except Exception as e:
-                log.warning("failed to fetch history page for task %s: %s", task_id, e)
-                break
+            page_data = await self.client.workflow_task_history(
+                task_id=task_id,
+                next_history_page_token=next_page_token,
+                lease_owner=self.worker_id,
+                workflow_task_attempt=attempt,
+            )
+            if page_data and page_data.get("history_events"):
+                history.extend(page_data["history_events"])
+            next_page_token = page_data.get("next_history_page_token") if page_data else None
 
         start_input: list[Any] = []
         codec = task.get("payload_codec")
@@ -2535,6 +2533,7 @@ class Worker:
                     timeout=self._poll_http_timeout,
                     build_id=self.build_id,
                     task_kinds=self._workflow_poll_task_kinds(),
+                    history_page_size=WORKFLOW_HISTORY_PAGE_SIZE,
                 )
             except asyncio.CancelledError:
                 self._release_workflow_capacity()
@@ -3224,6 +3223,7 @@ class Worker:
                         timeout=self._poll_http_timeout,
                         build_id=self.build_id,
                         task_kinds=self._workflow_poll_task_kinds(),
+                        history_page_size=WORKFLOW_HISTORY_PAGE_SIZE,
                     )
                 except BaseException:
                     self._release_workflow_capacity()
