@@ -4,11 +4,12 @@ import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
-from durable_workflow import Replayer, serializer, workflow
-from durable_workflow.client import WorkflowStreamAppendItem
+from durable_workflow import Replayer, Worker, serializer, workflow
+from durable_workflow.client import Client, WorkflowStreamAppendItem
 from durable_workflow.errors import NonDeterministicReplayError, WorkflowPayloadDecodeError
 from durable_workflow.workflow import WorkflowContext, commands_to_server_commands, query_state
 from tests.test_golden_history_replay import (
@@ -156,6 +157,17 @@ class RecordedSideEffectWorkflow:
         return (yield ctx.side_effect(unexpected_execution))
 
 
+@workflow.defn(name="tests.replay.paged-recorded-side-effects")
+class PagedRecordedSideEffectsWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        def unexpected_execution() -> int:
+            raise AssertionError("recorded side effect callable ran during replay")
+
+        first = yield ctx.side_effect(unexpected_execution)
+        second = yield ctx.side_effect(unexpected_execution)
+        return first + second
+
+
 @workflow.defn(name="tests.replay.message-stream-consumer")
 class MessageStreamConsumerWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -212,6 +224,7 @@ WORKFLOWS = [
     NestedParallelPathWorkflow,
     ParallelMetadataProducerWorkflow,
     ParallelResultBindingWorkflow,
+    PagedRecordedSideEffectsWorkflow,
     PostConditionReceiversWorkflow,
     RecordedSideEffectWorkflow,
     SelectionAwaitMarkerWorkflow,
@@ -392,6 +405,41 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
         return
 
     _execute_fixture(fixture)
+
+
+@pytest.mark.asyncio
+async def test_worker_replays_recorded_side_effects_across_history_pages() -> None:
+    fixture = json.loads((FIXTURE_DIR / "paged-recorded-side-effects.json").read_text(encoding="utf-8"))
+    history = fixture["history"]
+    client = AsyncMock(spec=Client)
+    client.workflow_task_history.return_value = {
+        "history_events": history[1:],
+        "next_history_page_token": None,
+    }
+    worker = Worker(client, task_queue="paged-history", workflows=[PagedRecordedSideEffectsWorkflow])
+
+    commands = await worker._run_workflow_task_core({
+        "task_id": "task-paged-side-effects",
+        "workflow_id": "workflow-paged-side-effects",
+        "run_id": "run-paged-side-effects",
+        "workflow_type": fixture["workflow"]["type"],
+        "workflow_task_attempt": 1,
+        "history_events": history[:1],
+        "next_history_page_token": "second-page",
+        "arguments": serializer.encode([], codec="avro"),
+        "payload_codec": "avro",
+    })
+
+    client.workflow_task_history.assert_awaited_once_with(
+        task_id="task-paged-side-effects",
+        next_history_page_token="second-page",
+        lease_owner=worker.worker_id,
+        workflow_task_attempt=1,
+    )
+    client.complete_workflow_task.assert_awaited_once()
+    assert commands is not None
+    assert [command["type"] for command in commands] == ["complete_workflow"]
+    assert serializer.decode_envelope(commands[0]["result"]) == 198
 
 
 @pytest.mark.parametrize(
