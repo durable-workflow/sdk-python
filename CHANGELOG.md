@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.7] - 2026-09-29
+
+### Fixed
+- Request bounded workflow history pages in Python workers so long valid
+  histories no longer require an unbounded Server poll response. A worker now
+  stops rather than replaying partial history if a later page fetch fails.
+
 ## [2.3.6] - 2026-09-29
 
 ### Fixed
