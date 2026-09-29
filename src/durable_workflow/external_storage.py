@@ -250,7 +250,7 @@ class ExternalPayloadCache:
     contract as a fresh driver fetch.
     """
 
-    def __init__(self, *, max_entries: int = 128, max_bytes: int = 16 * 1024 * 1024) -> None:
+    def __init__(self, *, max_entries: int = 1024, max_bytes: int = 16 * 1024 * 1024) -> None:
         if max_entries < 1:
             raise ValueError("external payload cache max_entries must be at least 1")
         if max_bytes < 1:

@@ -1,6 +1,6 @@
 import hashlib
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -738,6 +738,26 @@ def test_fetch_external_payload_cache_reuses_verified_bytes(tmp_path: Path) -> N
 
     assert fetch_external_payload(storage, reference, cache=cache) == b'{"stable":true}'
     assert len(cache) == 1
+
+
+def test_default_cache_reuses_large_replay_reference_set(tmp_path: Path) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path)
+    cache = ExternalPayloadCache()
+    references = [
+        store_external_payload(storage, f"signal-{index}".encode(), codec="avro")
+        for index in range(1000)
+    ]
+
+    with patch.object(storage, "get", wraps=storage.get) as get:
+        for _ in range(2):
+            for index, reference in enumerate(references):
+                assert fetch_external_payload(storage, reference, cache=cache) == (
+                    f"signal-{index}".encode()
+                )
+
+    assert get.call_count == len(references)
+    assert len(cache) == len(references)
+    assert cache.current_bytes <= cache.max_bytes == 16 * 1024 * 1024
 
 
 def test_delete_external_payload_removes_blob_and_cache_entry(tmp_path: Path) -> None:
