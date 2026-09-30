@@ -133,12 +133,17 @@ class CancellationHistory:
     delivery_index: int | None
     resolved_before_request: frozenset[int]
     failed_before_request: frozenset[int]
+    selected_before_request: frozenset[tuple[int, int]]
 
     def eligible(self, sequence: int, span: int = 1) -> bool:
         if self.request is None or self.delivery is not None:
             return False
         sequences = set(range(sequence, sequence + span))
-        return not sequences <= self.resolved_before_request and not sequences & self.failed_before_request
+        return (
+            not sequences <= self.resolved_before_request
+            and not sequences & self.failed_before_request
+            and (sequence, span) not in self.selected_before_request
+        )
 
 
 def read_cancellation_history(
@@ -197,12 +202,23 @@ def read_cancellation_history(
             delivery_index = index
     resolved: set[int] = set()
     failed: set[int] = set()
+    selected: set[tuple[int, int]] = set()
     for event in events[:request_index]:
         kind = event.get("event_type") or event.get("type")
         payload = event.get("payload") or {}
         if not isinstance(payload, Mapping):
             continue
         sequence = payload.get("sequence")
+        if kind == "SelectionResolved":
+            base = payload.get("selection_group_base_sequence")
+            span = payload.get("selection_group_size")
+            if type(base) is int and base > 0 and type(span) is int and 1 <= span <= 1000:
+                selected.add((base, span))
+        elif kind == "SelectionOperationCancelled":
+            base = payload.get("member_base_sequence")
+            span = payload.get("member_size")
+            if type(base) is int and base > 0 and type(span) is int and 1 <= span <= 1000:
+                resolved.update(range(base, base + span))
         if type(sequence) is int and sequence > 0 and kind in _RESOLUTION_EVENTS:
             resolved.add(sequence)
             if kind in {
@@ -214,4 +230,13 @@ def read_cancellation_history(
                 "ChildRunTerminated",
             }:
                 failed.add(sequence)
-    return CancellationHistory(request, delivery, request_index, delivery_index, frozenset(resolved), frozenset(failed))
+    state = CancellationHistory(
+        request, delivery, request_index, delivery_index, frozenset(resolved), frozenset(failed), frozenset(selected),
+    )
+    if delivery is not None:
+        base = delivery.operation_sequence or delivery.sequence
+        span = delivery.operation_sequence_span if delivery.operation_sequence is not None else delivery.sequence_span
+        interrupted = set(range(base, base + span))
+        if interrupted <= resolved or interrupted & failed or (base, span) in selected:
+            raise _invalid("delivery cannot replace an earlier committed result", delivery.sequence)
+    return state

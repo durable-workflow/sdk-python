@@ -10,7 +10,7 @@ import pytest
 
 from durable_workflow import Replayer, Worker, serializer, workflow
 from durable_workflow.client import Client, WorkflowStreamAppendItem
-from durable_workflow.errors import NonDeterministicReplayError, WorkflowPayloadDecodeError
+from durable_workflow.errors import NonDeterministicReplayError, WorkflowCancelled, WorkflowPayloadDecodeError
 from durable_workflow.workflow import WorkflowContext, commands_to_server_commands, query_state
 from tests.test_golden_history_replay import (
     GoldenSagaCompensationWorkflow,
@@ -212,8 +212,21 @@ class LocalActivityColdResultWorkflow:
         return (yield ctx.local_activity("golden.local", []))
 
 
+@workflow.defn(name="tests.replay.cooperative-reopened-condition-cleanup")
+class CooperativeReopenedConditionCleanupWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.wait_condition(lambda: False, key="forward-wait")
+        except WorkflowCancelled as exc:
+            with ctx.cancellation_shield():
+                yield ctx.start_timer(1)
+            return exc.request_id
+        return "not cancelled"
+
+
 WORKFLOWS = [
     ColdReplacementSatisfiedConditionWorkflow,
+    CooperativeReopenedConditionCleanupWorkflow,
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
     GoldenSingleActivityWorkflow,

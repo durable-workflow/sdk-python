@@ -655,8 +655,9 @@ class WorkflowCancelled(BaseException):
     class by name.
     """
 
-    def __init__(self, message: str = "workflow was cancelled") -> None:
+    def __init__(self, message: str = "workflow was cancelled", *, request_id: str | None = None) -> None:
         super().__init__(message)
+        self.request_id = request_id
 
 
 class ActivityCancelled(BaseException):

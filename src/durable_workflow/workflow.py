@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
 
 from . import serializer
+from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
 from .client import WorkflowStreamAppendItem
 from .errors import (
     ActivityFailed,
@@ -1680,16 +1681,17 @@ class Saga:
         if self._closed:
             raise RuntimeError("a saga instance can only compensate once")
         self._closed = True
-        for compensation in reversed(self._compensations):
-            try:
-                yield compensation.command
-            except (Exception, WorkflowCancelled) as compensation_failure:
-                raise SagaCompensationFailed(
-                    initiating_failure,
-                    compensation_failure,
-                    compensation_activity_type=compensation.command.activity_type,
-                    compensation_registration_order=compensation.registration_order,
-                ) from compensation_failure
+        with self._context.cancellation_shield():
+            for compensation in reversed(self._compensations):
+                try:
+                    yield compensation.command
+                except (Exception, WorkflowCancelled) as compensation_failure:
+                    raise SagaCompensationFailed(
+                        initiating_failure,
+                        compensation_failure,
+                        compensation_activity_type=compensation.command.activity_type,
+                        compensation_registration_order=compensation.registration_order,
+                    ) from compensation_failure
 
     def run(self, forward: Callable[[Saga], Any]) -> Any:
         """Run ``forward`` and compensate if it fails or is cancelled."""
@@ -1727,6 +1729,8 @@ class WorkflowContext:
         self._current_time = current_time or datetime.now(timezone.utc)
         self._workflow_command_id = workflow_command_id or run_id or workflow_id
         self._cancel_requested = bool(cancel_requested)
+        self._cancellation_request_id: str | None = None
+        self._cancellation_shield_depth = 0
         seed = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16)
         self._rng = random.Random(seed)
         self._uuid7_counter = 0
@@ -1810,17 +1814,30 @@ class WorkflowContext:
 
     @property
     def is_cancellation_requested(self) -> bool:
-        """Whether this task carries a cooperative cancellation request.
+        """Whether cancellation has reached this replay's authored boundary.
 
-        Server's current ``/cancel`` route is terminal and does not set this
-        flag. Service-mode cooperative cancellation is not yet available.
+        Transport observation alone does not set this flag. Server's terminal
+        ``/cancel`` route does not deliver a cooperative workflow exception.
         """
         return self._cancel_requested
 
     def throw_if_cancellation_requested(self) -> None:
         """Raise :class:`WorkflowCancelled` at an explicit safe point."""
-        if self._cancel_requested:
-            raise WorkflowCancelled("workflow cancellation was requested")
+        if self._cancel_requested and self._cancellation_shield_depth == 0:
+            raise WorkflowCancelled("workflow cancellation was requested", request_id=self._cancellation_request_id)
+
+    @contextlib.contextmanager
+    def cancellation_shield(self) -> Generator[None, None, None]:
+        """Permit cleanup calls without delivering the same request again.
+
+        The Server still enforces the original cleanup deadline, task lease
+        and termination fence. This scope does not extend any of them.
+        """
+        self._cancellation_shield_depth += 1
+        try:
+            yield
+        finally:
+            self._cancellation_shield_depth -= 1
 
     def saga(self) -> Saga:
         """Create a deterministic reverse-order compensation scope."""
@@ -2241,6 +2258,7 @@ class ReplayOutcome:
     commands: list[Command]
     message_stream_cursors: list[dict[str, Any]] = field(default_factory=list)
     message_stream_waits: list[dict[str, Any]] = field(default_factory=list)
+    cancellation_delivery: CancellationDelivery | None = None
 
 
 class Replayer:
@@ -2328,6 +2346,7 @@ class _PendingReceiver:
     name: str
     args: list[Any]
     condition_wait_id: str | None = None
+    after_cancellation_delivery: bool = False
 
 
 @dataclass(frozen=True)
@@ -2611,6 +2630,7 @@ def replay(
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
     cancel_requested: bool = False,
+    cancellation_request: Mapping[str, Any] | None = None,
     local_activity_executor: Callable[[RecordLocalActivity], Any] | None = None,
 ) -> ReplayOutcome:
     return _replay_state(
@@ -2624,6 +2644,7 @@ def replay(
         external_storage=external_storage,
         external_storage_cache=external_storage_cache,
         cancel_requested=cancel_requested,
+        cancellation_request=cancellation_request,
         local_activity_executor=local_activity_executor,
     ).outcome
 
@@ -3606,6 +3627,7 @@ def _replay_state(
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
     cancel_requested: bool = False,
+    cancellation_request: Mapping[str, Any] | None = None,
     local_activity_executor: Callable[[RecordLocalActivity], Any] | None = None,
     stop_at_uncommitted_cancellation: bool = False,
 ) -> _ReplayState:
@@ -3622,6 +3644,11 @@ def _replay_state(
             ) from exception
 
     events = list(history_events)
+    cancellation = read_cancellation_history(events, run_id=run_id, observation=cancellation_request)
+    cancellation_consumed = False
+    cancellation_intent: CancellationDelivery | None = None
+    authored_sequence = 1
+    current_call_sequence = 1
     workflow_id = workflow_id or _workflow_id_from_history(events)
     event_types_by_sequence: dict[int, list[str]] = {}
     details_by_sequence: dict[int, dict[str, Any]] = {}
@@ -3725,6 +3752,7 @@ def _replay_state(
         return _ReplayState(
             outcome=ReplayOutcome(
                 commands=commands,
+                cancellation_delivery=cancellation_intent,
                 message_stream_cursors=[
                     {"stream_name": name, "through_position": position}
                     for name, position in sorted(ctx._message_stream_cursors.items())
@@ -3924,6 +3952,15 @@ def _replay_state(
         step_index = result_cursor + offset
         if step_index >= len(recorded_steps):
             return
+        if (
+            cancellation.request is not None
+            and recorded_steps[step_index].workflow_sequence != current_call_sequence + offset
+        ):
+            raise NonDeterministicReplayError(
+                current_call_sequence + offset, _command_diagnostic_shape(command),
+                recorded_steps[step_index].event_types,
+                detail="recorded result belongs to a different authored call",
+            )
         _assert_step_matches(command, recorded_steps[step_index])
 
     def _unconsumed_recorded_steps() -> list[_RecordedStep]:
@@ -3949,6 +3986,11 @@ def _replay_state(
         _assert_step_matches(command, candidates[offset])
 
     def _assert_no_unconsumed_history(terminal_shape: str) -> None:
+        if cancellation.delivery is not None and not cancellation_consumed:
+            raise NonDeterministicReplayError(
+                cancellation.delivery.sequence, terminal_shape, ["CooperativeCancellationDelivered"],
+                detail="workflow did not reach the committed cancellation boundary",
+            )
         step = _next_unconsumed_recorded_step()
         if step is not None:
             raise NonDeterministicReplayError(
@@ -4007,6 +4049,8 @@ def _replay_state(
         return event_type in ("SignalReceived", "UpdateApplied")
 
     def _receiver_binding_boundary_kind(event_type: str | None, payload: Mapping[str, Any]) -> str | None:
+        if event_type == "CooperativeCancellationDelivered":
+            return "condition" if payload.get("call_kind") == "condition" else "step"
         if event_type in (
             "ConditionWaitSatisfied",
             "ConditionWaitTimedOut",
@@ -4154,6 +4198,25 @@ def _replay_state(
         raw_payload = ev.get("payload") or {}
         payload = dict(raw_payload) if isinstance(raw_payload, Mapping) else {}
         sequence = _workflow_sequence(payload)
+        if (
+            cancellation.delivery is not None and sequence is not None
+            and cancellation.delivery.interrupts(sequence)
+            and etype in {
+                "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "ActivityFailed", "ActivityTimedOut",
+                "ActivityCancelled", "TimerScheduled", "TimerFired", "TimerCancelled", "ChildWorkflowScheduled",
+                "ChildRunStarted", "ChildRunCompleted", "ChildRunFailed", "ChildRunCancelled", "ChildRunTerminated",
+                "ConditionWaitOpened", "ConditionWaitSatisfied", "ConditionWaitTimedOut", "SignalWaitOpened",
+                "SignalApplied",
+            }
+            and not (cancellation.delivery.call_kind == "selection_handle" and etype in {
+                "ActivityScheduled", "ActivityStarted", "TimerScheduled", "ChildWorkflowScheduled",
+                "ChildRunStarted", "ConditionWaitOpened", "SignalWaitOpened",
+            })
+            and not (cancellation.delivery.call_kind == "condition" and etype == "ConditionWaitOpened")
+        ):
+            # The delivery marker owns the interruption. Its activity/timer
+            # terminal rows are not ordinary workflow results or cleanup calls.
+            continue
         if (
             etype
             in {
@@ -4365,6 +4428,9 @@ def _replay_state(
                         external_storage_cache=external_storage_cache,
                     ),
                     condition_wait_id=condition_wait_id,
+                    after_cancellation_delivery=(
+                        cancellation.delivery_index is not None and event_index > cancellation.delivery_index
+                    ),
                 ))
         elif etype == "UpdateApplied":
             update_name = payload.get("update_name")
@@ -4393,6 +4459,9 @@ def _replay_state(
                         external_storage_cache=external_storage_cache,
                     ),
                     condition_wait_id=condition_wait_id,
+                    after_cancellation_delivery=(
+                        cancellation.delivery_index is not None and event_index > cancellation.delivery_index
+                    ),
                 ))
 
     resolved_results, recorded_steps = _reorder_completed_parallel_groups(
@@ -4428,6 +4497,8 @@ def _replay_state(
         handler(*receiver.args)
 
     def _receiver_due(receiver: _PendingReceiver, *, before_consuming_result: bool) -> bool:
+        if receiver.after_cancellation_delivery and not cancellation_consumed:
+            return False
         if receiver.condition_wait_id is not None:
             return False
         if before_consuming_result:
@@ -4608,6 +4679,8 @@ def _replay_state(
         candidates = _unconsumed_recorded_steps()
         if base_sequence_override is not None:
             base_sequence = base_sequence_override
+        elif cancellation.request is not None:
+            base_sequence = current_call_sequence
         elif candidates:
             base_sequence = candidates[0].workflow_sequence
         else:
@@ -4911,6 +4984,8 @@ def _replay_state(
                     "SelectionResolved with a positive group base sequence",
                     ["SelectionResolved"],
                 )
+        elif cancellation.request is not None:
+            base_sequence = current_call_sequence
         elif candidates:
             base_sequence = candidates[0].workflow_sequence
         elif any(sequence not in consumed_selection_sequences for sequence in selection_steps):
@@ -5034,6 +5109,86 @@ def _replay_state(
                 break
             wait_yield_count += 1
 
+    def _cancellation_boundary(command: Any) -> CancellationDelivery | None:
+        nonlocal authored_sequence, current_call_sequence
+        if cancellation.request is None:
+            return None
+        current_call_sequence = authored_sequence
+        kind: str | None = None
+        span = 1
+        operation_sequence: int | None = None
+        operation_span = 1
+        if isinstance(command, ScheduleActivity):
+            kind = "activity"
+        elif isinstance(command, RecordLocalActivity):
+            kind = "local_activity"
+        elif isinstance(command, StartTimer):
+            kind = "timer"
+        elif isinstance(command, StartChildWorkflow):
+            kind = "child"
+        elif isinstance(command, WaitCondition):
+            has_recorded_open = any(
+                _history_event_type(event) == "ConditionWaitOpened"
+                and _workflow_sequence(event.get("payload") or {}) == current_call_sequence
+                for event in events
+            )
+            if has_recorded_open or (
+                cancellation.delivery is not None and cancellation.delivery.sequence == current_call_sequence
+            ) or not command.predicate():
+                kind = "condition"
+        elif isinstance(command, list):
+            kind = "parallel"
+            span = len(_parallel_leaves(command))
+        elif isinstance(command, SelectGroup):
+            kind = "parallel"
+            span = sum(len(_parallel_leaves(operation)) if isinstance(operation, list) else 1
+                       for _, operation in command.operations)
+        elif isinstance(command, DurableOperationHandle):
+            kind = "selection_handle"
+            operation_sequence = command.base_sequence
+            operation_span = command.size
+        if kind != "selection_handle" and (kind is not None or isinstance(
+            command, RecordSideEffect | RecordVersionMarker | UpsertMemo | UpsertSearchAttributes | NexusServiceCall,
+        )):
+            authored_sequence += span
+        if kind is None or span == 0 or cancellation.request is None:
+            return None
+        return CancellationDelivery(
+            cancellation.request.request_id, current_call_sequence, kind, span,
+            operation_sequence, operation_span,
+        )
+
+    def _assert_cancellation_call_matches(command: Any, boundary: CancellationDelivery) -> None:
+        if isinstance(command, list):
+            leaves, _ = _annotate_parallel_commands(command, boundary.sequence)
+        elif isinstance(command, SelectGroup):
+            leaves, _, _ = _annotate_selection(command, None)
+        elif isinstance(command, DurableOperationHandle):
+            _assert_authored_selection_handle(command)
+            return
+        else:
+            leaves = [command]
+        opening_shapes = {
+            "ActivityScheduled": "activity", "ActivityStarted": "activity",
+            "TimerScheduled": "timer", "ChildWorkflowScheduled": "child workflow",
+            "ChildRunStarted": "child workflow", "ConditionWaitOpened": "condition wait",
+        }
+        for offset, leaf in enumerate(leaves):
+            sequence = boundary.sequence + offset
+            for event in events:
+                event_type = _history_event_type(event)
+                payload = event.get("payload") or {}
+                if _workflow_sequence(payload) != sequence or event_type not in opening_shapes:
+                    continue
+                if event_type == "TimerScheduled" and _internal_timeout_timer_kind(
+                    payload, condition_wait_ids_by_sequence,
+                ) is not None:
+                    continue
+                _assert_step_matches(leaf, _RecordedStep(
+                    workflow_sequence=sequence, shape=opening_shapes[event_type],
+                    event_types=[event_type], details=_recorded_step_details(payload),
+                ))
+
     def _terminal_state(value: Any, *, include_pending: bool) -> _ReplayState:
         _apply_due_receivers()
         _consume_terminal_condition_reopens()
@@ -5043,6 +5198,36 @@ def _replay_state(
             return _state(commands + [value])
         _assert_no_unconsumed_history("complete workflow")
         return _state(commands + [CompleteWorkflow(result=value)])
+
+    def _consume_cancellation(command: Any, boundary: CancellationDelivery) -> _ReplayState | None:
+        nonlocal cancellation_consumed, authored_sequence, wait_yield_count, advanced_cmd
+        _assert_cancellation_call_matches(command, boundary)
+        if boundary.call_kind == "condition":
+            for event in events:
+                payload = event.get("payload") or {}
+                if (
+                    _history_event_type(event) == "ConditionWaitOpened"
+                    and _workflow_sequence(payload) == boundary.sequence
+                ):
+                    _apply_condition_wait_receivers(payload.get("condition_wait_id"))
+            if (
+                wait_yield_count < len(recorded_wait_steps)
+                and recorded_wait_steps[wait_yield_count].workflow_sequence == boundary.sequence
+            ):
+                wait_yield_count += 1
+        cancellation_consumed = True
+        ctx._cancel_requested = True
+        ctx._cancellation_request_id = boundary.request_id
+        _apply_due_receivers()
+        if isinstance(command, DurableOperationHandle):
+            authored_sequence += 1
+        try:
+            advanced_cmd = gen.throw(WorkflowCancelled(
+                "workflow cancellation was requested", request_id=boundary.request_id,
+            ))
+            return None
+        except StopIteration as stop:
+            return _terminal_state(stop.value, include_pending=True)
 
     try:
         while True:
@@ -5062,6 +5247,36 @@ def _replay_state(
                     return _terminal_state(stop.value, include_pending=True)
                 first = False
             _apply_due_receivers()
+            boundary = _cancellation_boundary(cmd)
+            if cancellation.delivery is not None and not cancellation_consumed:
+                cancellation_marker = cancellation.delivery
+                if cancellation_marker.sequence < current_call_sequence:
+                    raise NonDeterministicReplayError(
+                        cancellation_marker.sequence, "committed cancellation boundary",
+                        ["CooperativeCancellationDelivered"],
+                        detail="workflow passed the committed authored call",
+                    )
+                if cancellation_marker.sequence == current_call_sequence:
+                    if boundary != cancellation_marker or ctx._cancellation_shield_depth > 0:
+                        raise NonDeterministicReplayError(
+                            cancellation_marker.sequence, "matching unshielded authored call",
+                            ["CooperativeCancellationDelivered"],
+                            detail="committed cancellation call kind or range changed",
+                        )
+                    terminal = _consume_cancellation(cmd, boundary)
+                    if terminal is not None:
+                        return terminal
+                    continue
+            elif boundary is not None and not cancellation_consumed and ctx._cancellation_shield_depth == 0:
+                eligible_sequence = boundary.operation_sequence or boundary.sequence
+                eligible_span = (
+                    boundary.operation_sequence_span
+                    if boundary.operation_sequence is not None else boundary.sequence_span
+                )
+                if cancellation.eligible(eligible_sequence, eligible_span):
+                    _assert_cancellation_call_matches(cmd, boundary)
+                    cancellation_intent = boundary
+                    return _state(pending)
             if isinstance(cmd, SelectGroup):
                 marker = (
                     selection_markers[selection_marker_cursor]
@@ -5374,6 +5589,34 @@ def _replay_state(
                     resolution: str | None = None
                     opened: dict[str, Any] | None = None
                     if wait_yield_count < len(wait_opened):
+                        if cancellation.request is not None and wait_yield_count < len(recorded_wait_steps):
+                            physical_sequence = recorded_wait_steps[wait_yield_count].workflow_sequence
+                            if physical_sequence > current_call_sequence:
+                                current_call_sequence = physical_sequence
+                                authored_sequence = max(authored_sequence, physical_sequence + 1)
+                                physical_boundary = CancellationDelivery(
+                                    cancellation.request.request_id, physical_sequence, "condition",
+                                )
+                                if (
+                                    cancellation.delivery is not None and not cancellation_consumed
+                                    and cancellation.delivery.sequence == physical_sequence
+                                ):
+                                    if cancellation.delivery != physical_boundary or ctx._cancellation_shield_depth > 0:
+                                        raise NonDeterministicReplayError(
+                                            physical_sequence, "matching unshielded reopened condition",
+                                            ["CooperativeCancellationDelivered"],
+                                        )
+                                    terminal = _consume_cancellation(cmd, physical_boundary)
+                                    if terminal is not None:
+                                        return terminal
+                                    break
+                                if (
+                                    cancellation.delivery is None and not cancellation_consumed
+                                    and ctx._cancellation_shield_depth == 0 and cancellation.eligible(physical_sequence)
+                                ):
+                                    _assert_cancellation_call_matches(cmd, physical_boundary)
+                                    cancellation_intent = physical_boundary
+                                    return _state(pending)
                         if wait_yield_count < len(recorded_wait_steps):
                             _assert_step_matches(cmd, recorded_wait_steps[wait_yield_count])
                         opened = wait_opened[wait_yield_count]
