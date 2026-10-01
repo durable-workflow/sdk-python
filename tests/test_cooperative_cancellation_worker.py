@@ -27,6 +27,8 @@ class CancellationWorkflow:
                 yield ctx.local_activity("work", [])
             elif kind == "activity":
                 yield ctx.schedule_activity("work", [])
+            elif kind == "child":
+                yield ctx.start_child_workflow("child", [])
             elif kind == "parallel":
                 yield [ctx.start_timer(20), ctx.schedule_activity("work", [])]
             else:
@@ -76,14 +78,17 @@ class ClaimServer:
     def __init__(
         self, *, history: list[dict[str, Any]] | None = None,
         lease_owner: str = "cooperative-worker", workflow_task_attempt: int = 4,
+        task_id: str = "task-1",
     ) -> None:
         self.client = AsyncMock(spec=Client)
         self.lease_owner = lease_owner
         self.workflow_task_attempt = workflow_task_attempt
+        self.task_id = task_id
         self.history = list(history if history is not None else [request()])
         self.trace: list[str] = []
         self.delivery_error: Exception | None = None
         self.commit_delivery = True
+        self.pending_deliveries = 0
         self.client.get_cluster_info.return_value = compatible_cluster_info(worker_protocol={
             "version": "1.20", "server_capabilities": {
                 "query_tasks": True, "long_poll_timeout": 30, "cooperative_cancellation": True,
@@ -100,7 +105,7 @@ class ClaimServer:
 
     async def page(self, **kwargs: Any) -> dict[str, Any]:
         assert kwargs == {
-            "task_id": "task-1", "next_history_page_token": "opaque-first-page",
+            "task_id": self.task_id, "next_history_page_token": "opaque-first-page",
             "lease_owner": self.lease_owner, "workflow_task_attempt": self.workflow_task_attempt,
         }
         self.trace.append("history")
@@ -108,6 +113,12 @@ class ClaimServer:
 
     async def deliver(self, **kwargs: Any) -> dict[str, Any]:
         self.trace.append("delivery")
+        if self.pending_deliveries:
+            self.pending_deliveries -= 1
+            return {
+                "delivered": False, "task_id": self.task_id,
+                "reason": "cancellation_waiting_for_child", "claim_released": True,
+            }
         if self.commit_delivery:
             self.history.append(marker(
                 kwargs["sequence"], kwargs["call_kind"], sequence_span=kwargs["sequence_span"],
@@ -149,6 +160,42 @@ async def test_claim_commits_delivery_and_reloads_before_cleanup(
         "request_id": "request-1", "sequence": 1, "call_kind": kind, "sequence_span": span,
         "operation_sequence": None, "operation_sequence_span": 1,
     }
+    server.client.fail_workflow_task.assert_not_awaited()
+
+
+async def test_pending_child_returns_to_other_work_and_replays_on_a_new_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @workflow.defn(name="other-work")
+    class OtherWorkflow:
+        def run(self, ctx: workflow.WorkflowContext, kind: str) -> str:
+            return kind
+
+    server = ClaimServer()
+    server.pending_deliveries = 1
+    worker = await server.worker(monkeypatch, workflows=[CancellationWorkflow, OtherWorkflow])
+    assert await worker._run_workflow_task(claimed_task("child")) is None
+    assert server.trace == ["history", "delivery"]
+    server.client.complete_workflow_task.assert_not_awaited()
+    server.client.fail_workflow_task.assert_not_awaited()
+
+    other = claimed_task(observed=False)
+    other.update(task_id="other-task", workflow_id="other-workflow", run_id="other-run", workflow_type="other-work")
+    commands = await worker._run_workflow_task(other)
+    assert commands is not None and commands[0]["type"] == "complete_workflow"
+
+    server.task_id = "parent-resume-task"
+    server.workflow_task_attempt = 1
+    resumed = claimed_task("child")
+    resumed.update(task_id=server.task_id, workflow_task_attempt=1)
+    original_request = deepcopy(resumed["cancellation_request"])
+    commands = await worker._run_workflow_task(resumed)
+    assert commands is not None and commands[0]["type"] == "start_timer"
+    assert commands[0]["delay_seconds"] == 1
+    assert server.trace == ["history", "delivery", "completion", "history", "delivery", "history", "completion"]
+    assert resumed["cancellation_request"] == original_request
+    assert server.client.deliver_workflow_cancellation.await_args.kwargs["workflow_task_attempt"] == 1
+    assert server.client.deliver_workflow_cancellation.await_args.kwargs["request_id"] == "request-1"
     server.client.fail_workflow_task.assert_not_awaited()
 
 

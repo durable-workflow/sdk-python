@@ -5163,7 +5163,9 @@ class Client:
         Requires worker protocol 1.20 and a capable recorded claim. Retry
         with the same request, attempt and operation range after a lost
         acknowledgment, then reload canonical history before cleanup replay.
-        This method does not release or renew the lease.
+        A child wait may explicitly release the claim. Return to polling and
+        replay the boundary on the successor claim when the child finishes.
+        Successful delivery does not release or renew the lease.
         """
         version = _protocol_version_from_env("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION)
         if not _supports_cooperative_cancellation_protocol(version):
@@ -5194,6 +5196,19 @@ class Client:
             "POST", f"/worker/workflow-tasks/{quote(task_id, safe='._:-')}/deliver-cancellation",
             worker=True, json=body,
         )
+        if (
+            isinstance(result, dict)
+            and result.get("delivered") is False
+            and delivery.call_kind in {"child", "parallel", "selection_handle"}
+            and result.get("reason") == "cancellation_waiting_for_child"
+            and result.get("claim_released") is True
+            and result.get("task_id") == task_id
+            and all(result.get(field) is None for field in (
+                "request_id", "sequence", "call_kind", "sequence_span",
+                "operation_sequence", "operation_sequence_span",
+            ))
+        ):
+            return result
         if not isinstance(result, dict) or result.get("delivered") is not True or result.get("task_id") != task_id:
             raise ServerError(200, {"reason": "invalid_cooperative_cancellation_delivery"})
         try:

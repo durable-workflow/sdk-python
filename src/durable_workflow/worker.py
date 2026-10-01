@@ -173,6 +173,10 @@ class _CooperativeCancellationObserved(LocalActivityExecutionAborted):
     """Return transport observation to the worker, never to authored cleanup."""
 
 
+class _WorkflowClaimDeferred(LocalActivityExecutionAborted):
+    """Server parked the parent and released its claim until child cleanup ends."""
+
+
 class _InvalidLocalActivityReport(NonRetryableError):
     pass
 
@@ -1523,13 +1527,17 @@ class Worker:
             observed = self._observe_workflow_cancellation(task, task.get("cancellation_request"))
             delivery_error: Exception | None = None
             try:
-                await self.client.deliver_workflow_cancellation(
+                delivery_reply = await self.client.deliver_workflow_cancellation(
                     task_id=task["task_id"], lease_owner=self.worker_id,
                     workflow_task_attempt=task.get("workflow_task_attempt", 1),
                     request_id=intent.request_id, sequence=intent.sequence, call_kind=intent.call_kind,
                     sequence_span=intent.sequence_span, operation_sequence=intent.operation_sequence,
                     operation_sequence_span=intent.operation_sequence_span,
                 )
+                if delivery_reply.get("delivered") is False:
+                    raise _WorkflowClaimDeferred("parent awaits canonical child cleanup on a new claim")
+            except _WorkflowClaimDeferred:
+                raise
             except Exception as error:
                 delivery_error = error
             history = await self._refresh_cancellation_history(task, observed)
@@ -1967,6 +1975,9 @@ class Worker:
             outcome, history = await self._replay_workflow_claim(
                 cls, task, history, start_input, payload_codec=codec, execute_local=execute_local,
             )
+        except _WorkflowClaimDeferred:
+            log.info("workflow task %s parked until child cleanup finishes", task_id)
+            return None
         except LocalActivityExecutionAborted as e:
             log.warning("abandoning workflow task %s before local activity commit: %s", task_id, e)
             return None
