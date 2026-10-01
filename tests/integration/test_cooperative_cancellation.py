@@ -549,6 +549,9 @@ async def test_sigkill_activity_owner_reclaims_attempt_before_cooperative_cleanu
             assert time.time() >= expires_at, "reclaim precedes actual lease expiry"
             print(f"SIGKILL successor activity: {json.dumps(reclaimed)}")
 
+            closed = await client.activity_task_status(**fence)
+            assert closed["attempt_status"] == "expired"
+            assert closed["can_continue"] is False
             before = await events(handle)
             with pytest.raises(ServerError) as completion:
                 await client.complete_activity_task(**fence, result="late")
@@ -561,8 +564,9 @@ async def test_sigkill_activity_owner_reclaims_attempt_before_cooperative_cleanu
             assert heartbeat["heartbeat_recorded"] is False
             assert heartbeat["cancel_requested"] is False
             assert heartbeat["reason"] == "attempt_closed"
-            assert heartbeat["lease_expires_at"] == leased["lease_expires_at"]
-            assert heartbeat["last_heartbeat_at"] is None
+            assert heartbeat["lease_expires_at"] == closed["lease_expires_at"]
+            assert heartbeat["last_heartbeat_at"] == closed["last_heartbeat_at"]
+            assert await client.activity_task_status(**fence) == closed
             assert await events(handle) == before, "dead attempt changed canonical history"
 
             accepted = await handle.request_cancellation(cleanup_timeout_seconds=60)
