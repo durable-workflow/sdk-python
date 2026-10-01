@@ -30,6 +30,8 @@ services:
       WORKFLOW_SERVER_AUTH_DRIVER: token
       WORKFLOW_SERVER_AUTH_TOKEN: "test-token"
       DW_WORKFLOW_TASK_TIMEOUT: 10
+      # Candidate cooperative qualification is explicit. Published defaults remain 1.19.
+      DW_WORKER_PROTOCOL_VERSION: "${DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION:-1.19}"
     depends_on:
       mysql:
         condition: service_healthy

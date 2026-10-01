@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      server_commit:
+        description: Exact public Server candidate SHA, or empty for its default branch
+        type: string
+        default: ""
+      cooperative_qualification:
+        description: Qualify the candidate cooperative protocol 1.20
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -145,6 +154,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     needs: [lint, test]
+    env:
+      DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION: ${{ inputs.cooperative_qualification && '1.20' || '1.19' }}
+      DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION: ${{ inputs.cooperative_qualification && '1' || '0' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
@@ -153,7 +165,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Check out public Server integration source
-        run: python sdk-python/scripts/ci/checkout-public-repository.py server server
+        env:
+          SERVER_COMMIT: ${{ inputs.server_commit }}
+        run: python sdk-python/scripts/ci/checkout-public-repository.py server server --commit "$SERVER_COMMIT"
       - run: pip install -e '.[dev]'
         working-directory: sdk-python
       - name: Configure isolated Docker project
@@ -171,7 +185,15 @@ jobs:
         working-directory: sdk-python
         env:
           DURABLE_WORKFLOW_AUTH_TOKEN: test-token
-        run: pytest tests/integration/ -v
+        run: pytest tests/integration/ -v --junitxml=integration-results.xml
+      - name: Retain connected scenario results
+        if: ${{ always() && github.server_url == 'https://github.com' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: connected-integration-${{ github.sha }}
+          path: sdk-python/integration-results.xml
+          if-no-files-found: warn
+          retention-days: 7
       - name: Emit integration diagnostics
         if: failure()
         working-directory: sdk-python
