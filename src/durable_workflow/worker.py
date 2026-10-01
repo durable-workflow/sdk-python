@@ -29,7 +29,7 @@ import traceback
 import types
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from functools import wraps
 from types import FunctionType
@@ -157,6 +157,10 @@ _LOCAL_ACTIVITY_REPORT_LIMIT = 1000
 _WORKER_WORKFLOW_FINGERPRINTS: dict[tuple[str, str], str] = {}
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
+
+
+class _RemoteActivityExecutionAborted(Exception):
+    """Ownership cannot authorize another remote callback boundary."""
 
 
 class _LocalActivityTimedOut(Exception):
@@ -1060,6 +1064,9 @@ class Worker:
         self._stop = asyncio.Event()
         self._local_activity_shutdown = asyncio.Event()
         self._local_activity_executor: ThreadPoolExecutor | None = None
+        self._remote_activity_executor: ThreadPoolExecutor | None = None
+        self._remote_activity_threads: set[Future[Any]] = set()
+        self._remote_activity_thread_slots = asyncio.Semaphore(max_concurrent_activity_tasks)
         self._wf_semaphore = asyncio.Semaphore(max_concurrent_workflow_tasks)
         self._act_semaphore = asyncio.Semaphore(max_concurrent_activity_tasks)
         self._shutdown_timeout = shutdown_timeout
@@ -2175,6 +2182,159 @@ class Worker:
                 fail_error,
             )
 
+    async def _assert_remote_activity_claim(self, task: dict[str, Any]) -> None:
+        try:
+            if self._local_activity_shutdown.is_set():
+                raise _RemoteActivityExecutionAborted("worker shutdown abandoned its remote activity claim")
+            reply = await self.client.activity_task_status(
+                task_id=task["task_id"],
+                activity_attempt_id=task.get("activity_attempt_id") or task.get("attempt_id", ""),
+                lease_owner=self.worker_id,
+            )
+            if (not isinstance(reply, Mapping)
+                    or reply.get("task_id") != task["task_id"]
+                    or reply.get("activity_attempt_id") != (
+                        task.get("activity_attempt_id") or task.get("attempt_id", ""))
+                    or reply.get("lease_owner") != self.worker_id
+                    or reply.get("can_continue") is not True
+                    or reply.get("cancel_requested") is not False
+                    or reply.get("heartbeat_recorded") is not False
+                    or reply.get("reason") is not None):
+                raise _RemoteActivityExecutionAborted("remote activity observation refused its ownership fence")
+            bounds = [reply.get("lease_expires_at")]
+            deadlines = reply.get("deadlines")
+            if deadlines is not None:
+                if not isinstance(deadlines, Mapping):
+                    raise _RemoteActivityExecutionAborted("remote activity observation returned invalid deadlines")
+                bounds.extend(deadlines[kind] for kind in ("heartbeat", "start_to_close", "schedule_to_close")
+                              if deadlines.get(kind) is not None)
+            session = reply.get("worker_session")
+            if session is not None:
+                if (not isinstance(session, Mapping) or session.get("status") != "active"
+                        or session.get("lease_owner") != self.worker_id):
+                    raise _RemoteActivityExecutionAborted("remote activity observation lost its worker session")
+                bounds.extend([session.get("lease_expires_at"), session.get("ttl_expires_at")])
+            for bound in bounds:
+                if not isinstance(bound, str) or "T" not in bound:
+                    raise _RemoteActivityExecutionAborted("remote activity observation returned an invalid deadline")
+                deadline = datetime.fromisoformat(bound.replace("Z", "+00:00"))
+                if deadline.tzinfo is None or deadline <= datetime.now(timezone.utc):
+                    raise _RemoteActivityExecutionAborted("remote activity ownership or execution deadline elapsed")
+            if self._local_activity_shutdown.is_set():
+                raise _RemoteActivityExecutionAborted("worker shutdown abandoned its remote activity claim")
+        except _RemoteActivityExecutionAborted:
+            raise
+        except Exception as error:
+            raise _RemoteActivityExecutionAborted("remote activity ownership observation failed") from error
+
+    async def _execute_cooperative_remote_callable(
+        self, task: dict[str, Any], handler: Callable[..., Any], args: tuple[Any, ...], info: ActivityInfo,
+    ) -> Any:
+        abandoned = threading.Event()
+        owner_loop = asyncio.get_running_loop()
+
+        def boundary() -> None:
+            if abandoned.is_set() or self._local_activity_shutdown.is_set():
+                raise _RemoteActivityExecutionAborted("remote activity callback no longer owns its claim")
+
+        async def observe() -> None:
+            boundary()
+            try:
+                await self._assert_remote_activity_claim(task)
+            except BaseException:
+                abandoned.set()
+                raise
+            boundary()
+
+        async def send_heartbeat(details: dict[str, Any] | None) -> None:
+            await observe()
+            try:
+                reply = await asyncio.wait_for(self.client.heartbeat_activity_task(
+                    task_id=info.task_id, activity_attempt_id=info.activity_attempt_id,
+                    lease_owner=self.worker_id, details=details,
+                ), timeout=5.0)
+                if (not isinstance(reply, Mapping) or reply.get("task_id") != info.task_id
+                        or reply.get("activity_attempt_id") != info.activity_attempt_id
+                        or reply.get("lease_owner") != self.worker_id or reply.get("can_continue") is not True
+                        or reply.get("cancel_requested") is not False):
+                    raise _RemoteActivityExecutionAborted("remote activity heartbeat lost its ownership fence")
+            except Exception as error:
+                abandoned.set()
+                raise _RemoteActivityExecutionAborted("remote activity user heartbeat failed") from error
+            await observe()
+
+        async def heartbeat(details: dict[str, Any] | None) -> None:
+            boundary()
+            if asyncio.get_running_loop() is owner_loop:
+                await send_heartbeat(details)
+            else:
+                # A synchronous handler may use its own loop to await heartbeat.
+                # Its HTTP client and claim checks remain on the owner loop.
+                proxy = asyncio.run_coroutine_threadsafe(send_heartbeat(details), owner_loop)
+                await asyncio.wrap_future(proxy)
+
+        if inspect.iscoroutinefunction(handler):
+            async def guarded(*arguments: Any) -> Any:
+                boundary()
+                return await handler(*arguments)
+            callback: Callable[..., Any] = guarded
+        else:
+            def guarded_sync(*arguments: Any) -> Any:
+                boundary()
+                return handler(*arguments)
+            callback = guarded_sync
+
+        async def invoke() -> Any:
+            _set_context(ActivityContext(info=info, client=self.client, heartbeat_callback=heartbeat))
+            try:
+                return await self._execute_activity_callable(
+                    task, info.activity_type, args, callback, run_sync_in_thread=True, remote=True,
+                )
+            finally:
+                _set_context(None)
+
+        async def observe_ownership() -> None:
+            while True:
+                await asyncio.sleep(1.0)
+                await observe()
+
+        await observe()
+        invocation = asyncio.create_task(invoke())
+        observation = asyncio.create_task(observe_ownership())
+        shutdown = asyncio.create_task(self._local_activity_shutdown.wait())
+        try:
+            done, _ = await asyncio.wait([invocation, observation, shutdown], return_when=asyncio.FIRST_COMPLETED)
+            if shutdown in done:
+                raise _RemoteActivityExecutionAborted("worker shutdown abandoned its remote activity claim")
+            if observation in done:
+                await observation
+                raise _RemoteActivityExecutionAborted("remote ownership observer stopped without a response")
+            try:
+                result = await invocation
+            except Exception:
+                await observe()  # A genuine application failure also needs current authority.
+                raise
+            await observe()  # Fence before the Client encodes or externalizes the result.
+            return result
+        finally:
+            abandoned.set()
+            shutdown.cancel()
+            observation.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await shutdown
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await observation
+            if not invocation.done():
+                invocation.cancel()
+
+                def discard_late_result(future: asyncio.Task[Any]) -> None:
+                    if not future.cancelled():
+                        future.exception()
+
+                # A running thread or cancellation-resistant callable can outlive
+                # the await. Its heartbeat and eventual publication stay fenced.
+                invocation.add_done_callback(discard_late_result)
+
     async def _run_activity_task(self, task: dict[str, Any]) -> str:
         self._track_worker_session_from_task(task)
         task_id: str = task["task_id"]
@@ -2261,7 +2421,13 @@ class Worker:
         )
         _set_context(act_ctx)
         try:
-            result = await self._execute_activity_callable(task, activity_type, tuple(args), fn)
+            if self._cooperative_cancellation_supported:
+                result = await self._execute_cooperative_remote_callable(task, fn, tuple(args), act_ctx.info)
+            else:
+                result = await self._execute_activity_callable(task, activity_type, tuple(args), fn)
+        except _RemoteActivityExecutionAborted as error:
+            log.warning("remote activity %s claim abandoned: %s", task_id, error)
+            return "claim_aborted"
         except ActivityCancelled:
             log.info("activity %s cancelled via heartbeat", task_id)
             try:
@@ -2337,7 +2503,7 @@ class Worker:
         activity_type: str,
         args: tuple[Any, ...],
         fn: Callable[..., Any],
-        *, run_sync_in_thread: bool = False,
+        *, run_sync_in_thread: bool = False, remote: bool = False,
     ) -> Any:
         context = ActivityInterceptorContext(
             worker_id=self.worker_id,
@@ -2349,14 +2515,40 @@ class Worker:
 
         async def call_activity(ctx: ActivityInterceptorContext) -> Any:
             if run_sync_in_thread and not inspect.iscoroutinefunction(fn):
-                if self._local_activity_executor is None:
-                    # Replay threads wait for local results, so sharing their pool can deadlock.
-                    self._local_activity_executor = ThreadPoolExecutor(
-                        max_workers=self.max_concurrent_workflow_tasks, thread_name_prefix="dw-local-activity",
+                if remote:
+                    await self._remote_activity_thread_slots.acquire()
+                    if self._remote_activity_executor is None:
+                        self._remote_activity_executor = ThreadPoolExecutor(
+                            max_workers=self.max_concurrent_activity_tasks, thread_name_prefix="dw-remote-activity",
+                        )
+                    owner_loop = asyncio.get_running_loop()
+                    try:
+                        future = self._remote_activity_executor.submit(contextvars.copy_context().run, fn, *ctx.args)
+                    except BaseException:
+                        self._remote_activity_thread_slots.release()
+                        raise
+                    self._remote_activity_threads.add(future)
+
+                    def thread_finished(completed: Future[Any]) -> None:
+                        def release_capacity() -> None:
+                            self._remote_activity_threads.discard(completed)
+                            self._remote_activity_thread_slots.release()
+                        with contextlib.suppress(RuntimeError):
+                            owner_loop.call_soon_threadsafe(release_capacity)
+
+                    # Cancellation of the await cannot release a running thread's
+                    # slot. Only actual completion or cancellation before start can.
+                    future.add_done_callback(thread_finished)
+                    result = await asyncio.wrap_future(future)
+                else:
+                    if self._local_activity_executor is None:
+                        # Replay threads wait for local results, so sharing their pool can deadlock.
+                        self._local_activity_executor = ThreadPoolExecutor(
+                            max_workers=self.max_concurrent_workflow_tasks, thread_name_prefix="dw-local-activity",
+                        )
+                    result = await asyncio.get_running_loop().run_in_executor(
+                        self._local_activity_executor, contextvars.copy_context().run, fn, *ctx.args,
                     )
-                result = await asyncio.get_running_loop().run_in_executor(
-                    self._local_activity_executor, contextvars.copy_context().run, fn, *ctx.args,
-                )
             else:
                 result = fn(*ctx.args)
             if asyncio.iscoroutine(result):
@@ -2808,6 +3000,9 @@ class Worker:
 
     async def _poll_activity_tasks(self) -> None:
         while not self._stop.is_set():
+            if len(self._remote_activity_threads) >= self.max_concurrent_activity_tasks:
+                await asyncio.sleep(0.1)
+                continue
             await self._act_semaphore.acquire()
             if self._stop.is_set():
                 self._act_semaphore.release()
@@ -3242,7 +3437,8 @@ class Worker:
                 0, self.max_concurrent_workflow_tasks - self._workflow_reserved
             ),
             "activity_available": max(
-                0, self.max_concurrent_activity_tasks - self._activity_inflight
+                0, min(self.max_concurrent_activity_tasks - self._activity_inflight,
+                       self.max_concurrent_activity_tasks - len(self._remote_activity_threads)),
             ),
             "session_available": max(
                 0, self.max_concurrent_worker_sessions
@@ -3573,6 +3769,8 @@ class Worker:
 
         if self._local_activity_executor is not None:
             self._local_activity_executor.shutdown(wait=False, cancel_futures=True)
+        if self._remote_activity_executor is not None:
+            self._remote_activity_executor.shutdown(wait=False, cancel_futures=True)
 
         for session in self._worker_sessions.values():
             if not session.active:

@@ -5553,6 +5553,28 @@ class Client:
             "POST", f"/worker/activity-tasks/{task_id}/fail", worker=True, json=body
         )
 
+    async def activity_task_status(
+        self,
+        *,
+        task_id: str,
+        activity_attempt_id: str,
+        lease_owner: str,
+    ) -> Any:
+        """Observe one cooperative activity claim without recording progress.
+
+        Requires explicit worker protocol 1.20. This readonly observation does
+        not renew the activity lease or its heartbeat deadline. A positive reply
+        is not a reservation of ownership for a subsequent completion.
+        """
+        if not _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+            "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+        )):
+            raise ValueError("activity ownership observation requires explicit worker protocol 1.20")
+        return await asyncio.wait_for(self._request(
+            "POST", f"/worker/activity-tasks/{task_id}/status", worker=True,
+            json={"activity_attempt_id": activity_attempt_id, "lease_owner": lease_owner}, timeout=5.0,
+        ), timeout=5.0)
+
     async def heartbeat_activity_task(
         self,
         *,

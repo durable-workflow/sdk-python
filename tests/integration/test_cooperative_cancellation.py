@@ -15,6 +15,7 @@ import pytest
 from durable_workflow import Client, Worker, activity, workflow
 from durable_workflow.client import WorkflowHandle
 from durable_workflow.errors import ServerError, WorkflowCancelled
+from durable_workflow.worker import _RemoteActivityExecutionAborted
 from durable_workflow.workflow import LocalActivityExecutionAborted
 
 pytestmark = pytest.mark.usefixtures("cooperative_runtime")
@@ -110,6 +111,151 @@ class LostDeliveryAcknowledgmentClient(Client):
         if self.delivery_calls == 1:
             raise ServerError(503, {"reason": "qualification_lost_delivery_acknowledgment"})
         return result
+
+
+class ObservedOwnerClient(Client):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.owner_heartbeat = asyncio.Event()
+
+    async def heartbeat_worker(self, **kwargs: Any) -> Any:
+        reply = await super().heartbeat_worker(**kwargs)
+        if isinstance(reply, dict) and reply.get("acknowledged") is True:
+            self.owner_heartbeat.set()
+        return reply
+
+
+@pytest.mark.parametrize("handler_kind", ["async", "sync"])
+@pytest.mark.parametrize("user_heartbeat", [False, True])
+async def test_actual_remote_worker_fences_blocked_callbacks_without_manufacturing_progress(
+    server_url: str, server_token: str, handler_kind: str, user_heartbeat: bool,
+) -> None:
+    queue = f"py-cooperative-owner-{uuid.uuid4().hex[:8]}"
+    entered, late_fenced = asyncio.Event(), asyncio.Event()
+    release_thread = threading.Event()
+    loop = asyncio.get_running_loop()
+    fences: list[dict[str, str]] = []
+
+    def record_fence() -> None:
+        info = activity.context().info
+        fences.append({"task_id": info.task_id, "activity_attempt_id": info.activity_attempt_id,
+                       "lease_owner": info.worker_id})
+
+    async def asynchronous() -> object:
+        record_fence()
+        entered.set()
+        try:
+            while True:
+                await asyncio.sleep(0.1)
+                if user_heartbeat:
+                    await activity.context().heartbeat({"qualification": "remote-in-flight"})
+        except (asyncio.CancelledError, _RemoteActivityExecutionAborted):
+            with pytest.raises(_RemoteActivityExecutionAborted):
+                await activity.context().heartbeat({"late": True})
+            late_fenced.set()
+            return object()
+
+    def synchronous() -> object:
+        record_fence()
+        loop.call_soon_threadsafe(entered.set)
+        try:
+            while not release_thread.wait(timeout=0.1):
+                if user_heartbeat:
+                    asyncio.run(activity.context().heartbeat({"qualification": "remote-in-flight"}))
+        except _RemoteActivityExecutionAborted:
+            pass
+        with pytest.raises(_RemoteActivityExecutionAborted):
+            asyncio.run(activity.context().heartbeat({"late": True}))
+        loop.call_soon_threadsafe(late_fenced.set)
+        return object()
+
+    async with ObservedOwnerClient(server_url, token=server_token, namespace="default") as client:
+        worker = candidate_worker(client, queue, max_concurrent_activity_tasks=1)
+        worker.activities["tests.python-cooperative-work"] = asynchronous if handler_kind == "async" else synchronous
+        running = asyncio.create_task(worker.run())
+        try:
+            handle = await client.start_workflow(
+                workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["remote"],
+            )
+            await asyncio.wait_for(entered.wait(), timeout=15)
+            await asyncio.wait_for(client.owner_heartbeat.wait(), timeout=15)
+            assert not late_fenced.is_set()
+            accepted = await handle.request_cancellation(cleanup_timeout_seconds=60)
+            history = await assert_cancelled_cleanup(handle, accepted["cancellation_request"]["request_id"])
+            release_thread.set()
+            await asyncio.wait_for(late_fenced.wait(), timeout=5)
+            delivery = [event for event in history if event["event_type"] == "CooperativeCancellationDelivered"][0]
+            assert delivery["payload"]["call_kind"] == "activity"
+            assert len([event for event in history if event["event_type"] == "ActivityCancelled"]) == 1
+            progress = [event for event in history if event["event_type"] == "ActivityHeartbeatRecorded"
+                        and event["payload"].get("activity_type") == "tests.python-cooperative-work"]
+            assert bool(progress) is user_heartbeat
+            assert len(fences) == 1
+            with pytest.raises(ServerError) as completion:
+                await client.complete_activity_task(**fences[0], result="late")
+            assert completion.value.status_code == 409
+            with pytest.raises(ServerError) as failure:
+                await client.fail_activity_task(**fences[0], message="late", failure_type="LateQualification")
+            assert failure.value.status_code == 409
+            assert await events(handle) == history
+        finally:
+            release_thread.set()
+            await worker.stop()
+            await asyncio.wait_for(running, timeout=5)
+
+
+@pytest.mark.parametrize("handler_kind", ["async", "sync"])
+async def test_actual_remote_shutdown_expiry_fences_callback_before_replacement_cleanup(
+    server_url: str, server_token: str, handler_kind: str,
+) -> None:
+    queue = f"py-cooperative-owner-stop-{uuid.uuid4().hex[:8]}"
+    entered, late_fenced = asyncio.Event(), asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    async def asynchronous() -> object:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            with pytest.raises(_RemoteActivityExecutionAborted):
+                await activity.context().heartbeat({"late": True})
+            late_fenced.set()
+            return object()
+
+    def synchronous() -> object:
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(timeout=20)
+        with pytest.raises(_RemoteActivityExecutionAborted):
+            asyncio.run(activity.context().heartbeat({"late": True}))
+        loop.call_soon_threadsafe(late_fenced.set)
+        return object()
+
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        worker = candidate_worker(client, queue, shutdown_timeout=0.1)
+        worker.activities["tests.python-cooperative-work"] = asynchronous if handler_kind == "async" else synchronous
+        running = asyncio.create_task(worker.run())
+        replacement = candidate_worker(client, queue, worker_id=f"{queue}-replacement")
+        try:
+            handle = await client.start_workflow(
+                workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["remote"],
+            )
+            await asyncio.wait_for(entered.wait(), timeout=15)
+            before = await events(handle)
+            await asyncio.wait_for(worker.stop(), timeout=5)
+            await asyncio.wait_for(running, timeout=5)
+            release.set()
+            await asyncio.wait_for(late_fenced.wait(), timeout=5)
+            assert await events(handle) == before
+            accepted = await handle.request_cancellation(cleanup_timeout_seconds=60)
+            await replacement._register()
+            assert await replacement._run_workflow_task(await poll_claim(client, replacement)) is not None
+            await assert_cancelled_cleanup(handle, accepted["cancellation_request"]["request_id"])
+        finally:
+            release.set()
+            await replacement.stop()
+            await worker.stop()
+            await asyncio.wait_for(running, timeout=5)
 
 
 async def test_waiting_timer_is_cancelled_by_canonical_delivery(
@@ -363,6 +509,50 @@ async def process_event(process: asyncio.subprocess.Process, phase: str) -> dict
         assert process.stderr is not None
         pytest.fail(f"worker exited before {phase}: {(await process.stderr.read()).decode()}")
     return await asyncio.wait_for(read(), timeout=40)
+
+
+async def test_killed_remote_owner_cannot_publish_after_cold_workflow_delivery(
+    server_url: str, server_token: str,
+) -> None:
+    queue = f"py-cooperative-remote-process-{uuid.uuid4().hex[:8]}"
+    processes: list[asyncio.subprocess.Process] = []
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        seed = candidate_worker(client, queue, worker_id=f"{queue}-seed")
+        await seed._register()
+        try:
+            handle = await client.start_workflow(
+                workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["remote"],
+            )
+            owner = await native_process(queue, f"{queue}-killed", "remote")
+            processes.append(owner)
+            claimed = await process_event(owner, "remote-entered")
+            before = await events(handle)
+            owner.kill()
+            assert await asyncio.wait_for(owner.wait(), timeout=10) == -9
+            assert await events(handle) == before
+            accepted = await handle.request_cancellation(cleanup_timeout_seconds=60)
+            replacement = await native_process(queue, f"{queue}-replacement", "finish")
+            processes.append(replacement)
+            resumed = await process_event(replacement, "cleanup")
+            assert resumed["request_id"] == accepted["cancellation_request"]["request_id"]
+            assert (await process_event(replacement, "finished"))["committed"] is True
+            assert await asyncio.wait_for(replacement.wait(), timeout=10) == 0
+            history = await assert_cancelled_cleanup(handle, accepted["cancellation_request"]["request_id"])
+            assert len([event for event in history if event["event_type"] == "ActivityCancelled"]) == 1
+            fence = {key: claimed[key] for key in ("task_id", "activity_attempt_id", "lease_owner")}
+            with pytest.raises(ServerError) as completion:
+                await client.complete_activity_task(**fence, result="late")
+            assert completion.value.status_code == 409
+            with pytest.raises(ServerError) as failure:
+                await client.fail_activity_task(**fence, message="late", failure_type="LateQualification")
+            assert failure.value.status_code == 409
+            assert await events(handle) == history
+        finally:
+            for process in processes:
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
+            await seed.stop()
 
 
 async def test_killed_process_reclaims_cleanup_in_a_new_process(
