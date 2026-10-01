@@ -33,7 +33,8 @@ async def main() -> None:
                 info = activity.context().info
                 print(json.dumps({"phase": "remote-entered", "task_id": info.task_id,
                                   "activity_attempt_id": info.activity_attempt_id,
-                                  "lease_owner": info.worker_id}), flush=True)
+                                  "lease_owner": info.worker_id,
+                                  "attempt_number": info.attempt_number}), flush=True)
                 await asyncio.Event().wait()
                 return object()
             worker.activities["tests.python-cooperative-work"] = blocked_remote

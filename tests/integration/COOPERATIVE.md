@@ -25,6 +25,11 @@ tested with and without user heartbeats, through an actual accepted worker
 registration heartbeat. Shutdown expiry fences callbacks before replacement
 cleanup. Another case kills the real remote owner process, delivers the request
 in a new process and rejects the dead owner's late completion/failure.
+A separate case kills an active owner, waits for the real five-minute activity
+lease and repair pass, and requires attempt 2 under a distinct owner before
+requesting cancellation. It checks the killed attempt cannot publish a result,
+failure or heartbeat, renew its lease, or change canonical history, then verifies
+one cleanup with the original request identity.
 
 Readonly status calls never record user progress or renew the activity lease.
 They fail closed on refused/invalid ownership, elapsed execution/session bounds
@@ -45,6 +50,5 @@ need idempotency and reconciliation.
 Only activity-authored heartbeats extend the existing five-minute activity
 lease and any user heartbeat deadline. A positive readonly observation does not
 reserve ownership for a later completion. The Server independently validates
-completion and failure fences. Active remote-attempt reclaim under a new
-activity owner and exact published Server/SDK qualification remain distinct
-release gates.
+completion and failure fences. Exact published Server/SDK qualification remains
+a separate release gate from these source scenarios.

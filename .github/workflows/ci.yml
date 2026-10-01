@@ -198,7 +198,7 @@ jobs:
         if: failure()
         working-directory: sdk-python
         run: |
-          for service in bootstrap server worker; do
+          for service in bootstrap server worker repair; do
             echo "::group::$service logs"
             docker compose --project-name "$COMPOSE_PROJECT_NAME" -f docker-compose.test.yml \
               logs --no-color --tail 200 "$service" || true

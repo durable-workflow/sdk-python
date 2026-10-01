@@ -7,7 +7,9 @@ import json
 import os
 import sys
 import threading
+import time
 import uuid
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -499,7 +501,7 @@ async def native_process(queue: str, worker_id: str, mode: str) -> asyncio.subpr
     )
 
 
-async def process_event(process: asyncio.subprocess.Process, phase: str) -> dict[str, Any]:
+async def process_event(process: asyncio.subprocess.Process, phase: str, timeout: float = 40) -> dict[str, Any]:
     async def read() -> dict[str, Any]:
         assert process.stdout is not None
         while line := await process.stdout.readline():
@@ -508,7 +510,70 @@ async def process_event(process: asyncio.subprocess.Process, phase: str) -> dict
                 return value
         assert process.stderr is not None
         pytest.fail(f"worker exited before {phase}: {(await process.stderr.read()).decode()}")
-    return await asyncio.wait_for(read(), timeout=40)
+    return await asyncio.wait_for(read(), timeout=timeout)
+
+
+async def test_sigkill_activity_owner_reclaims_attempt_before_cooperative_cleanup(
+    server_url: str, server_token: str,
+) -> None:
+    queue = f"py-cooperative-activity-reclaim-{uuid.uuid4().hex[:8]}"
+    processes: list[asyncio.subprocess.Process] = []
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        handle = await client.start_workflow(
+            workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["remote"],
+        )
+        try:
+            owner = await native_process(queue, f"{queue}-killed", "remote")
+            processes.append(owner)
+            original = await process_event(owner, "remote-entered")
+            assert original["attempt_number"] == 1
+            fence = {key: original[key] for key in ("task_id", "activity_attempt_id", "lease_owner")}
+            leased = await client.activity_task_status(**fence)
+            assert leased["can_continue"] is True
+            assert leased["attempt_status"] == "running"
+            expires_at = datetime.fromisoformat(leased["lease_expires_at"].replace("Z", "+00:00")).timestamp()
+            assert expires_at > time.time(), "kill an actually current lease"
+            print(f"SIGKILL original activity: {json.dumps([original, leased])}")
+            owner.kill()
+            assert await asyncio.wait_for(owner.wait(), timeout=10) == -9
+
+            successor = await native_process(queue, f"{queue}-successor", "remote")
+            processes.append(successor)
+            # Wait for Native's actual five-minute lease and normal repair.
+            # No clock, storage row or production lease is changed.
+            reclaimed = await process_event(successor, "remote-entered", timeout=330)
+            assert reclaimed["task_id"] == original["task_id"]
+            assert reclaimed["activity_attempt_id"] != original["activity_attempt_id"]
+            assert reclaimed["lease_owner"] != original["lease_owner"]
+            assert reclaimed["attempt_number"] == 2
+            assert time.time() >= expires_at, "reclaim precedes actual lease expiry"
+            print(f"SIGKILL successor activity: {json.dumps(reclaimed)}")
+
+            before = await events(handle)
+            with pytest.raises(ServerError) as completion:
+                await client.complete_activity_task(**fence, result="late")
+            assert completion.value.status == 409
+            with pytest.raises(ServerError) as failure:
+                await client.fail_activity_task(**fence, message="late", failure_type="LateQualification")
+            assert failure.value.status == 409
+            heartbeat = await client.heartbeat_activity_task(**fence)
+            assert heartbeat["can_continue"] is False
+            assert heartbeat["heartbeat_recorded"] is False
+            assert heartbeat["cancel_requested"] is False
+            assert heartbeat["reason"] == "attempt_closed"
+            assert heartbeat["lease_expires_at"] == leased["lease_expires_at"]
+            assert heartbeat["last_heartbeat_at"] is None
+            assert await events(handle) == before, "dead attempt changed canonical history"
+
+            accepted = await handle.request_cancellation(cleanup_timeout_seconds=60)
+            history = await assert_cancelled_cleanup(handle, accepted["cancellation_request"]["request_id"])
+            assert len([event for event in history if event["event_type"] == "ActivityCancelled"]) == 1
+            print(f"SIGKILL reclaimed cancellation history: {json.dumps(history)}")
+        finally:
+            for process in processes:
+                if process.returncode is None:
+                    process.kill()
+                    await asyncio.wait_for(process.wait(), timeout=10)
 
 
 async def test_killed_remote_owner_cannot_publish_after_cold_workflow_delivery(
