@@ -17,7 +17,7 @@ import pytest
 from durable_workflow import Client, Worker, activity, workflow
 from durable_workflow.client import WorkflowHandle
 from durable_workflow.errors import ServerError, WorkflowCancelled
-from durable_workflow.worker import _RemoteActivityExecutionAborted
+from durable_workflow.worker import _RemoteActivityExecutionAborted, _poll_capacity_delay
 from durable_workflow.workflow import LocalActivityExecutionAborted
 
 pytestmark = pytest.mark.usefixtures("cooperative_runtime")
@@ -73,9 +73,17 @@ def candidate_worker(client: Client, queue: str, **kwargs: Any) -> Worker:
 async def poll_claim(client: Client, worker: Worker) -> dict[str, Any]:
     async def poll() -> dict[str, Any]:
         while True:
-            task = await client.poll_workflow_task(
-                worker_id=worker.worker_id, task_queue=worker.task_queue, timeout=worker._poll_http_timeout,
-            )
+            try:
+                task = await client.poll_workflow_task(
+                    worker_id=worker.worker_id, task_queue=worker.task_queue, timeout=worker._poll_http_timeout,
+                )
+            except ServerError as error:
+                delay = _poll_capacity_delay(error, "workflow_task", worker.task_queue)
+                if delay is None:
+                    raise
+                print(json.dumps({"phase": "poll-deferral", "delay_seconds": delay}), flush=True)
+                await asyncio.sleep(delay)
+                continue
             if task is not None:
                 return task
             await asyncio.sleep(0.1)
