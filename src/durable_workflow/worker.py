@@ -93,6 +93,7 @@ from .workflow import (
     RecordLocalActivity,
     RecordSideEffect,
     ReplayOutcome,
+    StartChildWorkflow,
     UpsertMemo,
     apply_update,
     commands_to_server_commands,
@@ -2071,6 +2072,26 @@ class Worker:
                 )
             except Exception as failure_error:
                 log.warning("failed to report workflow memo capability failure: %s", failure_error)
+            return None
+
+        if not self._cooperative_cancellation_supported and any(
+            isinstance(command, StartChildWorkflow) and (
+                command.parent_close_policy == "request_cancellation"
+                or command.cancellation_policy in ("try_cancel", "wait_cancellation_completed")
+            )
+            for command in workflow_commands
+        ):
+            message = (
+                f"child_cancellation_policy_not_supported: Python worker {self.worker_id} requires "
+                "cooperative_cancellation capability, worker protocol 1.20 and a compatible Server/Native backend"
+            )
+            try:
+                await self.client.fail_workflow_task(
+                    task_id=task_id, lease_owner=self.worker_id, workflow_task_attempt=attempt,
+                    message=message, failure_type="RuntimeCapabilityUnsupported",
+                )
+            except Exception as failure_error:
+                log.warning("failed to report child cancellation policy capability failure: %s", failure_error)
             return None
 
         def serialize_commands(source: list[Command]) -> list[dict[str, Any]]:

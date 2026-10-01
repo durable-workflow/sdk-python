@@ -40,9 +40,39 @@ mismatched local request/run identities, cycles, invalid budgets and a delivery
 that changes the accepted snapshot. Older cancellation histories without rich
 context continue delivering cancellation with `context is None`.
 
+## Child policies
+
+`CancellationPolicy` and `ParentClosePolicy` are available from the package
+root. Child commands accept these enums or their portable string values.
+
+```python
+yield ctx.start_child_workflow(
+    "python.child",
+    [],
+    cancellation_policy=CancellationPolicy.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy=ParentClosePolicy.REQUEST_CANCELLATION,
+)
+```
+
+`TRY_CANCEL` requests child cleanup and delivers parent cancellation without
+waiting. `WAIT_CANCELLATION_COMPLETED` parks the parent until the child has a
+recorded terminal outcome, releasing its task claim for other work. `ABANDON`
+leaves the child independent and preserves the historical default. Parent
+closure is a separate choice. `REQUEST_CANCELLATION` uses genuine cooperative
+cleanup with the original lineage and budget. `REQUEST_CANCEL` retains legacy
+terminal behavior. `TERMINATE` and `ABANDON` retain their existing meanings.
+
+Both command encoders preserve the policies. Cold replay compares them for
+ordinary calls, parallel groups, selections and cancellation delivery. Omitted
+historical fields mean the original `ABANDON` defaults. Later events with
+missing fields keep the scheduled snapshot. Changed options and invalid or
+conflicting history fail replay. A worker without the negotiated cooperation
+capability refuses these choices before completion, reporting its identity and
+the required protocol. Server also checks the immutable task claim and backend.
+
 ## Remaining qualification
 
-Rust context parity, portable operation policies, nested scopes and deterministic
+Rust policy parity, portable activity policies, nested scopes and deterministic
 remaining-time helpers still need completion. Remaining time must use the
 replayed workflow clock. Do not subtract the host clock from the deadline in
 workflow code. The runtime continues enforcing the original deadline and fencing

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "python-child-cancellation-policy-changed",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {"type": "tests.replay.child-policy-author", "input": [], "payload_codec": "avro"},
+  "history": [
+    {"event_type": "ChildWorkflowScheduled", "payload": {"sequence": 1, "child_workflow_type": "child", "parent_close_policy": "abandon", "cancellation_policy": "wait_cancellation_completed"}},
+    {"event_type": "ChildRunCompleted", "payload": {"sequence": 1, "child_workflow_type": "child"}}
+  ],
+  "expected": {"command_sequence": []},
+  "expected_replay_error": {"type": "NonDeterministicReplayError", "message_contains": "child_workflow_policy_changed", "workflow_sequence": 1}
+}

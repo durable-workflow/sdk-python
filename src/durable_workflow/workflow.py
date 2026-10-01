@@ -34,7 +34,7 @@ from typing import Any, TypeVar, cast
 
 from . import serializer
 from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
-from .cancellation import CancellationContext
+from .cancellation import CancellationContext, CancellationPolicy, ParentClosePolicy, _canonical_child_policies
 from .client import WorkflowStreamAppendItem
 from .errors import (
     ActivityFailed,
@@ -918,16 +918,23 @@ class StartChildWorkflow:
     workflow_type: str
     arguments: list[Any] = field(default_factory=list)
     task_queue: str | None = None
-    parent_close_policy: str | None = None
+    parent_close_policy: str | ParentClosePolicy | None = None
     retry_policy: ChildWorkflowRetryPolicyInput | None = None
     execution_timeout_seconds: int | None = None
     run_timeout_seconds: int | None = None
+    cancellation_policy: str | CancellationPolicy | None = None
     _parallel_group_path: list[dict[str, Any]] | None = field(
         default=None,
         init=False,
         repr=False,
         compare=False,
     )
+
+    def __post_init__(self) -> None:
+        _canonical_child_policies({
+            "parent_close_policy": self.parent_close_policy,
+            "cancellation_policy": self.cancellation_policy,
+        })
 
     def to_server_command(
         self,
@@ -961,8 +968,10 @@ class StartChildWorkflow:
             cmd["queue"] = self.task_queue
         else:
             cmd["queue"] = task_queue
-        if self.parent_close_policy is not None:
-            cmd["parent_close_policy"] = self.parent_close_policy
+        cmd.update(_canonical_child_policies({
+            "parent_close_policy": self.parent_close_policy,
+            "cancellation_policy": self.cancellation_policy,
+        }))
         if self.retry_policy is not None:
             cmd["retry_policy"] = (
                 self.retry_policy.to_dict()
@@ -1491,8 +1500,10 @@ def commands_to_server_commands(
                     task_queue=queue,
                 ),
             ))
-            if command.parent_close_policy is not None:
-                server_command["parent_close_policy"] = command.parent_close_policy
+            server_command.update(_canonical_child_policies({
+                "parent_close_policy": command.parent_close_policy,
+                "cancellation_policy": command.cancellation_policy,
+            }))
             if command.retry_policy is not None:
                 server_command["retry_policy"] = (
                     command.retry_policy.to_dict()
@@ -2080,7 +2091,8 @@ class WorkflowContext:
         arguments: list[Any] | None = None,
         *,
         task_queue: str | None = None,
-        parent_close_policy: str | None = None,
+        parent_close_policy: str | ParentClosePolicy | None = None,
+        cancellation_policy: str | CancellationPolicy | None = None,
         retry_policy: ChildWorkflowRetryPolicyInput | None = None,
         execution_timeout_seconds: int | None = None,
         run_timeout_seconds: int | None = None,
@@ -2090,6 +2102,7 @@ class WorkflowContext:
             arguments=list(arguments) if arguments is not None else [],
             task_queue=task_queue,
             parent_close_policy=parent_close_policy,
+            cancellation_policy=cancellation_policy,
             retry_policy=retry_policy,
             execution_timeout_seconds=execution_timeout_seconds,
             run_timeout_seconds=run_timeout_seconds,
@@ -3337,6 +3350,8 @@ def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
     for key in (
         "workflow_type",
         "child_workflow_type",
+        "parent_close_policy",
+        "cancellation_policy",
         "timer_kind",
         "change_id",
         "condition_key",
@@ -3486,6 +3501,20 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
                 f"Recorded child workflow_type {recorded!r}, but current workflow "
                 f"started {command.workflow_type!r}."
             )
+        actual_policies = {
+            "parent_close_policy": "abandon", "cancellation_policy": "abandon",
+            **_canonical_child_policies({
+                "parent_close_policy": command.parent_close_policy,
+                "cancellation_policy": command.cancellation_policy,
+            }),
+        }
+        for field, actual_policy in actual_policies.items():
+            recorded_policy = step.details.get(field, "abandon")
+            if recorded_policy != actual_policy:
+                return (
+                    f"child_workflow_policy_changed: recorded {field} {recorded_policy!r}, "
+                    f"but current workflow requested {actual_policy!r}."
+                )
     elif isinstance(command, RecordVersionMarker):
         recorded = step.details.get("change_id")
         if isinstance(recorded, str) and recorded != command.change_id:
@@ -3662,6 +3691,7 @@ def _replay_state(
     workflow_id = workflow_id or _workflow_id_from_history(events)
     event_types_by_sequence: dict[int, list[str]] = {}
     details_by_sequence: dict[int, dict[str, Any]] = {}
+    child_policies_by_sequence: dict[int, dict[str, str]] = {}
     resolved_sequences: set[int] = set()
     condition_wait_ids_by_sequence: dict[int, str] = {}
     selected_condition_wait_ids_by_sequence: dict[int, str] = {}
@@ -3683,6 +3713,29 @@ def _replay_state(
             # envelopes into the public non-determinism diagnostic.
             recorded_details = {}
         details_by_sequence.setdefault(sequence, {}).update(recorded_details)
+        if event_type in (
+            "ChildWorkflowScheduled", "ChildRunStarted", "ChildRunCompleted",
+            "ChildRunFailed", "ChildRunCancelled", "ChildRunTerminated",
+        ):
+            try:
+                incoming_policies = _canonical_child_policies(payload)
+            except ValueError as error:
+                raise NonDeterministicReplayError(
+                    sequence, "child workflow", [event_type],
+                    detail=f"invalid_child_workflow_policy_history: {error}",
+                ) from error
+            previous_policies = child_policies_by_sequence.get(sequence)
+            for field, value in incoming_policies.items():
+                if previous_policies is not None and previous_policies[field] != value:
+                    raise NonDeterministicReplayError(
+                        sequence, "child workflow", [event_type],
+                        detail=f"child_workflow_policy_history_conflict: {field} changed between history events.",
+                    )
+            child_policies_by_sequence[sequence] = {
+                "parent_close_policy": "abandon", "cancellation_policy": "abandon",
+                **(previous_policies or {}), **incoming_policies,
+            }
+            details_by_sequence[sequence].update(child_policies_by_sequence[sequence])
         if event_type == "ConditionWaitOpened":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
@@ -3870,6 +3923,8 @@ def _replay_state(
             else {}
         )
         details.update(_recorded_step_details(payload))
+        if shape == "child workflow":
+            details.update(child_policies_by_sequence.get(workflow_sequence, {}))
         return _RecordedStep(
             workflow_sequence=workflow_sequence,
             shape=shape,
@@ -5196,7 +5251,9 @@ def _replay_state(
                     continue
                 _assert_step_matches(leaf, _RecordedStep(
                     workflow_sequence=sequence, shape=opening_shapes[event_type],
-                    event_types=[event_type], details=_recorded_step_details(payload),
+                    event_types=[event_type], details={
+                        **details_by_sequence.get(sequence, {}), **_recorded_step_details(payload),
+                    },
                 ))
 
     def _terminal_state(value: Any, *, include_pending: bool) -> _ReplayState:

@@ -6,8 +6,46 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from types import MappingProxyType
 from typing import Any
+
+
+class CancellationPolicy(str, Enum):
+    """Cancellation at an awaiting child call. Abandon preserves the legacy default."""
+
+    TRY_CANCEL = "try_cancel"
+    WAIT_CANCELLATION_COMPLETED = "wait_cancellation_completed"
+    ABANDON = "abandon"
+
+
+class ParentClosePolicy(str, Enum):
+    """Open-child behavior after parent closure. REQUEST_CANCEL is legacy terminal cancellation."""
+
+    ABANDON = "abandon"
+    REQUEST_CANCEL = "request_cancel"
+    REQUEST_CANCELLATION = "request_cancellation"
+    TERMINATE = "terminate"
+
+
+def _canonical_child_policies(options: Mapping[str, Any]) -> dict[str, str]:
+    policies: dict[str, str] = {}
+    for field, enum in (
+        ("parent_close_policy", ParentClosePolicy),
+        ("cancellation_policy", CancellationPolicy),
+    ):
+        value = options.get(field)
+        if value is None:
+            continue
+        if isinstance(value, Enum) and not isinstance(value, enum):
+            raise ValueError(f"child workflow {field} must be a supported policy")
+        if not isinstance(value, str):
+            raise ValueError(f"child workflow {field} must be a supported policy")
+        try:
+            policies[field] = enum(value).value
+        except ValueError as error:
+            raise ValueError(f"child workflow {field} must be a supported policy") from error
+    return policies
 
 
 def _text(snapshot: Mapping[str, Any], key: str) -> str:

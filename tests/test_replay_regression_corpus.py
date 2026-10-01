@@ -224,7 +224,14 @@ class CooperativeReopenedConditionCleanupWorkflow:
         return "not cancelled"
 
 
+@workflow.defn(name="tests.replay.child-policy-author")
+class ChildPolicyAuthorWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return (yield ctx.start_child_workflow("child", []))
+
+
 WORKFLOWS = [
+    ChildPolicyAuthorWorkflow,
     ColdReplacementSatisfiedConditionWorkflow,
     CooperativeReopenedConditionCleanupWorkflow,
     GoldenSagaCompensationWorkflow,
