@@ -17,7 +17,7 @@ import pytest
 from durable_workflow import Client, Worker, activity, workflow
 from durable_workflow.client import WorkflowHandle
 from durable_workflow.errors import ServerError, WorkflowCancelled
-from durable_workflow.worker import _RemoteActivityExecutionAborted, _poll_capacity_delay
+from durable_workflow.worker import _poll_capacity_delay, _RemoteActivityExecutionAborted
 from durable_workflow.workflow import LocalActivityExecutionAborted
 
 pytestmark = pytest.mark.usefixtures("cooperative_runtime")
