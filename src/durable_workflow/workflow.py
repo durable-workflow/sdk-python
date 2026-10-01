@@ -34,6 +34,7 @@ from typing import Any, TypeVar, cast
 
 from . import serializer
 from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
+from .cancellation import CancellationContext
 from .client import WorkflowStreamAppendItem
 from .errors import (
     ActivityFailed,
@@ -1730,6 +1731,7 @@ class WorkflowContext:
         self._workflow_command_id = workflow_command_id or run_id or workflow_id
         self._cancel_requested = bool(cancel_requested)
         self._cancellation_request_id: str | None = None
+        self._cancellation_context: CancellationContext | None = None
         self._cancellation_shield_depth = 0
         seed = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16)
         self._rng = random.Random(seed)
@@ -1824,7 +1826,15 @@ class WorkflowContext:
     def throw_if_cancellation_requested(self) -> None:
         """Raise :class:`WorkflowCancelled` at an explicit safe point."""
         if self._cancel_requested and self._cancellation_shield_depth == 0:
-            raise WorkflowCancelled("workflow cancellation was requested", request_id=self._cancellation_request_id)
+            raise WorkflowCancelled(
+                "workflow cancellation was requested", request_id=self._cancellation_request_id,
+                context=self._cancellation_context,
+            )
+
+    @property
+    def cancellation_context(self) -> CancellationContext | None:
+        """Original metadata, visible only at committed cancellation delivery."""
+        return self._cancellation_context
 
     @contextlib.contextmanager
     def cancellation_shield(self) -> Generator[None, None, None]:
@@ -5218,12 +5228,14 @@ def _replay_state(
         cancellation_consumed = True
         ctx._cancel_requested = True
         ctx._cancellation_request_id = boundary.request_id
+        ctx._cancellation_context = cancellation.request.context if cancellation.request is not None else None
         _apply_due_receivers()
         if isinstance(command, DurableOperationHandle):
             authored_sequence += 1
         try:
             advanced_cmd = gen.throw(WorkflowCancelled(
                 "workflow cancellation was requested", request_id=boundary.request_id,
+                context=ctx._cancellation_context,
             ))
             return None
         except StopIteration as stop:

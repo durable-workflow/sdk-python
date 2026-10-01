@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from .cancellation import CancellationContext
 from .errors import NonDeterministicReplayError
 
 REQUEST_EVENT = "CooperativeCancellationRequested"
@@ -71,6 +72,7 @@ class CancellationRequest:
     requested_at: str
     cleanup_deadline_at: str
     history_refresh_page_token: str | None = None
+    context: CancellationContext | None = None
 
     @classmethod
     def from_observation(cls, value: Mapping[str, Any]) -> CancellationRequest:
@@ -173,9 +175,33 @@ def read_cancellation_history(
         if kind == REQUEST_EVENT:
             if saw_request or delivery is not None:
                 raise _invalid("history must contain one request before delivery")
+            context = None
+            if "cancellation" in payload:
+                snapshot = payload["cancellation"]
+                if not isinstance(snapshot, Mapping):
+                    raise _invalid("canonical cancellation context must be an object")
+                try:
+                    context = CancellationContext.from_dict(snapshot)
+                except ValueError as error:
+                    raise _invalid(str(error)) from error
+                local = context.lineage[-1]
+                recorded_at = _timestamp(event.get("recorded_at", event.get("timestamp")), "recorded_at")
+                if (
+                    context.request_id != request_id or local.workflow_run_id != event_run
+                    or ("workflow_instance_id" in payload
+                        and local.workflow_instance_id != payload["workflow_instance_id"])
+                    or context.deadline != datetime.fromisoformat(
+                        _timestamp(payload.get("cleanup_deadline_at"), "cleanup_deadline_at").replace("Z", "+00:00"),
+                    )
+                    or context.requested_at > datetime.fromisoformat(recorded_at.replace("Z", "+00:00"))
+                    or "reason" in payload and context.reason != payload["reason"]
+                ):
+                    raise _invalid("canonical cancellation context does not match its request event")
             canonical_request = CancellationRequest(
                 request_id,
-                request.requested_at
+                context.requested_at.isoformat(timespec="microseconds").replace("+00:00", "Z")
+                if context is not None
+                else request.requested_at
                 if request is not None
                 else _timestamp(
                     event.get("recorded_at", event.get("timestamp")),
@@ -183,6 +209,7 @@ def read_cancellation_history(
                 ),
                 _timestamp(payload.get("cleanup_deadline_at"), "cleanup_deadline_at"),
                 request.history_refresh_page_token if request is not None else None,
+                context,
             )
             if request is not None and (
                 request.request_id != canonical_request.request_id
@@ -199,6 +226,16 @@ def read_cancellation_history(
             delivery = CancellationDelivery.from_payload(payload)
             if delivery.request_id != request.request_id:
                 raise _invalid("delivery names a different request", delivery.sequence)
+            if "cancellation" in payload:
+                snapshot = payload["cancellation"]
+                if not isinstance(snapshot, Mapping) or request.context is None:
+                    raise _invalid("delivery changes the canonical cancellation context", delivery.sequence)
+                try:
+                    delivered_context = CancellationContext.from_dict(snapshot)
+                except ValueError as error:
+                    raise _invalid(str(error), delivery.sequence) from error
+                if delivered_context != request.context:
+                    raise _invalid("delivery changes the canonical cancellation context", delivery.sequence)
             delivery_index = index
     resolved: set[int] = set()
     failed: set[int] = set()
