@@ -34,6 +34,7 @@ from types import FunctionType
 from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from . import serializer
+from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
 from .activity import ActivityContext, ActivityInfo, _set_context
 from .auth_composition import (
     AUTH_COMPOSITION_CONTRACT_SCHEMA,
@@ -49,6 +50,8 @@ from .client import (
     PROTOCOL_VERSION,
     Client,
     WorkflowExecution,
+    _protocol_version_from_env,
+    _supports_cooperative_cancellation_protocol,
 )
 from .errors import (
     ActivityCancelled,
@@ -87,6 +90,7 @@ from .workflow import (
     NexusServiceCall,
     RecordLocalActivity,
     RecordSideEffect,
+    ReplayOutcome,
     UpsertMemo,
     apply_update,
     commands_to_server_commands,
@@ -157,6 +161,10 @@ class _LocalActivityTimedOut(Exception):
     def __init__(self, kind: str) -> None:
         super().__init__(f"local activity {kind} timeout elapsed")
         self.kind = kind
+
+
+class _CooperativeCancellationObserved(LocalActivityExecutionAborted):
+    """Return transport observation to the worker, never to authored cleanup."""
 
 
 class _InvalidLocalActivityReport(NonRetryableError):
@@ -1021,6 +1029,7 @@ class Worker:
         }
         self.activities = {_activity_name(a): a for a in activities}
         self.capabilities = tuple(dict.fromkeys(capability.strip() for capability in capabilities))
+        self._cooperative_cancellation_supported = False
         if any(not capability for capability in self.capabilities):
             raise ValueError("worker capabilities must be non-empty strings")
         self.worker_id = worker_id or f"py-worker-{uuid.uuid4().hex[:8]}"
@@ -1177,6 +1186,20 @@ class Worker:
             raise RuntimeError(f"Server compatibility error: unable to read /api/cluster/info: {e}") from e
 
         _validate_server_compatibility(info)
+        protocol = info.get("worker_protocol")
+        server_capabilities = protocol.get("server_capabilities") if isinstance(protocol, Mapping) else None
+        self._cooperative_cancellation_supported = (
+            "cooperative_cancellation" in self.capabilities
+            and isinstance(protocol, Mapping)
+            and isinstance(server_capabilities, Mapping)
+            and server_capabilities.get("cooperative_cancellation") is True
+            and _supports_cooperative_cancellation_protocol(protocol.get("version"))
+            and _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+                "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+            ))
+        )
+        if "cooperative_cancellation" in self.capabilities and not self._cooperative_cancellation_supported:
+            raise RuntimeError("cooperative cancellation requires explicit compatible runtime and worker protocol 1.20")
         self._query_tasks_supported = _server_supports_query_tasks(info)
         self._workflow_memo_updates_supported = _server_supports_workflow_memo_updates(info)
         has_update_validators = any(
@@ -1389,6 +1412,120 @@ class Worker:
             response.get("renewed") is not True,
         )):
             raise LocalActivityExecutionAborted("workflow task lease renewal was not fenced and acknowledged")
+        observation = response.get("cancellation_request")
+        if observation is not None:
+            self._observe_workflow_cancellation(task, observation)
+            if task.get("_delivered_cancellation_request_id") != task["cancellation_request"]["request_id"]:
+                raise _CooperativeCancellationObserved("cooperative request observed on the actual task heartbeat")
+
+    def _observe_workflow_cancellation(self, task: dict[str, Any], observation: Any) -> CancellationRequest:
+        if not self._cooperative_cancellation_supported or not isinstance(observation, Mapping):
+            raise LocalActivityExecutionAborted("workflow cancellation observation is not negotiated")
+        try:
+            current = CancellationRequest.from_observation(observation)
+            previous = task.get("cancellation_request")
+            if previous is not None and not isinstance(previous, Mapping):
+                raise ValueError("previous observation is not an object")
+            original = CancellationRequest.from_observation(previous) if previous is not None else None
+        except Exception as error:
+            raise LocalActivityExecutionAborted("workflow cancellation observation is malformed") from error
+        if original is not None and (original.request_id, original.requested_at, original.cleanup_deadline_at) != (
+            current.request_id, current.requested_at, current.cleanup_deadline_at,
+        ):
+            raise LocalActivityExecutionAborted("workflow cancellation observation changed its original identity")
+        task["cancellation_request"] = dict(observation)
+        return current
+
+    async def _load_workflow_claim_history(
+        self, task: dict[str, Any], *, first_page_token: str | None = None,
+    ) -> list[dict[str, Any]]:
+        history = [] if first_page_token is not None else list(task.get("history_events", []))
+        token = first_page_token if first_page_token is not None else task.get("next_history_page_token")
+        seen: set[str] = set()
+        while token is not None:
+            if not isinstance(token, str) or not token or token in seen:
+                raise LocalActivityExecutionAborted("workflow history paging did not advance its opaque token")
+            seen.add(token)
+            page = await self.client.workflow_task_history(
+                task_id=task["task_id"], next_history_page_token=token,
+                lease_owner=self.worker_id, workflow_task_attempt=task.get("workflow_task_attempt", 1),
+            )
+            if not isinstance(page, Mapping) or not isinstance(page.get("history_events"), list):
+                raise LocalActivityExecutionAborted("workflow history page was not acknowledged")
+            if any(not isinstance(event, dict) for event in page["history_events"]):
+                raise LocalActivityExecutionAborted("workflow history page contains a malformed event")
+            history.extend(page["history_events"])
+            token = page.get("next_history_page_token")
+        return history
+
+    async def _refresh_cancellation_history(
+        self, task: dict[str, Any], observed: CancellationRequest,
+    ) -> list[dict[str, Any]]:
+        try:
+            return await self._load_workflow_claim_history(task, first_page_token=observed.history_refresh_page_token)
+        except Exception as error:
+            raise LocalActivityExecutionAborted(
+                "canonical cancellation history could not be loaded on this claim",
+            ) from error
+
+    async def _replay_workflow_claim(
+        self, cls: type, task: dict[str, Any], history: list[dict[str, Any]], start_input: list[Any],
+        *, payload_codec: str | None, execute_local: Callable[[RecordLocalActivity], Any],
+    ) -> tuple[ReplayOutcome, list[dict[str, Any]]]:
+        observation = task.get("cancellation_request")
+        if observation is not None:
+            observed = self._observe_workflow_cancellation(task, observation)
+            history = await self._refresh_cancellation_history(task, observed)
+        for _ in range(3):
+            state = read_cancellation_history(
+                history, run_id=task.get("run_id", ""), observation=task.get("cancellation_request"),
+            )
+            if state.request is not None and not self._cooperative_cancellation_supported:
+                raise LocalActivityExecutionAborted("canonical cancellation requires a negotiated capable worker")
+            if state.delivery is not None:
+                task["_delivered_cancellation_request_id"] = state.delivery.request_id
+            try:
+                outcome = await asyncio.to_thread(
+                    replay, cls, history, start_input, workflow_id=task.get("workflow_id"),
+                    run_id=task.get("run_id", ""),
+                    workflow_command_id=(
+                        _string_or_none(task.get("workflow_command_id")) or _string_or_none(task.get("task_id"))
+                    ),
+                    payload_codec=payload_codec, external_storage=self.external_storage,
+                    external_storage_cache=self.external_storage_cache,
+                    cancel_requested=bool(task.get("cancel_requested", False)) and state.request is None,
+                    cancellation_request=task.get("cancellation_request"), local_activity_executor=execute_local,
+                )
+            except _CooperativeCancellationObserved:
+                observed = self._observe_workflow_cancellation(task, task.get("cancellation_request"))
+                history = await self._refresh_cancellation_history(task, observed)
+                continue
+            intent = outcome.cancellation_delivery
+            if intent is None or outcome.commands:
+                # Earlier authored commands must commit on this claim first.
+                # Completion releases the claim; a successor replays their durable results.
+                return outcome, history
+            observed = self._observe_workflow_cancellation(task, task.get("cancellation_request"))
+            delivery_error: Exception | None = None
+            try:
+                await self.client.deliver_workflow_cancellation(
+                    task_id=task["task_id"], lease_owner=self.worker_id,
+                    workflow_task_attempt=task.get("workflow_task_attempt", 1),
+                    request_id=intent.request_id, sequence=intent.sequence, call_kind=intent.call_kind,
+                    sequence_span=intent.sequence_span, operation_sequence=intent.operation_sequence,
+                    operation_sequence_span=intent.operation_sequence_span,
+                )
+            except Exception as error:
+                delivery_error = error
+            history = await self._refresh_cancellation_history(task, observed)
+            committed = read_cancellation_history(
+                history, run_id=task.get("run_id", ""), observation=task.get("cancellation_request"),
+            )
+            if committed.delivery != intent:
+                raise LocalActivityExecutionAborted(
+                    "delivery was not proved by matching canonical history",
+                ) from delivery_error
+        raise LocalActivityExecutionAborted("workflow cancellation replay did not converge on its canonical delivery")
 
     def _maybe_externalize_local_payload(self, envelope: dict[str, str]) -> dict[str, Any]:
         storage = self.external_storage
@@ -1400,6 +1537,42 @@ class Worker:
             return envelope
         reference = store_external_payload(storage, data, codec=envelope["codec"])
         return {"codec": envelope["codec"], "external_storage": reference.to_dict()}
+
+    async def _execute_cooperative_local_callable(
+        self, task: dict[str, Any], command: RecordLocalActivity, handler: Callable[..., Any],
+        attempt_state: dict[str, Any],
+    ) -> Any:
+        async def observe_lease() -> None:
+            while True:
+                await asyncio.sleep(min(5.0, self._heartbeat_interval))
+                await self._renew_local_workflow_lease(task)
+
+        invocation = asyncio.create_task(self._execute_activity_callable(
+            task, command.activity_type, tuple(command.arguments), handler,
+        ))
+        observation = asyncio.create_task(observe_lease())
+        try:
+            done, _ = await asyncio.wait([invocation, observation], return_when=asyncio.FIRST_COMPLETED)
+            if observation in done:
+                await observation  # Propagate transport observation or lost lease, never a workflow cancellation.
+                raise LocalActivityExecutionAborted("local lease observer stopped without an acknowledgment")
+            return await invocation
+        finally:
+            observation.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await observation
+            if not invocation.done():
+                attempt_state["lease_aborted"] = True
+                invocation.cancel()
+
+                def discard_late_result(future: asyncio.Task[Any]) -> None:
+                    if not future.cancelled():
+                        future.exception()
+
+                # Python cannot forcibly stop a synchronous thread or a callable
+                # that suppresses cancellation. Its attempt is fenced and its
+                # eventual result cannot become a durable command.
+                invocation.add_done_callback(discard_late_result)
 
     async def _execute_local_activity(
         self,
@@ -1478,7 +1651,10 @@ class Worker:
                 now = time.monotonic()
                 if state["lease_aborted"]:
                     raise LocalActivityExecutionAborted("local activity lost its workflow task lease")
-                if self._stop.is_set() or task.get("cancel_requested") is True:
+                if self._stop.is_set() or (
+                    task.get("cancel_requested") is True and task.get("cancellation_request") is None
+                    and task.get("_delivered_cancellation_request_id") is None
+                ):
                     raise ActivityCancelled("local activity cancelled")
                 if (
                     command.heartbeat_timeout is not None
@@ -1541,11 +1717,16 @@ class Worker:
                 )
                 _set_context(ActivityContext(info=info, client=self.client, heartbeat_callback=heartbeat))
                 try:
-                    result = await self._execute_activity_callable(
-                        task, command.activity_type, tuple(command.arguments), handler,
-                    )
+                    if self._cooperative_cancellation_supported:
+                        result = await self._execute_cooperative_local_callable(task, command, handler, attempt_state)
+                    else:
+                        result = await self._execute_activity_callable(
+                            task, command.activity_type, tuple(command.arguments), handler,
+                        )
                 finally:
                     _set_context(None)
+                if self._cooperative_cancellation_supported:
+                    await self._renew_local_workflow_lease(task)
                 check_boundary()
                 attempts.append({
                     "attempt_id": attempt_id,
@@ -1636,21 +1817,7 @@ class Worker:
         task_id: str = task["task_id"]
         attempt: int = task.get("workflow_task_attempt", 1)
         wf_type: str = task.get("workflow_type", "")
-        history = task.get("history_events", [])
-
-        # The worker requests bounded history pages when polling. Do not replay
-        # an incomplete history if fetching a later page fails.
-        next_page_token = task.get("next_history_page_token")
-        while next_page_token:
-            page_data = await self.client.workflow_task_history(
-                task_id=task_id,
-                next_history_page_token=next_page_token,
-                lease_owner=self.worker_id,
-                workflow_task_attempt=attempt,
-            )
-            if page_data and page_data.get("history_events"):
-                history.extend(page_data["history_events"])
-            next_page_token = page_data.get("next_history_page_token") if page_data else None
+        history = await self._load_workflow_claim_history(task)
 
         start_input: list[Any] = []
         codec = task.get("payload_codec")
@@ -1773,22 +1940,8 @@ class Worker:
             return future.result()
 
         try:
-            outcome = await asyncio.to_thread(
-                replay,
-                cls,
-                history,
-                start_input,
-                workflow_id=task.get("workflow_id"),
-                run_id=run_id,
-                workflow_command_id=(
-                    _string_or_none(task.get("workflow_command_id"))
-                    or _string_or_none(task.get("task_id"))
-                ),
-                payload_codec=codec,
-                external_storage=self.external_storage,
-                external_storage_cache=self.external_storage_cache,
-                cancel_requested=bool(task.get("cancel_requested", False)),
-                local_activity_executor=execute_local,
+            outcome, history = await self._replay_workflow_claim(
+                cls, task, history, start_input, payload_codec=codec, execute_local=execute_local,
             )
         except LocalActivityExecutionAborted as e:
             log.warning("abandoning workflow task %s before local activity commit: %s", task_id, e)
