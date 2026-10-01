@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import hashlib
 import inspect
 import json
@@ -28,6 +29,7 @@ import traceback
 import types
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from functools import wraps
 from types import FunctionType
@@ -1056,6 +1058,8 @@ class Worker:
         self.max_concurrent_worker_sessions = max_concurrent_worker_sessions
         self._worker_sessions: dict[str, WorkerSession] = {}
         self._stop = asyncio.Event()
+        self._local_activity_shutdown = asyncio.Event()
+        self._local_activity_executor: ThreadPoolExecutor | None = None
         self._wf_semaphore = asyncio.Semaphore(max_concurrent_workflow_tasks)
         self._act_semaphore = asyncio.Semaphore(max_concurrent_activity_tasks)
         self._shutdown_timeout = shutdown_timeout
@@ -1395,6 +1399,8 @@ class Worker:
         raise RuntimeError("workflow yielded too many consecutive Nexus service calls")
 
     async def _renew_local_workflow_lease(self, task: dict[str, Any]) -> None:
+        if self._cooperative_cancellation_supported and self._local_activity_shutdown.is_set():
+            raise LocalActivityExecutionAborted("worker shutdown abandoned its local workflow claim")
         task_id = str(task["task_id"])
         attempt = int(task.get("workflow_task_attempt", 1))
         try:
@@ -1405,6 +1411,8 @@ class Worker:
             )
         except Exception as exc:
             raise LocalActivityExecutionAborted("workflow task lease renewal failed") from exc
+        if self._cooperative_cancellation_supported and self._local_activity_shutdown.is_set():
+            raise LocalActivityExecutionAborted("worker shutdown abandoned its local workflow claim")
         if not isinstance(response, Mapping) or any((
             response.get("task_id") != task_id,
             response.get("lease_owner") != self.worker_id,
@@ -1548,16 +1556,22 @@ class Worker:
                 await self._renew_local_workflow_lease(task)
 
         invocation = asyncio.create_task(self._execute_activity_callable(
-            task, command.activity_type, tuple(command.arguments), handler,
+            task, command.activity_type, tuple(command.arguments), handler, run_sync_in_thread=True,
         ))
         observation = asyncio.create_task(observe_lease())
+        shutdown = asyncio.create_task(self._local_activity_shutdown.wait())
         try:
-            done, _ = await asyncio.wait([invocation, observation], return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait([invocation, observation, shutdown], return_when=asyncio.FIRST_COMPLETED)
+            if shutdown in done:
+                raise LocalActivityExecutionAborted("worker shutdown abandoned its local workflow claim")
             if observation in done:
                 await observation  # Propagate transport observation or lost lease, never a workflow cancellation.
                 raise LocalActivityExecutionAborted("local lease observer stopped without an acknowledgment")
             return await invocation
         finally:
+            shutdown.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await shutdown
             observation.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await observation
@@ -1651,7 +1665,10 @@ class Worker:
                 now = time.monotonic()
                 if state["lease_aborted"]:
                     raise LocalActivityExecutionAborted("local activity lost its workflow task lease")
-                if self._stop.is_set() or (
+                if self._cooperative_cancellation_supported and self._local_activity_shutdown.is_set():
+                    state["lease_aborted"] = True
+                    raise LocalActivityExecutionAborted("worker shutdown abandoned its local workflow claim")
+                if (self._stop.is_set() and not self._cooperative_cancellation_supported) or (
                     task.get("cancel_requested") is True and task.get("cancellation_request") is None
                     and task.get("_delivered_cancellation_request_id") is None
                 ):
@@ -2320,6 +2337,7 @@ class Worker:
         activity_type: str,
         args: tuple[Any, ...],
         fn: Callable[..., Any],
+        *, run_sync_in_thread: bool = False,
     ) -> Any:
         context = ActivityInterceptorContext(
             worker_id=self.worker_id,
@@ -2330,7 +2348,17 @@ class Worker:
         )
 
         async def call_activity(ctx: ActivityInterceptorContext) -> Any:
-            result = fn(*ctx.args)
+            if run_sync_in_thread and not inspect.iscoroutinefunction(fn):
+                if self._local_activity_executor is None:
+                    # Replay threads wait for local results, so sharing their pool can deadlock.
+                    self._local_activity_executor = ThreadPoolExecutor(
+                        max_workers=self.max_concurrent_workflow_tasks, thread_name_prefix="dw-local-activity",
+                    )
+                result = await asyncio.get_running_loop().run_in_executor(
+                    self._local_activity_executor, contextvars.copy_context().run, fn, *ctx.args,
+                )
+            else:
+                result = fn(*ctx.args)
             if asyncio.iscoroutine(result):
                 return await result
             return result
@@ -3527,6 +3555,8 @@ class Worker:
                 in_flight,
                 timeout=self._remaining_shutdown_time(deadline),
             )
+            if pending:
+                self._local_activity_shutdown.set()
             for t in pending:
                 t.cancel()
             if pending:
@@ -3540,6 +3570,9 @@ class Worker:
                     "the worker registration remains active"
                 )
             await asyncio.gather(*in_flight, return_exceptions=True)
+
+        if self._local_activity_executor is not None:
+            self._local_activity_executor.shutdown(wait=False, cancel_futures=True)
 
         for session in self._worker_sessions.values():
             if not session.active:
