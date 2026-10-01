@@ -121,6 +121,32 @@ async def test_synchronous_callback_keeps_owner_available_and_fences_late_thread
         release.set()
 
 
+async def test_shutdown_expiry_of_tracked_remote_attempt_fences_a_cancellation_resistant_result(owner) -> None:
+    worker, client = owner
+    worker._shutdown_timeout = 0.01
+    entered, late_fenced = asyncio.Event(), asyncio.Event()
+
+    async def callback() -> object:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            with pytest.raises(_RemoteActivityExecutionAborted):
+                await activity.context().heartbeat()
+            late_fenced.set()
+            return object()
+
+    worker.activities["remote"] = callback
+    execution = worker._track(worker._run_activity_task(task()))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    await asyncio.wait_for(worker.stop(), timeout=2)
+    await asyncio.wait_for(late_fenced.wait(), timeout=2)
+    assert execution.cancelled() or execution.result() == "claim_aborted"
+    client.heartbeat_activity_task.assert_not_awaited()
+    client.complete_activity_task.assert_not_awaited()
+    client.fail_activity_task.assert_not_awaited()
+
+
 @pytest.mark.parametrize("synchronous", [False, True])
 async def test_authored_heartbeat_stays_on_owner_loop_and_preserves_typed_result(owner, synchronous: bool) -> None:
     worker, client = owner

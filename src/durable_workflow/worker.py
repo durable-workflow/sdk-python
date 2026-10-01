@@ -2318,22 +2318,17 @@ class Worker:
             return result
         finally:
             abandoned.set()
-            shutdown.cancel()
-            observation.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await shutdown
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await observation
-            if not invocation.done():
-                invocation.cancel()
 
-                def discard_late_result(future: asyncio.Task[Any]) -> None:
-                    if not future.cancelled():
-                        future.exception()
+            def discard_late_result(future: asyncio.Task[Any]) -> None:
+                if not future.cancelled():
+                    future.exception()
 
-                # A running thread or cancellation-resistant callable can outlive
-                # the await. Its heartbeat and eventual publication stay fenced.
-                invocation.add_done_callback(discard_late_result)
+            # The abandoned claim must finish without waiting for callback or
+            # observer cancellation. All late progress/publication stays fenced.
+            for background in (invocation, observation, shutdown):
+                if not background.done():
+                    background.cancel()
+                background.add_done_callback(discard_late_result)
 
     async def _run_activity_task(self, task: dict[str, Any]) -> str:
         self._track_worker_session_from_task(task)
