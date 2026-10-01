@@ -193,10 +193,10 @@ async def test_actual_remote_worker_fences_blocked_callbacks_without_manufacturi
             assert len(fences) == 1
             with pytest.raises(ServerError) as completion:
                 await client.complete_activity_task(**fences[0], result="late")
-            assert completion.value.status_code == 409
+            assert completion.value.status == 409
             with pytest.raises(ServerError) as failure:
                 await client.fail_activity_task(**fences[0], message="late", failure_type="LateQualification")
-            assert failure.value.status_code == 409
+            assert failure.value.status == 409
             assert await events(handle) == history
         finally:
             release_thread.set()
@@ -542,10 +542,10 @@ async def test_killed_remote_owner_cannot_publish_after_cold_workflow_delivery(
             fence = {key: claimed[key] for key in ("task_id", "activity_attempt_id", "lease_owner")}
             with pytest.raises(ServerError) as completion:
                 await client.complete_activity_task(**fence, result="late")
-            assert completion.value.status_code == 409
+            assert completion.value.status == 409
             with pytest.raises(ServerError) as failure:
                 await client.fail_activity_task(**fence, message="late", failure_type="LateQualification")
-            assert failure.value.status_code == 409
+            assert failure.value.status == 409
             assert await events(handle) == history
         finally:
             for process in processes:
