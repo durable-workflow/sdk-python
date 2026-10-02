@@ -631,6 +631,36 @@ class RecordLocalActivity:
         return command
 
 
+@dataclass(frozen=True)
+class PreparedLocalActivityCall:
+    """An authored local call awaiting admission, with no application execution."""
+
+    command: RecordLocalActivity
+    sequence: int
+    recover: bool = False
+    cleanup: Mapping[str, str] | None = None
+
+    def descriptor(self, payload_codec: str) -> dict[str, Any]:
+        command = self.command
+        descriptor: dict[str, Any] = {
+            "type": "record_local_activity", "activity_type": command.activity_type,
+            "execution_mode": "local", "arguments": serializer.envelope(command.arguments, codec=payload_codec),
+            "payload_codec": payload_codec,
+        }
+        if command.retry_policy is not None:
+            descriptor["retry_policy"] = dict(command.retry_policy)
+        for name in ("start_to_close_timeout", "schedule_to_close_timeout", "heartbeat_timeout"):
+            value = getattr(command, name)
+            if value is not None:
+                descriptor[name] = value
+        if self.cleanup is not None:
+            descriptor["cancellation_cleanup"] = {
+                "request_id": self.cleanup["request_id"],
+                "delivery_history_event_id": self.cleanup["delivery_history_event_id"],
+            }
+        return descriptor
+
+
 class LocalActivityExecutionAborted(Exception):
     """The workflow task lease could not be trusted after local execution began."""
 
@@ -2282,6 +2312,7 @@ class ReplayOutcome:
     message_stream_cursors: list[dict[str, Any]] = field(default_factory=list)
     message_stream_waits: list[dict[str, Any]] = field(default_factory=list)
     cancellation_delivery: CancellationDelivery | None = None
+    prepared_local_activity: PreparedLocalActivityCall | None = None
 
 
 class Replayer:
@@ -2655,6 +2686,7 @@ def replay(
     cancel_requested: bool = False,
     cancellation_request: Mapping[str, Any] | None = None,
     local_activity_executor: Callable[[RecordLocalActivity], Any] | None = None,
+    prepare_local_activities: bool = False,
 ) -> ReplayOutcome:
     return _replay_state(
         workflow_cls,
@@ -2669,6 +2701,7 @@ def replay(
         cancel_requested=cancel_requested,
         cancellation_request=cancellation_request,
         local_activity_executor=local_activity_executor,
+        prepare_local_activities=prepare_local_activities,
     ).outcome
 
 
@@ -3668,6 +3701,7 @@ def _replay_state(
     cancel_requested: bool = False,
     cancellation_request: Mapping[str, Any] | None = None,
     local_activity_executor: Callable[[RecordLocalActivity], Any] | None = None,
+    prepare_local_activities: bool = False,
     stop_at_uncommitted_cancellation: bool = False,
 ) -> _ReplayState:
     if payload_codec is not None and payload_codec != serializer.AVRO_CODEC:
@@ -3811,11 +3845,14 @@ def _replay_state(
         ):
             ctx._accept_message_stream(arguments)
 
-    def _state(commands: list[Command]) -> _ReplayState:
+    def _state(
+        commands: list[Command], prepared_local_activity: PreparedLocalActivityCall | None = None,
+    ) -> _ReplayState:
         return _ReplayState(
             outcome=ReplayOutcome(
                 commands=commands,
                 cancellation_delivery=cancellation_intent,
+                prepared_local_activity=prepared_local_activity,
                 message_stream_cursors=[
                     {"stream_name": name, "through_position": position}
                     for name, position in sorted(ctx._message_stream_cursors.items())
@@ -4018,7 +4055,7 @@ def _replay_state(
         if step_index >= len(recorded_steps):
             return
         if (
-            cancellation.request is not None
+            (cancellation.request is not None or prepare_local_activities)
             and recorded_steps[step_index].workflow_sequence != current_call_sequence + offset
         ):
             raise NonDeterministicReplayError(
@@ -5176,7 +5213,7 @@ def _replay_state(
 
     def _cancellation_boundary(command: Any) -> CancellationDelivery | None:
         nonlocal authored_sequence, current_call_sequence
-        if cancellation.request is None:
+        if cancellation.request is None and not prepare_local_activities:
             return None
         current_call_sequence = authored_sequence
         kind: str | None = None
@@ -5222,6 +5259,15 @@ def _replay_state(
             cancellation.request.request_id, current_call_sequence, kind, span,
             operation_sequence, operation_span,
         )
+
+    def _contains_local_activity(operation: Any) -> bool:
+        if isinstance(operation, RecordLocalActivity):
+            return True
+        if isinstance(operation, list):
+            return any(_contains_local_activity(member) for member in operation)
+        if isinstance(operation, SelectGroup):
+            return any(_contains_local_activity(member) for _, member in operation.operations)
+        return False
 
     def _assert_cancellation_call_matches(command: Any, boundary: CancellationDelivery) -> None:
         if isinstance(command, list):
@@ -5316,6 +5362,10 @@ def _replay_state(
                     return _terminal_state(stop.value, include_pending=True)
                 first = False
             _apply_due_receivers()
+            if prepare_local_activities and isinstance(cmd, list | SelectGroup) and _contains_local_activity(cmd):
+                raise LocalActivityExecutionAborted(
+                    "prepared local groups require an implemented atomic group consumer",
+                )
             boundary = _cancellation_boundary(cmd)
             if cancellation.delivery is not None and not cancellation_consumed:
                 cancellation_marker = cancellation.delivery
@@ -5768,6 +5818,38 @@ def _replay_state(
                     continue
                 ctx.logger._set_replaying(False)
                 _assert_pending_step_matches(cmd)
+                if isinstance(cmd, RecordLocalActivity) and prepare_local_activities:
+                    cleanup: dict[str, str] | None = None
+                    if cancellation.request is not None:
+                        delivery = cancellation.delivery
+                        context = cancellation.request.context
+                        delivery_id = (
+                            events[cancellation.delivery_index].get("id")
+                            if cancellation.delivery_index is not None else None
+                        )
+                        if (
+                            not cancellation_consumed or ctx._cancellation_shield_depth < 1
+                            or delivery is None or context is None
+                            or current_call_sequence < delivery.sequence + delivery.sequence_span
+                            or not isinstance(delivery_id, str) or not delivery_id.strip()
+                        ):
+                            raise LocalActivityExecutionAborted(
+                                "prepared cleanup requires a shield after canonical cancellation delivery",
+                            )
+                        cleanup = {
+                            "request_id": context.request_id, "root_request_id": context.root_request_id,
+                            "delivery_history_event_id": delivery_id,
+                            "cleanup_deadline_at": context.to_dict()["cleanup_deadline_at"],
+                        }
+                    started = False
+                    for event in events:
+                        if _workflow_sequence(event.get("payload") or {}) != current_call_sequence:
+                            continue
+                        if _history_event_type(event) == "ActivityStarted":
+                            started = True
+                        elif _history_event_type(event) == "ActivityRetryScheduled":
+                            started = False
+                    return _state(pending, PreparedLocalActivityCall(cmd, current_call_sequence, started, cleanup))
                 if isinstance(cmd, RecordLocalActivity) and local_activity_executor is not None:
                     local_result = local_activity_executor(cmd)
                     if cmd.outcome is None or cmd.arguments_envelope is None:

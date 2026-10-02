@@ -39,6 +39,7 @@ from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Uni
 from . import serializer
 from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProcessLost, SupervisedCallback
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
+from ._prepared_local_activity import PreparedAttempt, PreparedCancellationObserved, PreparedLocalRunner
 from .activity import ActivityContext, ActivityInfo, _set_context
 from .auth_composition import (
     AUTH_COMPOSITION_CONTRACT_SCHEMA,
@@ -46,6 +47,7 @@ from .auth_composition import (
     AuthCompositionContractError,
     parse_auth_composition_contract,
 )
+from .cancellation import CancellationContext
 from .client import (
     CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA,
     CONTROL_PLANE_REQUEST_CONTRACT_VERSION,
@@ -1049,6 +1051,11 @@ class Worker:
         self.activities = {_activity_name(a): a for a in activities}
         self.capabilities = tuple(dict.fromkeys(capability.strip() for capability in capabilities))
         self._cooperative_cancellation_supported = False
+        self._prepared_local_activities_supported = False
+        if "prepared_local_activity_groups" in self.capabilities:
+            raise ValueError("Python has no prepared local group consumer yet")
+        if "prepared_local_activities" in self.capabilities and "cooperative_cancellation" not in self.capabilities:
+            raise ValueError("prepared local activities require cooperative_cancellation capability")
         if any(not capability for capability in self.capabilities):
             raise ValueError("worker capabilities must be non-empty strings")
         self.worker_id = worker_id or f"py-worker-{uuid.uuid4().hex[:8]}"
@@ -1080,6 +1087,8 @@ class Worker:
         self._remote_activity_executor: ThreadPoolExecutor | None = None
         self._remote_activity_threads: set[Future[Any]] = set()
         self._remote_activity_processes: set[SupervisedCallback] = set()
+        self._prepared_local_activity_processes: set[SupervisedCallback] = set()
+        self._abandoned_prepared_local_claims: set[str] = set()
         self._remote_activity_thread_slots = asyncio.Semaphore(max_concurrent_activity_tasks)
         self._wf_semaphore = asyncio.Semaphore(max_concurrent_workflow_tasks)
         self._act_semaphore = asyncio.Semaphore(max_concurrent_activity_tasks)
@@ -1225,6 +1234,15 @@ class Worker:
         )
         if "cooperative_cancellation" in self.capabilities and not self._cooperative_cancellation_supported:
             raise RuntimeError("cooperative cancellation requires explicit compatible runtime and worker protocol 1.20")
+        self._prepared_local_activities_supported = (
+            "prepared_local_activities" in self.capabilities and self._cooperative_cancellation_supported
+            and isinstance(server_capabilities, Mapping)
+            and server_capabilities.get("prepared_local_activities") is True
+        )
+        if "prepared_local_activities" in self.capabilities and not self._prepared_local_activities_supported:
+            raise RuntimeError(
+                "prepared_local_activity_not_supported: Server must advertise its installed admission bridge",
+            )
         self._validate_cooperative_activity_handlers()
         self._query_tasks_supported = _server_supports_query_tasks(info)
         self._workflow_memo_updates_supported = _server_supports_workflow_memo_updates(info)
@@ -1274,7 +1292,13 @@ class Worker:
             max_concurrent_worker_sessions=self.max_concurrent_worker_sessions,
             build_id=self.build_id,
             capabilities=capabilities,
-            capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+            capability_manifest={
+                **PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+                **({"prepared_local_activities": {
+                    "supported": True, "minimum_protocol_version": "1.20",
+                    "implementation": "durable_sequential_admission",
+                }} if self._prepared_local_activities_supported else {}),
+            },
             task_slots=self._current_task_slots(),
             process_metrics=self._current_process_metrics(),
         )
@@ -1506,7 +1530,8 @@ class Worker:
         if observation is not None:
             observed = self._observe_workflow_cancellation(task, observation)
             history = await self._refresh_cancellation_history(task, observed)
-        for _ in range(3):
+        delivery_attempts = 0
+        for _ in range(1000):
             state = read_cancellation_history(
                 history, run_id=task.get("run_id", ""), observation=task.get("cancellation_request"),
             )
@@ -1525,7 +1550,34 @@ class Worker:
                     external_storage_cache=self.external_storage_cache,
                     cancel_requested=bool(task.get("cancel_requested", False)) and state.request is None,
                     cancellation_request=task.get("cancellation_request"), local_activity_executor=execute_local,
+                    prepare_local_activities=self._prepared_local_activities_supported,
                 )
+                if outcome.prepared_local_activity is not None:
+                    history = await self._execute_prepared_local_activity(task, history, outcome)
+                    continue
+            except PreparedCancellationObserved as error:
+                # Control carries the root request time. Workflow observations
+                # carry this run's local admission time, which can be later in a
+                # cascade. Read the actual task observation instead of replacing
+                # either timestamp with the other.
+                expected = CancellationContext.from_dict(task["_prepared_cancellation_context"])
+                with contextlib.suppress(_CooperativeCancellationObserved):
+                    await self._renew_local_workflow_lease(task)
+                observed = self._observe_workflow_cancellation(task, task.get("cancellation_request"))
+                if observed.request_id != expected.request_id or datetime.fromisoformat(
+                    observed.cleanup_deadline_at.replace("Z", "+00:00"),
+                ) != expected.deadline:
+                    raise LocalActivityExecutionAborted(
+                        "prepared stop changed the original request or deadline",
+                    ) from error
+                history = await self._refresh_cancellation_history(task, observed)
+                committed = read_cancellation_history(history, run_id=task.get("run_id", ""),
+                                                       observation=task.get("cancellation_request"))
+                if committed.request is None or committed.request.context != expected:
+                    raise LocalActivityExecutionAborted(
+                        "prepared stop context differs from canonical request history",
+                    ) from error
+                continue
             except _CooperativeCancellationObserved:
                 observed = self._observe_workflow_cancellation(task, task.get("cancellation_request"))
                 history = await self._refresh_cancellation_history(task, observed)
@@ -1535,6 +1587,9 @@ class Worker:
                 # Earlier authored commands must commit on this claim first.
                 # Completion releases the claim; a successor replays their durable results.
                 return outcome, history
+            delivery_attempts += 1
+            if delivery_attempts > 3:
+                raise LocalActivityExecutionAborted("cancellation replay did not converge on its canonical delivery")
             observed = self._observe_workflow_cancellation(task, task.get("cancellation_request"))
             delivery_error: Exception | None = None
             try:
@@ -1559,7 +1614,152 @@ class Worker:
                 raise LocalActivityExecutionAborted(
                     "delivery was not proved by matching canonical history",
                 ) from delivery_error
-        raise LocalActivityExecutionAborted("workflow cancellation replay did not converge on its canonical delivery")
+        raise LocalActivityExecutionAborted("workflow exceeded the prepared local replay admission limit")
+
+    async def _refresh_prepared_local_history(
+        self, task: dict[str, Any], receipt: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        token = receipt.get("history_refresh_page_token")
+        if not isinstance(token, str) or not token.strip():
+            raise LocalActivityExecutionAborted("prepared operation lacks a Server-issued canonical history cursor")
+        return await self._load_workflow_claim_history(task, first_page_token=token)
+
+    async def _execute_prepared_local_activity(
+        self, task: dict[str, Any], history: list[dict[str, Any]], outcome: ReplayOutcome,
+    ) -> list[dict[str, Any]]:
+        call = outcome.prepared_local_activity
+        if call is None:
+            raise LocalActivityExecutionAborted("prepared replay did not identify its authored local call")
+        task_id = task["task_id"]
+        epoch = task.get("workflow_task_attempt", 1)
+        codec = _validate_payload_codec(task.get("payload_codec")) or serializer.AVRO_CODEC
+        try:
+            if outcome.commands:
+                commands = commands_to_server_commands(outcome.commands, self.task_queue, payload_codec=codec)
+                start = call.sequence - len(commands)
+                if start < 1 or any(command["type"] not in {
+                    "record_side_effect", "record_version_marker", "upsert_memo", "upsert_search_attributes",
+                } for command in commands):
+                    raise LocalActivityExecutionAborted("prepared prefix has no supported authored sequence range")
+                if any(command["type"] == "upsert_memo" for command in commands) and (
+                    not self._workflow_memo_updates_supported
+                ):
+                    raise LocalActivityExecutionAborted(
+                        "prepared memo prefix requires negotiated workflow memo updates",
+                    )
+                checkpoint = hashlib.sha256(json.dumps(
+                    [task_id, self.worker_id, epoch, start, commands], sort_keys=True, allow_nan=False,
+                ).encode()).hexdigest()
+                receipt = await self.client.prepared_local_activity_operation(
+                    task_id=task_id, lease_owner=self.worker_id, workflow_task_attempt=epoch, operation="checkpoint",
+                    body={"checkpoint_id": checkpoint, "start_sequence": start, "commands": commands},
+                )
+                if (receipt.get("checkpointed") is not True or type(receipt.get("duplicate")) is not bool
+                        or receipt.get("checkpoint_id") != checkpoint
+                        or receipt.get("task_id") != task_id or receipt.get("workflow_run_id") != task["run_id"]
+                        or type(receipt.get("workflow_task_attempt")) is not int
+                        or receipt["workflow_task_attempt"] != epoch or receipt.get("lease_owner") != self.worker_id
+                        or receipt.get("start_sequence") != start or receipt.get("next_sequence") != call.sequence
+                        or "reason" not in receipt
+                        or receipt["reason"] is not None):
+                    raise LocalActivityExecutionAborted("prepared prefix lacks an original-claim checkpoint receipt")
+                return await self._refresh_prepared_local_history(task, receipt)
+            descriptor = call.descriptor(codec)
+            if call.recover:
+                original = next((event.get("payload", {}) for event in reversed(history)
+                                 if event.get("event_type", event.get("type")) == "ActivityStarted"
+                                 and event.get("payload", {}).get("sequence", event.get("payload", {}).get(
+                                     "workflow_sequence")) == call.sequence), None)
+                receipt = await self.client.prepared_local_activity_operation(
+                    task_id=task_id, lease_owner=self.worker_id, workflow_task_attempt=epoch,
+                    operation="recover", body={"sequence": call.sequence, "descriptor": descriptor},
+                )
+                kind = receipt.get("event_type")
+                retry = bool(kind == "ActivityRetryScheduled")
+                created = receipt.get("created_task_ids")
+                if (receipt.get("recovered") is not True or type(receipt.get("duplicate")) is not bool
+                        or "reason" not in receipt or receipt["reason"] is not None
+                        or receipt.get("workflow_task_id") != task_id or original is None
+                        or not isinstance(receipt.get("activity_execution_id"), str)
+                        or not receipt["activity_execution_id"].strip()
+                        or not isinstance(receipt.get("activity_attempt_id"), str)
+                        or not receipt["activity_attempt_id"].strip()
+                        or receipt["activity_execution_id"] != original.get("activity_execution_id")
+                        or receipt["activity_attempt_id"] != original.get("activity_attempt_id")
+                        or receipt.get("callback_stop_state") != "unknown"
+                        or kind not in {"ActivityRetryScheduled", "ActivityFailed", "ActivityTimedOut"}
+                        or receipt.get("claim_released") is not retry
+                        or not isinstance(created, list) or len(created) != int(retry)
+                        or any(not isinstance(value, str) or not value.strip() for value in created)
+                        or not isinstance(receipt.get("event_id"), str) or not receipt["event_id"].strip()):
+                    raise LocalActivityExecutionAborted("prepared recovery lacks its canonical unknown-stop receipt")
+                if retry:
+                    raise _WorkflowClaimDeferred("durable prepared local retry released the original workflow claim")
+                refreshed = await self._refresh_prepared_local_history(task, receipt)
+                event = next((event for event in refreshed if event.get("id") == receipt["event_id"]), None)
+                payload = event.get("payload", {}) if event is not None else {}
+                recovery = payload.get("local_recovery", {})
+                if (event is None or event.get("event_type", event.get("type")) != kind
+                        or payload.get("sequence", payload.get("workflow_sequence")) != call.sequence
+                        or payload.get("activity_execution_id") != receipt["activity_execution_id"]
+                        or payload.get("activity_attempt_id") != receipt["activity_attempt_id"]
+                        or recovery.get("workflow_task_id") != task_id or recovery.get("workflow_task_attempt") != epoch
+                        or recovery.get("lease_owner") != self.worker_id
+                        or recovery.get("callback_stop_state") != "unknown"):
+                    raise LocalActivityExecutionAborted(
+                        "prepared recovery is absent from this claim's canonical history",
+                    )
+                return refreshed
+            nonce = hashlib.sha256(json.dumps(
+                [task_id, task["run_id"], self.worker_id, epoch, call.sequence],
+            ).encode()).hexdigest()
+            started = time.monotonic()
+            receipt = await self.client.prepared_local_activity_operation(
+                task_id=task_id, lease_owner=self.worker_id, workflow_task_attempt=epoch, operation="prepare",
+                body={"sequence": call.sequence, "worker_attempt_id": nonce, "descriptor": descriptor},
+            )
+            attempt = PreparedAttempt.admitted(
+                receipt, task_id=task_id, run_id=task["run_id"], owner=self.worker_id, epoch=epoch, nonce=nonce,
+                heartbeat_timeout=call.command.heartbeat_timeout, cleanup=call.cleanup, request_started=started,
+            )
+            handler = self.activities.get(call.command.activity_type)
+            if handler is None:
+                raise LocalActivityExecutionAborted("prepared local activity has no registered handler")
+            runner = PreparedLocalRunner(
+                self.client, attempt, shutdown=self._local_activity_shutdown,
+                observe=lambda value: task.update({"_prepared_cancellation_context": dict(value)}),
+            )
+            try:
+                receipt = await runner.execute(CallbackInvocation(
+                    handler, tuple(call.command.arguments), ActivityInfo(
+                        task_id, call.command.activity_type, attempt.attempt_id, attempt.attempt_number,
+                        self.task_queue, self.worker_id,
+                    ), {**task, "activity_attempt_id": attempt.attempt_id}, self.interceptors,
+                ), self._prepared_local_activity_processes)
+            finally:
+                if runner.callback is not None and runner.callback in self._prepared_local_activity_processes:
+                    self._abandoned_prepared_local_claims.add(task_id)
+            if receipt["claim_released"]:
+                raise _WorkflowClaimDeferred("durable prepared local retry released the original workflow claim")
+            refreshed = await self._refresh_prepared_local_history(task, receipt)
+            event = next((event for event in refreshed if event.get("id") == receipt["event_id"]), None)
+            payload = event.get("payload", {}) if event is not None else {}
+            if (event is None or event.get("event_type", event.get("type")) != receipt["event_type"]
+                    or payload.get("sequence", payload.get("workflow_sequence")) != call.sequence
+                    or payload.get("activity_execution_id") != attempt.execution_id
+                    or payload.get("activity_attempt_id") != attempt.attempt_id):
+                raise LocalActivityExecutionAborted("prepared outcome is absent from this claim's canonical history")
+            return refreshed
+        except (_WorkflowClaimDeferred, LocalActivityExecutionAborted):
+            raise
+        except ServerError as error:
+            if error.reason() == "cancellation_requested":
+                await self._renew_local_workflow_lease(task)
+            raise LocalActivityExecutionAborted("prepared operation has an unknown or refused outcome") from error
+        except Exception as error:
+            raise LocalActivityExecutionAborted(
+                "prepared operation could not validate its original authority",
+            ) from error
 
     def _maybe_externalize_local_payload(self, envelope: dict[str, str]) -> dict[str, Any]:
         storage = self.external_storage
@@ -1987,7 +2187,7 @@ class Worker:
                 cls, task, history, start_input, payload_codec=codec, execute_local=execute_local,
             )
         except _WorkflowClaimDeferred:
-            log.info("workflow task %s parked until child cleanup finishes", task_id)
+            log.info("workflow task %s released for durable successor work", task_id)
             return None
         except LocalActivityExecutionAborted as e:
             log.warning("abandoning workflow task %s before local activity commit: %s", task_id, e)
@@ -2956,7 +3156,10 @@ class Worker:
 
         # The callback owns the reservation so cancellation releases capacity
         # even when the dispatch coroutine is cancelled before it first runs.
-        dispatched.add_done_callback(lambda _: self._release_workflow_capacity())
+        dispatched.add_done_callback(lambda _: (
+            self._release_workflow_capacity()
+            if task_kind != "workflow" or task.get("task_id") not in self._abandoned_prepared_local_claims else None
+        ))
         return dispatched
 
     async def _poll_workflow_tasks(self) -> None:
@@ -3834,7 +4037,7 @@ class Worker:
                 log.warning("cancelled %d task(s) after shutdown timeout", len(pending))
                 await asyncio.sleep(0)
             still_running = {task for task in pending if not task.done()}
-            if still_running and self._remote_activity_processes:
+            if still_running and (self._remote_activity_processes or self._prepared_local_activity_processes):
                 # Application drain has ended. Allow bounded process reaping and
                 # stop-report transport without granting more callback work or
                 # extending the run's original cancellation deadline.
@@ -3852,9 +4055,10 @@ class Worker:
         if self._remote_activity_executor is not None:
             self._remote_activity_executor.shutdown(wait=False, cancel_futures=True)
 
-        if self._remote_activity_processes:
+        if self._remote_activity_processes or self._prepared_local_activity_processes:
+            kind = "remote" if self._remote_activity_processes else "prepared local"
             raise RuntimeError(
-                "worker shutdown has unconfirmed remote callback stop(s); "
+                f"worker shutdown has unconfirmed {kind} callback stop(s); "
                 "the worker registration remains active"
             )
 

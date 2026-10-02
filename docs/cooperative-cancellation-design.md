@@ -108,10 +108,43 @@ application entry point with `if __name__ == "__main__"`. Captured memory change
 are local to the callback process. Open process-local connections in the
 callback. Registration and remote polling refuse incompatible handler or
 interceptor definitions before claiming work, naming the worker and activity.
-Cooperative local callbacks still require their separate supervision and receipt
-model. Legacy worker protocol 1.19 continues using its existing execution.
+Prepared local callbacks use the same physical process ownership with separate
+durable admission and receipts. Legacy worker protocol 1.19 continues using its existing execution.
 Cooperating downstream systems still need idempotency or reconciliation for
 effects already performed.
+
+## Prepared sequential local callbacks
+
+The source candidate can explicitly request both `cooperative_cancellation` and
+`prepared_local_activities` in Worker capabilities. Registration requires source
+protocol 1.20 and actual Server discovery of its installed admission bridge.
+The manifest advertises `durable_sequential_admission`. Python refuses prepared
+local parallel and selection groups until its atomic group consumer exists.
+
+Replay captures the authored local call and sequence before application code
+runs. Earlier side effects, version markers and metadata commands obtain a
+retained-claim checkpoint, followed by canonical history refresh. The Server
+then creates the local execution and original attempt. The worker validates its
+workflow claim, epoch, owner, backend IDs, nonce, fixed deadlines and cleanup
+authority before spawning. Native owns retries, backoff and execution timeouts.
+
+Independent control renews ownership without creating application heartbeat
+history or advancing its timeout. Only a real callback heartbeat may do those
+things. Requests, retries, payload transfer and result encoding share the
+original conservative authority budget. A cancellation fence physically stops
+and joins callback and supervisor before the stop receipt. An unconfirmed stop
+retains workflow capacity and prevents successful worker deregistration.
+
+Canonical outcome history supplies the next replay value. A lost or malformed
+receipt abandons the claim. Cold replay skips completed callbacks and requests
+Native recovery of unfinished Started attempts. Recovery records unknown stop
+and may release the claim for a durable retry, without claiming that the
+replacement observed the original callback stop.
+
+Cleanup local calls require a shield after canonical delivery. Admission and
+control preserve its original local request ID, root ID, delivery history event
+ID and deadline. No replacement or duplicate request grants a fresh cleanup
+budget. Connected exact-source qualification remains separate from publication.
 
 ## Remaining qualification
 

@@ -238,7 +238,7 @@ jobs:
             sdk-python/integration-package-provenance.txt
             sdk-python/integration-images.json
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: ${{ inputs.cooperative_qualification && 90 || 7 }}
       - name: Emit integration diagnostics
         if: failure()
         working-directory: sdk-python
