@@ -9,7 +9,9 @@ import sys
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,7 +19,7 @@ import pytest
 from durable_workflow import Client, Worker, activity, workflow
 from durable_workflow.client import WorkflowHandle
 from durable_workflow.errors import ServerError, WorkflowCancelled
-from durable_workflow.worker import _poll_capacity_delay, _RemoteActivityExecutionAborted
+from durable_workflow.worker import _poll_capacity_delay
 from durable_workflow.workflow import LocalActivityExecutionAborted
 
 pytestmark = pytest.mark.usefixtures("cooperative_runtime")
@@ -135,137 +137,165 @@ class ObservedOwnerClient(Client):
         return reply
 
 
+@dataclass(frozen=True)
+class AsyncRemoteQualification:
+    marker: str
+    user_heartbeat: bool = False
+
+    async def __call__(self) -> None:
+        if self.user_heartbeat:
+            await activity.context().heartbeat({"qualification": "remote-in-flight"})
+        write_remote_marker(self.marker)
+        await asyncio.Event().wait()
+
+
+@dataclass(frozen=True)
+class SyncRemoteQualification:
+    marker: str
+    user_heartbeat: bool = False
+
+    def __call__(self) -> None:
+        if self.user_heartbeat:
+            asyncio.run(activity.context().heartbeat({"qualification": "remote-in-flight"}))
+        write_remote_marker(self.marker)
+        while True:
+            time.sleep(1)
+
+
+def write_remote_marker(marker: str) -> None:
+    info = activity.context().info
+    pending = Path(marker + ".writing")
+    pending.write_text(json.dumps({
+        "task_id": info.task_id, "activity_attempt_id": info.activity_attempt_id,
+        "lease_owner": info.worker_id, "callback_pid": os.getpid(),
+    }))
+    pending.replace(marker)
+
+
+async def remote_marker(marker: Path) -> dict[str, Any]:
+    async def ready() -> dict[str, Any]:
+        while not marker.exists():
+            await asyncio.sleep(0.05)
+        return json.loads(marker.read_text())
+    return await asyncio.wait_for(ready(), timeout=20)
+
+
+async def callback_gone(pid: int) -> None:
+    async def gone() -> None:
+        while True:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            await asyncio.sleep(0.05)
+    await asyncio.wait_for(gone(), timeout=10)
+
+
+async def observed_stop_receipt(client: Client, fence: dict[str, str]) -> dict[str, Any]:
+    async def receipt() -> dict[str, Any]:
+        while True:
+            reply = await client.activity_task_status(**fence)
+            proof = reply.get("cancellation_acknowledgement")
+            if isinstance(proof, dict) and proof.get("callback_state") == "stopped":
+                assert reply["heartbeat_recorded"] is False
+                assert reply["can_continue"] is False
+                return proof
+            await asyncio.sleep(0.1)
+    return await asyncio.wait_for(receipt(), timeout=15)
+
+
 @pytest.mark.parametrize("handler_kind", ["async", "sync"])
 @pytest.mark.parametrize("user_heartbeat", [False, True])
-async def test_actual_remote_worker_fences_blocked_callbacks_without_manufacturing_progress(
-    server_url: str, server_token: str, handler_kind: str, user_heartbeat: bool,
+async def test_actual_remote_worker_stops_callbacks_and_reports_original_cancellation(
+    server_url: str, server_token: str, handler_kind: str, user_heartbeat: bool, tmp_path: Path,
 ) -> None:
     queue = f"py-cooperative-owner-{uuid.uuid4().hex[:8]}"
-    entered, late_fenced = asyncio.Event(), asyncio.Event()
-    release_thread = threading.Event()
-    loop = asyncio.get_running_loop()
-    fences: list[dict[str, str]] = []
-
-    def record_fence() -> None:
-        info = activity.context().info
-        fences.append({"task_id": info.task_id, "activity_attempt_id": info.activity_attempt_id,
-                       "lease_owner": info.worker_id})
-
-    async def asynchronous() -> object:
-        record_fence()
-        entered.set()
-        try:
-            while True:
-                await asyncio.sleep(0.1)
-                if user_heartbeat:
-                    await activity.context().heartbeat({"qualification": "remote-in-flight"})
-        except (asyncio.CancelledError, _RemoteActivityExecutionAborted):
-            with pytest.raises(_RemoteActivityExecutionAborted):
-                await activity.context().heartbeat({"late": True})
-            late_fenced.set()
-            return object()
-
-    def synchronous() -> object:
-        record_fence()
-        loop.call_soon_threadsafe(entered.set)
-        try:
-            while not release_thread.wait(timeout=0.1):
-                if user_heartbeat:
-                    asyncio.run(activity.context().heartbeat({"qualification": "remote-in-flight"}))
-        except _RemoteActivityExecutionAborted:
-            pass
-        with pytest.raises(_RemoteActivityExecutionAborted):
-            asyncio.run(activity.context().heartbeat({"late": True}))
-        loop.call_soon_threadsafe(late_fenced.set)
-        return object()
-
+    marker = tmp_path / "remote"
     async with ObservedOwnerClient(server_url, token=server_token, namespace="default") as client:
         worker = candidate_worker(client, queue, max_concurrent_activity_tasks=1)
-        worker.activities["tests.python-cooperative-work"] = asynchronous if handler_kind == "async" else synchronous
+        worker.activities["tests.python-cooperative-work"] = (
+            AsyncRemoteQualification(str(marker), user_heartbeat) if handler_kind == "async"
+            else SyncRemoteQualification(str(marker), user_heartbeat)
+        )
         running = asyncio.create_task(worker.run())
         try:
             handle = await client.start_workflow(
                 workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["remote"],
             )
-            await asyncio.wait_for(entered.wait(), timeout=15)
+            entered = await remote_marker(marker)
             await asyncio.wait_for(client.owner_heartbeat.wait(), timeout=15)
-            assert not late_fenced.is_set()
+            fence = {key: entered[key] for key in ("task_id", "activity_attempt_id", "lease_owner")}
             accepted = await handle.request_cancellation(cleanup_timeout_seconds=60)
-            history = await assert_cancelled_cleanup(handle, accepted["cancellation_request"]["request_id"])
-            release_thread.set()
-            await asyncio.wait_for(late_fenced.wait(), timeout=5)
+            original = accepted["cancellation_request"]
+            await assert_cancelled_cleanup(handle, original["request_id"])
+            await callback_gone(entered["callback_pid"])
+            if os.environ.get("DURABLE_WORKFLOW_NATIVE_SOURCE_QUALIFICATION") == "1":
+                proof = await observed_stop_receipt(client, fence)
+                assert proof["request_id"] == original["request_id"]
+                assert proof["root_request_id"] == original["request_id"]
+                assert proof["cleanup_deadline_at"] == original["cleanup_deadline_at"]
+                assert proof["received_after_deadline"] is False
+                duplicate = await client.acknowledge_activity_cancellation(**fence, request_id=original["request_id"])
+                assert duplicate["duplicate"] is True
+                assert duplicate["history_event_id"] == proof["history_event_id"]
+                print(f"Remote callback stop receipt: {json.dumps([entered, original, proof, duplicate])}")
+            history = await events(handle)
+            if os.environ.get("DURABLE_WORKFLOW_NATIVE_SOURCE_QUALIFICATION") == "1":
+                receipt = [event for event in history if event["event_type"] == "ActivityCancellationAcknowledged"]
+                assert len(receipt) == 1
+                assert receipt[0]["id"] == proof["history_event_id"]
+                assert receipt[0]["payload"]["evidence_source"] == "activity_worker"
             delivery = [event for event in history if event["event_type"] == "CooperativeCancellationDelivered"][0]
             assert delivery["payload"]["call_kind"] == "activity"
             assert len([event for event in history if event["event_type"] == "ActivityCancelled"]) == 1
             progress = [event for event in history if event["event_type"] == "ActivityHeartbeatRecorded"
                         and event["payload"].get("activity_type") == "tests.python-cooperative-work"]
             assert bool(progress) is user_heartbeat
-            assert len(fences) == 1
             with pytest.raises(ServerError) as completion:
-                await client.complete_activity_task(**fences[0], result="late")
+                await client.complete_activity_task(**fence, result="late")
             assert completion.value.status == 409
             with pytest.raises(ServerError) as failure:
-                await client.fail_activity_task(**fences[0], message="late", failure_type="LateQualification")
+                await client.fail_activity_task(**fence, message="late", failure_type="LateQualification")
             assert failure.value.status == 409
             assert await events(handle) == history
+            print(f"Remote stopped cancellation history: {json.dumps(history)}")
         finally:
-            release_thread.set()
             await worker.stop()
-            await asyncio.wait_for(running, timeout=5)
+            await asyncio.wait_for(running, timeout=10)
 
 
 @pytest.mark.parametrize("handler_kind", ["async", "sync"])
-async def test_actual_remote_shutdown_expiry_fences_callback_before_replacement_cleanup(
-    server_url: str, server_token: str, handler_kind: str,
+async def test_actual_remote_shutdown_joins_callback_before_replacement_cleanup(
+    server_url: str, server_token: str, handler_kind: str, tmp_path: Path,
 ) -> None:
     queue = f"py-cooperative-owner-stop-{uuid.uuid4().hex[:8]}"
-    entered, late_fenced = asyncio.Event(), asyncio.Event()
-    release = threading.Event()
-    loop = asyncio.get_running_loop()
-
-    async def asynchronous() -> object:
-        entered.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            with pytest.raises(_RemoteActivityExecutionAborted):
-                await activity.context().heartbeat({"late": True})
-            late_fenced.set()
-            return object()
-
-    def synchronous() -> object:
-        loop.call_soon_threadsafe(entered.set)
-        assert release.wait(timeout=20)
-        with pytest.raises(_RemoteActivityExecutionAborted):
-            asyncio.run(activity.context().heartbeat({"late": True}))
-        loop.call_soon_threadsafe(late_fenced.set)
-        return object()
-
+    marker = tmp_path / "remote"
     async with Client(server_url, token=server_token, namespace="default") as client:
         worker = candidate_worker(client, queue, shutdown_timeout=0.1)
-        worker.activities["tests.python-cooperative-work"] = asynchronous if handler_kind == "async" else synchronous
+        worker.activities["tests.python-cooperative-work"] = (
+            AsyncRemoteQualification(str(marker)) if handler_kind == "async" else SyncRemoteQualification(str(marker))
+        )
         running = asyncio.create_task(worker.run())
         replacement = candidate_worker(client, queue, worker_id=f"{queue}-replacement")
         try:
             handle = await client.start_workflow(
                 workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["remote"],
             )
-            await asyncio.wait_for(entered.wait(), timeout=15)
+            entered = await remote_marker(marker)
             before = await events(handle)
-            await asyncio.wait_for(worker.stop(), timeout=5)
-            await asyncio.wait_for(running, timeout=5)
-            release.set()
-            await asyncio.wait_for(late_fenced.wait(), timeout=5)
+            await asyncio.wait_for(worker.stop(), timeout=10)
+            await asyncio.wait_for(running, timeout=10)
+            await callback_gone(entered["callback_pid"])
             assert await events(handle) == before
             accepted = await handle.request_cancellation(cleanup_timeout_seconds=60)
             await replacement._register()
             assert await replacement._run_workflow_task(await poll_claim(client, replacement)) is not None
             await assert_cancelled_cleanup(handle, accepted["cancellation_request"]["request_id"])
+            print(f"Stopped remote callback before replacement: {json.dumps(entered)}")
         finally:
-            release.set()
             await replacement.stop()
             await worker.stop()
-            await asyncio.wait_for(running, timeout=5)
+            await asyncio.wait_for(running, timeout=10)
 
 
 async def test_waiting_timer_is_cancelled_by_canonical_delivery(
@@ -308,8 +338,10 @@ async def test_leased_remote_activity_cannot_complete_after_delivery(
 
     async with Client(server_url, token=server_token, namespace="default") as client:
         worker = candidate_worker(client, queue)
-        worker.activities["tests.python-cooperative-cleanup"] = cleanup
         await worker._register()
+        # This fixture invokes only local cleanup and claims remote work by API.
+        # Its in-process closure does not qualify callback process supervision.
+        worker.activities["tests.python-cooperative-cleanup"] = cleanup
         try:
             handle = await client.start_workflow(
                 workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["remote"],
@@ -411,11 +443,13 @@ async def test_active_local_work_observes_request_and_discards_late_result(
 
     async with Client(server_url, token=server_token, namespace="default") as client:
         worker = candidate_worker(client, queue)
+        await worker._register()
+        # Exercise the existing local replay fence without polling remote work.
+        # Physical local callback supervision remains a separate qualification.
         worker.activities["tests.python-cooperative-work"] = (
             blocked_work if handler_kind == "async" else synchronous_work
         )
         worker.activities["tests.python-cooperative-cleanup"] = cleanup
-        await worker._register()
         try:
             handle = await client.start_workflow(
                 workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["local"],
@@ -458,8 +492,9 @@ async def test_shutdown_during_shielded_cleanup_reuses_canonical_delivery(
 
     async with Client(server_url, token=server_token, namespace="default") as client:
         worker = candidate_worker(client, queue, shutdown_timeout=5 if shutdown_kind == "drain" else 0.1)
-        worker.activities["tests.python-cooperative-cleanup"] = cleanup
         await worker._register()
+        # Local-only replay fixture. It does not poll remote activity callbacks.
+        worker.activities["tests.python-cooperative-cleanup"] = cleanup
         try:
             handle = await client.start_workflow(
                 workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["timer"],
@@ -544,6 +579,7 @@ async def test_sigkill_activity_owner_reclaims_attempt_before_cooperative_cleanu
             print(f"SIGKILL original activity: {json.dumps([original, leased])}")
             owner.kill()
             assert await asyncio.wait_for(owner.wait(), timeout=10) == -9
+            await callback_gone(original["callback_pid"])
 
             successor = await native_process(queue, f"{queue}-successor", "remote")
             processes.append(successor)
@@ -579,6 +615,7 @@ async def test_sigkill_activity_owner_reclaims_attempt_before_cooperative_cleanu
 
             accepted = await handle.request_cancellation(cleanup_timeout_seconds=60)
             history = await assert_cancelled_cleanup(handle, accepted["cancellation_request"]["request_id"])
+            await callback_gone(reclaimed["callback_pid"])
             assert len([event for event in history if event["event_type"] == "ActivityCancelled"]) == 1
             print(f"SIGKILL reclaimed cancellation history: {json.dumps(history)}")
         finally:
@@ -606,6 +643,7 @@ async def test_killed_remote_owner_cannot_publish_after_cold_workflow_delivery(
             before = await events(handle)
             owner.kill()
             assert await asyncio.wait_for(owner.wait(), timeout=10) == -9
+            await callback_gone(claimed["callback_pid"])
             assert await events(handle) == before
             accepted = await handle.request_cancellation(cleanup_timeout_seconds=60)
             replacement = await native_process(queue, f"{queue}-replacement", "finish")
@@ -691,8 +729,9 @@ async def test_cleanup_deadline_and_termination_fence_in_flight_local_result(
 
     async with Client(server_url, token=server_token, namespace="default") as client:
         worker = candidate_worker(client, queue)
-        worker.activities["tests.python-cooperative-cleanup"] = cleanup
         await worker._register()
+        # Local-only replay fixture. It does not poll remote activity callbacks.
+        worker.activities["tests.python-cooperative-cleanup"] = cleanup
         try:
             handle = await client.start_workflow(
                 workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["timer"],
