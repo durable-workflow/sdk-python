@@ -81,9 +81,25 @@ record an application heartbeat or extend the cleanup deadline.
 
 The caller must first prove the callback stopped and was joined. The current
 Python worker fences abandoned callback threads but cannot forcibly stop them.
-It therefore does not send this receipt. Independent process supervision is
-the next implementation step. Cooperating downstream systems still need
-idempotency or reconciliation for effects already performed.
+It therefore does not send this receipt. The internal process supervisor is
+implemented for the next worker integration step. Each attempt gets an explicit
+spawn context, an independent supervisor, a callback process and private payload
+files. Single-byte control channels keep owner disconnect independent of a
+payload transfer or callback progress. The supervisor joins the callback before
+reporting stop. The owner then joins the supervisor. A failed supervisor alone
+does not prove a live callback stopped.
+
+The primitive's process tests cover a C call holding the callback interpreter's
+GIL, ignored TERM followed by forced stop, actual owner SIGKILL, typed results,
+application failure metadata, interceptors and authored heartbeats. It is not
+connected to worker claims or Server receipts yet. Those tests remain required
+before worker adoption. Handlers, arguments and interceptors must be compatible
+with Python's spawn serialization. Define importable handlers and protect the
+application entry point with `if __name__ == "__main__"`. Captured memory changes
+are local to the callback process. Open process-local connections in the
+callback. Legacy worker protocol 1.19 continues using its existing execution.
+Cooperating downstream systems still need idempotency or reconciliation for
+effects already performed.
 
 ## Remaining qualification
 
