@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from durable_workflow import Client, Worker, activity, workflow
+from durable_workflow import CancellationPolicy, Client, Worker, activity, serializer, workflow
 from durable_workflow.client import WorkflowHandle
 from durable_workflow.errors import ServerError, WorkflowCancelled
 from durable_workflow.worker import _poll_capacity_delay
@@ -38,12 +38,15 @@ async def cooperative_runtime(server_url: str, server_token: str, monkeypatch: p
 
 @workflow.defn(name="tests.python-cooperative-cleanup")
 class CooperativeCleanupWorkflow:
-    def run(self, ctx: Any, kind: str) -> Any:
+    def run(self, ctx: Any, kind: str, cancellation_policy: str | None = None) -> Any:
         try:
             if kind == "local":
                 yield ctx.local_activity("tests.python-cooperative-work", [])
             elif kind == "remote":
-                yield ctx.schedule_activity("tests.python-cooperative-work", [])
+                yield ctx.schedule_activity(
+                    "tests.python-cooperative-work", [], cancellation_policy=cancellation_policy,
+                    schedule_to_close_timeout=60 if cancellation_policy is not None else None,
+                )
             else:
                 yield ctx.start_timer(300)
         except WorkflowCancelled as error:
@@ -141,12 +144,17 @@ class ObservedOwnerClient(Client):
 class AsyncRemoteQualification:
     marker: str
     user_heartbeat: bool = False
+    duration_seconds: int | None = None
 
-    async def __call__(self) -> None:
+    async def __call__(self) -> str | None:
         if self.user_heartbeat:
             await activity.context().heartbeat({"qualification": "remote-in-flight"})
         write_remote_marker(self.marker)
+        if self.duration_seconds is not None:
+            await asyncio.sleep(self.duration_seconds)
+            return "independent-completion"
         await asyncio.Event().wait()
+        return None
 
 
 @dataclass(frozen=True)
@@ -205,9 +213,13 @@ async def observed_stop_receipt(client: Client, fence: dict[str, str]) -> dict[s
 
 
 @pytest.mark.parametrize("handler_kind", ["async", "sync"])
-@pytest.mark.parametrize("user_heartbeat", [False, True])
+@pytest.mark.parametrize("user_heartbeat,policy", [
+    (False, None), (True, None), (False, CancellationPolicy.TRY_CANCEL),
+    (False, CancellationPolicy.WAIT_CANCELLATION_COMPLETED),
+])
 async def test_actual_remote_worker_stops_callbacks_and_reports_original_cancellation(
-    server_url: str, server_token: str, handler_kind: str, user_heartbeat: bool, tmp_path: Path,
+    server_url: str, server_token: str, handler_kind: str, user_heartbeat: bool, policy: CancellationPolicy | None,
+    tmp_path: Path,
 ) -> None:
     queue = f"py-cooperative-owner-{uuid.uuid4().hex[:8]}"
     marker = tmp_path / "remote"
@@ -220,7 +232,8 @@ async def test_actual_remote_worker_stops_callbacks_and_reports_original_cancell
         running = asyncio.create_task(worker.run())
         try:
             handle = await client.start_workflow(
-                workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["remote"],
+                workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue,
+                input=["remote", policy.value if policy is not None else None],
             )
             entered = await remote_marker(marker)
             await asyncio.wait_for(client.owner_heartbeat.wait(), timeout=15)
@@ -253,6 +266,12 @@ async def test_actual_remote_worker_stops_callbacks_and_reports_original_cancell
                     assert payload[key] == proof[key]
             delivery = [event for event in history if event["event_type"] == "CooperativeCancellationDelivered"][0]
             assert delivery["payload"]["call_kind"] == "activity"
+            if policy is not None:
+                scheduled = [event for event in history if event["event_type"] == "ActivityScheduled"][0]
+                assert scheduled["payload"]["activity"]["cancellation_policy"] == policy.value
+            if policy == CancellationPolicy.WAIT_CANCELLATION_COMPLETED:
+                kinds = [event["event_type"] for event in history]
+                assert kinds.index("ActivityCancellationAcknowledged") < kinds.index("CooperativeCancellationDelivered")
             assert len([event for event in history if event["event_type"] == "ActivityCancelled"]) == 1
             progress = [event for event in history if event["event_type"] == "ActivityHeartbeatRecorded"
                         and event["payload"].get("activity_type") == "tests.python-cooperative-work"]
@@ -265,6 +284,67 @@ async def test_actual_remote_worker_stops_callbacks_and_reports_original_cancell
             assert failure.value.status == 409
             assert await events(handle) == history
             print(f"Remote stopped cancellation history: {json.dumps(history)}")
+        finally:
+            await worker.stop()
+            await asyncio.wait_for(running, timeout=10)
+
+
+async def test_bounded_remote_abandon_completes_after_parent_cancellation(
+    server_url: str, server_token: str, tmp_path: Path,
+) -> None:
+    queue = f"py-cooperative-abandon-{uuid.uuid4().hex[:8]}"
+    marker = tmp_path / "remote"
+    async with ObservedOwnerClient(server_url, token=server_token, namespace="default") as client:
+        worker = candidate_worker(client, queue, max_concurrent_activity_tasks=1)
+        worker.activities["tests.python-cooperative-work"] = AsyncRemoteQualification(str(marker), duration_seconds=25)
+        running = asyncio.create_task(worker.run())
+        try:
+            handle = await client.start_workflow(
+                workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue,
+                input=["remote", CancellationPolicy.ABANDON.value],
+            )
+            entered = await remote_marker(marker)
+            await asyncio.wait_for(client.owner_heartbeat.wait(), timeout=15)
+            fence = {key: entered[key] for key in ("task_id", "activity_attempt_id", "lease_owner")}
+            accepted = await handle.request_cancellation(cleanup_timeout_seconds=30)
+            duplicate = await handle.request_cancellation(cleanup_timeout_seconds=300)
+            assert duplicate["duplicate"] is True
+            assert duplicate["cancellation_request"] == accepted["cancellation_request"]
+            history = await assert_cancelled_cleanup(handle, accepted["cancellation_request"]["request_id"])
+            os.kill(entered["callback_pid"], 0)
+            kinds = [event["event_type"] for event in history]
+            assert "ActivityCancelled" not in kinds
+            assert "ActivityCancellationAcknowledged" not in kinds
+            scheduled = [event for event in history if event["event_type"] == "ActivityScheduled"][0]
+            assert scheduled["payload"]["activity"]["cancellation_policy"] == "abandon"
+            total_deadline = scheduled["payload"]["activity"]["schedule_to_close_deadline_at"]
+            assert isinstance(total_deadline, str)
+            status = await client.activity_task_status(**fence)
+            assert status["can_continue"] is True
+            until = time.monotonic() + 35
+            while True:
+                history = await events(handle)
+                completed = [event for event in history if event["event_type"] == "ActivityCompleted"
+                             and event["payload"].get("activity_type") == "tests.python-cooperative-work"]
+                if completed or time.monotonic() >= until:
+                    break
+                await asyncio.sleep(0.1)
+            assert len(completed) == 1
+            assert serializer.decode_envelope(completed[0]["payload"]["result"]) == "independent-completion"
+            assert completed[0]["payload"]["activity"]["schedule_to_close_deadline_at"] == total_deadline
+            assert completed[0]["payload"]["activity_attempt_id"] == fence["activity_attempt_id"]
+            kinds = [event["event_type"] for event in history]
+            assert kinds.count("WorkflowCancelled") == 1
+            assert "WorkflowCompleted" not in kinds
+            assert "ActivityCancellationAcknowledged" not in kinds
+            with pytest.raises(ServerError) as completion:
+                await client.complete_activity_task(**fence, result="stale")
+            assert completion.value.status == 409
+            with pytest.raises(ServerError) as failure:
+                await client.fail_activity_task(**fence, message="stale", failure_type="LateQualification")
+            assert failure.value.status == 409
+            assert await events(handle) == history
+            print(f"Bounded remote Abandon: {json.dumps([entered, accepted, completed])}")
         finally:
             await worker.stop()
             await asyncio.wait_for(running, timeout=10)

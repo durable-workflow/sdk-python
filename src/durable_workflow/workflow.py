@@ -34,7 +34,13 @@ from typing import Any, TypeVar, cast
 
 from . import serializer
 from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
-from .cancellation import CancellationContext, CancellationPolicy, ParentClosePolicy, _canonical_child_policies
+from .cancellation import (
+    CancellationContext,
+    CancellationPolicy,
+    ParentClosePolicy,
+    _canonical_activity_policy,
+    _canonical_child_policies,
+)
 from .client import WorkflowStreamAppendItem
 from .errors import (
     ActivityFailed,
@@ -471,12 +477,25 @@ class ScheduleActivity:
     schedule_to_close_timeout: int | None = None
     heartbeat_timeout: int | None = None
     worker_session: WorkerSessionOptions | None = None
+    cancellation_policy: str | CancellationPolicy | None = None
     _parallel_group_path: list[dict[str, Any]] | None = field(
         default=None,
         init=False,
         repr=False,
         compare=False,
     )
+
+    def __post_init__(self) -> None:
+        self._validate_cancellation_policy()
+
+    def _validate_cancellation_policy(self) -> None:
+        self.cancellation_policy = _canonical_activity_policy(self.cancellation_policy)
+        if self.cancellation_policy == CancellationPolicy.ABANDON.value and (
+            not isinstance(self.schedule_to_close_timeout, int)
+            or isinstance(self.schedule_to_close_timeout, bool)
+            or self.schedule_to_close_timeout < 1
+        ):
+            raise ValueError("remote activity Abandon requires a finite positive schedule_to_close_timeout")
 
     def to_server_command(
         self,
@@ -488,6 +507,7 @@ class ScheduleActivity:
         external_storage: ExternalStorageDriver | None = None,
         external_storage_threshold_bytes: int | None = None,
     ) -> dict[str, Any]:
+        self._validate_cancellation_policy()
         self._validate_timeouts()
 
         command: dict[str, Any] = {
@@ -524,6 +544,8 @@ class ScheduleActivity:
             command["heartbeat_timeout"] = self.heartbeat_timeout
         if self.worker_session is not None:
             command["worker_session"] = self.worker_session.to_wire()
+        if self.cancellation_policy is not None:
+            command["cancellation_policy"] = _canonical_activity_policy(self.cancellation_policy)
         return command
 
     def _validate_timeouts(self) -> None:
@@ -1438,6 +1460,7 @@ def commands_to_server_commands(
 
     for command in commands:
         if isinstance(command, ScheduleActivity):
+            command._validate_cancellation_policy()
             queue = command.queue or task_queue
             server_command: dict[str, Any] = {
                 "type": "schedule_activity",
@@ -1471,6 +1494,8 @@ def commands_to_server_commands(
                 server_command["heartbeat_timeout"] = command.heartbeat_timeout
             if command.worker_session is not None:
                 server_command["worker_session"] = command.worker_session.to_wire()
+            if command.cancellation_policy is not None:
+                server_command["cancellation_policy"] = _canonical_activity_policy(command.cancellation_policy)
             server_commands.append(server_command)
             continue
 
@@ -1930,6 +1955,7 @@ class WorkflowContext:
         schedule_to_close_timeout: int | None = None,
         heartbeat_timeout: int | None = None,
         worker_session: WorkerSessionOptions | None = None,
+        cancellation_policy: str | CancellationPolicy | None = None,
     ) -> ScheduleActivity:
         return ScheduleActivity(
             activity_type=activity_type,
@@ -1941,6 +1967,7 @@ class WorkflowContext:
             schedule_to_close_timeout=schedule_to_close_timeout,
             heartbeat_timeout=heartbeat_timeout,
             worker_session=worker_session,
+            cancellation_policy=cancellation_policy,
         )
 
     def local_activity(
@@ -3545,6 +3572,13 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
                 f"Recorded activity_type {recorded!r}, but current workflow "
                 f"scheduled {command.activity_type!r}."
             )
+        actual_policy = _canonical_activity_policy(command.cancellation_policy) or "try_cancel"
+        recorded_policy = step.details.get("cancellation_policy", "try_cancel")
+        if recorded_policy != actual_policy:
+            return (
+                f"activity_cancellation_policy_changed: recorded {recorded_policy!r}, "
+                f"but current workflow requested {actual_policy!r}."
+            )
     elif isinstance(command, RecordLocalActivity):
         if step.details.get("execution_mode") != "local":
             return "Recorded remote activity cannot replay as a local activity."
@@ -3756,6 +3790,7 @@ def _replay_state(
     event_types_by_sequence: dict[int, list[str]] = {}
     details_by_sequence: dict[int, dict[str, Any]] = {}
     child_policies_by_sequence: dict[int, dict[str, str]] = {}
+    activity_policies_by_sequence: dict[int, str] = {}
     resolved_sequences: set[int] = set()
     condition_wait_ids_by_sequence: dict[int, str] = {}
     selected_condition_wait_ids_by_sequence: dict[int, str] = {}
@@ -3777,6 +3812,29 @@ def _replay_state(
             # envelopes into the public non-determinism diagnostic.
             recorded_details = {}
         details_by_sequence.setdefault(sequence, {}).update(recorded_details)
+        if event_type in (
+            "ActivityScheduled", "ActivityStarted", "ActivityCompleted",
+            "ActivityFailed", "ActivityTimedOut", "ActivityCancelled",
+        ):
+            policy = activity_policies_by_sequence.get(sequence)
+            snapshot = payload.get("activity")
+            for source in (payload, snapshot if isinstance(snapshot, Mapping) else {}):
+                if "cancellation_policy" not in source:
+                    continue
+                incoming = source["cancellation_policy"]
+                if not isinstance(incoming, str) or incoming not in tuple(item.value for item in CancellationPolicy):
+                    raise NonDeterministicReplayError(
+                        sequence, "activity", [event_type],
+                        detail="invalid_activity_cancellation_policy_history: expected a supported policy.",
+                    )
+                if policy is not None and policy != incoming:
+                    raise NonDeterministicReplayError(
+                        sequence, "activity", [event_type],
+                        detail="activity_cancellation_policy_history_conflict: policy changed between events.",
+                    )
+                policy = incoming
+            activity_policies_by_sequence[sequence] = policy or "try_cancel"
+            details_by_sequence[sequence]["cancellation_policy"] = activity_policies_by_sequence[sequence]
         if event_type in (
             "ChildWorkflowScheduled", "ChildRunStarted", "ChildRunCompleted",
             "ChildRunFailed", "ChildRunCancelled", "ChildRunTerminated",
@@ -3994,6 +4052,8 @@ def _replay_state(
         details.update(_recorded_step_details(payload))
         if shape == "child workflow":
             details.update(child_policies_by_sequence.get(workflow_sequence, {}))
+        if shape == "activity":
+            details["cancellation_policy"] = activity_policies_by_sequence.get(workflow_sequence, "try_cancel")
         return _RecordedStep(
             workflow_sequence=workflow_sequence,
             shape=shape,

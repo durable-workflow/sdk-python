@@ -98,6 +98,7 @@ from .workflow import (
     RecordLocalActivity,
     RecordSideEffect,
     ReplayOutcome,
+    ScheduleActivity,
     StartChildWorkflow,
     UpsertMemo,
     apply_update,
@@ -2468,6 +2469,23 @@ class Worker:
                 )
             except Exception as failure_error:
                 log.warning("failed to report workflow memo capability failure: %s", failure_error)
+            return None
+
+        if not self._cooperative_cancellation_supported and any(
+            isinstance(command, ScheduleActivity) and command.cancellation_policy is not None
+            for command in workflow_commands
+        ):
+            message = (
+                f"activity_cancellation_policy_not_supported: Python worker {self.worker_id} requires "
+                "cooperative_cancellation capability, worker protocol 1.20 and a compatible Server/Native backend"
+            )
+            try:
+                await self.client.fail_workflow_task(
+                    task_id=task_id, lease_owner=self.worker_id, workflow_task_attempt=attempt,
+                    message=message, failure_type="RuntimeCapabilityUnsupported",
+                )
+            except Exception as failure_error:
+                log.warning("failed to report activity cancellation policy capability failure: %s", failure_error)
             return None
 
         if not self._cooperative_cancellation_supported and any(

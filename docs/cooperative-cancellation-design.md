@@ -70,6 +70,44 @@ conflicting history fail replay. A worker without the negotiated cooperation
 capability refuses these choices before completion, reporting its identity and
 the required protocol. Server also checks the immutable task claim and backend.
 
+## Remote Activity policies
+
+`ctx.schedule_activity()` accepts `cancellation_policy` as a `CancellationPolicy`
+enum or its portable string value. Both command encoders preserve it. Omission
+keeps the historical `TRY_CANCEL` behavior and wire shape.
+
+```python
+yield ctx.schedule_activity(
+    "rust.remote-work", [],
+    cancellation_policy=CancellationPolicy.WAIT_CANCELLATION_COMPLETED,
+)
+```
+
+`TRY_CANCEL` requests cancellation and continues without waiting for the stop
+receipt. `WAIT_CANCELLATION_COMPLETED` delays workflow delivery until the
+original remote attempt's physical stop acknowledgment is recorded. `ABANDON`
+leaves the Activity independent after parent cancellation. It requires a finite
+positive integer `schedule_to_close_timeout`, whose original deadline bounds
+the independent work. It does not extend the parent's cleanup budget.
+
+Every explicit remote policy requires negotiated cooperation, protocol 1.20
+and a compatible installed backend. Missing worker capability is diagnosed
+before submission. Server also checks the original immutable claim. Local
+Activity policy authoring remains unavailable while its lifetime and admission
+contract are unfinished.
+
+Replay compares authored policy with original canonical history for ordinary,
+parallel and selection calls and cancellation delivery. Later events that omit
+the policy retain the original value. Unknown, conflicting and changed policies
+fail replay explicitly. Historical histories without a policy retain Try.
+
+The connected Source tests include explicit Try and Wait with both async and
+sync callbacks and no application heartbeats. Wait checks physical stop receipt
+ordering before workflow delivery. Bounded Abandon checks that a callback
+survives parent closure, completes under its original total lifetime and cannot
+publish a second outcome or reopen the cancelled parent. The exact published
+mixed-language gate remains required.
+
 ## Remote callback-stop transport
 
 `Client.acknowledge_activity_cancellation()` reports the original task, activity

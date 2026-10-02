@@ -12,7 +12,7 @@ from typing import Any
 
 
 class CancellationPolicy(str, Enum):
-    """Cancellation at an awaiting child call. Abandon preserves the legacy default."""
+    """Cancellation at an awaiting operation. Activities default to Try, children to Abandon."""
 
     TRY_CANCEL = "try_cancel"
     WAIT_CANCELLATION_COMPLETED = "wait_cancellation_completed"
@@ -46,6 +46,19 @@ def _canonical_child_policies(options: Mapping[str, Any]) -> dict[str, str]:
         except ValueError as error:
             raise ValueError(f"child workflow {field} must be a supported policy") from error
     return policies
+
+
+def _canonical_activity_policy(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, Enum) and not isinstance(value, CancellationPolicy):
+        raise ValueError("remote activity cancellation_policy must be a supported policy")
+    if not isinstance(value, str):
+        raise ValueError("remote activity cancellation_policy must be a supported policy")
+    try:
+        return CancellationPolicy(value).value
+    except ValueError as error:
+        raise ValueError("remote activity cancellation_policy must be a supported policy") from error
 
 
 def _text(snapshot: Mapping[str, Any], key: str) -> str:
