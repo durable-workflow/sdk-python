@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -42,6 +44,14 @@ def pending_delivery_response(**overrides: Any) -> dict[str, Any]:
         "reason": "cancellation_waiting_for_child", "claim_released": True,
         "request_id": None, "sequence": None, "call_kind": None, "sequence_span": None,
         "operation_sequence": None, "operation_sequence_span": None, **overrides,
+    }
+
+
+def activity_stop_response(**overrides: Any) -> dict[str, Any]:
+    return {
+        "task_id": "task/1", "activity_attempt_id": "attempt-1", "lease_owner": "worker-1",
+        "request_id": "original-request", "acknowledged": True, "duplicate": False,
+        "reason": None, "heartbeat_recorded": False, "history_event_id": "original-event", **overrides,
     }
 
 
@@ -320,6 +330,147 @@ async def test_active_claim_refusal_does_not_fall_back_to_immediate_cancel(clien
     assert error.value.reason() == reason
     assert send.await_count == 1
     assert send.call_args.args[1].endswith("/request-cancellation")
+
+
+@pytest.mark.asyncio
+async def test_activity_stop_receipt_uses_original_identity_and_worker_credential(
+    client: Client, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
+    with patch.object(client._http, "request", new_callable=AsyncMock,
+                      side_effect=[response(activity_stop_response()),
+                                   response(activity_stop_response(duplicate=True))]) as send:
+        original = await client.acknowledge_activity_cancellation(
+            task_id="task/1", activity_attempt_id="attempt-1", lease_owner="worker-1", request_id="original-request",
+        )
+        duplicate = await client.acknowledge_activity_cancellation(
+            task_id="task/1", activity_attempt_id="attempt-1", lease_owner="worker-1", request_id="original-request",
+        )
+    assert original["history_event_id"] == duplicate["history_event_id"] == "original-event"
+    assert duplicate["duplicate"] is True
+    for call in send.await_args_list:
+        assert call.args[:2] == ("POST", "/api/worker/activity-tasks/task%2F1/acknowledge-cancellation")
+        assert call.kwargs["headers"]["Authorization"] == "Bearer worker-token"
+        assert call.kwargs["headers"]["X-Namespace"] == "ns1"
+        assert call.kwargs["headers"]["X-Durable-Workflow-Protocol-Version"] == "1.20"
+        assert call.kwargs["json"] == {
+            "activity_attempt_id": "attempt-1", "lease_owner": "worker-1", "request_id": "original-request",
+        }
+        assert call.kwargs["timeout"] == 5.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [
+    {"task_id": "other"}, {"activity_attempt_id": "other"}, {"lease_owner": "other"}, {"request_id": "other"},
+    {"acknowledged": 1}, {"acknowledged": False}, {"duplicate": 1}, {"reason": "refused"},
+    {"heartbeat_recorded": True}, {"heartbeat_recorded": 0}, {"history_event_id": None}, {"history_event_id": " "},
+])
+async def test_activity_stop_receipt_rejects_mismatched_or_unproved_response(
+    client: Client, monkeypatch: pytest.MonkeyPatch, change: dict[str, Any],
+) -> None:
+    monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
+    with (
+        patch.object(client._http, "request", new_callable=AsyncMock,
+                     return_value=response(activity_stop_response(**change))),
+        pytest.raises(ServerError) as error,
+    ):
+        await client.acknowledge_activity_cancellation(
+            task_id="task/1", activity_attempt_id="attempt-1", lease_owner="worker-1", request_id="original-request",
+        )
+    assert error.value.reason() == "invalid_activity_cancellation_acknowledgement"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["task_id", "activity_attempt_id", "lease_owner", "request_id"])
+@pytest.mark.parametrize("identity", [None, True, "", " ", "x" * 256, "é" * 128])
+async def test_activity_stop_receipt_rejects_invalid_identity_before_io(
+    client: Client, monkeypatch: pytest.MonkeyPatch, field: str, identity: Any,
+) -> None:
+    monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
+    options = {"task_id": "task/1", "activity_attempt_id": "attempt-1", "lease_owner": "worker-1",
+               "request_id": "original-request", field: identity}
+    with patch.object(client._http, "request", new_callable=AsyncMock) as send, pytest.raises(ValueError):
+        await client.acknowledge_activity_cancellation(**options)
+    send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [None, "1.19", "2.20", "invalid"])
+async def test_activity_stop_receipt_requires_explicit_worker_opt_in(
+    client: Client, monkeypatch: pytest.MonkeyPatch, version: str | None,
+) -> None:
+    if version is None:
+        monkeypatch.delenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", raising=False)
+    else:
+        monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", version)
+    with patch.object(client._http, "request", new_callable=AsyncMock) as send, pytest.raises(ValueError):
+        await client.acknowledge_activity_cancellation(
+            task_id="task/1", activity_attempt_id="attempt-1", lease_owner="worker-1", request_id="original-request",
+        )
+    send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "reason"), [(409, "lease_owner_mismatch"), (503, "storage_fenced")])
+async def test_activity_stop_receipt_preserves_server_refusal(
+    client: Client, monkeypatch: pytest.MonkeyPatch, status: int, reason: str,
+) -> None:
+    monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
+    with (
+        patch.object(client._http, "request", new_callable=AsyncMock,
+                     return_value=response({"reason": reason, "request_admitted": False}, status)) as send,
+        pytest.raises(ServerError) as error,
+    ):
+        await client.acknowledge_activity_cancellation(
+            task_id="task/1", activity_attempt_id="attempt-1", lease_owner="worker-1", request_id="original-request",
+        )
+    assert error.value.reason() == reason
+    assert send.await_count == (1 if status == 409 else 3)
+    assert all(call == send.await_args_list[0] for call in send.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_activity_stop_receipt_retries_original_identity_after_response_loss(
+    client: Client, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
+    with patch.object(client._http, "request", new_callable=AsyncMock,
+                      side_effect=[httpx.ReadTimeout("receipt response lost"),
+                                   response(activity_stop_response(duplicate=True))]) as send:
+        result = await client.acknowledge_activity_cancellation(
+            task_id="task/1", activity_attempt_id="attempt-1", lease_owner="worker-1", request_id="original-request",
+        )
+    assert result["duplicate"] is True
+    assert result["history_event_id"] == "original-event"
+    assert send.await_count == 2
+    assert send.await_args_list[0] == send.await_args_list[1]
+
+
+@pytest.mark.asyncio
+async def test_activity_stop_receipt_transport_has_one_total_budget(
+    client: Client, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
+    stopped = asyncio.Event()
+
+    async def blocked(*args: Any, **kwargs: Any) -> httpx.Response:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+        raise AssertionError("blocked transport resumed")
+
+    started = time.monotonic()
+    with (
+        patch.object(client._http, "request", new_callable=AsyncMock, side_effect=blocked) as send,
+        pytest.raises(asyncio.TimeoutError),
+    ):
+        await client.acknowledge_activity_cancellation(
+            task_id="task/1", activity_attempt_id="attempt-1", lease_owner="worker-1", request_id="original-request",
+        )
+    assert time.monotonic() - started < 6.0
+    assert stopped.is_set()
+    assert send.await_count == 1
 
 
 @pytest.mark.asyncio

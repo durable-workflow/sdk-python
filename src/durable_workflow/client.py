@@ -5590,6 +5590,57 @@ class Client:
             json={"activity_attempt_id": activity_attempt_id, "lease_owner": lease_owner}, timeout=5.0,
         ), timeout=5.0)
 
+    async def acknowledge_activity_cancellation(
+        self,
+        *,
+        task_id: str,
+        activity_attempt_id: str,
+        lease_owner: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Report that the original owner's remote callback has stopped.
+
+        The caller must stop and join the callback before calling this method.
+        The receipt records diagnostic evidence and does not renew a lease,
+        heartbeat, publication authority or cleanup budget. Requires explicit
+        worker protocol 1.20. Retries share one five-second transport budget.
+        """
+        if not _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+            "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+        )):
+            raise ValueError("activity cancellation acknowledgment requires explicit worker protocol 1.20")
+        identities = {
+            "task_id": task_id,
+            "activity_attempt_id": activity_attempt_id,
+            "lease_owner": lease_owner,
+            "request_id": request_id,
+        }
+        if any(
+            not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 255
+            for value in identities.values()
+        ):
+            raise ValueError(
+                "activity cancellation acknowledgment requires bounded, nonempty claim and request identities"
+            )
+        result = await asyncio.wait_for(self._request(
+            "POST", f"/worker/activity-tasks/{quote(task_id, safe='._:-')}/acknowledge-cancellation",
+            worker=True,
+            json={"activity_attempt_id": activity_attempt_id, "lease_owner": lease_owner, "request_id": request_id},
+            timeout=5.0,
+        ), timeout=5.0)
+        if (
+            not isinstance(result, dict)
+            or any(result.get(key) != value for key, value in identities.items())
+            or result.get("acknowledged") is not True
+            or not isinstance(result.get("duplicate"), bool)
+            or result.get("reason") is not None
+            or result.get("heartbeat_recorded") is not False
+            or not isinstance(result.get("history_event_id"), str)
+            or not result["history_event_id"].strip()
+        ):
+            raise ServerError(200, {"reason": "invalid_activity_cancellation_acknowledgement"})
+        return result
+
     async def heartbeat_activity_task(
         self,
         *,

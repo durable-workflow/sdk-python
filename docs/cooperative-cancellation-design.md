@@ -70,6 +70,21 @@ conflicting history fail replay. A worker without the negotiated cooperation
 capability refuses these choices before completion, reporting its identity and
 the required protocol. Server also checks the immutable task claim and backend.
 
+## Remote callback-stop transport
+
+`Client.acknowledge_activity_cancellation()` reports the original task, activity
+attempt, lease owner and cancellation request. It requires explicit worker
+protocol 1.20 and validates the Server's original receipt identity. Duplicate
+retries retain those identities and share a five-second transport budget.
+Refusals preserve the Server diagnostic. This receipt does not renew authority,
+record an application heartbeat or extend the cleanup deadline.
+
+The caller must first prove the callback stopped and was joined. The current
+Python worker fences abandoned callback threads but cannot forcibly stop them.
+It therefore does not send this receipt. Independent process supervision is
+the next implementation step. Cooperating downstream systems still need
+idempotency or reconciliation for effects already performed.
+
 ## Remaining qualification
 
 Rust policy parity, portable activity policies, nested scopes and deterministic
