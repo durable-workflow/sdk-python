@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from durable_workflow import Client, Worker, activity, workflow
-from durable_workflow.errors import WorkflowCancelled
+from durable_workflow.errors import ServerError, WorkflowCancelled
 from durable_workflow.workflow import replay
 from tests.integration.test_cooperative_cancellation import callback_gone, events, poll_claim, remote_marker
 
@@ -127,7 +127,13 @@ class TrackingPreparedClient(Client):
         self.trace_path = trace_path
 
     async def prepared_local_activity_operation(self, **kwargs: Any) -> dict[str, Any]:
-        receipt = await super().prepared_local_activity_operation(**kwargs)
+        try:
+            receipt = await super().prepared_local_activity_operation(**kwargs)
+        except ServerError as error:
+            with self.trace_path.open("a") as stream:
+                stream.write(json.dumps({"operation": kwargs["operation"], "sequence": kwargs["body"].get("sequence"),
+                                         "refused": error.reason()}) + "\n")
+            raise
         if kwargs["operation"] != "control" or receipt.get("active") is False:
             with self.trace_path.open("a") as stream:
                 stream.write(json.dumps({"operation": kwargs["operation"], "receipt": receipt}) + "\n")
@@ -173,7 +179,10 @@ async def test_prepared_nested_mixed_group_starts_peers_concurrently_and_cold_re
 ) -> None:
     queue = "py-prepared-group-" + uuid.uuid4().hex[:8]
     marker = str(tmp_path / "callback")
-    async with Client(server_url, token=server_token, namespace="default") as client:
+    trace_path = tmp_path / "group-receipts.jsonl"
+    async with TrackingPreparedClient(
+        server_url, token=server_token, namespace="default", trace_path=trace_path,
+    ) as client:
         worker = prepared_worker(client, queue)
         owner = asyncio.create_task(worker.run())
         try:
@@ -200,6 +209,9 @@ async def test_prepared_nested_mixed_group_starts_peers_concurrently_and_cold_re
         finally:
             await worker.stop()
             await asyncio.wait_for(owner, timeout=10)
+            if trace_path.exists():
+                print("prepared nested mixed group receipts: " + trace_path.read_text())
+            print("prepared nested mixed group final history: " + json.dumps(await events(handle)))
 
 
 @pytest.mark.parametrize("group", [False, True], ids=["sequential", "atomic-group"])

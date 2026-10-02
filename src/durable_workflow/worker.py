@@ -1924,7 +1924,9 @@ class Worker:
                     except PreparedCancellationObserved:
                         await runner.acknowledge_stop()
                 await self._renew_local_workflow_lease(task)
-            raise LocalActivityExecutionAborted("prepared group operation has an unknown or refused outcome") from error
+            raise LocalActivityExecutionAborted(
+                f"prepared group operation was refused: {error.reason() or 'unknown'}",
+            ) from error
         except (_WorkflowClaimDeferred, LocalActivityExecutionAborted):
             raise
         except Exception as error:
