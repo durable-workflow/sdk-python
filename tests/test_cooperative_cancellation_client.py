@@ -203,7 +203,8 @@ async def test_delivery_sends_owner_attempt_and_authored_boundary(
 @pytest.mark.parametrize("kind,reason", [
     (kind, "cancellation_waiting_for_child") for kind in ("child", "parallel", "selection_handle")
 ] + [
-    (kind, "cancellation_waiting_for_activity") for kind in ("activity", "local_activity", "parallel", "selection_handle")
+    (kind, "cancellation_waiting_for_activity")
+    for kind in ("activity", "local_activity", "parallel", "selection_handle")
 ])
 async def test_pending_cancellation_requires_explicit_claim_release(
     client: Client, monkeypatch: pytest.MonkeyPatch, kind: str, reason: str,
@@ -231,9 +232,10 @@ async def test_malformed_pending_cancellation_ack_is_rejected(
     client: Client, monkeypatch: pytest.MonkeyPatch, change: dict[str, Any], kind: str,
 ) -> None:
     monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
+    pending = pending_delivery_response(reason="cancellation_waiting_for_" + kind) | change
     with (
         patch.object(client._http, "request", new_callable=AsyncMock,
-                     return_value=response(pending_delivery_response(reason="cancellation_waiting_for_" + kind) | change)),
+                     return_value=response(pending)),
         pytest.raises(ServerError) as error,
     ):
         await client.deliver_workflow_cancellation(
