@@ -108,10 +108,32 @@ _RUNTIME_EXTERNAL_PAYLOAD_FETCH_PATH_TEMPLATE = (
 )
 _RUNTIME_EXTERNAL_PAYLOAD_ERROR_BODY_LIMIT = 64 * 1024
 _PAYLOAD_COMPLETION_SCHEMA = "durable-workflow.v2.payload-completion-context.v1"
+_PREPARED_PAYLOAD_COMPLETION_SCHEMA = "durable-workflow.v2.payload-completion-context.v2"
 _PAYLOAD_COMPLETION_HEADER = "X-Durable-Workflow-Payload-Completion"
 
 
-def _payload_completion_context(path: str, body: Any) -> dict[str, Any] | None:
+def _payload_completion_context(path: str, body: Any, *, allow_prepared: bool = False) -> dict[str, Any] | None:
+    prepared = re.fullmatch(
+        r"/worker/workflow-tasks/([^/]+)/local-activities/(?:(checkpoint|checkpoint-group|prepare|recover)|([^/]+)/outcome)",
+        path.split("?")[0],
+    )
+    if allow_prepared and prepared is not None and isinstance(body, dict):
+        task_id, operation, activity_attempt_id = prepared.groups()
+        operation = operation or "outcome"
+        identity = ({"checkpoint_id": body.get("checkpoint_id")} if operation in {"checkpoint", "checkpoint-group"}
+                    else {"activity_attempt_id": unquote(activity_attempt_id)} if activity_attempt_id is not None
+                    else {"sequence": body.get("sequence")})
+        value = next(iter(identity.values()))
+        owner, attempt = body.get("lease_owner"), body.get("workflow_task_attempt")
+        identity_valid = (type(value) is int and value > 0) if operation in {"prepare", "recover"} \
+            else isinstance(value, str) and bool(value.strip())
+        if (not isinstance(owner, str) or not owner.strip() or type(attempt) is not int or attempt < 1
+                or not identity_valid):
+            return None
+        return {"schema": _PREPARED_PAYLOAD_COMPLETION_SCHEMA, "kind": "workflow", "task_id": unquote(task_id),
+                "attempt": attempt, "lease_owner": owner,
+                "operation": "local_activity_group_checkpoint" if operation == "checkpoint-group"
+                else "local_activity_" + operation, **identity}
     match = re.fullmatch(r"/worker/(activity|workflow|query)-tasks/([^/]+)/(complete|fail)", path.split("?")[0])
     if match is None or not isinstance(body, dict):
         return None
@@ -311,6 +333,7 @@ class _RuntimeExternalPayloadTransport:
     request_timeout_seconds: float
     status: str
     completion_context: bool = False
+    prepared_completion_context: bool = False
 
 
 @dataclass
@@ -1796,7 +1819,8 @@ class Client:
                     transport=transport,
                     uploaded={},
                     completion=(
-                        _payload_completion_context(path, json) if worker and transport.completion_context else None
+                        _payload_completion_context(path, json, allow_prepared=transport.prepared_completion_context)
+                        if worker and transport.completion_context else None
                     ),
                 )
 
@@ -1977,6 +2001,11 @@ class Client:
             completion_context=isinstance(completion, dict)
             and completion.get("schema") == _PAYLOAD_COMPLETION_SCHEMA
             and completion.get("header") == _PAYLOAD_COMPLETION_HEADER,
+            prepared_completion_context=isinstance(completion, dict)
+            and completion.get("prepared_schema") == _PREPARED_PAYLOAD_COMPLETION_SCHEMA
+            and _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+                "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+            )),
         )
         self._runtime_external_payload_transport_cache = transport
         self._runtime_external_payload_transport_resolved = True
@@ -5639,6 +5668,65 @@ class Client:
             or not result["history_event_id"].strip()
         ):
             raise ServerError(200, {"reason": "invalid_activity_cancellation_acknowledgement"})
+        return result
+
+    async def prepared_local_activity_operation(
+        self,
+        *,
+        task_id: str,
+        lease_owner: str,
+        workflow_task_attempt: int,
+        operation: str,
+        body: Mapping[str, Any] | None = None,
+        activity_attempt_id: str | None = None,
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, Any]:
+        """Perform one prepared-local operation on its original workflow claim.
+
+        Source protocol 1.20 only. This transport does not grant permission to
+        invoke a callback. The worker must discover the installed bridge and
+        validate its original admission receipt, deadlines and canonical history.
+        Every retry and payload transfer shares this total authority budget.
+        """
+        if not _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+            "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+        )):
+            raise ValueError("prepared local operations require explicit worker protocol 1.20")
+        admission = {"checkpoint", "checkpoint-group", "prepare", "recover"}
+        attempts = {"control", "heartbeat", "outcome", "acknowledge-cancellation"}
+        if operation not in admission | attempts:
+            raise ValueError("unsupported prepared local operation")
+        identifiers = [task_id, lease_owner]
+        if operation in attempts:
+            if activity_attempt_id is None:
+                raise ValueError("prepared local attempt operation requires its original backend attempt identity")
+            identifiers.append(activity_attempt_id)
+        elif activity_attempt_id is not None:
+            raise ValueError("prepared local admission cannot carry an activity attempt identity")
+        if any(not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 255
+               for value in identifiers):
+            raise ValueError("prepared local operations require bounded nonempty original claim identities")
+        if type(workflow_task_attempt) is not int or workflow_task_attempt < 1:
+            raise ValueError("prepared local operations require a positive original workflow task epoch")
+        if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int | float)
+                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 5):
+            raise ValueError("prepared local authority budget must be positive, finite and at most five seconds")
+        if body is not None and not isinstance(body, Mapping):
+            raise TypeError("prepared local operation body must be an object")
+        payload = dict(body or {})
+        if "lease_owner" in payload or "workflow_task_attempt" in payload:
+            raise ValueError("prepared local operation body cannot replace original workflow claim authority")
+        payload = {"lease_owner": lease_owner, "workflow_task_attempt": workflow_task_attempt, **payload}
+        json_module.dumps(payload, allow_nan=False)
+        path = f"/worker/workflow-tasks/{quote(task_id, safe='._:-')}/local-activities/"
+        if activity_attempt_id is not None:
+            path += quote(activity_attempt_id, safe="._:-") + "/"
+        result = await asyncio.wait_for(
+            self._request("POST", path + operation, worker=True, json=payload, timeout=timeout_seconds),
+            timeout=timeout_seconds,
+        )
+        if not isinstance(result, dict):
+            raise ServerError(200, {"reason": "invalid_prepared_local_activity_receipt"})
         return result
 
     async def heartbeat_activity_task(
