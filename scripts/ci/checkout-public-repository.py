@@ -13,6 +13,7 @@ from pathlib import Path
 PUBLIC_REPOSITORIES = {
     "cli": "https://github.com/durable-workflow/cli.git",
     "server": "https://github.com/durable-workflow/server.git",
+    "workflow": "https://github.com/durable-workflow/workflow.git",
 }
 
 

@@ -22,6 +22,7 @@ CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
     [
         ("cli", "https://github.com/durable-workflow/cli.git"),
         ("server", "https://github.com/durable-workflow/server.git"),
+        ("workflow", "https://github.com/durable-workflow/workflow.git"),
     ],
 )
 def test_public_checkout_uses_github_authority_on_every_runner(
@@ -90,7 +91,10 @@ def test_candidate_checkout_rejects_non_sha_before_running_git(tmp_path: Path, c
 
 
 @pytest.mark.parametrize("matches", [True, False])
-def test_candidate_checkout_verifies_the_requested_public_commit(tmp_path: Path, matches: bool) -> None:
+@pytest.mark.parametrize("repository", ["server", "workflow"])
+def test_candidate_checkout_verifies_the_requested_public_commit(
+    tmp_path: Path, matches: bool, repository: str,
+) -> None:
     commit = "a" * 40
     resolved = commit if matches else "b" * 40
     capture = tmp_path / "git-calls"
@@ -104,13 +108,13 @@ def test_candidate_checkout_verifies_the_requested_public_commit(tmp_path: Path,
         **os.environ, "PATH": str(tmp_path), "GIT_CAPTURE": str(capture), "RESOLVED_COMMIT": resolved,
     }
     result = subprocess.run(
-        [sys.executable, str(CHECKOUT_SCRIPT), "server", str(tmp_path / "server"), "--commit", commit],
+        [sys.executable, str(CHECKOUT_SCRIPT), repository, str(tmp_path / repository), "--commit", commit],
         env=environment, capture_output=True, text=True,
     )
     assert (result.returncode == 0) is matches
     calls = capture.read_text().splitlines()
-    assert "https://github.com/durable-workflow/server.git" in calls[0]
+    assert f"https://github.com/durable-workflow/{repository}.git" in calls[0]
     assert any(f"fetch --depth=1 origin {commit}" in call for call in calls)
     assert all("credential.helper=" in call for call in calls)
     if matches:
-        assert f"Integration server source commit: {commit}" in result.stdout
+        assert f"Integration {repository} source commit: {commit}" in result.stdout
