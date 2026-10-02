@@ -247,7 +247,7 @@ class PreparedLocalRunner:
             _require(not self.shutdown.is_set(), "worker shutdown abandoned its prepared local claim")
             started = time.monotonic()
             receipt = await self.operation("heartbeat" if heartbeat else "control",
-                                           {"details": details} if heartbeat else {"renew_lease": True})
+                                           {"progress": details or {}} if heartbeat else {"renew_lease": True})
             self.attempt.validate_control(receipt, heartbeat=heartbeat)
             if receipt["active"]:
                 self.attempt.accept_budget(receipt, started)

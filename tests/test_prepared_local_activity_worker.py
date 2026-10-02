@@ -59,6 +59,13 @@ def typed_callback(marker: str) -> dict[str, Any]:
     return {"value": b"\x00\xff", "attempt": activity.context().info.activity_attempt_id}
 
 
+@activity.defn(name="prepared.progress")
+async def progress_callback(marker: str) -> dict[str, Any]:
+    Path(marker).write_text(str(os.getpid()))
+    await activity.context().heartbeat({"phase": "processing", "count": 2})
+    return {"value": b"\x00\xff", "attempt": activity.context().info.activity_attempt_id}
+
+
 def timestamp(seconds: float = 0) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="microseconds").replace(
         "+00:00", "Z",
@@ -301,6 +308,12 @@ class PreparedServer:
             with pytest.raises(ProcessLookupError):
                 os.kill(pid, 0)
             return {"acknowledged": True, "duplicate": False, "reason": None, "history_event_id": "joined"}
+        if name == "heartbeat":
+            assert body == {"progress": {"phase": "processing", "count": 2}}
+            payload = {**self.history[-1]["payload"], "progress": body["progress"]}
+            self.history.append({"id": "progress", "event_type": "ActivityHeartbeatRecorded", "payload": payload})
+            return control(self.receipt, renewed=False, heartbeat_recorded=True,
+                           heartbeat_history_event_id="progress")
         assert name == "outcome"
         if self.fail_outcome:
             raise TimeoutError("outcome acknowledgment lost")
@@ -350,6 +363,21 @@ async def test_bad_admission_never_spawns_and_never_completes_or_fails_a_claim(
     assert not (tmp_path / "callback").exists()
     assert server.trace == ["prepare"]
     server.client.complete_workflow_task.assert_not_awaited()
+    server.client.fail_workflow_task.assert_not_awaited()
+
+
+async def test_supervised_application_heartbeat_preserves_progress_in_canonical_history(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    server = PreparedServer()
+    worker = await server.worker(monkeypatch, handler=progress_callback)
+    marker = tmp_path / "callback"
+    commands = await worker._run_workflow_task(server.task(marker))
+    assert commands is not None and commands[0]["type"] == "complete_workflow"
+    progress = [event for event in server.history if event["event_type"] == "ActivityHeartbeatRecorded"]
+    assert len(progress) == 1 and progress[0]["payload"]["progress"] == {"phase": "processing", "count": 2}
+    assert server.trace.count("heartbeat") == 1 and server.trace.count("outcome") == 1
+    await wait_for_exit(int(marker.read_text()))
     server.client.fail_workflow_task.assert_not_awaited()
 
 

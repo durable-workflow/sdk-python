@@ -132,7 +132,8 @@ class TrackingPreparedClient(Client):
         except ServerError as error:
             with self.trace_path.open("a") as stream:
                 stream.write(json.dumps({"operation": kwargs["operation"], "sequence": kwargs["body"].get("sequence"),
-                                         "refused": error.reason()}) + "\n")
+                                         "refused": error.reason(), "status": error.status,
+                                         "response": error.body}) + "\n")
             raise
         if kwargs["operation"] != "control" or receipt.get("active") is False:
             with self.trace_path.open("a") as stream:
@@ -162,6 +163,8 @@ async def test_prepared_prefix_two_callbacks_and_cold_replay_use_canonical_histo
             kinds = [event["event_type"] for event in history]
             assert kinds.count("ActivityStarted") == kinds.count("ActivityCompleted") == 2
             assert kinds.count("ActivityHeartbeatRecorded") == 2
+            assert sorted(event["payload"]["progress"]["phase"] for event in history
+                          if event["event_type"] == "ActivityHeartbeatRecorded") == ["first", "second"]
             assert kinds.count("MemoUpserted") == kinds.count("WorkflowCompleted") == 1
             outcome = replay(PreparedSequentialWorkflow, history, [marker], run_id=handle.run_id or "",
                              prepare_local_activities=True)
@@ -197,6 +200,8 @@ async def test_prepared_nested_mixed_group_starts_peers_concurrently_and_cold_re
             assert kinds.count("ActivityScheduled") == kinds.count("ActivityStarted") == 2
             assert kinds.count("ActivityCompleted") == 2
             assert kinds.count("ActivityHeartbeatRecorded") == 2
+            assert sorted(event["payload"]["progress"]["phase"] for event in history
+                          if event["event_type"] == "ActivityHeartbeatRecorded") == ["first", "second"]
             assert kinds.count("TimerScheduled") == kinds.count("TimerFired") == 1
             assert kinds.count("MemoUpserted") == kinds.count("WorkflowCompleted") == 1
             completed = replay(PreparedGroupWorkflow, history, [marker], run_id=handle.run_id or "",
