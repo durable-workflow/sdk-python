@@ -79,25 +79,37 @@ retries retain those identities and share a five-second transport budget.
 Refusals preserve the Server diagnostic. This receipt does not renew authority,
 record an application heartbeat or extend the cleanup deadline.
 
-The caller must first prove the callback stopped and was joined. The current
-Python worker fences abandoned callback threads but cannot forcibly stop them.
-It therefore does not send this receipt. The internal process supervisor is
-implemented for the next worker integration step. Each attempt gets an explicit
+The cooperative remote worker stops and joins its callback and supervisor
+before sending this receipt. Each attempt gets an explicit
 spawn context, an independent supervisor, a callback process and private payload
 files. Single-byte control channels keep owner disconnect independent of a
 payload transfer or callback progress. The supervisor joins the callback before
 reporting stop. The owner then joins the supervisor. A failed supervisor alone
 does not prove a live callback stopped.
 
-The primitive's process tests cover a C call holding the callback interpreter's
+The process tests cover a C call holding the callback interpreter's
 GIL, ignored TERM followed by forced stop, actual owner SIGKILL, typed results,
-application failure metadata, interceptors and authored heartbeats. It is not
-connected to worker claims or Server receipts yet. Those tests remain required
-before worker adoption. Handlers, arguments and interceptors must be compatible
+application failure metadata, interceptors and authored heartbeats. The worker
+observes ownership independently of callback progress, checks before result
+encoding or failure reporting, and reports only the original canonical request
+after confirmed stop. Unconfirmed stop retains activity capacity and refuses
+successful worker shutdown. A receipt refusal cannot become result publication
+or a new cleanup budget. Connected exact-source qualification remains required.
+
+After application drain expires, cooperative remote shutdown permits up to
+15 seconds for process reaping and bounded receipt transport. Application work
+is stopped during this phase. The run's original cancellation deadline stays
+unchanged. Failure to confirm stop leaves the worker registration active and
+raises an explicit shutdown error.
+
+Handlers, arguments and interceptors must be compatible
 with Python's spawn serialization. Define importable handlers and protect the
 application entry point with `if __name__ == "__main__"`. Captured memory changes
 are local to the callback process. Open process-local connections in the
-callback. Legacy worker protocol 1.19 continues using its existing execution.
+callback. Registration and remote polling refuse incompatible handler or
+interceptor definitions before claiming work, naming the worker and activity.
+Cooperative local callbacks still require their separate supervision and receipt
+model. Legacy worker protocol 1.19 continues using its existing execution.
 Cooperating downstream systems still need idempotency or reconciliation for
 effects already performed.
 

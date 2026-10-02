@@ -22,6 +22,7 @@ import hashlib
 import inspect
 import json
 import logging
+import pickle
 import sys
 import threading
 import time
@@ -36,6 +37,7 @@ from types import FunctionType
 from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from . import serializer
+from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProcessLost, SupervisedCallback
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
 from .activity import ActivityContext, ActivityInfo, _set_context
 from .auth_composition import (
@@ -162,6 +164,12 @@ _R = TypeVar("_R")
 
 class _RemoteActivityExecutionAborted(Exception):
     """Ownership cannot authorize another remote callback boundary."""
+
+
+class _RemoteActivityApplicationFailure(Exception):
+    def __init__(self, failure: CallbackFailure) -> None:
+        super().__init__(failure.message)
+        self.failure = failure
 
 
 class _LocalActivityTimedOut(Exception):
@@ -1071,6 +1079,7 @@ class Worker:
         self._local_activity_executor: ThreadPoolExecutor | None = None
         self._remote_activity_executor: ThreadPoolExecutor | None = None
         self._remote_activity_threads: set[Future[Any]] = set()
+        self._remote_activity_processes: set[SupervisedCallback] = set()
         self._remote_activity_thread_slots = asyncio.Semaphore(max_concurrent_activity_tasks)
         self._wf_semaphore = asyncio.Semaphore(max_concurrent_workflow_tasks)
         self._act_semaphore = asyncio.Semaphore(max_concurrent_activity_tasks)
@@ -1216,6 +1225,7 @@ class Worker:
         )
         if "cooperative_cancellation" in self.capabilities and not self._cooperative_cancellation_supported:
             raise RuntimeError("cooperative cancellation requires explicit compatible runtime and worker protocol 1.20")
+        self._validate_cooperative_activity_handlers()
         self._query_tasks_supported = _server_supports_query_tasks(info)
         self._workflow_memo_updates_supported = _server_supports_workflow_memo_updates(info)
         has_update_validators = any(
@@ -2214,6 +2224,53 @@ class Worker:
                 fail_error,
             )
 
+    def _validate_cooperative_activity_handlers(self) -> None:
+        if not self._cooperative_cancellation_supported:
+            return
+        for activity_type, handler in self.activities.items():
+            try:
+                pickle.dumps((handler, self.interceptors), protocol=pickle.HIGHEST_PROTOCOL)
+            except Exception as error:
+                raise RuntimeError(
+                    f"worker {self.worker_id!r} cannot supervise cooperative activity {activity_type!r}: "
+                    "handler and interceptors must be importable and spawn-compatible"
+                ) from error
+
+    async def _acknowledge_stopped_remote_activity(self, task: dict[str, Any]) -> None:
+        # The caller has joined both the callback and its supervisor. Observation
+        # binds only this original claim to canonical cancellation metadata.
+        task_id = task["task_id"]
+        attempt_id = task.get("activity_attempt_id") or task.get("attempt_id", "")
+        try:
+            status = await asyncio.wait_for(self.client.activity_task_status(
+                task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id,
+            ), timeout=5.0)
+            receipt = status.get("cancellation_acknowledgement") if isinstance(status, Mapping) else None
+            if (not isinstance(status, Mapping) or status.get("task_id") != task_id
+                    or status.get("activity_attempt_id") != attempt_id or status.get("lease_owner") != self.worker_id
+                    or status.get("can_continue") is not False or status.get("cancel_requested") is not True
+                    or status.get("heartbeat_recorded") is not False or not isinstance(receipt, Mapping)
+                    or receipt.get("callback_state") not in ("unknown", "stopped")):
+                return
+            for field in ("request_id", "root_request_id", "cleanup_deadline_at", "cancellation_history_event_id"):
+                if not isinstance(receipt.get(field), str) or not receipt[field].strip():
+                    return
+            reply = await asyncio.wait_for(self.client.acknowledge_activity_cancellation(
+                task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id,
+                request_id=receipt["request_id"],
+            ), timeout=5.0)
+            if (not isinstance(reply, Mapping) or reply.get("task_id") != task_id
+                    or reply.get("activity_attempt_id") != attempt_id or reply.get("lease_owner") != self.worker_id
+                    or reply.get("request_id") != receipt["request_id"] or reply.get("acknowledged") is not True
+                    or not isinstance(reply.get("duplicate"), bool) or reply.get("reason") is not None
+                    or reply.get("heartbeat_recorded") is not False
+                    or not isinstance(reply.get("history_event_id"), str) or not reply["history_event_id"].strip()):
+                raise _RemoteActivityExecutionAborted("Server did not prove the original callback-stop receipt")
+            log.info("remote activity %s callback stopped for request %s, root %s, deadline %s",
+                     task_id, receipt["request_id"], receipt["root_request_id"], receipt["cleanup_deadline_at"])
+        except Exception as error:
+            log.warning("remote activity %s stopped but its cancellation receipt failed: %s", task_id, error)
+
     async def _assert_remote_activity_claim(self, task: dict[str, Any]) -> None:
         try:
             if self._local_activity_shutdown.is_set():
@@ -2262,24 +2319,8 @@ class Worker:
     async def _execute_cooperative_remote_callable(
         self, task: dict[str, Any], handler: Callable[..., Any], args: tuple[Any, ...], info: ActivityInfo,
     ) -> Any:
-        abandoned = threading.Event()
-        owner_loop = asyncio.get_running_loop()
-
-        def boundary() -> None:
-            if abandoned.is_set() or self._local_activity_shutdown.is_set():
-                raise _RemoteActivityExecutionAborted("remote activity callback no longer owns its claim")
-
-        async def observe() -> None:
-            boundary()
-            try:
-                await self._assert_remote_activity_claim(task)
-            except BaseException:
-                abandoned.set()
-                raise
-            boundary()
-
         async def send_heartbeat(details: dict[str, Any] | None) -> None:
-            await observe()
+            await self._assert_remote_activity_claim(task)
             try:
                 reply = await asyncio.wait_for(self.client.heartbeat_activity_task(
                     task_id=info.task_id, activity_attempt_id=info.activity_attempt_id,
@@ -2291,50 +2332,24 @@ class Worker:
                         or reply.get("cancel_requested") is not False):
                     raise _RemoteActivityExecutionAborted("remote activity heartbeat lost its ownership fence")
             except Exception as error:
-                abandoned.set()
                 raise _RemoteActivityExecutionAborted("remote activity user heartbeat failed") from error
-            await observe()
-
-        async def heartbeat(details: dict[str, Any] | None) -> None:
-            boundary()
-            if asyncio.get_running_loop() is owner_loop:
-                await send_heartbeat(details)
-            else:
-                # A synchronous handler may use its own loop to await heartbeat.
-                # Its HTTP client and claim checks remain on the owner loop.
-                proxy = asyncio.run_coroutine_threadsafe(send_heartbeat(details), owner_loop)
-                await asyncio.wrap_future(proxy)
-
-        if inspect.iscoroutinefunction(handler):
-            async def guarded(*arguments: Any) -> Any:
-                boundary()
-                return await handler(*arguments)
-            callback: Callable[..., Any] = guarded
-        else:
-            def guarded_sync(*arguments: Any) -> Any:
-                boundary()
-                return handler(*arguments)
-            callback = guarded_sync
-
-        async def invoke() -> Any:
-            _set_context(ActivityContext(info=info, client=self.client, heartbeat_callback=heartbeat))
-            try:
-                return await self._execute_activity_callable(
-                    task, info.activity_type, args, callback, run_sync_in_thread=True, remote=True,
-                )
-            finally:
-                _set_context(None)
+            await self._assert_remote_activity_claim(task)
 
         async def observe_ownership() -> None:
             while True:
                 await asyncio.sleep(1.0)
-                await observe()
+                await self._assert_remote_activity_claim(task)
 
-        await observe()
-        invocation = asyncio.create_task(invoke())
+        await self._assert_remote_activity_claim(task)
+        callback = SupervisedCallback(CallbackInvocation(handler, args, info, task, self.interceptors))
+        self._remote_activity_processes.add(callback)
+        invocation: asyncio.Task[Any] | None = None
+        abandoned = False
         observation = asyncio.create_task(observe_ownership())
         shutdown = asyncio.create_task(self._local_activity_shutdown.wait())
         try:
+            await callback.start()
+            invocation = asyncio.create_task(callback.result(send_heartbeat))
             done, _ = await asyncio.wait([invocation, observation, shutdown], return_when=asyncio.FIRST_COMPLETED)
             if shutdown in done:
                 raise _RemoteActivityExecutionAborted("worker shutdown abandoned its remote activity claim")
@@ -2342,25 +2357,33 @@ class Worker:
                 await observation
                 raise _RemoteActivityExecutionAborted("remote ownership observer stopped without a response")
             try:
-                result = await invocation
-            except Exception:
-                await observe()  # A genuine application failure also needs current authority.
-                raise
-            await observe()  # Fence before the Client encodes or externalizes the result.
-            return result
+                outcome = await invocation
+            except CallbackProcessLost as error:
+                raise _RemoteActivityExecutionAborted("remote callback supervisor lost stop authority") from error
+            await self._assert_remote_activity_claim(task)
+            if outcome.failure is not None:
+                raise _RemoteActivityApplicationFailure(outcome.failure)
+            return outcome.value
+        except (CallbackProcessLost, _RemoteActivityExecutionAborted, asyncio.CancelledError):
+            abandoned = True
+            raise
         finally:
-            abandoned.set()
-
-            def discard_late_result(future: asyncio.Task[Any]) -> None:
-                if not future.cancelled():
-                    future.exception()
-
-            # The abandoned claim must finish without waiting for callback or
-            # observer cancellation. All late progress/publication stays fenced.
-            for background in (invocation, observation, shutdown):
+            backgrounds = [background for background in (invocation, observation, shutdown) if background is not None]
+            for background in backgrounds:
                 if not background.done():
                     background.cancel()
-                background.add_done_callback(discard_late_result)
+            await asyncio.gather(*backgrounds, return_exceptions=True)
+            try:
+                if not callback.stopped:
+                    await callback.stop()
+            except Exception as error:
+                log.warning("remote activity %s callback stop remains unconfirmed: %s", info.task_id, error)
+            if callback.stopped:
+                self._remote_activity_processes.discard(callback)
+                if abandoned:
+                    await self._acknowledge_stopped_remote_activity(task)
+            # An unconfirmed callback retains its capacity and never emits a
+            # stop receipt, result or failure. Owner shutdown closes its channel.
 
     async def _run_activity_task(self, task: dict[str, Any]) -> str:
         self._track_worker_session_from_task(task)
@@ -2455,6 +2478,23 @@ class Worker:
         except _RemoteActivityExecutionAborted as error:
             log.warning("remote activity %s claim abandoned: %s", task_id, error)
             return "claim_aborted"
+        except CallbackProcessLost as error:
+            log.warning("remote activity %s supervision failed: %s", task_id, error)
+            return "claim_aborted"
+        except _RemoteActivityApplicationFailure as error:
+            failure = error.failure
+            try:
+                await self.client.fail_activity_task(
+                    task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id,
+                    message="activity cancelled" if failure.cancelled else failure.message,
+                    failure_type=failure.failure_type, failure_class=failure.failure_class,
+                    failure_code=failure.failure_code, stack_trace=failure.stack_trace,
+                    non_retryable=failure.non_retryable or failure.cancelled,
+                )
+            except Exception as report_error:
+                log.warning("failed to report remote activity failure: %s", report_error)
+            return ("cancelled" if failure.cancelled else
+                    "failed_non_retryable" if failure.non_retryable else "failed")
         except ActivityCancelled:
             log.info("activity %s cancelled via heartbeat", task_id)
             try:
@@ -3027,7 +3067,9 @@ class Worker:
 
     async def _poll_activity_tasks(self) -> None:
         while not self._stop.is_set():
-            if len(self._remote_activity_threads) >= self.max_concurrent_activity_tasks:
+            self._validate_cooperative_activity_handlers()
+            if (len(self._remote_activity_threads) + len(self._remote_activity_processes)
+                    >= self.max_concurrent_activity_tasks):
                 await asyncio.sleep(0.1)
                 continue
             await self._act_semaphore.acquire()
@@ -3465,7 +3507,8 @@ class Worker:
             ),
             "activity_available": max(
                 0, min(self.max_concurrent_activity_tasks - self._activity_inflight,
-                       self.max_concurrent_activity_tasks - len(self._remote_activity_threads)),
+                       self.max_concurrent_activity_tasks - len(self._remote_activity_threads)
+                       - len(self._remote_activity_processes)),
             ),
             "session_available": max(
                 0, self.max_concurrent_worker_sessions
@@ -3669,6 +3712,11 @@ class Worker:
                     next_task_kind = "workflow"
                 continue
 
+            self._validate_cooperative_activity_handlers()
+            if len(self._remote_activity_processes) >= self.max_concurrent_activity_tasks:
+                next_task_kind = "workflow"
+                await asyncio.sleep(poll_interval)
+                continue
             poll_start = time.perf_counter()
             task = await self.client.poll_activity_task(
                 worker_id=self.worker_id,
@@ -3786,6 +3834,11 @@ class Worker:
                 log.warning("cancelled %d task(s) after shutdown timeout", len(pending))
                 await asyncio.sleep(0)
             still_running = {task for task in pending if not task.done()}
+            if still_running and self._remote_activity_processes:
+                # Application drain has ended. Allow bounded process reaping and
+                # stop-report transport without granting more callback work or
+                # extending the run's original cancellation deadline.
+                _, still_running = await asyncio.wait(still_running, timeout=15.0)
             if still_running:
                 raise RuntimeError(
                     "worker shutdown timed out while cancelling "
@@ -3798,6 +3851,12 @@ class Worker:
             self._local_activity_executor.shutdown(wait=False, cancel_futures=True)
         if self._remote_activity_executor is not None:
             self._remote_activity_executor.shutdown(wait=False, cancel_futures=True)
+
+        if self._remote_activity_processes:
+            raise RuntimeError(
+                "worker shutdown has unconfirmed remote callback stop(s); "
+                "the worker registration remains active"
+            )
 
         for session in self._worker_sessions.values():
             if not session.active:

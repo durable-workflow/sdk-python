@@ -135,12 +135,16 @@ class ClaimServer:
 
     async def worker(self, monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> Worker:
         monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
+        # These transport/replay fixtures use local callbacks that share mock
+        # state with this process. They never poll or advertise remote handlers.
+        local_callbacks = kwargs.pop("activities", [])
         worker = Worker(
             self.client, task_queue="queue", worker_id=self.lease_owner,
             workflows=kwargs.pop("workflows", [CancellationWorkflow]),
             capabilities=["cooperative_cancellation"], **kwargs,
         )
         await worker._register()
+        worker.activities.update({callback.__activity_name__: callback for callback in local_callbacks})
         return worker
 
 

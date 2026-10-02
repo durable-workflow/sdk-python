@@ -59,6 +59,7 @@ class CallbackFailure:
     failure_code: int | None
     stack_trace: str
     non_retryable: bool
+    cancelled: bool = False
 
 
 @dataclass(frozen=True)
@@ -136,6 +137,7 @@ def _callback(directory: str, channel: socket.socket) -> None:
                 failure_class=f"{type(error).__module__}.{type(error).__qualname__}",
                 failure_code=code if isinstance(code, int) and not isinstance(code, bool) else None,
                 stack_trace=traceback.format_exc(), non_retryable=isinstance(error, NonRetryableError),
+                cancelled=isinstance(error, ActivityCancelled),
             )))
     finally:
         channel.close()
