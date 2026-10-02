@@ -233,9 +233,11 @@ or invalid boundary timestamps also fail, without a host-time fallback.
 The runtime supervisor independently enforces the actual deadline and task
 ownership even when authoring code cannot run.
 
-The connected process-loss scenario records remaining time before SIGKILL,
-requires the same value in the replacement worker, then checks the value after
-prepared cleanup against its committed history timestamp and original deadline.
+Connected process-loss scenarios record remaining time before SIGKILL and
+require the same value and metadata in the replacement worker. Legacy inline
+cleanup preserves that value through result persistence. Sequential and atomic
+prepared cleanup, each under an original 30-second deadline, check the final
+value against the committed completion timestamp and original deadline.
 
 Rust helpers, explicit local operation policies, nested scopes and competitive
 qualification still need completion.

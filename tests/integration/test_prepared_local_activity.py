@@ -62,6 +62,11 @@ class PreparedCancellationWorkflow:
             else:
                 yield ctx.local_activity("tests.python-prepared-blocked", [marker, "work", None])
         except WorkflowCancelled as error:
+            assert error.context is ctx.cancellation_context and error.context is not None
+            delivery_path = Path(marker + ".remaining-delivery-" + str(os.getpid()) + ".json")
+            pending = delivery_path.with_suffix(".writing")
+            pending.write_text(json.dumps({"context": error.context.to_dict(), "remaining": error.context.remaining()}))
+            pending.replace(delivery_path)
             with ctx.cancellation_shield():
                 if group:
                     yield [ctx.local_activity(
@@ -73,6 +78,10 @@ class PreparedCancellationWorkflow:
                         "tests.python-prepared-blocked", [marker, "cleanup", error.request_id],
                         retry_policy={"max_attempts": 2, "backoff_seconds": [0]},
                     )
+            final_path = Path(marker + ".remaining-final.json")
+            pending = final_path.with_suffix(".writing")
+            pending.write_text(json.dumps({"context": error.context.to_dict(), "remaining": error.context.remaining()}))
+            pending.replace(final_path)
             return error.request_id
         return "not cancelled"
 
@@ -256,6 +265,8 @@ async def test_prepared_callback_stop_cleanup_sigkill_and_cold_recovery_keep_ori
             cleanup = [await remote_marker(Path(marker + "." + phase + "." + queue + "-first"))
                        for phase in cleanup_phases]
             assert all(item["request_id"] == original["request_id"] for item in cleanup)
+            original_remaining = await remote_marker(Path(marker + ".remaining-delivery-" + str(first.pid) + ".json"))
+            assert original_remaining["context"] == original_context
             for item in work:
                 await callback_gone(item["callback_pid"])
             first.kill()
@@ -265,13 +276,26 @@ async def test_prepared_callback_stop_cleanup_sigkill_and_cold_recovery_keep_ori
             duplicate = await handle.request_cancellation(cleanup_timeout_seconds=90)
             for field in ("request_id", "requested_at", "cleanup_deadline_at"):
                 assert duplicate["cancellation_request"][field] == original[field]
-            await owner(queue + "-replacement", "finish")
+            successor = await owner(queue + "-replacement", "finish")
             deadline = datetime.fromisoformat(original["cleanup_deadline_at"].replace("Z", "+00:00"))
             timeout = (deadline - datetime.now(deadline.tzinfo)).total_seconds()
             assert timeout > 0
             with pytest.raises(WorkflowCancelled):
                 await handle.result(timeout=timeout)
             history = await events(handle)
+            replacement_remaining = await remote_marker(
+                Path(marker + ".remaining-delivery-" + str(successor.pid) + ".json"),
+            )
+            completed_remaining = await remote_marker(Path(marker + ".remaining-final.json"))
+            assert replacement_remaining == original_remaining
+            assert completed_remaining["context"] == original_context
+            assert 0 < completed_remaining["remaining"] < original_remaining["remaining"]
+            delivered = next(event for event in history if event["event_type"] == "CooperativeCancellationDelivered")
+            completed = max(datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+                            for event in history if event["event_type"] == "ActivityCompleted")
+            delivered_at = datetime.fromisoformat(delivered["timestamp"].replace("Z", "+00:00"))
+            assert original_remaining["remaining"] == pytest.approx((deadline - delivered_at).total_seconds(), abs=1e-6)
+            assert completed_remaining["remaining"] == pytest.approx((deadline - completed).total_seconds(), abs=1e-6)
             kinds = [event["event_type"] for event in history]
             assert kinds.count("CooperativeCancellationDelivered") == kinds.count("WorkflowCancelled") == 1
             assert kinds.count("ActivityCancellationAcknowledged") == len(work)
@@ -298,6 +322,9 @@ async def test_prepared_callback_stop_cleanup_sigkill_and_cold_recovery_keep_ori
                 await callback_gone(item["callback_pid"])
             print("prepared physically joined callbacks: " + json.dumps({
                 "work": work, "killed_cleanup": cleanup, "replacement_cleanup": replacement,
+            }))
+            print("prepared remaining-time observations: " + json.dumps({
+                "original": original_remaining, "replacement": replacement_remaining, "completed": completed_remaining,
             }))
             print("prepared cleanup recovery receipts: " + json.dumps(receipts))
             print("prepared cleanup recovery history: " + json.dumps(history))

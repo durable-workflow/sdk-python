@@ -802,16 +802,14 @@ async def test_killed_process_reclaims_cleanup_in_a_new_process(
             assert resumed["request_id"] == original["request_id"]
             completed_remaining = await process_event(replacement, "remaining-cleanup")
             assert completed_remaining["context"] == original_remaining["context"]
-            assert 0 < completed_remaining["remaining"] < original_remaining["remaining"]
+            assert completed_remaining["remaining"] == original_remaining["remaining"] > 0
             assert (await process_event(replacement, "finished"))["committed"] is True
             assert await asyncio.wait_for(replacement.wait(), timeout=10) == 0
             history = await assert_cancelled_cleanup(handle, original["request_id"])
             deadline = datetime.fromisoformat(original["cleanup_deadline_at"].replace("Z", "+00:00"))
             delivered = next(event for event in history if event["event_type"] == "CooperativeCancellationDelivered")
-            completed = next(event for event in history if event["event_type"] == "ActivityCompleted")
-            for event, observation in ((delivered, original_remaining), (completed, completed_remaining)):
-                recorded = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
-                assert observation["remaining"] == pytest.approx((deadline - recorded).total_seconds(), abs=1e-6)
+            recorded = datetime.fromisoformat(delivered["timestamp"].replace("Z", "+00:00"))
+            assert original_remaining["remaining"] == pytest.approx((deadline - recorded).total_seconds(), abs=1e-6)
             remaining_observations = {
                 "original": original_remaining, "replacement": replacement_remaining, "completed": completed_remaining,
             }
