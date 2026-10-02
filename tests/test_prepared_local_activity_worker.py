@@ -409,7 +409,7 @@ async def test_prepared_capability_requires_actual_bridge_and_never_advertises_g
     del info["worker_protocol"]["server_capabilities"]["prepared_local_activities"]
     with pytest.raises(RuntimeError, match="installed admission bridge"):
         await worker._register()
-    with pytest.raises(ValueError, match="no prepared local group consumer"):
+    with pytest.raises(ValueError, match="require prepared_local_activities"):
         Worker(server.client, task_queue="queue", capabilities=["prepared_local_activity_groups"])
 
 

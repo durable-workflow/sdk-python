@@ -118,8 +118,10 @@ effects already performed.
 The source candidate can explicitly request both `cooperative_cancellation` and
 `prepared_local_activities` in Worker capabilities. Registration requires source
 protocol 1.20 and actual Server discovery of its installed admission bridge.
-The manifest advertises `durable_sequential_admission`. Python refuses prepared
-local parallel and selection groups until its atomic group consumer exists.
+The manifest advertises `durable_sequential_admission`. Ordinary parallel groups
+add explicit `prepared_local_activity_groups` capability and require the Server's
+installed atomic admission bridge. Their manifest advertises
+`durable_atomic_all_admission`. Selection and turn-closing waits remain refused.
 
 Replay captures the authored local call and sequence before application code
 runs. Earlier side effects, version markers and metadata commands obtain a
@@ -145,6 +147,29 @@ Cleanup local calls require a shield after canonical delivery. Admission and
 control preserve its original local request ID, root ID, delivery history event
 ID and deadline. No replacement or duplicate request grants a fresh cleanup
 budget. Connected exact-source qualification remains separate from publication.
+
+## Prepared local parallel groups
+
+An ordinary list may contain local activities, remote activities, children,
+timers and nested lists, with at most 100 total leaves. The worker checkpoints
+the complete authored batch atomically, including every nested position. It
+validates all opening history and each canonical local execution identity before
+preparing callbacks. Every local admission must validate before any callback
+spawns. Earlier metadata and side effects use a separate retained checkpoint.
+
+Callbacks execute concurrently with independent authority observation. Native
+owns outcome history, deadlines, retries and unknown-stop recovery. A retry,
+receipt loss or authority loss stops and joins siblings before returning the
+claim. Cancellation joins the entire group before workflow delivery or cleanup
+replay. A stop acknowledgment proves its own callback physically joined, or
+that no callback spawned. An unconfirmed join retains workflow capacity and
+worker registration.
+
+Cold replay preserves completed siblings and recovers only unfinished Started
+attempts. A durable retry must release the original claim before new admission.
+Results preserve authored nested positions despite settlement order. A cleanup
+group requires a shield after canonical delivery and every local member retains
+the same original root, delivery event and immutable deadline.
 
 ## Remaining qualification
 

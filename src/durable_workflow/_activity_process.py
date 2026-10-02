@@ -284,6 +284,20 @@ class SupervisedCallback:
             raise
 
     async def _finish(self) -> None:
+        # Once stop evidence arrives, cancellation cannot interrupt the OS
+        # join and leave a physically exited callback falsely unconfirmed.
+        join = asyncio.create_task(self._confirm_join())
+        cancelled = False
+        while not join.done():
+            try:
+                await asyncio.shield(join)
+            except asyncio.CancelledError:
+                cancelled = True
+        join.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _confirm_join(self) -> None:
         await self._send(b"F")
         await self.close()
         if self._exitcode != 0:

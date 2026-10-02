@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "prepared-local-group-cold-results",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "tests.replay.prepared-local-group-cold-results",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"event_type": "ActivityScheduled", "payload": {"sequence": 1, "activity_type": "prepared.first", "execution_mode": "local", "parallel_group_path": [{"parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0}]}},
+    {"event_type": "ActivityScheduled", "payload": {"sequence": 2, "activity_type": "prepared.second", "execution_mode": "local", "parallel_group_path": [{"parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1}]}},
+    {"event_type": "ActivityStarted", "payload": {"sequence": 1, "activity_type": "prepared.first", "execution_mode": "local", "activity_execution_id": "first", "activity_attempt_id": "first-original-attempt", "parallel_group_path": [{"parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0}]}},
+    {"event_type": "ActivityStarted", "payload": {"sequence": 2, "activity_type": "prepared.second", "execution_mode": "local", "activity_execution_id": "second", "activity_attempt_id": "second-original-attempt", "parallel_group_path": [{"parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1}]}},
+    {"event_type": "ActivityCompleted", "payload": {"sequence": 1, "activity_type": "prepared.first", "execution_mode": "local", "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoUZmFzdC12YWx1ZQ=="}, "parallel_group_path": [{"parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0}]}},
+    {"event_type": "ActivityCompleted", "payload": {"sequence": 2, "activity_type": "prepared.second", "execution_mode": "local", "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoUZmFzdC12YWx1ZQ=="}, "parallel_group_path": [{"parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1}]}}
+  ],
+  "expected": {
+    "command_sequence": [{"type": "complete_workflow", "command_type": "CompleteWorkflow", "result": ["fast-value", "fast-value"]}]
+  }
+}

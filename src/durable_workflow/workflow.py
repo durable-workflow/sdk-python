@@ -572,6 +572,7 @@ class RecordLocalActivity:
     outcome: dict[str, Any] | None = field(default=None, init=False, repr=False)
     arguments_envelope: dict[str, Any] | None = field(default=None, init=False, repr=False)
     result_envelope: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _parallel_group_path: list[dict[str, Any]] | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.activity_type, str):
@@ -658,7 +659,30 @@ class PreparedLocalActivityCall:
                 "request_id": self.cleanup["request_id"],
                 "delivery_history_event_id": self.cleanup["delivery_history_event_id"],
             }
+        _apply_parallel_group_metadata(command, descriptor)
         return descriptor
+
+
+@dataclass(frozen=True)
+class PreparedLocalActivityGroup:
+    """A complete ordinary parallel group, with only unresolved local calls."""
+
+    base_sequence: int
+    size: int
+    commands: tuple[Command, ...]
+    calls: tuple[PreparedLocalActivityCall, ...]
+    committed: bool
+
+    def __post_init__(self) -> None:
+        sequences = [call.sequence for call in self.calls]
+        if (
+            self.base_sequence < 1 or not 1 <= self.size <= 100 or not self.calls
+            or len(self.commands) != (0 if self.committed else self.size)
+            or len(set(sequences)) != len(sequences)
+            or any(not self.base_sequence <= call.sequence < self.base_sequence + self.size
+                   or not call.command._parallel_group_path for call in self.calls)
+        ):
+            raise LocalActivityExecutionAborted("prepared group lacks complete bounded authored membership")
 
 
 class LocalActivityExecutionAborted(Exception):
@@ -2313,6 +2337,7 @@ class ReplayOutcome:
     message_stream_waits: list[dict[str, Any]] = field(default_factory=list)
     cancellation_delivery: CancellationDelivery | None = None
     prepared_local_activity: PreparedLocalActivityCall | None = None
+    prepared_local_activity_group: PreparedLocalActivityGroup | None = None
 
 
 class Replayer:
@@ -2687,6 +2712,7 @@ def replay(
     cancellation_request: Mapping[str, Any] | None = None,
     local_activity_executor: Callable[[RecordLocalActivity], Any] | None = None,
     prepare_local_activities: bool = False,
+    prepare_local_activity_groups: bool = False,
 ) -> ReplayOutcome:
     return _replay_state(
         workflow_cls,
@@ -2702,6 +2728,7 @@ def replay(
         cancellation_request=cancellation_request,
         local_activity_executor=local_activity_executor,
         prepare_local_activities=prepare_local_activities,
+        prepare_local_activity_groups=prepare_local_activity_groups,
     ).outcome
 
 
@@ -3702,8 +3729,11 @@ def _replay_state(
     cancellation_request: Mapping[str, Any] | None = None,
     local_activity_executor: Callable[[RecordLocalActivity], Any] | None = None,
     prepare_local_activities: bool = False,
+    prepare_local_activity_groups: bool = False,
     stop_at_uncommitted_cancellation: bool = False,
 ) -> _ReplayState:
+    if prepare_local_activity_groups and not prepare_local_activities:
+        raise LocalActivityExecutionAborted("prepared groups require prepared local activity admission")
     if payload_codec is not None and payload_codec != serializer.AVRO_CODEC:
         try:
             serializer.decode("", codec=payload_codec)
@@ -3847,12 +3877,14 @@ def _replay_state(
 
     def _state(
         commands: list[Command], prepared_local_activity: PreparedLocalActivityCall | None = None,
+        prepared_local_activity_group: PreparedLocalActivityGroup | None = None,
     ) -> _ReplayState:
         return _ReplayState(
             outcome=ReplayOutcome(
                 commands=commands,
                 cancellation_delivery=cancellation_intent,
                 prepared_local_activity=prepared_local_activity,
+                prepared_local_activity_group=prepared_local_activity_group,
                 message_stream_cursors=[
                     {"stream_name": name, "through_position": position}
                     for name, position in sorted(ctx._message_stream_cursors.items())
@@ -4719,7 +4751,7 @@ def _replay_state(
     terminal_condition_reopen_cmd: WaitCondition | None = None
 
     def _parallel_leaf_kind(command: Any) -> str:
-        if isinstance(command, ScheduleActivity):
+        if isinstance(command, ScheduleActivity | RecordLocalActivity):
             return "activity"
         if isinstance(command, StartTimer):
             return "timer"
@@ -5269,6 +5301,91 @@ def _replay_state(
             return any(_contains_local_activity(member) for _, member in operation.operations)
         return False
 
+    def _prepared_call(command: RecordLocalActivity, sequence: int) -> PreparedLocalActivityCall:
+        cleanup: dict[str, str] | None = None
+        if cancellation.request is not None:
+            delivery = cancellation.delivery
+            context = cancellation.request.context
+            delivery_id = (
+                events[cancellation.delivery_index].get("id")
+                if cancellation.delivery_index is not None else None
+            )
+            if (
+                not cancellation_consumed or ctx._cancellation_shield_depth < 1
+                or delivery is None or context is None
+                or sequence < delivery.sequence + delivery.sequence_span
+                or not isinstance(delivery_id, str) or not delivery_id.strip()
+            ):
+                raise LocalActivityExecutionAborted(
+                    "prepared cleanup requires a shield after canonical cancellation delivery",
+                )
+            cleanup = {
+                "request_id": context.request_id, "root_request_id": context.root_request_id,
+                "delivery_history_event_id": delivery_id,
+                "cleanup_deadline_at": context.to_dict()["cleanup_deadline_at"],
+            }
+        started = False
+        for event in events:
+            if _workflow_sequence(event.get("payload") or {}) != sequence:
+                continue
+            if _history_event_type(event) == "ActivityStarted":
+                started = True
+            elif _history_event_type(event) == "ActivityRetryScheduled":
+                started = False
+        return PreparedLocalActivityCall(command, sequence, started, cleanup)
+
+    def _prepared_group(commands: list[Any]) -> PreparedLocalActivityGroup | None:
+        if not 1 <= len(commands) <= 100:
+            raise LocalActivityExecutionAborted("atomic prepared groups require 1 to 100 authored members")
+        openings = {
+            "ActivityScheduled": "activity", "TimerScheduled": "timer",
+            "ChildWorkflowScheduled": "child workflow", "ChildRunStarted": "child workflow",
+        }
+        present: set[int] = set()
+        for offset, command in enumerate(commands):
+            sequence = current_call_sequence + offset
+            if not isinstance(command, ScheduleActivity | RecordLocalActivity | StartTimer | StartChildWorkflow):
+                raise LocalActivityExecutionAborted("prepared group contains an unsupported admission operation")
+            for event in events:
+                payload = event.get("payload") or {}
+                if _workflow_sequence(payload) != sequence:
+                    continue
+                kind = _history_event_type(event)
+                if kind not in openings:
+                    continue
+                # A complete path is admission authority. Legacy metadata-poor
+                # history cannot authorize fresh Source callbacks.
+                details = _recorded_step_details(payload)
+                if payload.get("parallel_group_path") != command._parallel_group_path:
+                    raise NonDeterministicReplayError(
+                        sequence, "complete authored parallel group path", [kind],
+                        detail="prepared group history changed or omitted its membership",
+                    )
+                _assert_step_matches(command, _RecordedStep(sequence, openings[kind], [kind], details))
+                present.add(sequence)
+        if present and len(present) != len(commands):
+            raise NonDeterministicReplayError(
+                current_call_sequence, "all parallel members scheduled", [],
+                detail="prepared group history is missing a declared member",
+            )
+        # Never reinterpret terminal/started history without its atomic opening.
+        group_sequences = set(range(current_call_sequence, current_call_sequence + len(commands)))
+        if not present and group_sequences.intersection(event_types_by_sequence):
+            raise NonDeterministicReplayError(
+                current_call_sequence, "complete atomic group opening", [],
+                detail="prepared group history lacks its original scheduling batch",
+            )
+        calls = tuple(
+            _prepared_call(command, current_call_sequence + offset)
+            for offset, command in enumerate(commands)
+            if isinstance(command, RecordLocalActivity) and current_call_sequence + offset not in resolved_sequences
+        )
+        if not calls:
+            return None
+        return PreparedLocalActivityGroup(
+            current_call_sequence, len(commands), () if present else tuple(commands), calls, bool(present),
+        )
+
     def _assert_cancellation_call_matches(command: Any, boundary: CancellationDelivery) -> None:
         if isinstance(command, list):
             leaves, _ = _annotate_parallel_commands(command, boundary.sequence)
@@ -5362,7 +5479,9 @@ def _replay_state(
                     return _terminal_state(stop.value, include_pending=True)
                 first = False
             _apply_due_receivers()
-            if prepare_local_activities and isinstance(cmd, list | SelectGroup) and _contains_local_activity(cmd):
+            if prepare_local_activities and isinstance(cmd, list | SelectGroup) and _contains_local_activity(cmd) and (
+                not prepare_local_activity_groups or isinstance(cmd, SelectGroup)
+            ):
                 raise LocalActivityExecutionAborted(
                     "prepared local groups require an implemented atomic group consumer",
                 )
@@ -5510,8 +5629,22 @@ def _replay_state(
                         "ordinary parallel list groups do not support WaitCondition; "
                         "use WorkflowContext.select() for durable condition selection"
                     )
-                cmd, result_shape = _annotate_parallel_commands(cmd)
+                prepared_group = prepare_local_activities and _contains_local_activity(cmd)
+                cmd, result_shape = _annotate_parallel_commands(cmd, current_call_sequence if prepared_group else None)
                 needed = len(cmd)
+                if prepared_group:
+                    group = _prepared_group(cmd)
+                    if group is not None:
+                        ctx.logger._set_replaying(False)
+                        return _state(pending, prepared_local_activity_group=group)
+                    if any(current_call_sequence + offset not in resolved_sequences for offset in range(needed)):
+                        # Local results are durable. Remote members own their
+                        # remaining work, with no repeat scheduling batch.
+                        return _state(pending)
+                elif any(isinstance(command, RecordLocalActivity) for command in cmd) and (
+                    result_cursor + needed > len(resolved_results)
+                ):
+                    raise LocalActivityExecutionAborted("local groups require negotiated atomic prepared admission")
                 if result_cursor + needed <= len(resolved_results):
                     for offset, child_command in enumerate(cmd):
                         _assert_next_step_matches(child_command, offset)
@@ -5819,37 +5952,7 @@ def _replay_state(
                 ctx.logger._set_replaying(False)
                 _assert_pending_step_matches(cmd)
                 if isinstance(cmd, RecordLocalActivity) and prepare_local_activities:
-                    cleanup: dict[str, str] | None = None
-                    if cancellation.request is not None:
-                        delivery = cancellation.delivery
-                        context = cancellation.request.context
-                        delivery_id = (
-                            events[cancellation.delivery_index].get("id")
-                            if cancellation.delivery_index is not None else None
-                        )
-                        if (
-                            not cancellation_consumed or ctx._cancellation_shield_depth < 1
-                            or delivery is None or context is None
-                            or current_call_sequence < delivery.sequence + delivery.sequence_span
-                            or not isinstance(delivery_id, str) or not delivery_id.strip()
-                        ):
-                            raise LocalActivityExecutionAborted(
-                                "prepared cleanup requires a shield after canonical cancellation delivery",
-                            )
-                        cleanup = {
-                            "request_id": context.request_id, "root_request_id": context.root_request_id,
-                            "delivery_history_event_id": delivery_id,
-                            "cleanup_deadline_at": context.to_dict()["cleanup_deadline_at"],
-                        }
-                    started = False
-                    for event in events:
-                        if _workflow_sequence(event.get("payload") or {}) != current_call_sequence:
-                            continue
-                        if _history_event_type(event) == "ActivityStarted":
-                            started = True
-                        elif _history_event_type(event) == "ActivityRetryScheduled":
-                            started = False
-                    return _state(pending, PreparedLocalActivityCall(cmd, current_call_sequence, started, cleanup))
+                    return _state(pending, _prepared_call(cmd, current_call_sequence))
                 if isinstance(cmd, RecordLocalActivity) and local_activity_executor is not None:
                     local_result = local_activity_executor(cmd)
                     if cmd.outcome is None or cmd.arguments_envelope is None:

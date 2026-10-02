@@ -227,3 +227,37 @@ def test_nonimportable_handler_is_rejected_before_spawn() -> None:
         pass
     with pytest.raises(ValueError, match="spawn-compatible.*importable handler"):
         SupervisedCallback(invocation(callback))
+
+
+async def test_cancellation_during_confirmed_result_join_still_reaps_and_proves_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback = SupervisedCallback(invocation(typed_result, b"typed"))
+    entering_join = asyncio.Event()
+    release_join = asyncio.Event()
+    close = SupervisedCallback.close
+
+    async def paused_close(self: SupervisedCallback) -> None:
+        entering_join.set()
+        await release_join.wait()
+        await close(self)
+
+    monkeypatch.setattr(SupervisedCallback, "close", paused_close)
+    result: asyncio.Task[Any] | None = None
+    try:
+        await callback.start()
+        result = asyncio.create_task(callback.result(no_heartbeat))
+        await asyncio.wait_for(entering_join.wait(), timeout=5)
+        result.cancel()
+        await asyncio.sleep(0)
+        assert not callback.stopped
+        release_join.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(result, timeout=7)
+        assert callback.stopped and callback._joined and callback._exitcode == 0
+    finally:
+        release_join.set()
+        if result is not None:
+            await asyncio.gather(result, return_exceptions=True)
+        if not callback.stopped:
+            await callback.stop()

@@ -28,6 +28,7 @@ async def prepared_runtime(server_url: str, server_token: str, monkeypatch: pyte
     async with Client(server_url, token=server_token, namespace="default") as client:
         info = await client.get_cluster_info()
     assert info["worker_protocol"]["server_capabilities"]["prepared_local_activities"] is True
+    assert info["worker_protocol"]["server_capabilities"]["prepared_local_activity_groups"] is True
     assert info["worker_protocol"]["version"] == "1.20"
     monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
 
@@ -53,15 +54,25 @@ async def prepared_local(marker: str, phase: str) -> dict[str, Any]:
 
 @workflow.defn(name="tests.python-prepared-cancellation")
 class PreparedCancellationWorkflow:
-    def run(self, ctx: Any, marker: str) -> Any:
+    def run(self, ctx: Any, marker: str, group: bool = False) -> Any:
         try:
-            yield ctx.local_activity("tests.python-prepared-blocked", [marker, "work", None])
+            if group:
+                yield [ctx.local_activity("tests.python-prepared-blocked", [marker, "work-0", None]),
+                       ctx.local_activity("tests.python-prepared-blocked", [marker, "work-1", None])]
+            else:
+                yield ctx.local_activity("tests.python-prepared-blocked", [marker, "work", None])
         except WorkflowCancelled as error:
             with ctx.cancellation_shield():
-                yield ctx.local_activity(
-                    "tests.python-prepared-blocked", [marker, "cleanup", error.request_id],
-                    retry_policy={"max_attempts": 2, "backoff_seconds": [0]},
-                )
+                if group:
+                    yield [ctx.local_activity(
+                        "tests.python-prepared-blocked", [marker, "cleanup-" + str(index), error.request_id],
+                        retry_policy={"max_attempts": 2, "backoff_seconds": [0]},
+                    ) for index in range(2)]
+                else:
+                    yield ctx.local_activity(
+                        "tests.python-prepared-blocked", [marker, "cleanup", error.request_id],
+                        retry_policy={"max_attempts": 2, "backoff_seconds": [0]},
+                    )
             return error.request_id
         return "not cancelled"
 
@@ -74,18 +85,39 @@ async def prepared_blocked(marker: str, phase: str, request_id: str | None) -> d
     pending.write_text(json.dumps({"phase": phase, "callback_pid": os.getpid(), "request_id": request_id,
                                    "activity_attempt_id": info.activity_attempt_id}))
     pending.replace(path)
-    if phase == "work" or os.environ.get("DW_PREPARED_FIXTURE_MODE") == "hold":
+    if phase.startswith("work") or os.environ.get("DW_PREPARED_FIXTURE_MODE") == "hold":
         # Intentionally no application heartbeat.
         await asyncio.Event().wait()
     return {"request_id": request_id, "bytes": b"\x00\xff"}
 
 
+@workflow.defn(name="tests.python-prepared-group")
+class PreparedGroupWorkflow:
+    def run(self, ctx: Any, marker: str) -> Any:
+        yield ctx.upsert_memo({"before": "atomic local group"})
+        first = ctx.local_activity("tests.python-prepared-peer", [marker, "first", "second"], heartbeat_timeout=10)
+        second = ctx.local_activity("tests.python-prepared-peer", [marker, "second", "first"], heartbeat_timeout=10)
+        return (yield [first, [second, ctx.start_timer(1)]])
+
+
+@activity.defn(name="tests.python-prepared-peer")
+async def prepared_peer(marker: str, phase: str, peer: str) -> dict[str, Any]:
+    info = activity.context().info
+    Path(marker + "." + phase).write_text(json.dumps({
+        "callback_pid": os.getpid(), "attempt_id": info.activity_attempt_id,
+    }))
+    await remote_marker(Path(marker + "." + peer))
+    await activity.context().heartbeat({"phase": phase})
+    return {"phase": phase, "bytes": b"\x00\xff", "attempt": info.activity_attempt_id}
+
+
 def prepared_worker(client: Client, queue: str, **kwargs: Any) -> Worker:
     return Worker(
         client, task_queue=queue, worker_id=kwargs.pop("worker_id", queue + "-owner"),
-        workflows=[PreparedSequentialWorkflow, PreparedCancellationWorkflow],
-        activities=[prepared_local, prepared_blocked],
-        capabilities=["cooperative_cancellation", "prepared_local_activities"], **kwargs,
+        workflows=[PreparedSequentialWorkflow, PreparedCancellationWorkflow, PreparedGroupWorkflow],
+        activities=[prepared_local, prepared_blocked, prepared_peer],
+        capabilities=["cooperative_cancellation", "prepared_local_activities", "prepared_local_activity_groups"],
+        **kwargs,
     )
 
 
@@ -136,8 +168,43 @@ async def test_prepared_prefix_two_callbacks_and_cold_replay_use_canonical_histo
             await worker.stop()
 
 
-async def test_prepared_callback_stop_cleanup_sigkill_and_cold_recovery_keep_original_30_second_deadline(
+async def test_prepared_nested_mixed_group_starts_peers_concurrently_and_cold_replays_results_in_position(
     server_url: str, server_token: str, tmp_path: Path,
+) -> None:
+    queue = "py-prepared-group-" + uuid.uuid4().hex[:8]
+    marker = str(tmp_path / "callback")
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        worker = prepared_worker(client, queue)
+        owner = asyncio.create_task(worker.run())
+        try:
+            handle = await client.start_workflow(workflow_type="tests.python-prepared-group", task_queue=queue,
+                                                 workflow_id=queue, input=[marker])
+            result = await handle.result(timeout=15)
+            assert result[0]["phase"] == "first" and result[1][0]["phase"] == "second"
+            assert result[0]["bytes"] == result[1][0]["bytes"] == b"\x00\xff"
+            assert result[0]["attempt"] != result[1][0]["attempt"]
+            history = await events(handle)
+            kinds = [event["event_type"] for event in history]
+            assert kinds.count("ActivityScheduled") == kinds.count("ActivityStarted") == 2
+            assert kinds.count("ActivityCompleted") == 2
+            assert kinds.count("ActivityHeartbeatRecorded") == 2
+            assert kinds.count("TimerScheduled") == kinds.count("TimerFired") == 1
+            assert kinds.count("MemoUpserted") == kinds.count("WorkflowCompleted") == 1
+            completed = replay(PreparedGroupWorkflow, history, [marker], run_id=handle.run_id or "",
+                               prepare_local_activities=True, prepare_local_activity_groups=True)
+            assert completed.prepared_local_activity_group is None
+            assert completed.commands[0].result == result  # type: ignore[union-attr]
+            for phase in ("first", "second"):
+                await callback_gone(json.loads(Path(marker + "." + phase).read_text())["callback_pid"])
+            print("prepared nested mixed group history: " + json.dumps(history))
+        finally:
+            await worker.stop()
+            await asyncio.wait_for(owner, timeout=10)
+
+
+@pytest.mark.parametrize("group", [False, True], ids=["sequential", "atomic-group"])
+async def test_prepared_callback_stop_cleanup_sigkill_and_cold_recovery_keep_original_30_second_deadline(
+    server_url: str, server_token: str, tmp_path: Path, group: bool,
 ) -> None:
     queue = "py-prepared-cancel-" + uuid.uuid4().hex[:8]
     marker = str(tmp_path / "callback")
@@ -158,20 +225,26 @@ async def test_prepared_callback_stop_cleanup_sigkill_and_cold_recovery_keep_ori
     async with Client(server_url, token=server_token, namespace="default") as client:
         try:
             handle = await client.start_workflow(workflow_type="tests.python-prepared-cancellation", task_queue=queue,
-                                                 workflow_id=queue, input=[marker])
+                                                 workflow_id=queue, input=[marker, group])
             first = await owner(queue + "-first", "hold")
-            work = await remote_marker(Path(marker + ".work." + queue + "-first"))
+            work_phases = ["work-0", "work-1"] if group else ["work"]
+            cleanup_phases = ["cleanup-0", "cleanup-1"] if group else ["cleanup"]
+            work = [await remote_marker(Path(marker + "." + phase + "." + queue + "-first"))
+                    for phase in work_phases]
             accepted = await handle.request_cancellation(cleanup_timeout_seconds=30)
             original = accepted["cancellation_request"]
             requested_history = await events(handle)
             original_context = next(event["payload"]["cancellation"] for event in requested_history
                                     if event["event_type"] == "CooperativeCancellationRequested")
-            cleanup = await remote_marker(Path(marker + ".cleanup." + queue + "-first"))
-            assert cleanup["request_id"] == original["request_id"]
-            await callback_gone(work["callback_pid"])
+            cleanup = [await remote_marker(Path(marker + "." + phase + "." + queue + "-first"))
+                       for phase in cleanup_phases]
+            assert all(item["request_id"] == original["request_id"] for item in cleanup)
+            for item in work:
+                await callback_gone(item["callback_pid"])
             first.kill()
             await asyncio.wait_for(first.wait(), timeout=10)
-            await callback_gone(cleanup["callback_pid"])
+            for item in cleanup:
+                await callback_gone(item["callback_pid"])
             duplicate = await handle.request_cancellation(cleanup_timeout_seconds=90)
             for field in ("request_id", "requested_at", "cleanup_deadline_at"):
                 assert duplicate["cancellation_request"][field] == original[field]
@@ -184,24 +257,31 @@ async def test_prepared_callback_stop_cleanup_sigkill_and_cold_recovery_keep_ori
             history = await events(handle)
             kinds = [event["event_type"] for event in history]
             assert kinds.count("CooperativeCancellationDelivered") == kinds.count("WorkflowCancelled") == 1
-            assert kinds.count("ActivityCancellationAcknowledged") == 1
+            assert kinds.count("ActivityCancellationAcknowledged") == len(work)
+            assert kinds.count("ActivityCancelled") == len(work)
             assert "ActivityHeartbeatRecorded" not in kinds
             terminal = next(event for event in history if event["event_type"] == "WorkflowCancelled")
             assert datetime.fromisoformat(terminal["timestamp"].replace("Z", "+00:00")) < deadline
             receipts = [json.loads(line) for line in trace_path.read_text().splitlines()]
             admissions = [entry["receipt"] for entry in receipts
                           if entry["operation"] == "prepare" and entry["receipt"].get("cancellation_cleanup")]
-            assert len(admissions) == 2
-            assert admissions[0]["activity_attempt_id"] != admissions[1]["activity_attempt_id"]
-            assert admissions[0]["cancellation_cleanup"] == admissions[1]["cancellation_cleanup"]
+            assert len(admissions) == 2 * len(cleanup)
+            assert len({item["activity_attempt_id"] for item in admissions}) == len(admissions)
+            assert all(item["cancellation_cleanup"] == admissions[0]["cancellation_cleanup"] for item in admissions)
             authority = admissions[0]["cancellation_cleanup"]
             assert authority["request_id"] == original["request_id"]
             assert authority["root_request_id"] == original_context["root_request_id"]
             assert datetime.fromisoformat(authority["cleanup_deadline_at"].replace("Z", "+00:00")) == deadline
             recoveries = [entry["receipt"] for entry in receipts if entry["operation"] == "recover"]
-            assert len(recoveries) == 1 and recoveries[0]["callback_stop_state"] == "unknown"
-            replacement = await remote_marker(Path(marker + ".cleanup." + queue + "-replacement"))
-            await callback_gone(replacement["callback_pid"])
+            assert len(recoveries) == len(cleanup)
+            assert all(item["callback_stop_state"] == "unknown" for item in recoveries)
+            replacement = [await remote_marker(Path(marker + "." + phase + "." + queue + "-replacement"))
+                           for phase in cleanup_phases]
+            for item in replacement:
+                await callback_gone(item["callback_pid"])
+            print("prepared physically joined callbacks: " + json.dumps({
+                "work": work, "killed_cleanup": cleanup, "replacement_cleanup": replacement,
+            }))
             print("prepared cleanup recovery receipts: " + json.dumps(receipts))
             print("prepared cleanup recovery history: " + json.dumps(history))
         finally:

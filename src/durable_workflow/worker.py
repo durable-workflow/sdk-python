@@ -94,6 +94,7 @@ from .workflow import (
     FailWorkflow,
     LocalActivityExecutionAborted,
     NexusServiceCall,
+    PreparedLocalActivityCall,
     RecordLocalActivity,
     RecordSideEffect,
     ReplayOutcome,
@@ -1052,8 +1053,11 @@ class Worker:
         self.capabilities = tuple(dict.fromkeys(capability.strip() for capability in capabilities))
         self._cooperative_cancellation_supported = False
         self._prepared_local_activities_supported = False
-        if "prepared_local_activity_groups" in self.capabilities:
-            raise ValueError("Python has no prepared local group consumer yet")
+        self._prepared_local_activity_groups_supported = False
+        if "prepared_local_activity_groups" in self.capabilities and (
+            "prepared_local_activities" not in self.capabilities
+        ):
+            raise ValueError("prepared local groups require prepared_local_activities capability")
         if "prepared_local_activities" in self.capabilities and "cooperative_cancellation" not in self.capabilities:
             raise ValueError("prepared local activities require cooperative_cancellation capability")
         if any(not capability for capability in self.capabilities):
@@ -1243,6 +1247,13 @@ class Worker:
             raise RuntimeError(
                 "prepared_local_activity_not_supported: Server must advertise its installed admission bridge",
             )
+        self._prepared_local_activity_groups_supported = (
+            "prepared_local_activity_groups" in self.capabilities and self._prepared_local_activities_supported
+            and isinstance(server_capabilities, Mapping)
+            and server_capabilities.get("prepared_local_activity_groups") is True
+        )
+        if "prepared_local_activity_groups" in self.capabilities and not self._prepared_local_activity_groups_supported:
+            raise RuntimeError("prepared_local_group_not_supported: Server must advertise its installed atomic bridge")
         self._validate_cooperative_activity_handlers()
         self._query_tasks_supported = _server_supports_query_tasks(info)
         self._workflow_memo_updates_supported = _server_supports_workflow_memo_updates(info)
@@ -1298,6 +1309,10 @@ class Worker:
                     "supported": True, "minimum_protocol_version": "1.20",
                     "implementation": "durable_sequential_admission",
                 }} if self._prepared_local_activities_supported else {}),
+                **({"prepared_local_activity_groups": {
+                    "supported": True, "minimum_protocol_version": "1.20",
+                    "implementation": "durable_atomic_all_admission",
+                }} if self._prepared_local_activity_groups_supported else {}),
             },
             task_slots=self._current_task_slots(),
             process_metrics=self._current_process_metrics(),
@@ -1551,7 +1566,11 @@ class Worker:
                     cancel_requested=bool(task.get("cancel_requested", False)) and state.request is None,
                     cancellation_request=task.get("cancellation_request"), local_activity_executor=execute_local,
                     prepare_local_activities=self._prepared_local_activities_supported,
+                    prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                 )
+                if outcome.prepared_local_activity_group is not None:
+                    history = await self._execute_prepared_local_activity_group(task, history, outcome)
+                    continue
                 if outcome.prepared_local_activity is not None:
                     history = await self._execute_prepared_local_activity(task, history, outcome)
                     continue
@@ -1635,35 +1654,7 @@ class Worker:
         codec = _validate_payload_codec(task.get("payload_codec")) or serializer.AVRO_CODEC
         try:
             if outcome.commands:
-                commands = commands_to_server_commands(outcome.commands, self.task_queue, payload_codec=codec)
-                start = call.sequence - len(commands)
-                if start < 1 or any(command["type"] not in {
-                    "record_side_effect", "record_version_marker", "upsert_memo", "upsert_search_attributes",
-                } for command in commands):
-                    raise LocalActivityExecutionAborted("prepared prefix has no supported authored sequence range")
-                if any(command["type"] == "upsert_memo" for command in commands) and (
-                    not self._workflow_memo_updates_supported
-                ):
-                    raise LocalActivityExecutionAborted(
-                        "prepared memo prefix requires negotiated workflow memo updates",
-                    )
-                checkpoint = hashlib.sha256(json.dumps(
-                    [task_id, self.worker_id, epoch, start, commands], sort_keys=True, allow_nan=False,
-                ).encode()).hexdigest()
-                receipt = await self.client.prepared_local_activity_operation(
-                    task_id=task_id, lease_owner=self.worker_id, workflow_task_attempt=epoch, operation="checkpoint",
-                    body={"checkpoint_id": checkpoint, "start_sequence": start, "commands": commands},
-                )
-                if (receipt.get("checkpointed") is not True or type(receipt.get("duplicate")) is not bool
-                        or receipt.get("checkpoint_id") != checkpoint
-                        or receipt.get("task_id") != task_id or receipt.get("workflow_run_id") != task["run_id"]
-                        or type(receipt.get("workflow_task_attempt")) is not int
-                        or receipt["workflow_task_attempt"] != epoch or receipt.get("lease_owner") != self.worker_id
-                        or receipt.get("start_sequence") != start or receipt.get("next_sequence") != call.sequence
-                        or "reason" not in receipt
-                        or receipt["reason"] is not None):
-                    raise LocalActivityExecutionAborted("prepared prefix lacks an original-claim checkpoint receipt")
-                return await self._refresh_prepared_local_history(task, receipt)
+                return await self._checkpoint_prepared_prefix(task, outcome.commands, call.sequence, codec)
             descriptor = call.descriptor(codec)
             if call.recover:
                 original = next((event.get("payload", {}) for event in reversed(history)
@@ -1710,32 +1701,10 @@ class Worker:
                         "prepared recovery is absent from this claim's canonical history",
                     )
                 return refreshed
-            nonce = hashlib.sha256(json.dumps(
-                [task_id, task["run_id"], self.worker_id, epoch, call.sequence],
-            ).encode()).hexdigest()
-            started = time.monotonic()
-            receipt = await self.client.prepared_local_activity_operation(
-                task_id=task_id, lease_owner=self.worker_id, workflow_task_attempt=epoch, operation="prepare",
-                body={"sequence": call.sequence, "worker_attempt_id": nonce, "descriptor": descriptor},
-            )
-            attempt = PreparedAttempt.admitted(
-                receipt, task_id=task_id, run_id=task["run_id"], owner=self.worker_id, epoch=epoch, nonce=nonce,
-                heartbeat_timeout=call.command.heartbeat_timeout, cleanup=call.cleanup, request_started=started,
-            )
-            handler = self.activities.get(call.command.activity_type)
-            if handler is None:
-                raise LocalActivityExecutionAborted("prepared local activity has no registered handler")
-            runner = PreparedLocalRunner(
-                self.client, attempt, shutdown=self._local_activity_shutdown,
-                observe=lambda value: task.update({"_prepared_cancellation_context": dict(value)}),
-            )
+            runner, invocation = await self._prepare_local_callback(task, call, codec)
+            attempt = runner.attempt
             try:
-                receipt = await runner.execute(CallbackInvocation(
-                    handler, tuple(call.command.arguments), ActivityInfo(
-                        task_id, call.command.activity_type, attempt.attempt_id, attempt.attempt_number,
-                        self.task_queue, self.worker_id,
-                    ), {**task, "activity_attempt_id": attempt.attempt_id}, self.interceptors,
-                ), self._prepared_local_activity_processes)
+                receipt = await runner.execute(invocation, self._prepared_local_activity_processes)
             finally:
                 if runner.callback is not None and runner.callback in self._prepared_local_activity_processes:
                     self._abandoned_prepared_local_claims.add(task_id)
@@ -1760,6 +1729,221 @@ class Worker:
             raise LocalActivityExecutionAborted(
                 "prepared operation could not validate its original authority",
             ) from error
+
+    async def _checkpoint_prepared_prefix(
+        self, task: dict[str, Any], commands: list[Command], next_sequence: int, codec: str,
+    ) -> list[dict[str, Any]]:
+        wire = commands_to_server_commands(commands, self.task_queue, payload_codec=codec)
+        if any(command["type"] not in {
+            "record_side_effect", "record_version_marker", "upsert_memo", "upsert_search_attributes",
+        } for command in wire):
+            raise LocalActivityExecutionAborted("prepared prefix has no supported authored sequence range")
+        if any(command["type"] == "upsert_memo" for command in wire) and not self._workflow_memo_updates_supported:
+            raise LocalActivityExecutionAborted("prepared memo prefix requires negotiated workflow memo updates")
+        receipt = await self._checkpoint_prepared_commands(task, wire, next_sequence)
+        return await self._refresh_prepared_local_history(task, receipt)
+
+    async def _checkpoint_prepared_commands(
+        self, task: dict[str, Any], commands: list[dict[str, Any]], next_sequence: int, *, group: bool = False,
+    ) -> dict[str, Any]:
+        task_id = task["task_id"]
+        epoch = task.get("workflow_task_attempt", 1)
+        start = next_sequence - len(commands)
+        if start < 1:
+            raise LocalActivityExecutionAborted("prepared checkpoint has no authored sequence range")
+        checkpoint = hashlib.sha256(json.dumps(
+            [task_id, self.worker_id, epoch, start, commands], sort_keys=True, allow_nan=False,
+        ).encode()).hexdigest()
+        receipt = await self.client.prepared_local_activity_operation(
+            task_id=task_id, lease_owner=self.worker_id, workflow_task_attempt=epoch,
+            operation="checkpoint-group" if group else "checkpoint",
+            body={"checkpoint_id": checkpoint, "start_sequence": start, "commands": commands},
+        )
+        if (receipt.get("checkpointed") is not True or type(receipt.get("duplicate")) is not bool
+                or receipt.get("checkpoint_id") != checkpoint
+                or receipt.get("task_id") != task_id or receipt.get("workflow_run_id") != task["run_id"]
+                or type(receipt.get("workflow_task_attempt")) is not int
+                or receipt["workflow_task_attempt"] != epoch or receipt.get("lease_owner") != self.worker_id
+                or type(receipt.get("start_sequence")) is not int or receipt["start_sequence"] != start
+                or type(receipt.get("next_sequence")) is not int or receipt["next_sequence"] != next_sequence
+                or "reason" not in receipt or receipt["reason"] is not None):
+            raise LocalActivityExecutionAborted("prepared checkpoint lacks an original-claim receipt")
+        return receipt
+
+    async def _prepare_local_callback(
+        self, task: dict[str, Any], call: PreparedLocalActivityCall, codec: str,
+    ) -> tuple[PreparedLocalRunner, CallbackInvocation]:
+        task_id = task["task_id"]
+        epoch = task.get("workflow_task_attempt", 1)
+        nonce = hashlib.sha256(json.dumps(
+            [task_id, task["run_id"], self.worker_id, epoch, call.sequence],
+        ).encode()).hexdigest()
+        started = time.monotonic()
+        receipt = await self.client.prepared_local_activity_operation(
+            task_id=task_id, lease_owner=self.worker_id, workflow_task_attempt=epoch, operation="prepare",
+            body={"sequence": call.sequence, "worker_attempt_id": nonce, "descriptor": call.descriptor(codec)},
+        )
+        attempt = PreparedAttempt.admitted(
+            receipt, task_id=task_id, run_id=task["run_id"], owner=self.worker_id, epoch=epoch, nonce=nonce,
+            heartbeat_timeout=call.command.heartbeat_timeout, cleanup=call.cleanup, request_started=started,
+        )
+        handler = self.activities.get(call.command.activity_type)
+        if handler is None:
+            raise LocalActivityExecutionAborted("prepared local activity has no registered handler")
+
+        def observe(value: Mapping[str, Any]) -> None:
+            previous = task.get("_prepared_cancellation_context")
+            if previous is not None and CancellationContext.from_dict(previous) != CancellationContext.from_dict(value):
+                raise LocalActivityExecutionAborted("prepared group members observed different cancellation authority")
+            task["_prepared_cancellation_context"] = dict(value)
+
+        runner = PreparedLocalRunner(self.client, attempt, shutdown=self._local_activity_shutdown, observe=observe)
+        invocation = CallbackInvocation(
+            handler, tuple(call.command.arguments), ActivityInfo(
+                task_id, call.command.activity_type, attempt.attempt_id, attempt.attempt_number,
+                self.task_queue, self.worker_id,
+            ), {**task, "activity_attempt_id": attempt.attempt_id}, self.interceptors,
+        )
+        return runner, invocation
+
+    async def _execute_prepared_local_activity_group(
+        self, task: dict[str, Any], history: list[dict[str, Any]], outcome: ReplayOutcome,
+    ) -> list[dict[str, Any]]:
+        group = outcome.prepared_local_activity_group
+        if group is None or not self._prepared_local_activity_groups_supported:
+            raise LocalActivityExecutionAborted("prepared group lacks negotiated atomic admission")
+        codec = _validate_payload_codec(task.get("payload_codec")) or serializer.AVRO_CODEC
+        members: list[tuple[PreparedLocalRunner, CallbackInvocation]] = []
+        executions: dict[asyncio.Task[dict[str, Any]], int] = {}
+        receipts: dict[int, dict[str, Any]] = {}
+        try:
+            if outcome.commands:
+                return await self._checkpoint_prepared_prefix(task, outcome.commands, group.base_sequence, codec)
+            if not group.committed:
+                calls = {call.sequence: call for call in group.calls}
+                commands: list[dict[str, Any]] = []
+                for sequence, command in enumerate(group.commands, group.base_sequence):
+                    if sequence in calls:
+                        commands.append({**calls[sequence].descriptor(codec), "type": "prepare_local_activity"})
+                    else:
+                        commands.extend(commands_to_server_commands([command], self.task_queue, payload_codec=codec))
+                receipt = await self._checkpoint_prepared_commands(
+                    task, commands, group.base_sequence + group.size, group=True,
+                )
+                locals_ = receipt.get("local_activities")
+                identities: set[str] = set()
+                executions_by_sequence: dict[int, str] = {}
+                if not isinstance(locals_, list) or len(locals_) != len(group.calls):
+                    raise LocalActivityExecutionAborted("atomic checkpoint omitted an authored local member")
+                for call, local in zip(group.calls, locals_, strict=True):
+                    identity = local.get("activity_execution_id") if isinstance(local, Mapping) else None
+                    if (not isinstance(local, Mapping) or type(local.get("sequence")) is not int
+                            or local["sequence"] != call.sequence or not isinstance(identity, str)
+                            or not identity.strip() or identity in identities):
+                        raise LocalActivityExecutionAborted("atomic checkpoint changed its authored local members")
+                    identities.add(identity)
+                    executions_by_sequence[call.sequence] = identity
+                # Replay the entire canonical batch before preparing any callback.
+                refreshed = await self._refresh_prepared_local_history(task, receipt)
+                opening_kinds = {
+                    "prepare_local_activity": {"ActivityScheduled"}, "schedule_activity": {"ActivityScheduled"},
+                    "start_timer": {"TimerScheduled"},
+                    "start_child_workflow": {"ChildWorkflowScheduled", "ChildRunStarted"},
+                }
+                for sequence, wire_command in enumerate(commands, group.base_sequence):
+                    opening = next((event for event in refreshed
+                                    if event.get("event_type", event.get("type")) in opening_kinds[wire_command["type"]]
+                                    and event.get("payload", {}).get("sequence", event.get("payload", {}).get(
+                                        "workflow_sequence")) == sequence), None)
+                    payload = opening.get("payload", {}) if opening is not None else {}
+                    if opening is None or payload.get("parallel_group_path") != wire_command["parallel_group_path"]:
+                        raise LocalActivityExecutionAborted("atomic checkpoint is absent from canonical group history")
+                    if sequence in calls and payload.get("activity_execution_id") != executions_by_sequence[sequence]:
+                        raise LocalActivityExecutionAborted(
+                            "atomic checkpoint changed canonical local execution identity",
+                        )
+                return refreshed
+            for call in group.calls:
+                if call.recover:
+                    return await self._execute_prepared_local_activity(
+                        task, history, ReplayOutcome([], prepared_local_activity=call),
+                    )
+            for call in group.calls:
+                members.append(await self._prepare_local_callback(task, call, codec))
+            for index, (runner, invocation) in enumerate(members):
+                execution = asyncio.create_task(runner.execute(invocation, self._prepared_local_activity_processes))
+                executions[execution] = index
+            pending = set(executions)
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for execution in done:
+                    receipt = await execution
+                    if receipt["claim_released"]:
+                        raise _WorkflowClaimDeferred("Native released the group claim for a durable local retry")
+                    receipts[executions[execution]] = receipt
+            # A cursor from a later-settled receipt includes all prior commits.
+            last = next(reversed(receipts.values()))
+            refreshed = await self._refresh_prepared_local_history(task, last)
+            for index, receipt in receipts.items():
+                call = group.calls[index]
+                attempt = members[index][0].attempt
+                event = next((event for event in refreshed if event.get("id") == receipt["event_id"]), None)
+                payload = event.get("payload", {}) if event is not None else {}
+                if (event is None or event.get("event_type", event.get("type")) != receipt["event_type"]
+                        or payload.get("sequence", payload.get("workflow_sequence")) != call.sequence
+                        or payload.get("activity_execution_id") != attempt.execution_id
+                        or payload.get("activity_attempt_id") != attempt.attempt_id):
+                    raise LocalActivityExecutionAborted("prepared group outcome is absent from canonical history")
+            return refreshed
+        except PreparedCancellationObserved:
+            # Stop every sibling first, including admitted members that did not
+            # spawn. Only then report their canonical cancellation fences.
+            await self._join_prepared_group(executions, members, task)
+            for execution, index in executions.items():
+                if not execution.cancelled() and execution.exception() is None:
+                    receipts[index] = execution.result()
+            for index, (runner, _) in enumerate(members):
+                if index in receipts or runner.stop_acknowledged:
+                    continue
+                try:
+                    await runner.control()
+                except PreparedCancellationObserved:
+                    await runner.acknowledge_stop()
+                    continue
+                raise LocalActivityExecutionAborted(
+                    "joined group member lacks its canonical cancellation fence",
+                ) from None
+            raise
+        except ServerError as error:
+            await self._join_prepared_group(executions, members, task)
+            if error.reason() == "cancellation_requested":
+                # No group process can start until all admissions have validated.
+                for runner, _ in members:
+                    try:
+                        await runner.control()
+                    except PreparedCancellationObserved:
+                        await runner.acknowledge_stop()
+                await self._renew_local_workflow_lease(task)
+            raise LocalActivityExecutionAborted("prepared group operation has an unknown or refused outcome") from error
+        except (_WorkflowClaimDeferred, LocalActivityExecutionAborted):
+            raise
+        except Exception as error:
+            raise LocalActivityExecutionAborted("prepared group could not validate original authority") from error
+        finally:
+            await self._join_prepared_group(executions, members, task)
+
+    async def _join_prepared_group(
+        self, executions: Mapping[asyncio.Task[dict[str, Any]], int],
+        members: list[tuple[PreparedLocalRunner, CallbackInvocation]], task: dict[str, Any],
+    ) -> None:
+        for execution in executions:
+            if not execution.done():
+                execution.cancel()
+        await asyncio.gather(*executions, return_exceptions=True)
+        if any(runner.callback is not None and runner.callback in self._prepared_local_activity_processes
+               for runner, _ in members):
+            self._abandoned_prepared_local_claims.add(task["task_id"])
+            raise LocalActivityExecutionAborted("prepared group callback stop remains unconfirmed")
 
     def _maybe_externalize_local_payload(self, envelope: dict[str, str]) -> dict[str, Any]:
         storage = self.external_storage

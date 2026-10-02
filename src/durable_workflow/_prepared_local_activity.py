@@ -8,6 +8,7 @@ abandons the claim and never authorizes another callback or publication.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -230,6 +231,7 @@ class PreparedLocalRunner:
         self.observe = observe
         self.shutdown = shutdown
         self.stop_request: CancellationContext | None = None
+        self.stop_acknowledged = False
         self.lock = asyncio.Lock()
         self.callback: SupervisedCallback | None = None
 
@@ -314,18 +316,26 @@ class PreparedLocalRunner:
                 self.attempt.validate_outcome(receipt)
                 return receipt
         finally:
-            for pending in background:
-                if not pending.done():
-                    pending.cancel()
-            await asyncio.gather(*background, return_exceptions=True)
-            if not callback.stopped:
-                await callback.stop()
-            _require(callback.stopped, "prepared callback stop remains unconfirmed")
-            processes.discard(callback)
-            await self.acknowledge_stop()
+            async def finish() -> None:
+                for pending in background:
+                    if not pending.done():
+                        pending.cancel()
+                await asyncio.gather(*background, return_exceptions=True)
+                if not callback.stopped:
+                    await callback.stop()
+                _require(callback.stopped, "prepared callback stop remains unconfirmed")
+                processes.discard(callback)
+                await self.acknowledge_stop()
+
+            joined = asyncio.create_task(finish())
+            while not joined.done():
+                # The original cancellation still propagates after finally.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(joined)
+            joined.result()
 
     async def acknowledge_stop(self) -> None:
-        if self.stop_request is None:
+        if self.stop_request is None or self.stop_acknowledged:
             return
         # A physical join, or the absence of any spawned callback, is proved
         # before this diagnostic receipt. It grants no execution authority.
@@ -338,3 +348,4 @@ class PreparedLocalRunner:
                  and "reason" in receipt and receipt["reason"] is None,
                  "joined prepared callback stop was not acknowledged")
         _text(receipt.get("history_event_id"))
+        self.stop_acknowledged = True

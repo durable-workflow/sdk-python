@@ -220,6 +220,12 @@ class PreparedLocalColdResultsWorkflow:
         return [first, second]
 
 
+@workflow.defn(name="tests.replay.prepared-local-group-cold-results")
+class PreparedLocalGroupColdResultsWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return (yield [ctx.local_activity("prepared.first", []), ctx.local_activity("prepared.second", [])])
+
+
 @workflow.defn(name="tests.replay.cooperative-reopened-condition-cleanup")
 class CooperativeReopenedConditionCleanupWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -249,6 +255,7 @@ WORKFLOWS = [
     GoldenVersionMarkerWorkflow,
     LocalActivityColdResultWorkflow,
     PreparedLocalColdResultsWorkflow,
+    PreparedLocalGroupColdResultsWorkflow,
     MessageStreamConsumerWorkflow,
     NestedParallelPathWorkflow,
     ParallelMetadataProducerWorkflow,
