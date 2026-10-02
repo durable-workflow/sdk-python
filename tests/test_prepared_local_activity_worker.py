@@ -309,7 +309,7 @@ class PreparedServer:
                 os.kill(pid, 0)
             return {"acknowledged": True, "duplicate": False, "reason": None, "history_event_id": "joined"}
         if name == "heartbeat":
-            assert body == {"progress": {"phase": "processing", "count": 2}}
+            assert body == {"progress": {"details": {"phase": "processing", "count": 2}}}
             payload = {**self.history[-1]["payload"], "progress": body["progress"]}
             self.history.append({"id": "progress", "event_type": "ActivityHeartbeatRecorded", "payload": payload})
             return control(self.receipt, renewed=False, heartbeat_recorded=True,
@@ -375,7 +375,7 @@ async def test_supervised_application_heartbeat_preserves_progress_in_canonical_
     commands = await worker._run_workflow_task(server.task(marker))
     assert commands is not None and commands[0]["type"] == "complete_workflow"
     progress = [event for event in server.history if event["event_type"] == "ActivityHeartbeatRecorded"]
-    assert len(progress) == 1 and progress[0]["payload"]["progress"] == {"phase": "processing", "count": 2}
+    assert len(progress) == 1 and progress[0]["payload"]["progress"]["details"] == {"phase": "processing", "count": 2}
     assert server.trace.count("heartbeat") == 1 and server.trace.count("outcome") == 1
     await wait_for_exit(int(marker.read_text()))
     server.client.fail_workflow_task.assert_not_awaited()
