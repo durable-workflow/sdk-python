@@ -243,8 +243,14 @@ async def test_actual_remote_worker_stops_callbacks_and_reports_original_cancell
             if os.environ.get("DURABLE_WORKFLOW_NATIVE_SOURCE_QUALIFICATION") == "1":
                 receipt = [event for event in history if event["event_type"] == "ActivityCancellationAcknowledged"]
                 assert len(receipt) == 1
-                assert receipt[0]["id"] == proof["history_event_id"]
-                assert receipt[0]["payload"]["evidence_source"] == "activity_worker"
+                # Public history exposes event sequence/payload, not row IDs.
+                # The readonly status and duplicate transport prove receipt ID.
+                payload = receipt[0]["payload"]
+                assert payload["activity_attempt_id"] == fence["activity_attempt_id"]
+                assert payload["lease_owner"] == fence["lease_owner"]
+                assert payload["evidence_source"] == "activity_worker"
+                for key in ("request_id", "root_request_id", "cleanup_deadline_at", "acknowledged_at"):
+                    assert payload[key] == proof[key]
             delivery = [event for event in history if event["event_type"] == "CooperativeCancellationDelivered"][0]
             assert delivery["payload"]["call_kind"] == "activity"
             assert len([event for event in history if event["event_type"] == "ActivityCancelled"]) == 1
