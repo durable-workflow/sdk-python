@@ -186,7 +186,7 @@ class _CooperativeCancellationObserved(LocalActivityExecutionAborted):
 
 
 class _WorkflowClaimDeferred(LocalActivityExecutionAborted):
-    """Server parked the parent and released its claim until child cleanup ends."""
+    """Server released this claim until cancellation acknowledgments resolve."""
 
 
 class _InvalidLocalActivityReport(NonRetryableError):

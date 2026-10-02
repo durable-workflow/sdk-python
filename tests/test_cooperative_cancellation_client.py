@@ -200,13 +200,17 @@ async def test_delivery_sends_owner_attempt_and_authored_boundary(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["child", "parallel", "selection_handle"])
-async def test_pending_child_requires_explicit_claim_release(
-    client: Client, monkeypatch: pytest.MonkeyPatch, kind: str,
+@pytest.mark.parametrize("kind,reason", [
+    (kind, "cancellation_waiting_for_child") for kind in ("child", "parallel", "selection_handle")
+] + [
+    (kind, "cancellation_waiting_for_activity") for kind in ("activity", "local_activity", "parallel", "selection_handle")
+])
+async def test_pending_cancellation_requires_explicit_claim_release(
+    client: Client, monkeypatch: pytest.MonkeyPatch, kind: str, reason: str,
 ) -> None:
     monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
     options = {"operation_sequence": 1} if kind == "selection_handle" else {}
-    pending = pending_delivery_response()
+    pending = pending_delivery_response(reason=reason)
     with patch.object(client._http, "request", new_callable=AsyncMock, return_value=response(pending)):
         result = await client.deliver_workflow_cancellation(
             task_id="task/1", lease_owner="worker-1", workflow_task_attempt=2,
@@ -216,41 +220,46 @@ async def test_pending_child_requires_explicit_claim_release(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["child", "activity"])
 @pytest.mark.parametrize("change", [
     {"claim_released": False}, {"claim_released": "true"}, {"claim_released": None},
-    {"task_id": "other"}, {"reason": "other"}, {"request_id": "original-request"},
+    {"task_id": "other"}, {"reason": "other"}, {"reason": []}, {"request_id": "original-request"},
     {"sequence": 3}, {"call_kind": "child"}, {"sequence_span": 1},
     {"operation_sequence": 1}, {"operation_sequence_span": 1}, {"delivered": 0},
 ])
-async def test_malformed_pending_child_ack_is_rejected(
-    client: Client, monkeypatch: pytest.MonkeyPatch, change: dict[str, Any],
+async def test_malformed_pending_cancellation_ack_is_rejected(
+    client: Client, monkeypatch: pytest.MonkeyPatch, change: dict[str, Any], kind: str,
 ) -> None:
     monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
     with (
         patch.object(client._http, "request", new_callable=AsyncMock,
-                     return_value=response(pending_delivery_response(**change))),
+                     return_value=response(pending_delivery_response(reason="cancellation_waiting_for_" + kind) | change)),
         pytest.raises(ServerError) as error,
     ):
         await client.deliver_workflow_cancellation(
             task_id="task/1", lease_owner="worker-1", workflow_task_attempt=2,
-            request_id="original-request", sequence=3, call_kind="child",
+            request_id="original-request", sequence=3, call_kind=kind,
         )
     assert error.value.reason() == "invalid_cooperative_cancellation_delivery"
 
 
 @pytest.mark.asyncio
-async def test_pending_child_reply_cannot_release_an_unrelated_timer_claim(
-    client: Client, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("kind,reason", [
+    ("timer", "cancellation_waiting_for_child"), ("timer", "cancellation_waiting_for_activity"),
+    ("child", "cancellation_waiting_for_activity"), ("activity", "cancellation_waiting_for_child"),
+])
+async def test_pending_reply_cannot_release_an_unrelated_claim(
+    client: Client, monkeypatch: pytest.MonkeyPatch, kind: str, reason: str,
 ) -> None:
     monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
     with (
         patch.object(client._http, "request", new_callable=AsyncMock,
-                     return_value=response(pending_delivery_response())),
+                     return_value=response(pending_delivery_response(reason=reason))),
         pytest.raises(ServerError),
     ):
         await client.deliver_workflow_cancellation(
             task_id="task/1", lease_owner="worker-1", workflow_task_attempt=2,
-            request_id="original-request", sequence=3, call_kind="timer",
+            request_id="original-request", sequence=3, call_kind=kind,
         )
 
 

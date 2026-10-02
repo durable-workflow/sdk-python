@@ -5228,8 +5228,12 @@ class Client:
         if (
             isinstance(result, dict)
             and result.get("delivered") is False
-            and delivery.call_kind in {"child", "parallel", "selection_handle"}
-            and result.get("reason") == "cancellation_waiting_for_child"
+            and (
+                (result.get("reason") == "cancellation_waiting_for_child"
+                 and delivery.call_kind in {"child", "parallel", "selection_handle"})
+                or (result.get("reason") == "cancellation_waiting_for_activity"
+                    and delivery.call_kind in {"activity", "local_activity", "parallel", "selection_handle"})
+            )
             and result.get("claim_released") is True
             and result.get("task_id") == task_id
             and all(result.get(field) is None for field in (
