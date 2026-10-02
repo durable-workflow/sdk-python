@@ -50,8 +50,16 @@ class CooperativeCleanupWorkflow:
             else:
                 yield ctx.start_timer(300)
         except WorkflowCancelled as error:
+            if kind == "clock_timer":
+                assert error.context is ctx.cancellation_context and error.context is not None
+                print(json.dumps({"phase": "remaining-delivery", "remaining": error.context.remaining(),
+                                  "context": error.context.to_dict()}), flush=True)
             with ctx.cancellation_shield():
                 yield ctx.local_activity("tests.python-cooperative-cleanup", [error.request_id])
+            if kind == "clock_timer":
+                assert error.context is not None
+                print(json.dumps({"phase": "remaining-cleanup", "remaining": error.context.remaining(),
+                                  "context": error.context.to_dict()}), flush=True)
             return error.request_id
         return "not cancelled"
 
@@ -766,13 +774,15 @@ async def test_killed_process_reclaims_cleanup_in_a_new_process(
         await seed._register()
         try:
             handle = await client.start_workflow(
-                workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["timer"],
+                workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue,
+                input=["clock_timer"],
             )
             accepted = await handle.request_cancellation(cleanup_timeout_seconds=120)
             original = accepted["cancellation_request"]
             first = await native_process(queue, f"{queue}-killed", "hold")
             processes.append(first)
             claim = await process_event(first, "claim")
+            original_remaining = await process_event(first, "remaining-delivery")
             cleanup = await process_event(first, "cleanup")
             assert cleanup["request_id"] == original["request_id"]
             before = await events(handle)
@@ -786,11 +796,26 @@ async def test_killed_process_reclaims_cleanup_in_a_new_process(
             assert reclaimed["worker_id"] != claim["worker_id"]
             assert reclaimed["request_id"] == original["request_id"]
             assert reclaimed["cleanup_deadline_at"] == original["cleanup_deadline_at"]
+            replacement_remaining = await process_event(replacement, "remaining-delivery")
+            assert replacement_remaining == original_remaining
             resumed = await process_event(replacement, "cleanup")
             assert resumed["request_id"] == original["request_id"]
+            completed_remaining = await process_event(replacement, "remaining-cleanup")
+            assert completed_remaining["context"] == original_remaining["context"]
+            assert 0 < completed_remaining["remaining"] < original_remaining["remaining"]
             assert (await process_event(replacement, "finished"))["committed"] is True
             assert await asyncio.wait_for(replacement.wait(), timeout=10) == 0
-            await assert_cancelled_cleanup(handle, original["request_id"])
+            history = await assert_cancelled_cleanup(handle, original["request_id"])
+            deadline = datetime.fromisoformat(original["cleanup_deadline_at"].replace("Z", "+00:00"))
+            delivered = next(event for event in history if event["event_type"] == "CooperativeCancellationDelivered")
+            completed = next(event for event in history if event["event_type"] == "ActivityCompleted")
+            for event, observation in ((delivered, original_remaining), (completed, completed_remaining)):
+                recorded = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+                assert observation["remaining"] == pytest.approx((deadline - recorded).total_seconds(), abs=1e-6)
+            remaining_observations = {
+                "original": original_remaining, "replacement": replacement_remaining, "completed": completed_remaining,
+            }
+            print(f"SIGKILL replay remaining-time observations: {json.dumps(remaining_observations)}")
         finally:
             for process in processes:
                 if process.returncode is None:

@@ -211,11 +211,34 @@ the same original root, delivery event and immutable deadline.
 
 ## Remaining qualification
 
-Rust policy parity, portable activity policies, nested scopes and deterministic
-remaining-time helpers still need completion. Remaining time must use the
-replayed workflow clock. Do not subtract the host clock from the deadline in
-workflow code. The runtime continues enforcing the original deadline and fencing
-task and activity ownership.
+### Python deadline and remaining time
+
+The Source `CancellationContext.deadline` is the original immutable cleanup
+deadline. `remaining()` returns fractional seconds left at the replay boundary
+consumed by workflow code, clamped to zero. Committed cancellation delivery sets
+the initial clock. Blocking activity, prepared local activity, child, timer,
+condition, selection and awaited-handle outcomes advance it. A selection uses
+its committed winner marker. A group failure excludes later sibling outcomes.
+Recorded clock skew cannot increase an already consumed budget.
+
+Synchronous side effects, version markers, memo updates and inline local
+callbacks preserve that clock because they return before their results are
+persisted on first execution. Their later history timestamps cannot change
+the same authored decision during cold replay. `WorkflowContext.now()` retains
+its existing start-time contract.
+
+Only the active replay that delivered the context can use its remaining-time
+clock. Detached metadata and calls after replay ends fail explicitly. Missing
+or invalid boundary timestamps also fail, without a host-time fallback.
+The runtime supervisor independently enforces the actual deadline and task
+ownership even when authoring code cannot run.
+
+The connected process-loss scenario records remaining time before SIGKILL,
+requires the same value in the replacement worker, then checks the value after
+prepared cleanup against its committed history timestamp and original deadline.
+
+Rust helpers, explicit local operation policies, nested scopes and competitive
+qualification still need completion.
 
 Connected qualification must cover the PHP parent, Python child, Rust remote
 activity and PHP local activity together. Callbacks must stop without application

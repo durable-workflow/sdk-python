@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from types import MappingProxyType
@@ -30,21 +30,21 @@ class ParentClosePolicy(str, Enum):
 
 def _canonical_child_policies(options: Mapping[str, Any]) -> dict[str, str]:
     policies: dict[str, str] = {}
-    for field, enum in (
+    for name, enum in (
         ("parent_close_policy", ParentClosePolicy),
         ("cancellation_policy", CancellationPolicy),
     ):
-        value = options.get(field)
+        value = options.get(name)
         if value is None:
             continue
         if isinstance(value, Enum) and not isinstance(value, enum):
-            raise ValueError(f"child workflow {field} must be a supported policy")
+            raise ValueError(f"child workflow {name} must be a supported policy")
         if not isinstance(value, str):
-            raise ValueError(f"child workflow {field} must be a supported policy")
+            raise ValueError(f"child workflow {name} must be a supported policy")
         try:
-            policies[field] = enum(value).value
+            policies[name] = enum(value).value
         except ValueError as error:
-            raise ValueError(f"child workflow {field} must be a supported policy") from error
+            raise ValueError(f"child workflow {name} must be a supported policy") from error
     return policies
 
 
@@ -109,6 +109,7 @@ class CancellationContext:
     requested_at: datetime
     cleanup_deadline_at: datetime
     lineage: tuple[CancellationLineage, ...]
+    _replay_clock: Callable[[], datetime] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "requester", MappingProxyType(dict(self.requester)))
@@ -118,6 +119,19 @@ class CancellationContext:
     def deadline(self) -> datetime:
         """The original immutable cleanup deadline."""
         return self.cleanup_deadline_at
+
+    def remaining(self) -> float:
+        """Seconds left at the consumed replay boundary, clamped to zero.
+
+        Available only during the workflow replay that delivered this context.
+        Detached metadata has no clock. Host time never supplies this value.
+        """
+        if self._replay_clock is None:
+            raise RuntimeError("cancellation remaining time requires active workflow replay")
+        return max(0.0, (self.cleanup_deadline_at - self._replay_clock()).total_seconds())
+
+    def _with_replay_clock(self, clock: Callable[[], datetime]) -> CancellationContext:
+        return replace(self, _replay_clock=clock)
 
     @classmethod
     def from_dict(cls, snapshot: Mapping[str, Any]) -> CancellationContext:

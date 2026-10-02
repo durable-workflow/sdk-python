@@ -26,7 +26,9 @@ import math
 import random
 import re
 import uuid
+import weakref
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,6 +42,7 @@ from .cancellation import (
     ParentClosePolicy,
     _canonical_activity_policy,
     _canonical_child_policies,
+    _timestamp,
 )
 from .client import WorkflowStreamAppendItem
 from .errors import (
@@ -1801,6 +1804,9 @@ class Saga:
             raise
 
 
+_ACTIVE_WORKFLOW_REPLAY: ContextVar[WorkflowContext | None] = ContextVar("active_workflow_replay", default=None)
+
+
 class WorkflowContext:
     """Replay-safe helper surface passed to workflow ``run`` methods."""
 
@@ -1822,6 +1828,8 @@ class WorkflowContext:
         self._cancel_requested = bool(cancel_requested)
         self._cancellation_request_id: str | None = None
         self._cancellation_context: CancellationContext | None = None
+        self._cancellation_replay_time: datetime | None = None
+        self._cancellation_replay_time_available = False
         self._cancellation_shield_depth = 0
         seed = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16)
         self._rng = random.Random(seed)
@@ -1925,6 +1933,34 @@ class WorkflowContext:
     def cancellation_context(self) -> CancellationContext | None:
         """Original metadata, visible only at committed cancellation delivery."""
         return self._cancellation_context
+
+    def _observe_cancellation_replay_time(self, event: Mapping[str, Any] | None) -> None:
+        timestamp = event.get("timestamp") if event is not None else None
+        if timestamp is None and event is not None:
+            timestamp = event.get("recorded_at")
+        self._cancellation_replay_time_available = False
+        if not isinstance(timestamp, str):
+            return
+        try:
+            recorded_time = _timestamp(timestamp)
+        except ValueError:
+            return
+        if self._cancellation_replay_time is None or recorded_time > self._cancellation_replay_time:
+            self._cancellation_replay_time = recorded_time
+        self._cancellation_replay_time_available = True
+
+    def _bind_cancellation_context(self, context: CancellationContext) -> CancellationContext:
+        reference = weakref.ref(self)
+
+        def replay_time() -> datetime:
+            active = reference()
+            if active is None or _ACTIVE_WORKFLOW_REPLAY.get() is not active:
+                raise RuntimeError("cancellation remaining time requires active workflow replay")
+            if not active._cancellation_replay_time_available or active._cancellation_replay_time is None:
+                raise RuntimeError("cancellation replay boundary requires a recorded timestamp")
+            return active._cancellation_replay_time
+
+        return context._with_replay_clock(replay_time)
 
     @contextlib.contextmanager
     def cancellation_shield(self) -> Generator[None, None, None]:
@@ -2461,6 +2497,7 @@ class _RecordedStep:
     shape: str
     event_types: list[str]
     details: dict[str, Any]
+    history_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -3987,15 +4024,18 @@ def _replay_state(
     # loser complete before or after unrelated successor work without changing
     # replay binding.
     selection_resolutions: dict[int, Any] = {}
+    selection_resolution_indexes: dict[int, int] = {}
     selection_steps: dict[int, list[_RecordedStep]] = {}
     selection_payloads: dict[int, list[dict[str, Any]]] = {}
     selection_opening_payloads: dict[int, dict[str, Any]] = {}
     selection_condition_terminal_payloads: dict[int, list[dict[str, Any]]] = {}
     selection_condition_sequences: dict[str, int] = {}
     selection_markers: list[dict[str, Any]] = []
+    selection_marker_indexes: list[int] = []
     selection_marker_cursor = 0
     consumed_selection_sequences: set[int] = set()
     cancelled_selection_members: dict[tuple[str, int], dict[str, Any]] = {}
+    cancelled_selection_indexes: dict[tuple[str, int], int] = {}
     validated_selection_cancellations: set[tuple[str, int]] = set()
     authored_selection_handles: dict[int, DurableOperationHandle] = {}
 
@@ -4018,9 +4058,11 @@ def _replay_state(
             shape=shape,
             event_types=event_types,
             details=details,
+            history_index=event_index,
         )
         if _selection_group_metadata(payload) is not None:
             selection_resolutions[workflow_sequence] = value
+            selection_resolution_indexes[workflow_sequence] = event_index
             _append_selection_step(shape, event, fallback_sequence=workflow_sequence)
             return
         resolved_results.append(value)
@@ -4059,6 +4101,7 @@ def _replay_state(
             shape=shape,
             event_types=event_types,
             details=details,
+            history_index=event_index,
         )
 
     def _append_selection_step(
@@ -4120,6 +4163,7 @@ def _replay_state(
             fallback_sequence=selection_sequence,
         )
         selection_resolutions[selection_sequence] = value
+        selection_resolution_indexes[selection_sequence] = event_index
         return True
 
     def _assert_step_matches(command: Any, step: _RecordedStep) -> None:
@@ -4500,6 +4544,7 @@ def _replay_state(
         elif etype == "SelectionResolved":
             if isinstance(payload.get("selection_group_id"), str):
                 selection_markers.append(dict(payload))
+                selection_marker_indexes.append(event_index)
         elif etype == "SelectionOperationCancelled":
             group_id = payload.get("selection_group_id")
             member_base = _parallel_group_integer(payload, "member_base_sequence")
@@ -4515,6 +4560,7 @@ def _replay_state(
                         detail="conflicting cancellation markers target the same durable member",
                     )
                 cancelled_selection_members[cancellation_key] = cancellation_payload
+                cancelled_selection_indexes.setdefault(cancellation_key, event_index)
         elif etype in ("SideEffectRecorded", "ChildRunCompleted"):
             shape = "side effect" if etype == "SideEffectRecorded" else "child workflow"
             _append_resolved_result(
@@ -5508,7 +5554,12 @@ def _replay_state(
         cancellation_consumed = True
         ctx._cancel_requested = True
         ctx._cancellation_request_id = boundary.request_id
-        ctx._cancellation_context = cancellation.request.context if cancellation.request is not None else None
+        metadata = cancellation.request.context if cancellation.request is not None else None
+        if metadata is not None:
+            ctx._observe_cancellation_replay_time(
+                events[cancellation.delivery_index] if cancellation.delivery_index is not None else None,
+            )
+            ctx._cancellation_context = ctx._bind_cancellation_context(metadata)
         _apply_due_receivers()
         if isinstance(command, DurableOperationHandle):
             authored_sequence += 1
@@ -5521,6 +5572,26 @@ def _replay_state(
         except StopIteration as stop:
             return _terminal_state(stop.value, include_pending=True)
 
+    def _advance_cancellation_clock(indexes: Iterable[int | None]) -> None:
+        if ctx._cancellation_context is None:
+            return
+        for index in sorted({index for index in indexes if index is not None}):
+            ctx._observe_cancellation_replay_time(events[index])
+
+    def _advance_selection_clock(base: int, size: int, failure: BaseException | None) -> None:
+        indexes = [
+            selection_resolution_indexes[sequence] for sequence in range(base, base + size)
+            if sequence in selection_resolution_indexes
+        ]
+        if failure is not None:
+            failure_index = next(
+                selection_resolution_indexes[sequence] for sequence in range(base, base + size)
+                if selection_resolutions.get(sequence) is failure
+            )
+            indexes = [index for index in indexes if index <= failure_index]
+        _advance_cancellation_clock(indexes)
+
+    replay_token = _ACTIVE_WORKFLOW_REPLAY.set(ctx)
     try:
         while True:
             # Cursor-0 receivers are start-boundary events. Enter run() once
@@ -5665,6 +5736,7 @@ def _replay_state(
                         ["SelectionResolved"],
                         detail="the committed winner has no terminal member history",
                     )
+                _advance_cancellation_clock([selection_marker_indexes[selection_marker_cursor - 1]])
                 for sequence in range(
                     winner.base_sequence,
                     winner.base_sequence + winner.size,
@@ -5709,8 +5781,20 @@ def _replay_state(
                     for offset, child_command in enumerate(cmd):
                         _assert_next_step_matches(child_command, offset)
                     vals = resolved_results[result_cursor : result_cursor + needed]
+                    consumed_steps = recorded_steps[result_cursor : result_cursor + needed]
                     result_cursor += needed
                     failed = _first_yield_failure(vals)
+                    consumed_indexes = [step.history_index for step in consumed_steps]
+                    if failed is not None:
+                        failure_index = next(
+                            step.history_index for step, value in zip(consumed_steps, vals, strict=True)
+                            if value is failed
+                        )
+                        consumed_indexes = [
+                            index for index in consumed_indexes
+                            if index is not None and failure_index is not None and index <= failure_index
+                        ]
+                    _advance_cancellation_clock(consumed_indexes)
                     if failed is not None:
                         try:
                             advanced_cmd = gen.throw(failed)
@@ -5727,6 +5811,9 @@ def _replay_state(
             if isinstance(cmd, DurableOperationHandle):
                 _assert_authored_selection_handle(cmd)
                 if _selection_cancellation_for_handle(cmd) is not None:
+                    _advance_cancellation_clock([
+                        cancelled_selection_indexes[(cmd.selection_group_id, cmd.base_sequence)],
+                    ])
                     try:
                         advanced_cmd = gen.throw(
                             DurableOperationCancelled(
@@ -5757,6 +5844,7 @@ def _replay_state(
                 if not resolved:
                     ctx.logger._set_replaying(False)
                     return _state(pending)
+                _advance_selection_clock(cmd.base_sequence, cmd.size, failure)
                 if failure is not None:
                     try:
                         advanced_cmd = gen.throw(failure)
@@ -5939,6 +6027,8 @@ def _replay_state(
                         if isinstance(opened_id, str):
                             resolution = wait_resolutions.get(opened_id)
                             _apply_condition_wait_receivers(opened_id)
+                            if resolution is not None:
+                                _advance_cancellation_clock([condition_wait_terminal_indexes.get(opened_id)])
                     next_wait_index = wait_yield_count + 1
                     has_reopened_same_wait = (
                         opened is not None
@@ -6000,6 +6090,8 @@ def _replay_state(
                 if result_cursor < len(resolved_results):
                     _assert_next_step_matches(cmd)
                     val = resolved_results[result_cursor]
+                    if not isinstance(cmd, RecordLocalActivity) or prepare_local_activities:
+                        _advance_cancellation_clock([recorded_steps[result_cursor].history_index])
                     result_cursor += 1
                     if isinstance(val, ActivityFailed | ChildWorkflowFailed):
                         try:
@@ -6044,3 +6136,5 @@ def _replay_state(
         return _state(pending + [_fail_workflow_from_exception(exc)])
     except Exception as exc:
         return _state(pending + [_fail_workflow_from_exception(exc)])
+    finally:
+        _ACTIVE_WORKFLOW_REPLAY.reset(replay_token)
