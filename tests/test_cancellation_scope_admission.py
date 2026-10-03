@@ -39,7 +39,12 @@ def reset_calls() -> None:
 def scoped_histories() -> list[dict[str, Any]]:
     histories: list[dict[str, Any]] = [
         {"event_type": name, "payload": {"sequence": 1, "scope_id": "scope-one"}}
-        for name in ("CancellationScopeOpened", "CancellationScopeRequested", "CancellationScopeDelivered", "CancellationScopeRequestConflicted")
+        for name in (
+            "CancellationScopeOpened",
+            "CancellationScopeRequested",
+            "CancellationScopeDelivered",
+            "CancellationScopeRequestConflicted",
+        )
     ]
     for location in (None, "activity", "timer", "child_workflow"):
         value = {"cancellation_scope_id": "scope-one"}
