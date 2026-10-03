@@ -594,12 +594,19 @@ class RecordLocalActivity:
     start_to_close_timeout: int | None = None
     schedule_to_close_timeout: int | None = None
     heartbeat_timeout: int | None = None
+    cancellation_policy: str | CancellationPolicy | None = None
     outcome: dict[str, Any] | None = field(default=None, init=False, repr=False)
     arguments_envelope: dict[str, Any] | None = field(default=None, init=False, repr=False)
     result_envelope: dict[str, Any] | None = field(default=None, init=False, repr=False)
     _parallel_group_path: list[dict[str, Any]] | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        try:
+            self.cancellation_policy = _canonical_activity_policy(self.cancellation_policy)
+        except ValueError as error:
+            raise ValueError("local activity cancellation_policy must be a supported prepared policy") from error
+        if self.cancellation_policy == CancellationPolicy.ABANDON.value:
+            raise ValueError("local activity abandon is not supported by prepared callback ownership")
         if not isinstance(self.activity_type, str):
             raise TypeError("local activity type must be a string")
         self.activity_type = self.activity_type.strip()
@@ -633,6 +640,11 @@ class RecordLocalActivity:
         size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
         warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
+        if self.cancellation_policy is not None:
+            raise LocalActivityExecutionAborted(
+                "prepared_local_activity_cancellation_policy_not_supported: "
+                "explicit policies require prepared admission",
+            )
         if self.outcome is None or self.arguments_envelope is None:
             raise ValueError("local activity has no recorded terminal outcome")
         status = self.outcome.get("outcome")
@@ -675,6 +687,8 @@ class PreparedLocalActivityCall:
         }
         if command.retry_policy is not None:
             descriptor["retry_policy"] = dict(command.retry_policy)
+        if command.cancellation_policy is not None:
+            descriptor["cancellation_policy"] = command.cancellation_policy
         for name in ("start_to_close_timeout", "schedule_to_close_timeout", "heartbeat_timeout"):
             value = getattr(command, name)
             if value is not None:
@@ -2015,6 +2029,7 @@ class WorkflowContext:
         start_to_close_timeout: int | None = None,
         schedule_to_close_timeout: int | None = None,
         heartbeat_timeout: int | None = None,
+        cancellation_policy: str | CancellationPolicy | None = None,
     ) -> RecordLocalActivity:
         """Yield an activity executed in this workflow worker process."""
         return RecordLocalActivity(
@@ -2024,6 +2039,7 @@ class WorkflowContext:
             start_to_close_timeout=start_to_close_timeout,
             schedule_to_close_timeout=schedule_to_close_timeout,
             heartbeat_timeout=heartbeat_timeout,
+            cancellation_policy=cancellation_policy,
         )
 
     def start_timer(self, seconds: int) -> StartTimer:
@@ -2777,6 +2793,7 @@ def replay(
     local_activity_executor: Callable[[RecordLocalActivity], Any] | None = None,
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
+    local_activity_cancellation_policies: tuple[str, ...] = (),
 ) -> ReplayOutcome:
     return _replay_state(
         workflow_cls,
@@ -2793,6 +2810,7 @@ def replay(
         local_activity_executor=local_activity_executor,
         prepare_local_activities=prepare_local_activities,
         prepare_local_activity_groups=prepare_local_activity_groups,
+        local_activity_cancellation_policies=local_activity_cancellation_policies,
     ).outcome
 
 
@@ -2808,6 +2826,9 @@ def query_state(
     payload_codec: str | None = None,
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
+    prepare_local_activities: bool = False,
+    prepare_local_activity_groups: bool = False,
+    local_activity_cancellation_policies: tuple[str, ...] = (),
 ) -> Any:
     """Replay a workflow to current state and invoke a registered query.
 
@@ -2830,6 +2851,9 @@ def query_state(
             external_storage=external_storage,
             external_storage_cache=external_storage_cache,
             stop_at_uncommitted_cancellation=True,
+            prepare_local_activities=prepare_local_activities,
+            prepare_local_activity_groups=prepare_local_activity_groups,
+            local_activity_cancellation_policies=local_activity_cancellation_policies,
         )
     except Exception as exc:
         raise QueryFailed(f"workflow replay failed before query: {exc}") from exc
@@ -2865,6 +2889,9 @@ def apply_update(
     payload_codec: str | None = None,
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
+    prepare_local_activities: bool = False,
+    prepare_local_activity_groups: bool = False,
+    local_activity_cancellation_policies: tuple[str, ...] = (),
 ) -> CompleteUpdate | FailUpdate:
     """Replay current workflow state and run one accepted update handler.
 
@@ -2885,6 +2912,9 @@ def apply_update(
             payload_codec=payload_codec,
             external_storage=external_storage,
             external_storage_cache=external_storage_cache,
+            prepare_local_activities=prepare_local_activities,
+            prepare_local_activity_groups=prepare_local_activity_groups,
+            local_activity_cancellation_policies=local_activity_cancellation_policies,
         )
     except Exception as exc:
         return _fail_update_from_exception(
@@ -2966,6 +2996,9 @@ def validate_update(
     payload_codec: str | None = None,
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
+    prepare_local_activities: bool = False,
+    prepare_local_activity_groups: bool = False,
+    local_activity_cancellation_policies: tuple[str, ...] = (),
 ) -> Any:
     """Replay state and invoke only the declared pre-accept update validator.
 
@@ -2986,6 +3019,9 @@ def validate_update(
             payload_codec=payload_codec,
             external_storage=external_storage,
             external_storage_cache=external_storage_cache,
+            prepare_local_activities=prepare_local_activities,
+            prepare_local_activity_groups=prepare_local_activity_groups,
+            local_activity_cancellation_policies=local_activity_cancellation_policies,
         )
     except Exception as exc:
         raise UpdateValidationFailed(
@@ -3625,6 +3661,13 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
                 f"Recorded local activity_type {recorded!r}, but current workflow "
                 f"requested {command.activity_type!r}."
             )
+        actual_policy = command.cancellation_policy or "try_cancel"
+        recorded_policy = step.details.get("cancellation_policy", "try_cancel")
+        if recorded_policy != actual_policy:
+            return (
+                f"local_activity_cancellation_policy_changed: recorded {recorded_policy!r}, "
+                f"but current workflow requested {actual_policy!r}."
+            )
     elif isinstance(command, StartChildWorkflow):
         recorded = step.details.get("workflow_type") or step.details.get("child_workflow_type")
         if isinstance(recorded, str) and recorded != command.workflow_type:
@@ -3801,6 +3844,7 @@ def _replay_state(
     local_activity_executor: Callable[[RecordLocalActivity], Any] | None = None,
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
+    local_activity_cancellation_policies: tuple[str, ...] = (),
     stop_at_uncommitted_cancellation: bool = False,
 ) -> _ReplayState:
     if prepare_local_activity_groups and not prepare_local_activities:
@@ -5407,6 +5451,23 @@ def _replay_state(
             return any(_contains_local_activity(member) for _, member in operation.operations)
         return False
 
+    def _validate_local_activity_policies(operation: Any) -> None:
+        if isinstance(operation, RecordLocalActivity) and operation.cancellation_policy is not None:
+            if (
+                not prepare_local_activities
+                or operation.cancellation_policy not in local_activity_cancellation_policies
+            ):
+                raise LocalActivityExecutionAborted(
+                    "prepared_local_activity_cancellation_policy_not_supported: "
+                    f"{operation.cancellation_policy} requires installed Server discovery and a prepared consumer",
+                )
+        elif isinstance(operation, list):
+            for member in operation:
+                _validate_local_activity_policies(member)
+        elif isinstance(operation, SelectGroup):
+            for _, member in operation.operations:
+                _validate_local_activity_policies(member)
+
     def _prepared_call(command: RecordLocalActivity, sequence: int) -> PreparedLocalActivityCall:
         cleanup: dict[str, str] | None = None
         if cancellation.request is not None:
@@ -5461,7 +5522,7 @@ def _replay_state(
                     continue
                 # A complete path is admission authority. Legacy metadata-poor
                 # history cannot authorize fresh Source callbacks.
-                details = _recorded_step_details(payload)
+                details = {**details_by_sequence.get(sequence, {}), **_recorded_step_details(payload)}
                 if payload.get("parallel_group_path") != command._parallel_group_path:
                     raise NonDeterministicReplayError(
                         sequence, "complete authored parallel group path", [kind],
@@ -5610,6 +5671,7 @@ def _replay_state(
                     return _terminal_state(stop.value, include_pending=True)
                 first = False
             _apply_due_receivers()
+            _validate_local_activity_policies(cmd)
             if prepare_local_activities and isinstance(cmd, list | SelectGroup) and _contains_local_activity(cmd) and (
                 not prepare_local_activity_groups or isinstance(cmd, SelectGroup)
             ):

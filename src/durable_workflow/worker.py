@@ -1055,6 +1055,11 @@ class Worker:
         self._cooperative_cancellation_supported = False
         self._prepared_local_activities_supported = False
         self._prepared_local_activity_groups_supported = False
+        self._local_activity_cancellation_policies: tuple[str, ...] = ()
+        if "prepared_local_activity_cancellation_policies" in self.capabilities and (
+            "prepared_local_activities" not in self.capabilities
+        ):
+            raise ValueError("prepared local cancellation policies require prepared_local_activities capability")
         if "prepared_local_activity_groups" in self.capabilities and (
             "prepared_local_activities" not in self.capabilities
         ):
@@ -1255,6 +1260,21 @@ class Worker:
         )
         if "prepared_local_activity_groups" in self.capabilities and not self._prepared_local_activity_groups_supported:
             raise RuntimeError("prepared_local_group_not_supported: Server must advertise its installed atomic bridge")
+        policies = (
+            server_capabilities.get("prepared_local_activity_cancellation_policies")
+            if isinstance(server_capabilities, Mapping) else None
+        )
+        self._local_activity_cancellation_policies = tuple(
+            policy for policy in ("try_cancel", "wait_cancellation_completed")
+            if isinstance(policies, list) and policy in policies
+        ) if self._prepared_local_activities_supported else ()
+        if "prepared_local_activity_cancellation_policies" in self.capabilities and (
+            not self._local_activity_cancellation_policies
+        ):
+            raise RuntimeError(
+                "prepared_local_activity_cancellation_policy_not_supported: "
+                "Server must advertise installed prepared policies",
+            )
         self._validate_cooperative_activity_handlers()
         self._query_tasks_supported = _server_supports_query_tasks(info)
         self._workflow_memo_updates_supported = _server_supports_workflow_memo_updates(info)
@@ -1289,6 +1309,11 @@ class Worker:
             capabilities.append(WORKFLOW_UPDATES_CAPABILITY)
         capabilities.append(MESSAGE_STREAMS_CAPABILITY)
         capabilities.extend(self.capabilities)
+        if (
+            self._local_activity_cancellation_policies
+            and "prepared_local_activity_cancellation_policies" not in capabilities
+        ):
+            capabilities.append("prepared_local_activity_cancellation_policies")
         if PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST["worker_sessions"]["supported"]:
             capabilities.append("worker_sessions")
 
@@ -1314,6 +1339,10 @@ class Worker:
                     "supported": True, "minimum_protocol_version": "1.20",
                     "implementation": "durable_atomic_all_admission",
                 }} if self._prepared_local_activity_groups_supported else {}),
+                **({"prepared_local_activity_cancellation_policies": {
+                    "supported": True, "minimum_protocol_version": "1.20",
+                    "implementation": "prepared_local_policy_admission_and_replay",
+                }} if self._local_activity_cancellation_policies else {}),
             },
             task_slots=self._current_task_slots(),
             process_metrics=self._current_process_metrics(),
@@ -1568,6 +1597,7 @@ class Worker:
                     cancellation_request=task.get("cancellation_request"), local_activity_executor=execute_local,
                     prepare_local_activities=self._prepared_local_activities_supported,
                     prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
+                    local_activity_cancellation_policies=self._local_activity_cancellation_policies,
                 )
                 if outcome.prepared_local_activity_group is not None:
                     history = await self._execute_prepared_local_activity_group(task, history, outcome)
@@ -2326,6 +2356,9 @@ class Worker:
                 payload_codec=codec,
                 external_storage=self.external_storage,
                 external_storage_cache=self.external_storage_cache,
+                prepare_local_activities=self._prepared_local_activities_supported,
+                prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
+                local_activity_cancellation_policies=self._local_activity_cancellation_policies,
             )
             command = update_command.to_server_command(
                 self.task_queue,
@@ -3146,6 +3179,9 @@ class Worker:
                 payload_codec=codec,
                 external_storage=self.external_storage,
                 external_storage_cache=self.external_storage_cache,
+                prepare_local_activities=self._prepared_local_activities_supported,
+                prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
+                local_activity_cancellation_policies=self._local_activity_cancellation_policies,
             )
             if inspect.isawaitable(result):
                 result = await result
@@ -3637,6 +3673,9 @@ class Worker:
                 payload_codec=codec,
                 external_storage=self.external_storage,
                 external_storage_cache=self.external_storage_cache,
+                prepare_local_activities=self._prepared_local_activities_supported,
+                prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
+                local_activity_cancellation_policies=self._local_activity_cancellation_policies,
             )
             if inspect.isawaitable(result):
                 result = await result

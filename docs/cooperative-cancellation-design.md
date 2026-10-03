@@ -92,9 +92,8 @@ the independent work. It does not extend the parent's cleanup budget.
 
 Every explicit remote policy requires negotiated cooperation, protocol 1.20
 and a compatible installed backend. Missing worker capability is diagnosed
-before submission. Server also checks the original immutable claim. Local
-Activity policy authoring remains unavailable while its lifetime and admission
-contract are unfinished.
+before submission. Server also checks the original immutable claim. Prepared
+local Activity policies use their separate admission contract below.
 
 Replay compares authored policy with original canonical history for ordinary,
 parallel and selection calls and cancellation delivery. Later events that omit
@@ -152,6 +151,31 @@ Cooperating downstream systems still need idempotency or reconciliation for
 effects already performed.
 
 ## Prepared sequential local callbacks
+
+`ctx.local_activity()` accepts `cancellation_policy=CancellationPolicy.TRY_CANCEL`
+or `CancellationPolicy.WAIT_CANCELLATION_COMPLETED`. Omission, including Python's
+optional `None`, preserves historical Try behavior and omits the wire field.
+Explicit policies require prepared execution and Server discovery of
+`prepared_local_activity_cancellation_policies`. The Worker advertises its policy
+consumer only for the discovered installed policies. Local `ABANDON` is refused
+because a callback owned by this workflow worker cannot outlive that ownership
+under the prepared contract.
+
+```python
+yield ctx.local_activity(
+    "release-reservation", [],
+    cancellation_policy=CancellationPolicy.WAIT_CANCELLATION_COMPLETED,
+)
+```
+
+Wait parks cancellation delivery until the original local attempt's stop receipt
+is recorded. Both supported policies physically stop and join the owned callback
+before acknowledgment, without requiring application heartbeats. Neither grants
+a new cleanup budget. Replay compares the original policy for completed and
+unresolved calls, groups and the committed delivery boundary. Unsupported
+policies refuse the entire authored group before callbacks or checkpoint
+submission. Queries, updates and validators use the same negotiated replay
+consumer. Explicit policies are unavailable through the legacy inline path.
 
 The source candidate can explicitly request both `cooperative_cancellation` and
 `prepared_local_activities` in Worker capabilities. Registration requires source

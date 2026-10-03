@@ -27,10 +27,11 @@ from tests.test_worker import compatible_cluster_info
 
 @workflow.defn(name="prepared.sequential")
 class SequentialWorkflow:
-    def run(self, ctx: workflow.WorkflowContext, marker: str, prefix: bool = False):  # type: ignore[no-untyped-def]
+    def run(self, ctx: workflow.WorkflowContext, marker: str, prefix: bool = False,
+            policy: str | None = None):  # type: ignore[no-untyped-def]
         if prefix:
             yield ctx.upsert_memo({"before": "local"})
-        return (yield ctx.local_activity("prepared.callback", [marker]))
+        return (yield ctx.local_activity("prepared.callback", [marker], cancellation_policy=policy))
 
 
 @workflow.defn(name="prepared.cleanup")
@@ -288,6 +289,8 @@ class PreparedServer:
                 self.receipt["activity_attempt_id"] = ""
             payload = {"sequence": body["sequence"], "activity_type": "prepared.callback", "execution_mode": "local",
                        "activity_execution_id": "execution", "activity_attempt_id": "attempt"}
+            if "cancellation_policy" in body["descriptor"]:
+                payload["activity"] = {"cancellation_policy": body["descriptor"]["cancellation_policy"]}
             self.history.extend([{"id": "scheduled", "event_type": "ActivityScheduled", "payload": payload},
                                  {"id": "started", "event_type": "ActivityStarted", "payload": payload}])
             return self.receipt
@@ -339,15 +342,22 @@ class PreparedServer:
                 "arguments": serializer.envelope([str(marker)]), "history_events": deepcopy(self.history)}
 
 
+@pytest.mark.parametrize("policy", [None, "try_cancel", "wait_cancellation_completed"])
 async def test_worker_runs_only_an_admitted_process_then_replays_canonical_result(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, policy: str | None,
 ) -> None:
     server = PreparedServer()
+    server.client.get_cluster_info.return_value["worker_protocol"]["server_capabilities"].update(
+        prepared_local_activity_cancellation_policies=["try_cancel", "wait_cancellation_completed"],
+    )
     worker = await server.worker(monkeypatch)
-    commands = await worker._run_workflow_task(server.task(tmp_path / "callback"))
+    task = server.task(tmp_path / "callback")
+    task["arguments"] = serializer.envelope([str(tmp_path / "callback"), False, policy])
+    commands = await worker._run_workflow_task(task)
     assert commands is not None and [command["type"] for command in commands] == ["complete_workflow"]
     assert serializer.decode_envelope(commands[0]["result"]) == {"value": b"\x00\xff", "attempt": "attempt"}
     assert server.trace == ["prepare", "control", "control", "outcome", "history"]
+    assert server.history[0]["payload"].get("activity", {}).get("cancellation_policy") == policy
     assert not worker._prepared_local_activity_processes
     server.client.fail_workflow_task.assert_not_awaited()
     await wait_for_exit(int((tmp_path / "callback").read_text()))
@@ -395,14 +405,19 @@ async def test_lost_or_noncanonical_outcome_abandons_without_reexecuting_callbac
     assert not worker._prepared_local_activity_processes
 
 
+@pytest.mark.parametrize("policy", [None, "try_cancel", "wait_cancellation_completed"])
 async def test_control_stops_and_joins_a_gil_blocked_local_callback_without_application_heartbeats(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, policy: str | None,
 ) -> None:
     server = PreparedServer()
+    server.client.get_cluster_info.return_value["worker_protocol"]["server_capabilities"].update(
+        prepared_local_activity_cancellation_policies=["try_cancel", "wait_cancellation_completed"],
+    )
     worker = await server.worker(monkeypatch, handler=blocked_without_python_progress)
     marker = tmp_path / "callback"
     task = server.task(marker)
-    outcome = replay(SequentialWorkflow, [], [str(marker)], prepare_local_activities=True)
+    outcome = replay(SequentialWorkflow, [], [str(marker), False, policy], prepare_local_activities=True,
+                     local_activity_cancellation_policies=worker._local_activity_cancellation_policies)
     pending = asyncio.create_task(worker._execute_prepared_local_activity(task, [], outcome))
     try:
         await wait_for_file(marker)

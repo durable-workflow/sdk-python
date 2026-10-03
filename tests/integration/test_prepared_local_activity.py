@@ -29,6 +29,9 @@ async def prepared_runtime(server_url: str, server_token: str, monkeypatch: pyte
         info = await client.get_cluster_info()
     assert info["worker_protocol"]["server_capabilities"]["prepared_local_activities"] is True
     assert info["worker_protocol"]["server_capabilities"]["prepared_local_activity_groups"] is True
+    assert info["worker_protocol"]["server_capabilities"]["prepared_local_activity_cancellation_policies"] == [
+        "try_cancel", "wait_cancellation_completed",
+    ]
     assert info["worker_protocol"]["version"] == "1.20"
     monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
 
@@ -54,13 +57,16 @@ async def prepared_local(marker: str, phase: str) -> dict[str, Any]:
 
 @workflow.defn(name="tests.python-prepared-cancellation")
 class PreparedCancellationWorkflow:
-    def run(self, ctx: Any, marker: str, group: bool = False) -> Any:
+    def run(self, ctx: Any, marker: str, group: bool = False, policy: str | None = None) -> Any:
         try:
             if group:
-                yield [ctx.local_activity("tests.python-prepared-blocked", [marker, "work-0", None]),
-                       ctx.local_activity("tests.python-prepared-blocked", [marker, "work-1", None])]
+                yield [ctx.local_activity("tests.python-prepared-blocked", [marker, "work-0", None],
+                                          cancellation_policy=policy),
+                       ctx.local_activity("tests.python-prepared-blocked", [marker, "work-1", None],
+                                          cancellation_policy=policy)]
             else:
-                yield ctx.local_activity("tests.python-prepared-blocked", [marker, "work", None])
+                yield ctx.local_activity("tests.python-prepared-blocked", [marker, "work", None],
+                                         cancellation_policy=policy)
         except WorkflowCancelled as error:
             assert error.context is ctx.cancellation_context and error.context is not None
             delivery_path = Path(marker + ".remaining-delivery-" + str(os.getpid()) + ".json")
@@ -72,11 +78,13 @@ class PreparedCancellationWorkflow:
                     yield [ctx.local_activity(
                         "tests.python-prepared-blocked", [marker, "cleanup-" + str(index), error.request_id],
                         retry_policy={"max_attempts": 2, "backoff_seconds": [0]},
+                        cancellation_policy=policy,
                     ) for index in range(2)]
                 else:
                     yield ctx.local_activity(
                         "tests.python-prepared-blocked", [marker, "cleanup", error.request_id],
                         retry_policy={"max_attempts": 2, "backoff_seconds": [0]},
+                        cancellation_policy=policy,
                     )
             final_path = Path(marker + ".remaining-final.json")
             pending = final_path.with_suffix(".writing")
@@ -229,8 +237,10 @@ async def test_prepared_nested_mixed_group_starts_peers_concurrently_and_cold_re
 
 
 @pytest.mark.parametrize("group", [False, True], ids=["sequential", "atomic-group"])
+@pytest.mark.parametrize("policy", [None, "try_cancel", "wait_cancellation_completed"],
+                         ids=["historical-omission", "try-cancel", "wait-cancellation-completed"])
 async def test_prepared_callback_stop_cleanup_sigkill_and_cold_recovery_keep_original_30_second_deadline(
-    server_url: str, server_token: str, tmp_path: Path, group: bool,
+    server_url: str, server_token: str, tmp_path: Path, group: bool, policy: str | None,
 ) -> None:
     queue = "py-prepared-cancel-" + uuid.uuid4().hex[:8]
     marker = str(tmp_path / "callback")
@@ -251,7 +261,7 @@ async def test_prepared_callback_stop_cleanup_sigkill_and_cold_recovery_keep_ori
     async with Client(server_url, token=server_token, namespace="default") as client:
         try:
             handle = await client.start_workflow(workflow_type="tests.python-prepared-cancellation", task_queue=queue,
-                                                 workflow_id=queue, input=[marker, group])
+                                                 workflow_id=queue, input=[marker, group, policy])
             first = await owner(queue + "-first", "hold")
             work_phases = ["work-0", "work-1"] if group else ["work"]
             cleanup_phases = ["cleanup-0", "cleanup-1"] if group else ["cleanup"]
@@ -301,6 +311,14 @@ async def test_prepared_callback_stop_cleanup_sigkill_and_cold_recovery_keep_ori
             assert kinds.count("ActivityCancellationAcknowledged") == len(work)
             assert kinds.count("ActivityCancelled") == len(work)
             assert "ActivityHeartbeatRecorded" not in kinds
+            scheduled = [event for event in history if event["event_type"] == "ActivityScheduled"]
+            assert len(scheduled) == len(work) + len(cleanup)
+            assert all(event["payload"]["activity"]["cancellation_policy"] == (policy or "try_cancel")
+                       for event in scheduled)
+            if policy == "wait_cancellation_completed":
+                delivery_index = kinds.index("CooperativeCancellationDelivered")
+                assert all(index < delivery_index for index, kind in enumerate(kinds)
+                           if kind == "ActivityCancellationAcknowledged")
             terminal = next(event for event in history if event["event_type"] == "WorkflowCancelled")
             assert datetime.fromisoformat(terminal["timestamp"].replace("Z", "+00:00")) < deadline
             receipts = [json.loads(line) for line in trace_path.read_text().splitlines()]
