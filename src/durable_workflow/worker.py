@@ -1061,6 +1061,7 @@ class Worker:
         if heartbeat_interval <= 0:
             raise ValueError("heartbeat_interval must be positive")
 
+        # Client supplies HTTP grace separately from this requested poll window.
         self._poll_timeout = poll_timeout
         self.max_concurrent_workflow_tasks = max_concurrent_workflow_tasks
         self.max_concurrent_activity_tasks = max_concurrent_activity_tasks
