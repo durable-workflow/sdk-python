@@ -3832,7 +3832,7 @@ def _assert_cancellation_scope_replay_supported(events: list[dict[str, Any]]) ->
     """Refuse unqualified scope execution before constructing application code."""
     for event in events:
         unsupported = _history_event_type(event) in {
-            "CancellationScopeOpened", "CancellationScopeRequested", "CancellationScopeRequestConflicted",
+            "CancellationScopeOpened", "CancellationScopeRequested", "CancellationScopeDelivered", "CancellationScopeRequestConflicted",
         }
         payload = event.get("payload")
         if isinstance(payload, Mapping):
