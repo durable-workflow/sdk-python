@@ -982,30 +982,6 @@ def _server_supports_update_validation_tasks(info: dict[str, Any]) -> bool:
     )
 
 
-def _server_long_poll_timeout(info: dict[str, Any]) -> float | None:
-    worker_protocol = info.get("worker_protocol")
-    if not isinstance(worker_protocol, dict):
-        return None
-
-    capabilities = worker_protocol.get("server_capabilities")
-    if not isinstance(capabilities, dict):
-        return None
-
-    timeout = capabilities.get("long_poll_timeout")
-    if isinstance(timeout, bool):
-        return None
-    if isinstance(timeout, int | float):
-        return float(timeout) if timeout > 0 else None
-    if isinstance(timeout, str):
-        try:
-            parsed = float(timeout)
-        except ValueError:
-            return None
-        return parsed if parsed > 0 else None
-
-    return None
-
-
 def _contract_version_matches(value: Any, expected: int) -> bool:
     if isinstance(value, int):
         return value == expected
@@ -1086,7 +1062,6 @@ class Worker:
             raise ValueError("heartbeat_interval must be positive")
 
         self._poll_timeout = poll_timeout
-        self._poll_http_timeout = poll_timeout
         self.max_concurrent_workflow_tasks = max_concurrent_workflow_tasks
         self.max_concurrent_activity_tasks = max_concurrent_activity_tasks
         self.max_concurrent_worker_sessions = max_concurrent_worker_sessions
@@ -1290,9 +1265,6 @@ class Worker:
                 "multiplexed workflow/update-validation polling. Refusing registration so validated "
                 "updates cannot be accepted without validator approval or exceed worker capacity."
             )
-        server_long_poll_timeout = _server_long_poll_timeout(info)
-        if server_long_poll_timeout is not None:
-            self._poll_http_timeout = max(self._poll_http_timeout, server_long_poll_timeout + 5.0)
         log.debug(
             "server compatibility accepted: app_version=%s control_plane=%s worker_protocol=%s",
             info.get("version", "unknown"),
@@ -3413,7 +3385,7 @@ class Worker:
                 task = await self.client.poll_workflow_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
-                    timeout=self._poll_http_timeout,
+                    timeout=self._poll_timeout,
                     build_id=self.build_id,
                     task_kinds=self._workflow_poll_task_kinds(),
                     history_page_size=WORKFLOW_HISTORY_PAGE_SIZE,
@@ -3524,7 +3496,7 @@ class Worker:
                 task = await self.client.poll_activity_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
-                    timeout=self._poll_http_timeout,
+                    timeout=self._poll_timeout,
                     build_id=self.build_id,
                 )
             except asyncio.CancelledError:
@@ -3583,7 +3555,7 @@ class Worker:
                 task = await client.poll_query_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
-                    timeout=self._poll_http_timeout,
+                    timeout=self._poll_timeout,
                     build_id=self.build_id,
                 )
             except Exception as e:
@@ -4113,7 +4085,7 @@ class Worker:
                     task = await self.client.poll_workflow_task(
                         worker_id=self.worker_id,
                         task_queue=self.task_queue,
-                        timeout=self._poll_http_timeout,
+                        timeout=self._poll_timeout,
                         build_id=self.build_id,
                         task_kinds=self._workflow_poll_task_kinds(),
                         history_page_size=WORKFLOW_HISTORY_PAGE_SIZE,
@@ -4167,7 +4139,7 @@ class Worker:
             task = await self.client.poll_activity_task(
                 worker_id=self.worker_id,
                 task_queue=self.task_queue,
-                timeout=self._poll_http_timeout,
+                timeout=self._poll_timeout,
                 build_id=self.build_id,
             )
             if self._stop.is_set():

@@ -88,7 +88,7 @@ async def poll_claim(client: Client, worker: Worker) -> dict[str, Any]:
         while True:
             try:
                 task = await client.poll_workflow_task(
-                    worker_id=worker.worker_id, task_queue=worker.task_queue, timeout=worker._poll_http_timeout,
+                    worker_id=worker.worker_id, task_queue=worker.task_queue, timeout=worker._poll_timeout,
                 )
             except ServerError as error:
                 delay = _poll_capacity_delay(error, "workflow_task", worker.task_queue)
