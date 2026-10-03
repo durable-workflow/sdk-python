@@ -3828,6 +3828,23 @@ def _first_yield_failure(values: Iterable[Any]) -> ActivityFailed | ChildWorkflo
     return None
 
 
+def _assert_cancellation_scope_replay_supported(events: list[dict[str, Any]]) -> None:
+    """Refuse unqualified scope execution before constructing application code."""
+    for event in events:
+        unsupported = _history_event_type(event) in {
+            "CancellationScopeOpened", "CancellationScopeRequested", "CancellationScopeRequestConflicted",
+        }
+        payload = event.get("payload")
+        if isinstance(payload, Mapping):
+            for container in (payload, *(payload.get(name) for name in ("activity", "timer", "child_workflow"))):
+                if isinstance(container, Mapping) and "cancellation_scope_id" in container:
+                    unsupported = unsupported or container["cancellation_scope_id"] != "root"
+        if unsupported:
+            raise LocalActivityExecutionAborted(
+                "cancellation_scope_execution_not_supported: Python worker cannot replay scoped cancellation history",
+            )
+
+
 def _replay_state(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
@@ -3862,6 +3879,7 @@ def _replay_state(
             ) from exception
 
     events = list(history_events)
+    _assert_cancellation_scope_replay_supported(events)
     cancellation = read_cancellation_history(events, run_id=run_id, observation=cancellation_request)
     cancellation_consumed = False
     cancellation_intent: CancellationDelivery | None = None

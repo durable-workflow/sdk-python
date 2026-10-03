@@ -11,7 +11,12 @@ import pytest
 from durable_workflow import Replayer, Worker, serializer, workflow
 from durable_workflow.client import Client, WorkflowStreamAppendItem
 from durable_workflow.errors import NonDeterministicReplayError, WorkflowCancelled, WorkflowPayloadDecodeError
-from durable_workflow.workflow import WorkflowContext, commands_to_server_commands, query_state
+from durable_workflow.workflow import (
+    LocalActivityExecutionAborted,
+    WorkflowContext,
+    commands_to_server_commands,
+    query_state,
+)
 from tests.test_golden_history_replay import (
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
@@ -416,12 +421,16 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
     expected_error = expected.get("error")
     expected_replay_error = fixture.get("expected_replay_error")
     if isinstance(expected_replay_error, dict):
-        assert expected_replay_error.get("type") == "NonDeterministicReplayError"
         message = expected_replay_error.get("message_contains")
-        workflow_sequence = expected_replay_error.get("workflow_sequence")
         assert isinstance(message, str) and message
-        assert isinstance(workflow_sequence, int)
         assert expected.get("command_sequence") == []
+        if expected_replay_error.get("type") == "LocalActivityExecutionAborted":
+            with pytest.raises(LocalActivityExecutionAborted, match=message):
+                _execute_fixture(fixture)
+            return
+        assert expected_replay_error.get("type") == "NonDeterministicReplayError"
+        workflow_sequence = expected_replay_error.get("workflow_sequence")
+        assert isinstance(workflow_sequence, int)
         with pytest.raises(NonDeterministicReplayError, match=message) as captured:
             _execute_fixture(fixture)
         assert captured.value.workflow_sequence == workflow_sequence
