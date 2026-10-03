@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.8] - 2026-10-03
+
+### Fixed
+- Preserve the configured worker poll window after Server discovery for workflow,
+  activity and query tasks. HTTP grace remains separate, so short polls release
+  Server admission slots when requested.
+
 ## [2.3.7] - 2026-09-29
 
 ### Fixed
