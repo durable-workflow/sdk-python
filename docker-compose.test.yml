@@ -30,6 +30,8 @@ services:
       WORKFLOW_SERVER_AUTH_DRIVER: token
       WORKFLOW_SERVER_AUTH_TOKEN: "test-token"
       DW_WORKFLOW_TASK_TIMEOUT: 10
+      # Candidate cooperative qualification is explicit. Published defaults remain 1.19.
+      DW_WORKER_PROTOCOL_VERSION: "${DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION:-1.19}"
     depends_on:
       mysql:
         condition: service_healthy
@@ -68,6 +70,16 @@ services:
       mysql:
         condition: service_healthy
       redis:
+        condition: service_healthy
+
+  repair:
+    build:
+      context: ../server
+    # Match the production scheduler's unscoped, unthrottled repair cadence.
+    command: sh -c 'while true; do php artisan workflow:v2:repair-pass --json; sleep 10; done'
+    environment: *server-env
+    depends_on:
+      server:
         condition: service_healthy
 
   mysql:

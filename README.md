@@ -127,10 +127,25 @@ pytest tests/ -m "not integration"
 Integration tests use Docker:
 
 ```bash
+export COMPOSE_PROJECT_NAME=sdk-python-local
 docker compose -f docker-compose.test.yml up -d --build --wait
-pytest tests/integration/ -v
+SERVER_PORT=$(docker compose -f docker-compose.test.yml port server 8080 | sed 's/.*://')
+DURABLE_WORKFLOW_SERVER_URL="http://127.0.0.1:$SERVER_PORT" DURABLE_WORKFLOW_AUTH_TOKEN=test-token pytest tests/integration/ -v
 docker compose -f docker-compose.test.yml down -v
 ```
+
+Candidate cooperative cancellation qualification is explicit. In a manual CI
+run, supply an exact public `server_commit` and set `cooperative_qualification`
+to true. CI verifies that checkout, builds the candidate Server, enables protocol
+1.20, runs the connected cases and retains JUnit, raw observations, image
+authority and exact source provenance. An optional exact `native_commit` mounts
+that public Native checkout read-only into the test stack. The image's published
+Composer authority stays intact and the evidence identifies the source overlay.
+These are source qualification runs. For a local
+candidate, set `DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION=1.20` before starting
+Compose and `DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION=1` for pytest. These cases
+fail if the runtime does not discover the required capability. Ordinary CI
+keeps protocol 1.19 and skips this unpublished feature's connected cases.
 
 ## License
 

@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .cancellation import CancellationContext
+
 
 class DurableWorkflowError(Exception):
     """Base class for every exception raised by the SDK."""
@@ -655,8 +657,13 @@ class WorkflowCancelled(BaseException):
     class by name.
     """
 
-    def __init__(self, message: str = "workflow was cancelled") -> None:
+    def __init__(
+        self, message: str = "workflow was cancelled", *, request_id: str | None = None,
+        context: CancellationContext | None = None,
+    ) -> None:
         super().__init__(message)
+        self.request_id = request_id
+        self.context = context
 
 
 class ActivityCancelled(BaseException):

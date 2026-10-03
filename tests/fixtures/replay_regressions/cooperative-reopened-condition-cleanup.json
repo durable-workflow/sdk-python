@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "cooperative-reopened-condition-cleanup",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "tests.replay.cooperative-reopened-condition-cleanup",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"event_type": "ConditionWaitOpened", "payload": {"sequence": 1, "condition_key": "forward-wait", "condition_wait_id": "wait-1"}},
+    {"event_type": "ConditionWaitSatisfied", "payload": {"sequence": 1, "condition_wait_id": "wait-1"}},
+    {"event_type": "ConditionWaitOpened", "payload": {"sequence": 2, "condition_key": "forward-wait", "condition_wait_id": "wait-2"}},
+    {
+      "event_type": "CooperativeCancellationRequested",
+      "workflow_command_id": "request-1",
+      "recorded_at": "2026-09-30T12:00:00Z",
+      "payload": {"workflow_command_id": "request-1", "workflow_run_id": "run-1", "cleanup_deadline_at": "2026-09-30T12:10:00Z"}
+    },
+    {
+      "event_type": "CooperativeCancellationDelivered",
+      "workflow_command_id": "request-1",
+      "payload": {"workflow_command_id": "request-1", "workflow_run_id": "run-1", "sequence": 2, "call_kind": "condition"}
+    },
+    {"event_type": "TimerScheduled", "payload": {"sequence": 3, "timer_kind": "durable_timer", "delay_seconds": 1}},
+    {"event_type": "TimerFired", "payload": {"sequence": 3, "timer_kind": "durable_timer"}}
+  ],
+  "expected": {
+    "command_sequence": [{"type": "complete_workflow", "command_type": "CompleteWorkflow", "result": "request-1"}]
+  }
+}

@@ -37,11 +37,13 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 import httpx
 
 from . import serializer
+from ._cooperative_cancellation import CancellationDelivery, CancellationRequest
 from .errors import (
     ExternalPayloadIntegrityMismatch,
     ExternalPayloadOversized,
     ExternalPayloadUnavailable,
     ExternalPayloadUnsupported,
+    NonDeterministicReplayError,
     RuntimeCapabilityUnsupported,
     RuntimeDiscoveryUnavailable,
     ServerError,
@@ -87,6 +89,7 @@ _MESSAGE_STREAMS_MINIMUM_WORKER_PROTOCOL = (1, 15)
 CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA = "durable-workflow.v2.control-plane-request.contract"
 CONTROL_PLANE_REQUEST_CONTRACT_VERSION = 1
 _QUERY_TASKS_DISCOVERY_PATH = "worker_protocol.server_capabilities.query_tasks"
+_COOPERATIVE_CANCELLATION_DISCOVERY_PATH = "worker_protocol.server_capabilities.cooperative_cancellation"
 _UPDATE_WAIT_STAGES_DISCOVERY_PATH = (
     "control_plane.request_contract.operations.update.fields.wait_for.canonical_values"
 )
@@ -105,10 +108,32 @@ _RUNTIME_EXTERNAL_PAYLOAD_FETCH_PATH_TEMPLATE = (
 )
 _RUNTIME_EXTERNAL_PAYLOAD_ERROR_BODY_LIMIT = 64 * 1024
 _PAYLOAD_COMPLETION_SCHEMA = "durable-workflow.v2.payload-completion-context.v1"
+_PREPARED_PAYLOAD_COMPLETION_SCHEMA = "durable-workflow.v2.payload-completion-context.v2"
 _PAYLOAD_COMPLETION_HEADER = "X-Durable-Workflow-Payload-Completion"
 
 
-def _payload_completion_context(path: str, body: Any) -> dict[str, Any] | None:
+def _payload_completion_context(path: str, body: Any, *, allow_prepared: bool = False) -> dict[str, Any] | None:
+    prepared = re.fullmatch(
+        r"/worker/workflow-tasks/([^/]+)/local-activities/(?:(checkpoint|checkpoint-group|prepare|recover)|([^/]+)/outcome)",
+        path.split("?")[0],
+    )
+    if allow_prepared and prepared is not None and isinstance(body, dict):
+        task_id, operation, activity_attempt_id = prepared.groups()
+        operation = operation or "outcome"
+        identity = ({"checkpoint_id": body.get("checkpoint_id")} if operation in {"checkpoint", "checkpoint-group"}
+                    else {"activity_attempt_id": unquote(activity_attempt_id)} if activity_attempt_id is not None
+                    else {"sequence": body.get("sequence")})
+        value = next(iter(identity.values()))
+        owner, attempt = body.get("lease_owner"), body.get("workflow_task_attempt")
+        identity_valid = (type(value) is int and value > 0) if operation in {"prepare", "recover"} \
+            else isinstance(value, str) and bool(value.strip())
+        if (not isinstance(owner, str) or not owner.strip() or type(attempt) is not int or attempt < 1
+                or not identity_valid):
+            return None
+        return {"schema": _PREPARED_PAYLOAD_COMPLETION_SCHEMA, "kind": "workflow", "task_id": unquote(task_id),
+                "attempt": attempt, "lease_owner": owner,
+                "operation": "local_activity_group_checkpoint" if operation == "checkpoint-group"
+                else "local_activity_" + operation, **identity}
     match = re.fullmatch(r"/worker/(activity|workflow|query)-tasks/([^/]+)/(complete|fail)", path.split("?")[0])
     if match is None or not isinstance(body, dict):
         return None
@@ -181,6 +206,13 @@ def _worker_protocol_supports_message_streams() -> bool:
         return False
 
     return (int(parts[0]), int(parts[1])) >= _MESSAGE_STREAMS_MINIMUM_WORKER_PROTOCOL
+
+
+def _supports_cooperative_cancellation_protocol(version: Any) -> bool:
+    if not isinstance(version, str):
+        return False
+    match = re.fullmatch(r"1\.([0-9]{1,4})", version)
+    return match is not None and int(match.group(1)) >= 20
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -301,6 +333,7 @@ class _RuntimeExternalPayloadTransport:
     request_timeout_seconds: float
     status: str
     completion_context: bool = False
+    prepared_completion_context: bool = False
 
 
 @dataclass
@@ -1330,6 +1363,15 @@ class WorkflowHandle:
         """Close this workflow's current run as cancelled. See :meth:`Client.cancel_workflow`."""
         await self._client.cancel_workflow(self.workflow_id, reason=reason)
 
+    async def request_cancellation(
+        self, *, reason: str | None = None, cleanup_timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Request bounded cleanup for this run. See :meth:`Client.request_workflow_cancellation`."""
+        return await self._client.request_workflow_cancellation(
+            self.workflow_id, run_id=self.run_id, reason=reason,
+            cleanup_timeout_seconds=cleanup_timeout_seconds,
+        )
+
     async def terminate(self, *, reason: str | None = None) -> None:
         """Forcefully stop this workflow. See :meth:`Client.terminate_workflow`."""
         await self._client.terminate_workflow(self.workflow_id, reason=reason)
@@ -1777,7 +1819,8 @@ class Client:
                     transport=transport,
                     uploaded={},
                     completion=(
-                        _payload_completion_context(path, json) if worker and transport.completion_context else None
+                        _payload_completion_context(path, json, allow_prepared=transport.prepared_completion_context)
+                        if worker and transport.completion_context else None
                     ),
                 )
 
@@ -1958,6 +2001,11 @@ class Client:
             completion_context=isinstance(completion, dict)
             and completion.get("schema") == _PAYLOAD_COMPLETION_SCHEMA
             and completion.get("header") == _PAYLOAD_COMPLETION_HEADER,
+            prepared_completion_context=isinstance(completion, dict)
+            and completion.get("prepared_schema") == _PREPARED_PAYLOAD_COMPLETION_SCHEMA
+            and _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+                "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+            )),
         )
         self._runtime_external_payload_transport_cache = transport
         self._runtime_external_payload_transport_resolved = True
@@ -2520,6 +2568,32 @@ class Client:
                     f"did not advertise {_QUERY_TASKS_DISCOVERY_PATH}=true. Check Server "
                     "compatibility and discovery authorization before retrying."
                 ),
+            )
+
+    async def _require_cooperative_cancellation_support(self) -> None:
+        operation = "Client.request_workflow_cancellation"
+        info = await self._runtime_discovery(
+            operation=operation,
+            required_path=_COOPERATIVE_CANCELLATION_DISCOVERY_PATH,
+        )
+        protocol = info.get("worker_protocol")
+        capabilities = protocol.get("server_capabilities") if isinstance(protocol, dict) else None
+        supported = capabilities.get("cooperative_cancellation") if isinstance(capabilities, dict) else None
+        if supported is False:
+            raise RuntimeCapabilityUnsupported(
+                operation, _COOPERATIVE_CANCELLATION_DISCOVERY_PATH,
+                "This runtime does not support cooperative cancellation. "
+                "Existing cancel and terminate close immediately.",
+            )
+        if supported is not True:
+            raise RuntimeDiscoveryUnavailable(
+                operation, _COOPERATIVE_CANCELLATION_DISCOVERY_PATH,
+                "Runtime discovery did not advertise cooperative cancellation support.",
+            )
+        if not isinstance(protocol, dict) or not _supports_cooperative_cancellation_protocol(protocol.get("version")):
+            raise RuntimeDiscoveryUnavailable(
+                operation, "worker_protocol.version",
+                "Cooperative cancellation requires an advertised compatible worker protocol of at least 1.20.",
             )
 
     async def _require_update_wait_stage(self, wait_for: str) -> None:
@@ -4140,14 +4214,61 @@ class Client:
             "POST", f"/workflows/{workflow_id}/query/{query_name}", json=body, context=workflow_id
         )
 
+    async def request_workflow_cancellation(
+        self,
+        workflow_id: str,
+        *,
+        run_id: str | None = None,
+        reason: str | None = None,
+        cleanup_timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Request cancellation with bounded workflow-authored cleanup.
+
+        Requires explicit runtime capability discovery and protocol 1.20.
+        Repeated requests return Server's original request ID and cleanup
+        deadline. No client-generated identity or deadline replaces them.
+        ``run_id`` fences the request to that current run when supplied.
+        """
+        if not isinstance(workflow_id, str) or not workflow_id.strip():
+            raise ValueError("workflow_id must be a non-empty string")
+        if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()):
+            raise ValueError("run_id must be a non-empty string")
+        if cleanup_timeout_seconds is not None and (
+            type(cleanup_timeout_seconds) is not int or not 1 <= cleanup_timeout_seconds <= 3600
+        ):
+            raise ValueError("cleanup_timeout_seconds must be an integer from 1 to 3600")
+        await self._require_cooperative_cancellation_support()
+        path = f"/workflows/{quote(workflow_id, safe='._:-')}"
+        if run_id is not None:
+            path += f"/runs/{quote(run_id, safe='._:-')}"
+        body: dict[str, Any] = {}
+        if reason is not None:
+            body["reason"] = reason
+        if cleanup_timeout_seconds is not None:
+            body["cleanup_timeout_seconds"] = cleanup_timeout_seconds
+        result = await self._request("POST", f"{path}/request-cancellation", json=body, context=workflow_id)
+        if (
+            not isinstance(result, dict) or result.get("accepted") is not True
+            or type(result.get("duplicate")) is not bool or result.get("workflow_id") != workflow_id
+            or not isinstance(result.get("run_id"), str) or not result["run_id"].strip()
+            or (run_id is not None and result["run_id"] != run_id)
+            or not isinstance(result.get("cancellation_request"), dict)
+        ):
+            raise ServerError(200, {"reason": "invalid_cooperative_cancellation_response"})
+        try:
+            CancellationRequest.from_observation(result["cancellation_request"])
+        except NonDeterministicReplayError as error:
+            raise ServerError(200, {"reason": "invalid_cooperative_cancellation_response"}) from error
+        return result
+
     async def cancel_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
         """Close the current run as cancelled immediately.
 
         Server cancels open tasks and timers; it does not resume workflow code
         to run saga or ``finally`` cleanup. :meth:`terminate_workflow` also
-        closes immediately, with a distinct terminal outcome. Embedded
-        Laravel's cooperative ``requestCancellation()`` is not yet available
-        through this service-mode API.
+        closes immediately, with a distinct terminal outcome.
+        For capable runtimes, :meth:`request_workflow_cancellation` separately
+        requests bounded workflow-authored cleanup.
         """
         body: dict[str, Any] = {}
         if reason is not None:
@@ -5053,6 +5174,90 @@ class Client:
             },
         )
 
+    async def deliver_workflow_cancellation(
+        self,
+        *,
+        task_id: str,
+        lease_owner: str,
+        workflow_task_attempt: int,
+        request_id: str,
+        sequence: int,
+        call_kind: str,
+        sequence_span: int = 1,
+        operation_sequence: int | None = None,
+        operation_sequence_span: int = 1,
+    ) -> dict[str, Any]:
+        """Commit delivery at one authored call using the current task lease.
+
+        Requires worker protocol 1.20 and a capable recorded claim. Retry
+        with the same request, attempt and operation range after a lost
+        acknowledgment, then reload canonical history before cleanup replay.
+        A child wait may explicitly release the claim. Return to polling and
+        replay the boundary on the successor claim when the child finishes.
+        Successful delivery does not release or renew the lease.
+        """
+        version = _protocol_version_from_env("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION)
+        if not _supports_cooperative_cancellation_protocol(version):
+            raise ValueError("cooperative cancellation delivery requires worker protocol 1.20 or newer")
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise ValueError("task_id must be a non-empty string")
+        if not isinstance(lease_owner, str) or not lease_owner.strip():
+            raise ValueError("lease_owner must be a non-empty string")
+        if type(workflow_task_attempt) is not int or workflow_task_attempt < 1:
+            raise ValueError("workflow_task_attempt must be a positive integer")
+        try:
+            delivery = CancellationDelivery.from_payload({
+                "workflow_command_id": request_id, "sequence": sequence, "call_kind": call_kind,
+                "sequence_span": sequence_span, "operation_sequence": operation_sequence,
+                "operation_sequence_span": operation_sequence_span,
+            })
+        except NonDeterministicReplayError as error:
+            raise ValueError("cancellation delivery must name a valid authored call and operation range") from error
+        body: dict[str, Any] = {
+            "lease_owner": lease_owner, "workflow_task_attempt": workflow_task_attempt,
+            "request_id": delivery.request_id, "sequence": delivery.sequence,
+            "call_kind": delivery.call_kind, "sequence_span": delivery.sequence_span,
+        }
+        if delivery.operation_sequence is not None:
+            body["operation_sequence"] = delivery.operation_sequence
+            body["operation_sequence_span"] = delivery.operation_sequence_span
+        result = await self._request(
+            "POST", f"/worker/workflow-tasks/{quote(task_id, safe='._:-')}/deliver-cancellation",
+            worker=True, json=body,
+        )
+        if (
+            isinstance(result, dict)
+            and result.get("delivered") is False
+            and (
+                (result.get("reason") == "cancellation_waiting_for_child"
+                 and delivery.call_kind in {"child", "parallel", "selection_handle"})
+                or (result.get("reason") == "cancellation_waiting_for_activity"
+                    and delivery.call_kind in {"activity", "local_activity", "parallel", "selection_handle"})
+            )
+            and result.get("claim_released") is True
+            and result.get("task_id") == task_id
+            and all(result.get(field) is None for field in (
+                "request_id", "sequence", "call_kind", "sequence_span",
+                "operation_sequence", "operation_sequence_span",
+            ))
+        ):
+            return result
+        if not isinstance(result, dict) or result.get("delivered") is not True or result.get("task_id") != task_id:
+            raise ServerError(200, {"reason": "invalid_cooperative_cancellation_delivery"})
+        try:
+            recorded = CancellationDelivery.from_payload({
+                "workflow_command_id": result.get("request_id"),
+                "sequence": result.get("sequence"), "call_kind": result.get("call_kind"),
+                "sequence_span": result.get("sequence_span"),
+                "operation_sequence": result.get("operation_sequence"),
+                "operation_sequence_span": result.get("operation_sequence_span"),
+            })
+        except NonDeterministicReplayError as error:
+            raise ServerError(200, {"reason": "invalid_cooperative_cancellation_delivery"}) from error
+        if recorded != delivery:
+            raise ServerError(200, {"reason": "invalid_cooperative_cancellation_delivery"})
+        return result
+
     async def workflow_task_history(
         self,
         *,
@@ -5395,6 +5600,138 @@ class Client:
         return await self._request(
             "POST", f"/worker/activity-tasks/{task_id}/fail", worker=True, json=body
         )
+
+    async def activity_task_status(
+        self,
+        *,
+        task_id: str,
+        activity_attempt_id: str,
+        lease_owner: str,
+    ) -> Any:
+        """Observe one cooperative activity claim without recording progress.
+
+        Requires explicit worker protocol 1.20. This readonly observation does
+        not renew the activity lease or its heartbeat deadline. A positive reply
+        is not a reservation of ownership for a subsequent completion.
+        """
+        if not _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+            "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+        )):
+            raise ValueError("activity ownership observation requires explicit worker protocol 1.20")
+        return await asyncio.wait_for(self._request(
+            "POST", f"/worker/activity-tasks/{task_id}/status", worker=True,
+            json={"activity_attempt_id": activity_attempt_id, "lease_owner": lease_owner}, timeout=5.0,
+        ), timeout=5.0)
+
+    async def acknowledge_activity_cancellation(
+        self,
+        *,
+        task_id: str,
+        activity_attempt_id: str,
+        lease_owner: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Report that the original owner's remote callback has stopped.
+
+        The caller must stop and join the callback before calling this method.
+        The receipt records diagnostic evidence and does not renew a lease,
+        heartbeat, publication authority or cleanup budget. Requires explicit
+        worker protocol 1.20. Retries share one five-second transport budget.
+        """
+        if not _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+            "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+        )):
+            raise ValueError("activity cancellation acknowledgment requires explicit worker protocol 1.20")
+        identities = {
+            "task_id": task_id,
+            "activity_attempt_id": activity_attempt_id,
+            "lease_owner": lease_owner,
+            "request_id": request_id,
+        }
+        if any(
+            not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 255
+            for value in identities.values()
+        ):
+            raise ValueError(
+                "activity cancellation acknowledgment requires bounded, nonempty claim and request identities"
+            )
+        result = await asyncio.wait_for(self._request(
+            "POST", f"/worker/activity-tasks/{quote(task_id, safe='._:-')}/acknowledge-cancellation",
+            worker=True,
+            json={"activity_attempt_id": activity_attempt_id, "lease_owner": lease_owner, "request_id": request_id},
+            timeout=5.0,
+        ), timeout=5.0)
+        if (
+            not isinstance(result, dict)
+            or any(result.get(key) != value for key, value in identities.items())
+            or result.get("acknowledged") is not True
+            or not isinstance(result.get("duplicate"), bool)
+            or result.get("reason") is not None
+            or result.get("heartbeat_recorded") is not False
+            or not isinstance(result.get("history_event_id"), str)
+            or not result["history_event_id"].strip()
+        ):
+            raise ServerError(200, {"reason": "invalid_activity_cancellation_acknowledgement"})
+        return result
+
+    async def prepared_local_activity_operation(
+        self,
+        *,
+        task_id: str,
+        lease_owner: str,
+        workflow_task_attempt: int,
+        operation: str,
+        body: Mapping[str, Any] | None = None,
+        activity_attempt_id: str | None = None,
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, Any]:
+        """Perform one prepared-local operation on its original workflow claim.
+
+        Source protocol 1.20 only. This transport does not grant permission to
+        invoke a callback. The worker must discover the installed bridge and
+        validate its original admission receipt, deadlines and canonical history.
+        Every retry and payload transfer shares this total authority budget.
+        """
+        if not _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+            "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+        )):
+            raise ValueError("prepared local operations require explicit worker protocol 1.20")
+        admission = {"checkpoint", "checkpoint-group", "prepare", "recover"}
+        attempts = {"control", "heartbeat", "outcome", "acknowledge-cancellation"}
+        if operation not in admission | attempts:
+            raise ValueError("unsupported prepared local operation")
+        identifiers = [task_id, lease_owner]
+        if operation in attempts:
+            if activity_attempt_id is None:
+                raise ValueError("prepared local attempt operation requires its original backend attempt identity")
+            identifiers.append(activity_attempt_id)
+        elif activity_attempt_id is not None:
+            raise ValueError("prepared local admission cannot carry an activity attempt identity")
+        if any(not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 255
+               for value in identifiers):
+            raise ValueError("prepared local operations require bounded nonempty original claim identities")
+        if type(workflow_task_attempt) is not int or workflow_task_attempt < 1:
+            raise ValueError("prepared local operations require a positive original workflow task epoch")
+        if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int | float)
+                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 5):
+            raise ValueError("prepared local authority budget must be positive, finite and at most five seconds")
+        if body is not None and not isinstance(body, Mapping):
+            raise TypeError("prepared local operation body must be an object")
+        payload = dict(body or {})
+        if "lease_owner" in payload or "workflow_task_attempt" in payload:
+            raise ValueError("prepared local operation body cannot replace original workflow claim authority")
+        payload = {"lease_owner": lease_owner, "workflow_task_attempt": workflow_task_attempt, **payload}
+        json_module.dumps(payload, allow_nan=False)
+        path = f"/worker/workflow-tasks/{quote(task_id, safe='._:-')}/local-activities/"
+        if activity_attempt_id is not None:
+            path += quote(activity_attempt_id, safe="._:-") + "/"
+        result = await asyncio.wait_for(
+            self._request("POST", path + operation, worker=True, json=payload, timeout=timeout_seconds),
+            timeout=timeout_seconds,
+        )
+        if not isinstance(result, dict):
+            raise ServerError(200, {"reason": "invalid_prepared_local_activity_receipt"})
+        return result
 
     async def heartbeat_activity_task(
         self,

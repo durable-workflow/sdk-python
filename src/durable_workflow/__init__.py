@@ -16,6 +16,7 @@ from .auth_composition import (
     AuthCompositionContractError,
     parse_auth_composition_contract,
 )
+from .cancellation import CancellationContext, CancellationLineage, CancellationPolicy, ParentClosePolicy
 from .client import (
     BridgeAdapterOutcome,
     Client,
@@ -237,6 +238,10 @@ __all__ = [
     "ActivityInterceptorContext",
     "ActivityRetryPolicy",
     "BridgeAdapterOutcome",
+    "CancellationContext",
+    "CancellationLineage",
+    "CancellationPolicy",
+    "ParentClosePolicy",
     "ChildWorkflowRetryPolicy",
     "ChildWorkflowCancelled",
     "ChildWorkflowFailed",
