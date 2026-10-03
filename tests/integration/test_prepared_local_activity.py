@@ -313,8 +313,10 @@ async def test_prepared_callback_stop_cleanup_sigkill_and_cold_recovery_keep_ori
             assert "ActivityHeartbeatRecorded" not in kinds
             scheduled = [event for event in history if event["event_type"] == "ActivityScheduled"]
             assert len(scheduled) == len(work) + len(cleanup)
-            assert all(event["payload"]["activity"].get("cancellation_policy", "try_cancel") == (policy or "try_cancel")
-                       for event in scheduled)
+            assert all(
+                event["payload"]["activity"].get("cancellation_policy", "try_cancel") == (policy or "try_cancel")
+                for event in scheduled
+            )
             if policy == "wait_cancellation_completed":
                 delivery_index = kinds.index("CooperativeCancellationDelivered")
                 assert all(index < delivery_index for index, kind in enumerate(kinds)
