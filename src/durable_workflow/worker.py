@@ -1017,6 +1017,8 @@ class Worker:
             raise ValueError("heartbeat_interval must be positive")
 
         self._poll_timeout = poll_timeout
+        # Client supplies HTTP grace separately from this requested poll window.
+        self._poll_http_timeout = poll_timeout
         self.max_concurrent_workflow_tasks = max_concurrent_workflow_tasks
         self.max_concurrent_activity_tasks = max_concurrent_activity_tasks
         self.max_concurrent_worker_sessions = max_concurrent_worker_sessions
@@ -2502,7 +2504,7 @@ class Worker:
                 task = await self.client.poll_workflow_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
-                    timeout=self._poll_timeout,
+                    timeout=self._poll_http_timeout,
                     build_id=self.build_id,
                     task_kinds=self._workflow_poll_task_kinds(),
                     history_page_size=WORKFLOW_HISTORY_PAGE_SIZE,
@@ -2608,7 +2610,7 @@ class Worker:
                 task = await self.client.poll_activity_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
-                    timeout=self._poll_timeout,
+                    timeout=self._poll_http_timeout,
                     build_id=self.build_id,
                 )
             except asyncio.CancelledError:
@@ -2667,7 +2669,7 @@ class Worker:
                 task = await client.poll_query_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
-                    timeout=self._poll_timeout,
+                    timeout=self._poll_http_timeout,
                     build_id=self.build_id,
                 )
             except Exception as e:
@@ -3192,7 +3194,7 @@ class Worker:
                     task = await self.client.poll_workflow_task(
                         worker_id=self.worker_id,
                         task_queue=self.task_queue,
-                        timeout=self._poll_timeout,
+                        timeout=self._poll_http_timeout,
                         build_id=self.build_id,
                         task_kinds=self._workflow_poll_task_kinds(),
                         history_page_size=WORKFLOW_HISTORY_PAGE_SIZE,
@@ -3241,7 +3243,7 @@ class Worker:
             task = await self.client.poll_activity_task(
                 worker_id=self.worker_id,
                 task_queue=self.task_queue,
-                timeout=self._poll_timeout,
+                timeout=self._poll_http_timeout,
                 build_id=self.build_id,
             )
             if self._stop.is_set():
