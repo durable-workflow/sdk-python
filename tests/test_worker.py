@@ -711,7 +711,14 @@ class TestWorkerRegistration:
         )
 
     @pytest.mark.asyncio
-    async def test_register_keeps_http_timeout_above_server_long_poll(self, mock_client: AsyncMock) -> None:
+    @pytest.mark.parametrize(("poll_loop", "poll_method"), [
+        ("_poll_workflow_tasks", "poll_workflow_task"),
+        ("_poll_activity_tasks", "poll_activity_task"),
+        ("_poll_query_tasks", "poll_query_task"),
+    ])
+    async def test_registration_preserves_configured_poll_window(
+        self, mock_client: AsyncMock, poll_loop: str, poll_method: str,
+    ) -> None:
         mock_client.get_cluster_info = AsyncMock(
             return_value=compatible_cluster_info(
                 worker_protocol={
@@ -736,12 +743,12 @@ class TestWorkerRegistration:
             worker._stop.set()
             return None
 
-        mock_client.poll_workflow_task.side_effect = poll_once
+        getattr(mock_client, poll_method).side_effect = poll_once
 
         await worker._register()
-        await worker._poll_workflow_tasks()
+        await getattr(worker, poll_loop)()
 
-        assert mock_client.poll_workflow_task.call_args.kwargs["timeout"] == 17.0
+        assert getattr(mock_client, poll_method).call_args.kwargs["timeout"] == 0.01
 
     @pytest.mark.asyncio
     async def test_register_keeps_baseline_capabilities_when_server_does_not_support_query_tasks(
