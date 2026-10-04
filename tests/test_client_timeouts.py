@@ -65,9 +65,9 @@ async def test_configured_timeout_bounds_a_stalled_response(operation: str) -> N
         Client(endpoint, timeout=0.05, retry_policy=TransportRetryPolicy(max_attempts=1)) as client,
     ):
         if operation == "control":
-            request = client._request("GET", "/health")
+            request = client.health()
         elif operation == "discovery":
-            request = client._request("GET", "/cluster/info", discovery=True)
+            request = client.get_cluster_info()
         else:
             request = client.complete_workflow_task(
                 task_id="synthetic-timeout-task",
