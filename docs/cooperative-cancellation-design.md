@@ -40,6 +40,18 @@ mismatched local request/run identities, cycles, invalid budgets and a delivery
 that changes the accepted snapshot. Older cancellation histories without rich
 context continue delivering cancellation with `context is None`.
 
+Candidate context v2 exposes immutable `scope_origin`, a
+`ScopedCancellationContext` with the original root context and every scope
+address in order. Its `deadline` is the originating scope's budget, while
+`root_deadline` retains the original global deadline. The child context's own
+`deadline` may be earlier when parent authority is narrower. The immediate
+parent request names the last scope hop, including multiple scopes in one run.
+The parser verifies that run lineage derives from the complete tree and refuses
+changed metadata, repeated addresses, reentry into an earlier run or a larger
+budget. Cold replay and `remaining()` retain the original narrowed authority.
+Reading this metadata does not enable scope execution. Both v1 and v2 contexts
+remain readable.
+
 ## Child policies
 
 `CancellationPolicy` and `ParentClosePolicy` are available from the package
