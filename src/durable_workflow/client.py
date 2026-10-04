@@ -1794,7 +1794,7 @@ class Client:
                 f"/api{path}",
                 headers=self._discovery_headers() if discovery else self._headers(worker=worker),
                 json=request_json,
-                timeout=timeout,
+                timeout=self.timeout if timeout is None else timeout,
             )
             # Raise HTTPStatusError for 4xx/5xx so retry policy can catch it
             resp.raise_for_status()
