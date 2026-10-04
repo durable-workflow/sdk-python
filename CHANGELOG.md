@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.9] - 2026-10-04
+
+### Fixed
+- Honor the configured Client HTTP timeout for ordinary control, discovery and
+  worker requests. Explicit long-poll timeouts retain their existing grace.
+
 ## [2.3.8] - 2026-10-03
 
 ### Fixed
