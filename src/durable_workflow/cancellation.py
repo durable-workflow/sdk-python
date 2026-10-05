@@ -252,6 +252,8 @@ class ScopedCancellationContext:
 
     root_context: CancellationContext
     lineage: tuple[ScopedCancellationLineage, ...]
+    _replay_clock: Callable[[], datetime] | None = field(default=None, repr=False, compare=False)
+    _authority_deadline: datetime | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "lineage", tuple(self.lineage))
@@ -281,6 +283,34 @@ class ScopedCancellationContext:
         return self.lineage[0].scope_id
 
     @property
+    def root_request_id(self) -> str:
+        return self.root_context.root_request_id
+
+    @property
+    def root_workflow_instance_id(self) -> str:
+        return self.root_context.root_workflow_instance_id
+
+    @property
+    def root_workflow_run_id(self) -> str:
+        return self.root_context.root_workflow_run_id
+
+    @property
+    def cleanup_deadline_at(self) -> datetime:
+        return self.deadline
+
+    @property
+    def reason(self) -> str | None:
+        return self.root_context.reason
+
+    @property
+    def requester(self) -> Mapping[str, str]:
+        return self.root_context.requester
+
+    @property
+    def source(self) -> str:
+        return self.root_context.source
+
+    @property
     def requested_at(self) -> datetime:
         return self.root_context.requested_at
 
@@ -291,6 +321,20 @@ class ScopedCancellationContext:
     @property
     def deadline(self) -> datetime:
         return self.lineage[-1].cleanup_deadline_at
+
+    def remaining(self) -> float:
+        """Seconds left at the consumed replay boundary within original authority."""
+        if self._replay_clock is None:
+            raise RuntimeError("cancellation remaining time requires active workflow replay")
+        ceiling = self._authority_deadline or self.deadline
+        return max(0.0, (ceiling - self._replay_clock()).total_seconds())
+
+    def _with_replay_clock(
+        self, clock: Callable[[], datetime], authority_deadline: datetime | None = None,
+    ) -> ScopedCancellationContext:
+        if authority_deadline is not None and not self.requested_at <= authority_deadline <= self.deadline:
+            raise ValueError("scope replay cannot extend its original authority ceiling")
+        return replace(self, _replay_clock=clock, _authority_deadline=authority_deadline)
 
     @classmethod
     def from_dict(cls, snapshot: Mapping[str, Any]) -> ScopedCancellationContext:

@@ -38,6 +38,11 @@ import httpx
 
 from . import serializer
 from ._cancellation_scope import CancellationScopeOpenReceipt, scope_identity
+from ._cancellation_scope_history import (
+    CancellationScopeBudget,
+    CancellationScopeDeliveryReceipt,
+    scope_timestamp,
+)
 from ._cooperative_cancellation import CancellationDelivery, CancellationRequest
 from .errors import (
     ExternalPayloadIntegrityMismatch,
@@ -5336,6 +5341,102 @@ class Client:
             return CancellationScopeOpenReceipt.from_history(receipt, history, expected)
 
         return await asyncio.wait_for(prove(), timeout=timeout_seconds)
+
+    async def cancellation_scope_boundary_on_claim(
+        self, *, task_id: str, run_id: str, workflow_id: str, lease_owner: str,
+        workflow_task_attempt: int, scope_id: str, boundary: CancellationDelivery, phase: str,
+        preparation: CancellationScopeDeliveryReceipt | None = None,
+        budget: CancellationScopeBudget | None = None, enforce_authority_deadline: bool = False,
+    ) -> CancellationScopeDeliveryReceipt:
+        """Prove preparation or delivery on the original candidate worker claim.
+
+        Every retry and history page shares the original bounded budget.
+        Delivery requires an earlier proved preparation and does not advertise
+        scope execution or grant callback authority.
+        """
+        if not _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+            "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+        )):
+            raise ValueError("scope boundaries require explicit worker protocol 1.20")
+        delivering = phase == "deliver"
+        if (not all(scope_identity(value) for value in (
+            task_id, run_id, workflow_id, lease_owner, scope_id, boundary.request_id, self.namespace,
+        )) or scope_id == "root" or type(workflow_task_attempt) is not int or workflow_task_attempt < 1
+            or phase not in {"prepare", "deliver"} or delivering != (preparation is not None)
+            or boundary.call_kind not in {"activity", "local_activity", "timer", "condition", "child"}
+            or boundary.sequence_span != 1 or boundary.operation_sequence is not None
+            or boundary.operation_sequence_span != 1):
+            raise ValueError("scope boundaries require their original claim, authored call and proved preparation")
+        # Also validate directly constructed internal boundary values.
+        body = {
+            "scope_id": scope_id, "request_id": boundary.request_id, "sequence": boundary.sequence,
+            "call_kind": boundary.call_kind, "sequence_span": boundary.sequence_span,
+            "operation_sequence": boundary.operation_sequence,
+            "operation_sequence_span": boundary.operation_sequence_span,
+        }
+        CancellationDelivery.from_payload({**body, "workflow_command_id": boundary.request_id})
+        if preparation is not None and (
+            preparation.preparation.context.workflow_run_id != run_id
+            or preparation.preparation.context.workflow_instance_id != workflow_id
+            or preparation.preparation.context.scope_id != scope_id or preparation.preparation.boundary != boundary
+        ):
+            raise ValueError("scope delivery cannot borrow another verified preparation")
+        if budget is None:
+            raise ValueError("scope preparation and delivery require an explicit shared request budget")
+        budget.remaining()
+        expected = {
+            "task_id": task_id, "workflow_run_id": run_id, "workflow_instance_id": workflow_id,
+            "lease_owner": lease_owner, "workflow_task_attempt": workflow_task_attempt,
+            "namespace": self.namespace, **body,
+        }
+        path = f"/worker/workflow-tasks/{quote(task_id, safe='._:-')}"
+        authority = {"lease_owner": lease_owner, "workflow_task_attempt": workflow_task_attempt}
+
+        async def prove() -> CancellationScopeDeliveryReceipt:
+            receipt = await self._request(
+                "POST", path + "/cancellation-scopes/" + phase, worker=True,
+                timeout=budget.remaining(), json={**authority, **body},
+            )
+            try:
+                token: str | None = CancellationScopeDeliveryReceipt.acknowledge(
+                    receipt, expected, delivering=delivering,
+                )
+                if enforce_authority_deadline:
+                    budget.restrict(scope_timestamp(receipt["authority_deadline_at"]))
+                history: list[dict[str, Any]] = []
+                seen: set[str] = set()
+                while token is not None:
+                    if token in seen:
+                        raise ValueError("scope history repeated its opaque cursor")
+                    seen.add(token)
+                    page = await self._request(
+                        "POST", path + "/history", worker=True, timeout=budget.remaining(),
+                        json={**authority, "next_history_page_token": token},
+                    )
+                    if (not isinstance(page, dict) or page.get("task_id") != task_id
+                        or type(page.get("workflow_task_attempt")) is not int
+                        or page["workflow_task_attempt"] != workflow_task_attempt
+                        or not isinstance(page.get("history_events"), list)
+                        or any(not isinstance(event, dict) for event in page["history_events"])
+                        or "next_history_page_token" not in page
+                        or (page["next_history_page_token"] is not None and (
+                            not isinstance(page["next_history_page_token"], str)
+                            or not page["next_history_page_token"].strip()
+                        ))):
+                        raise ValueError("scope history page changes its original claim or complete shape")
+                    history.extend(page["history_events"])
+                    token = page["next_history_page_token"]
+                proved = CancellationScopeDeliveryReceipt.from_history(
+                    receipt, history, expected, delivering=delivering,
+                )
+                if preparation is not None:
+                    proved.assert_original_preparation(preparation)
+                budget.remaining()
+                return proved
+            except (ValueError, TypeError, KeyError, NonDeterministicReplayError) as error:
+                raise ServerError(200, {"reason": "invalid_cancellation_scope_boundary"}) from error
+
+        return await asyncio.wait_for(prove(), timeout=budget.remaining())
 
     async def workflow_task_history(
         self,

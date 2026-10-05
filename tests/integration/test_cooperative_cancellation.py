@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from durable_workflow import CancellationPolicy, Client, Worker, activity, serializer, workflow
+from durable_workflow.cancellation import ScopedCancellationContext
 from durable_workflow.client import WorkflowHandle
 from durable_workflow.errors import ServerError, WorkflowCancelled
 from durable_workflow.worker import _poll_capacity_delay
@@ -526,6 +527,109 @@ async def test_candidate_scope_authoring_replays_nested_tree_and_deferred_member
                 "completed", "failed", "cancelled", "terminated", "continued_as_new",
             }:
                 await handle.terminate(reason="scope authoring qualification complete")
+            await replacement.stop()
+            await original.stop()
+
+
+@workflow.defn(name="tests.python-candidate-scope-cleanup")
+class CandidateScopeCleanupWorkflow:
+    def run(self, ctx: workflow.WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.side_effect(lambda: "original prefix")
+
+        def body():  # type: ignore[no-untyped-def]
+            try:
+                yield ctx.start_timer(300)
+            except WorkflowCancelled as error:
+                assert isinstance(error.context, ScopedCancellationContext)
+                assert error.context is ctx.cancellation_context
+                cancellation = error.context
+                with ctx.cancellation_shield():
+                    yield ctx.side_effect(lambda: {"entry": cancellation.to_dict()})
+                    yield ctx.start_timer(1)
+                return {"context": cancellation.to_dict(), "remaining": cancellation.remaining()}
+
+        result = yield from ctx.cancellation_scope(body)
+        assert not ctx.is_cancellation_requested and ctx.cancellation_context is None
+        yield ctx.start_timer(1)
+        return result
+
+
+async def request_native_scope_fixture(run_id: str, workflow_id: str, scope_id: str) -> dict[str, Any]:
+    process = await asyncio.create_subprocess_exec(
+        "docker", "compose", "exec", "-T", "--user", "1000:1000", "--env",
+        "DURABLE_WORKFLOW_NATIVE_SCOPE_FIXTURE=1", "server", "timeout", "--kill-after=1", "5",
+        "php", "/app/sdk-source-fixtures/native-scope-request.php",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(json.dumps({
+            "run_id": run_id, "workflow_id": workflow_id, "scope_id": scope_id,
+        }).encode()), timeout=10)
+    except BaseException:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+        raise
+    assert process.returncode == 0, stderr.decode()
+    return json.loads(stdout)  # type: ignore[no-any-return]
+
+
+async def test_candidate_scope_cleanup_keeps_original_delivery_and_budget_after_replacement(
+    server_url: str, server_token: str,
+) -> None:
+    if os.environ.get("DURABLE_WORKFLOW_NATIVE_SOURCE_QUALIFICATION") != "1":
+        pytest.skip("scope delivery requires the exact Native source overlay")
+    queue = f"py-cooperative-scope-boundary-{uuid.uuid4().hex[:8]}"
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        original = Worker(client, task_queue=queue, worker_id=f"{queue}-original",
+                          workflows=[CandidateScopeCleanupWorkflow], capabilities=["cooperative_cancellation"])
+        replacement = Worker(client, task_queue=queue, worker_id=f"{queue}-replacement",
+                             workflows=[CandidateScopeCleanupWorkflow], capabilities=["cooperative_cancellation"])
+        for worker in (original, replacement):
+            worker._allow_cancellation_scope_authoring = True
+            worker._allow_cancellation_scope_delivery = True
+        handle = None
+        try:
+            await original._register()
+            handle = await client.start_workflow(
+                workflow_type="tests.python-candidate-scope-cleanup", workflow_id=queue, task_queue=queue, input=[],
+            )
+            for expected in ("record_side_effect", "start_timer"):
+                wire = await original._run_workflow_task(await poll_claim(client, original))
+                assert wire is not None and [command["type"] for command in wire] == [expected]
+            history = await events(handle)
+            scope = next(row["payload"]["scope_id"] for row in history
+                         if row["event_type"] == "CancellationScopeOpened")
+            run_id = (await handle.describe()).run_id
+            assert run_id is not None
+            accepted = await request_native_scope_fixture(run_id, queue, scope)
+            repeated = await request_native_scope_fixture(run_id, queue, scope)
+            assert accepted == repeated
+            wire = await original._run_workflow_task(await poll_claim(client, original))
+            assert wire is not None and [command["type"] for command in wire] == ["record_side_effect", "start_timer"]
+            await original.stop()
+            await replacement._register()
+            for expected in ("start_timer", "complete_workflow"):
+                wire = await replacement._run_workflow_task(await poll_claim(client, replacement))
+                assert wire is not None and [command["type"] for command in wire] == [expected]
+            result = await handle.result(timeout=10)
+            assert result["context"] == accepted["payload"]["cancellation"]
+            assert 0 < result["remaining"] < 30
+            history = await events(handle)
+            kinds = [row["event_type"] for row in history]
+            for kind in ("CancellationScopeOpened", "CancellationScopeRequested", "CancellationScopeDeliveryPrepared",
+                         "CancellationScopeDelivered", "TimerCancelled", "WorkflowCompleted"):
+                assert kinds.count(kind) == 1
+            assert kinds.count("SideEffectRecorded") == 2
+            assert kinds.count("TimerScheduled") == 3 and kinds.count("TimerFired") == 2
+            assert "CooperativeCancellationRequested" not in kinds and "WorkflowCancelled" not in kinds
+            assert "WorkflowFailed" not in kinds
+            print(f"Native scope cleanup and replacement replay: {json.dumps(history)}")
+        finally:
+            if handle is not None and (await handle.describe()).status not in {
+                "completed", "failed", "cancelled", "terminated", "continued_as_new",
+            }:
+                await handle.terminate(reason="scope cleanup source qualification complete")
             await replacement.stop()
             await original.stop()
 

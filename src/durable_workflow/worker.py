@@ -38,6 +38,7 @@ from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Uni
 
 from . import serializer
 from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProcessLost, SupervisedCallback
+from ._cancellation_scope_history import CancellationScopeBudget, CancellationScopeDeliveryReceipt
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
 from ._prepared_local_activity import PreparedAttempt, PreparedCancellationObserved, PreparedLocalRunner
 from .activity import ActivityContext, ActivityInfo, _set_context
@@ -1032,6 +1033,7 @@ class Worker:
         self._prepared_local_activities_supported = False
         self._prepared_local_activity_groups_supported = False
         self._allow_cancellation_scope_authoring = False
+        self._allow_cancellation_scope_delivery = False
         self._local_activity_cancellation_policies: tuple[str, ...] = ()
         if "prepared_local_activity_cancellation_policies" in self.capabilities and (
             "prepared_local_activities" not in self.capabilities
@@ -1550,6 +1552,7 @@ class Worker:
             observed = self._observe_workflow_cancellation(task, observation)
             history = await self._refresh_cancellation_history(task, observed)
         delivery_attempts = 0
+        scope_claims: dict[str, tuple[CancellationScopeBudget, CancellationScopeDeliveryReceipt | None, bool]] = {}
         for _ in range(1000):
             state = read_cancellation_history(
                 history, run_id=task.get("run_id", ""), observation=task.get("cancellation_request"),
@@ -1573,7 +1576,47 @@ class Worker:
                     prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                     local_activity_cancellation_policies=self._local_activity_cancellation_policies,
                     allow_cancellation_scope_authoring=self._allow_cancellation_scope_authoring,
+                    allow_cancellation_scope_delivery=self._allow_cancellation_scope_delivery,
                 )
+                if outcome.cancellation_scope_delivery is not None:
+                    if outcome.commands:
+                        return outcome, history
+                    if not self._cooperative_cancellation_supported:
+                        raise LocalActivityExecutionAborted("scope delivery requires a negotiated original 1.20 claim")
+                    scope_intent = outcome.cancellation_scope_delivery
+                    key = scope_intent.context.scope_id
+                    if key not in scope_claims:
+                        budget = CancellationScopeBudget.start()
+                        budget.restrict(scope_intent.context.deadline)
+                        scope_claims[key] = (budget, None, False)
+                    budget, prepared, delivered = scope_claims[key]
+                    budget.remaining()
+                    if delivered:
+                        raise LocalActivityExecutionAborted(
+                            "scope replay did not consume its original committed delivery",
+                        )
+                    if prepared is not None:
+                        if scope_intent.preparation is None:
+                            raise LocalActivityExecutionAborted(
+                                "scope delivery requires replay of its proved preparation",
+                            )
+                        replayed_receipt = CancellationScopeDeliveryReceipt(
+                            scope_intent.preparation, None, tuple(history),
+                        )
+                        replayed_receipt.assert_original_preparation(prepared)
+                    receipt = await self.client.cancellation_scope_boundary_on_claim(
+                        task_id=task["task_id"], run_id=task["run_id"], workflow_id=task["workflow_id"],
+                        lease_owner=self.worker_id, workflow_task_attempt=task.get("workflow_task_attempt", 1),
+                        scope_id=key, boundary=scope_intent.boundary,
+                        phase="prepare" if prepared is None else "deliver", preparation=prepared,
+                        budget=budget, enforce_authority_deadline=True,
+                    )
+                    if receipt.preparation.context != scope_intent.context:
+                        raise LocalActivityExecutionAborted("scope receipt changes its selected original request")
+                    budget.restrict(receipt.preparation.authority_deadline)
+                    history = list(receipt.history)
+                    scope_claims[key] = (budget, receipt, prepared is not None)
+                    continue
                 if outcome.cancellation_scope_opening is not None:
                     if outcome.commands:
                         return outcome, history
@@ -1582,12 +1625,12 @@ class Worker:
                             "candidate scope opening requires an original protocol 1.20 claim",
                         )
                     opening = outcome.cancellation_scope_opening
-                    receipt = await self.client.open_cancellation_scope_on_claim(
+                    opening_receipt = await self.client.open_cancellation_scope_on_claim(
                         task_id=task["task_id"], run_id=task["run_id"], lease_owner=self.worker_id,
                         workflow_task_attempt=task.get("workflow_task_attempt", 1), sequence=opening.sequence,
                         parent_scope_id=opening.parent_scope_id, shield_parent=opening.shield_parent,
                     )
-                    history = list(receipt.history)
+                    history = list(opening_receipt.history)
                     continue
                 if outcome.prepared_local_activity_group is not None:
                     history = await self._execute_prepared_local_activity_group(task, history, outcome)

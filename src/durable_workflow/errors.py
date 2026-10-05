@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .cancellation import CancellationContext
+from .cancellation import CancellationContext, ScopedCancellationContext
 
 
 class DurableWorkflowError(Exception):
@@ -659,7 +659,7 @@ class WorkflowCancelled(BaseException):
 
     def __init__(
         self, message: str = "workflow was cancelled", *, request_id: str | None = None,
-        context: CancellationContext | None = None,
+        context: CancellationContext | ScopedCancellationContext | None = None,
     ) -> None:
         super().__init__(message)
         self.request_id = request_id
