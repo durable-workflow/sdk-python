@@ -418,6 +418,52 @@ async def test_waiting_timer_is_cancelled_by_canonical_delivery(
             await worker.stop()
 
 
+async def test_scope_opening_proves_real_native_tree_on_original_claim(
+    server_url: str, server_token: str,
+) -> None:
+    if os.environ.get("DURABLE_WORKFLOW_NATIVE_SOURCE_QUALIFICATION") != "1":
+        pytest.skip("scope opening requires the Native candidate source overlay")
+    queue = f"py-scope-opening-{uuid.uuid4().hex[:8]}"
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        worker = candidate_worker(client, queue)
+        await worker._register()
+        handle = None
+        try:
+            handle = await client.start_workflow(
+                workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["timer"],
+            )
+            task = await poll_claim(client, worker)
+            authority = dict(task_id=task["task_id"], run_id=task["run_id"], lease_owner=worker.worker_id,
+                             workflow_task_attempt=task["workflow_task_attempt"])
+            parent = await client.open_cancellation_scope_on_claim(**authority, sequence=1)
+            child = await client.open_cancellation_scope_on_claim(
+                **authority, sequence=2, parent_scope_id=parent.scope_id, shield_parent=True,
+            )
+            duplicate = await client.open_cancellation_scope_on_claim(
+                **authority, sequence=2, parent_scope_id=parent.scope_id, shield_parent=True,
+            )
+            assert parent.parent_scope_id == "root" and not parent.shield_parent and not parent.duplicate
+            assert child.parent_scope_id == parent.scope_id and child.shield_parent and not child.duplicate
+            assert duplicate.duplicate and duplicate.scope_id == child.scope_id
+            assert duplicate.history_event_id == child.history_event_id and duplicate.history == child.history
+            openings = [event for event in child.history if event["event_type"] == "CancellationScopeOpened"]
+            assert [event["payload"]["scope_id"] for event in openings] == [parent.scope_id, child.scope_id]
+            with pytest.raises(ServerError) as stale:
+                await client.open_cancellation_scope_on_claim(
+                    **{**authority, "workflow_task_attempt": authority["workflow_task_attempt"] + 1}, sequence=3,
+                )
+            assert stale.value.status == 409
+            public = await events(handle)
+            assert len([event for event in public if event["event_type"] == "CancellationScopeOpened"]) == 2
+            assert all(event["event_type"] not in {"TimerScheduled", "WorkflowFailed", "WorkflowCompleted"}
+                       for event in public)
+            print(f"Native scope opening proof: {json.dumps(child.history)}")
+        finally:
+            if handle is not None:
+                await handle.terminate(reason="scope opening qualification complete")
+            await worker.stop()
+
+
 async def test_leased_remote_activity_cannot_complete_after_delivery(
     server_url: str, server_token: str,
 ) -> None:
