@@ -42,6 +42,7 @@ def scoped_histories() -> list[dict[str, Any]]:
         for name in (
             "CancellationScopeOpened",
             "CancellationScopeRequested",
+            "CancellationScopeDeliveryPrepared",
             "CancellationScopeDelivered",
             "CancellationScopeRequestConflicted",
         )

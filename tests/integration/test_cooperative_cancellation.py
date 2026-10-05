@@ -464,6 +464,72 @@ async def test_scope_opening_proves_real_native_tree_on_original_claim(
             await worker.stop()
 
 
+@workflow.defn(name="tests.python-candidate-scope-replay")
+class CandidateScopeReplayWorkflow:
+    def run(self, ctx: workflow.WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.side_effect(lambda: "original prefix")
+
+        def outer():  # type: ignore[no-untyped-def]
+            deferred = yield from ctx.cancellation_scope(lambda: ctx.start_timer(1), shield_parent=True)
+            yield deferred
+            yield ctx.start_timer(1)
+
+        yield from ctx.cancellation_scope(outer)
+        yield ctx.start_timer(1)
+        return "replayed original scopes"
+
+
+async def test_candidate_scope_authoring_replays_nested_tree_and_deferred_membership_on_replacement(
+    server_url: str, server_token: str,
+) -> None:
+    if os.environ.get("DURABLE_WORKFLOW_NATIVE_SOURCE_QUALIFICATION") != "1":
+        pytest.skip("scope authoring requires the Native candidate source overlay")
+    queue = f"py-scope-replay-{uuid.uuid4().hex[:8]}"
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        original = Worker(client, task_queue=queue, worker_id=f"{queue}-original",
+                          workflows=[CandidateScopeReplayWorkflow], capabilities=["cooperative_cancellation"])
+        replacement = Worker(client, task_queue=queue, worker_id=f"{queue}-replacement",
+                             workflows=[CandidateScopeReplayWorkflow], capabilities=["cooperative_cancellation"])
+        original._allow_cancellation_scope_authoring = replacement._allow_cancellation_scope_authoring = True
+        handle = None
+        try:
+            await original._register()
+            handle = await client.start_workflow(
+                workflow_type="tests.python-candidate-scope-replay", workflow_id=queue, task_queue=queue, input=[],
+            )
+            for expected in ("record_side_effect", "start_timer"):
+                wire = await original._run_workflow_task(await poll_claim(client, original))
+                assert wire is not None and [command["type"] for command in wire] == [expected]
+            await original.stop()
+            await replacement._register()
+            for expected in ("start_timer", "start_timer", "complete_workflow"):
+                wire = await replacement._run_workflow_task(await poll_claim(client, replacement))
+                assert wire is not None and [command["type"] for command in wire] == [expected]
+            assert await handle.result(timeout=10) == "replayed original scopes"
+            history = await events(handle)
+            scopes = [event["payload"] for event in history if event["event_type"] == "CancellationScopeOpened"]
+            assert len(scopes) == 2
+            parent, child = scopes
+            assert (parent["sequence"], parent["parent_scope_id"], parent["shield_parent"]) == (2, "root", False)
+            assert (child["sequence"], child["parent_scope_id"], child["shield_parent"]) == (
+                3, parent["scope_id"], True,
+            )
+            timers = [event["payload"] for event in history if event["event_type"] == "TimerScheduled"]
+            assert [timer["sequence"] for timer in timers] == [4, 5, 6]
+            assert [timer.get("cancellation_scope_id", "root") for timer in timers] == [
+                child["scope_id"], parent["scope_id"], "root",
+            ]
+            assert len([event for event in history if event["event_type"] == "SideEffectRecorded"]) == 1
+            print(f"Native scope authoring and replacement replay: {json.dumps(history)}")
+        finally:
+            if handle is not None and (await handle.describe()).status not in {
+                "completed", "failed", "cancelled", "terminated", "continued_as_new",
+            }:
+                await handle.terminate(reason="scope authoring qualification complete")
+            await replacement.stop()
+            await original.stop()
+
+
 async def test_leased_remote_activity_cannot_complete_after_delivery(
     server_url: str, server_token: str,
 ) -> None:
@@ -891,7 +957,7 @@ async def test_cleanup_deadline_and_termination_fence_in_flight_local_result(
             handle = await client.start_workflow(
                 workflow_type="tests.python-cooperative-cleanup", workflow_id=queue, task_queue=queue, input=["timer"],
             )
-            await handle.request_cancellation(cleanup_timeout_seconds=2 if close_kind == "deadline" else 60)
+            accepted = await handle.request_cancellation(cleanup_timeout_seconds=2 if close_kind == "deadline" else 60)
             task = await poll_claim(client, worker)
             execution = worker._track(worker._run_workflow_task(task))
             await asyncio.wait_for(entered.wait(), timeout=10)
@@ -899,6 +965,28 @@ async def test_cleanup_deadline_and_termination_fence_in_flight_local_result(
                 await handle.terminate(reason="qualification termination during cleanup")
             assert await asyncio.wait_for(execution, timeout=15) is None
             history = await events(handle)
+            if close_kind == "deadline":
+                # Callback fencing ends cleanup authority immediately. Native's
+                # configured repair pass records the eventual terminal row.
+                # Measure that separately rather than treating callback join
+                # as acknowledgement that the repair pass has already run.
+                original = accepted["cancellation_request"]
+                original_deadline = datetime.fromisoformat(original["cleanup_deadline_at"].replace("Z", "+00:00"))
+
+                async def terminal_history() -> list[dict[str, Any]]:
+                    while True:
+                        current = await events(handle)
+                        requests = [row for row in current if row["event_type"] == "CooperativeCancellationRequested"]
+                        assert len(requests) == 1
+                        canonical = requests[0]["payload"]
+                        assert canonical["workflow_command_id"] == original["request_id"]
+                        assert datetime.fromisoformat(canonical["cleanup_deadline_at"].replace("Z", "+00:00")) == (
+                            original_deadline
+                        )
+                        if any(row["event_type"] == "WorkflowCancelled" for row in current):
+                            return current
+                        await asyncio.sleep(0.1)
+                history = await asyncio.wait_for(terminal_history(), timeout=15)
             kinds = [event["event_type"] for event in history]
             assert kinds.count("WorkflowCancelled" if close_kind == "deadline" else "WorkflowTerminated") == 1
             assert kinds.count("CooperativeCancellationRequested") == 1

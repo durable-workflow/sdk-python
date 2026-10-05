@@ -1031,6 +1031,7 @@ class Worker:
         self._cooperative_cancellation_supported = False
         self._prepared_local_activities_supported = False
         self._prepared_local_activity_groups_supported = False
+        self._allow_cancellation_scope_authoring = False
         self._local_activity_cancellation_policies: tuple[str, ...] = ()
         if "prepared_local_activity_cancellation_policies" in self.capabilities and (
             "prepared_local_activities" not in self.capabilities
@@ -1571,7 +1572,23 @@ class Worker:
                     prepare_local_activities=self._prepared_local_activities_supported,
                     prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                     local_activity_cancellation_policies=self._local_activity_cancellation_policies,
+                    allow_cancellation_scope_authoring=self._allow_cancellation_scope_authoring,
                 )
+                if outcome.cancellation_scope_opening is not None:
+                    if outcome.commands:
+                        return outcome, history
+                    if not self._cooperative_cancellation_supported:
+                        raise LocalActivityExecutionAborted(
+                            "candidate scope opening requires an original protocol 1.20 claim",
+                        )
+                    opening = outcome.cancellation_scope_opening
+                    receipt = await self.client.open_cancellation_scope_on_claim(
+                        task_id=task["task_id"], run_id=task["run_id"], lease_owner=self.worker_id,
+                        workflow_task_attempt=task.get("workflow_task_attempt", 1), sequence=opening.sequence,
+                        parent_scope_id=opening.parent_scope_id, shield_parent=opening.shield_parent,
+                    )
+                    history = list(receipt.history)
+                    continue
                 if outcome.prepared_local_activity_group is not None:
                     history = await self._execute_prepared_local_activity_group(task, history, outcome)
                     continue
