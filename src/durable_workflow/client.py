@@ -37,6 +37,7 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 import httpx
 
 from . import serializer
+from ._cancellation_scope import CancellationScopeOpenReceipt, scope_identity
 from ._cooperative_cancellation import CancellationDelivery, CancellationRequest
 from .errors import (
     ExternalPayloadIntegrityMismatch,
@@ -5257,6 +5258,84 @@ class Client:
         if recorded != delivery:
             raise ServerError(200, {"reason": "invalid_cooperative_cancellation_delivery"})
         return result
+
+    async def open_cancellation_scope_on_claim(
+        self,
+        *,
+        task_id: str,
+        run_id: str,
+        lease_owner: str,
+        workflow_task_attempt: int,
+        sequence: int,
+        parent_scope_id: str = "root",
+        shield_parent: bool = False,
+        timeout_seconds: float = 5.0,
+    ) -> CancellationScopeOpenReceipt:
+        """Prove a scope opening using complete history on its original claim.
+
+        Requires explicit candidate worker protocol 1.20. All retries and
+        history pages share one bounded request budget. The returned proof
+        preserves the Server's scope identity and does not advertise scoped
+        cancellation execution support.
+        """
+        if not _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+            "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+        )):
+            raise ValueError("cancellation scope opening requires explicit worker protocol 1.20")
+        if not all(scope_identity(value) for value in (task_id, run_id, lease_owner, parent_scope_id, self.namespace)):
+            raise ValueError("scope opening requires bounded nonempty original claim, run and parent identities")
+        if any(type(value) is not int or not 1 <= value <= 2**63 - 1 for value in (workflow_task_attempt, sequence)):
+            raise ValueError("scope opening requires a positive original attempt and authored sequence")
+        if type(shield_parent) is not bool:
+            raise ValueError("scope shielding must be boolean")
+        if (
+            isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int | float)
+            or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 5
+        ):
+            raise ValueError("scope opening budget must be positive, finite and at most five seconds")
+        expected = {
+            "task_id": task_id, "workflow_run_id": run_id, "lease_owner": lease_owner,
+            "workflow_task_attempt": workflow_task_attempt, "sequence": sequence,
+            "parent_scope_id": parent_scope_id, "shield_parent": shield_parent, "namespace": self.namespace,
+        }
+        path = f"/worker/workflow-tasks/{quote(task_id, safe='._:-')}"
+        authority = {"lease_owner": lease_owner, "workflow_task_attempt": workflow_task_attempt}
+
+        async def prove() -> CancellationScopeOpenReceipt:
+            receipt = await self._request(
+                "POST", path + "/cancellation-scopes/open", worker=True, timeout=timeout_seconds,
+                json={**authority, "sequence": sequence, "parent_scope_id": parent_scope_id,
+                      "shield_parent": shield_parent},
+            )
+            token: str | None = CancellationScopeOpenReceipt.acknowledge(receipt, expected)
+            history: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            while token is not None:
+                if token in seen:
+                    raise ServerError(200, {"reason": "invalid_cancellation_scope_history_page"})
+                seen.add(token)
+                page = await self._request(
+                    "POST", path + "/history", worker=True, timeout=timeout_seconds,
+                    json={**authority, "next_history_page_token": token},
+                )
+                if (
+                    not isinstance(page, dict) or page.get("task_id") != task_id
+                    or type(page.get("workflow_task_attempt")) is not int
+                    or page["workflow_task_attempt"] != workflow_task_attempt
+                    or not isinstance(page.get("history_events"), list)
+                    or any(not isinstance(event, dict) for event in page["history_events"])
+                    or "next_history_page_token" not in page
+                    or (page["next_history_page_token"] is not None and (
+                        not isinstance(page["next_history_page_token"], str)
+                        or not page["next_history_page_token"].strip()
+                    ))
+                ):
+                    raise ServerError(200, {"reason": "invalid_cancellation_scope_history_page"})
+                history.extend(page["history_events"])
+                token = page["next_history_page_token"]
+            return CancellationScopeOpenReceipt.from_history(receipt, history, expected)
+
+        return await asyncio.wait_for(prove(), timeout=timeout_seconds)
 
     async def workflow_task_history(
         self,
