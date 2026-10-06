@@ -113,7 +113,10 @@ async def test_pending_stop_does_not_renew_the_original_budget() -> None:
             return pending_stop(receipt) if args[1].endswith("/deliver") else page(history)
         budget = CancellationScopeBudget.start(0.25)
         original_expiry = budget.expires_at
-        with patch.object(client, "_request", side_effect=respond) as send, pytest.raises(TimeoutError):
+        with (
+            patch.object(client, "_request", side_effect=respond) as send,
+            pytest.raises((TimeoutError, asyncio.TimeoutError)),
+        ):
             await client.cancellation_scope_boundary_on_claim(**delivery_arguments, preparation=prepared, budget=budget)
         assert budget.expires_at == original_expiry
         mutations = [call for call in send.await_args_list if call.args[1].endswith("/deliver")]
