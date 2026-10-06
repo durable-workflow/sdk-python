@@ -5394,13 +5394,32 @@ class Client:
         authority = {"lease_owner": lease_owner, "workflow_task_attempt": workflow_task_attempt}
 
         async def prove() -> CancellationScopeDeliveryReceipt:
+            while True:
+                proved, pending = await prove_reply()
+                if not pending:
+                    return proved
+                # Allow the activity supervisor to stop and acknowledge the
+                # callback without renewing this workflow's original budget.
+                await asyncio.sleep(0.1)
+
+        async def prove_reply() -> tuple[CancellationScopeDeliveryReceipt, bool]:
             receipt = await self._request(
                 "POST", path + "/cancellation-scopes/" + phase, worker=True,
                 timeout=budget.remaining(), json={**authority, **body},
             )
             try:
+                pending = (delivering and isinstance(receipt, dict)
+                           and receipt.get("reason") == "cancellation_scope_activity_stop_not_acknowledged")
+                if pending:
+                    if "history_event_id" in receipt or preparation is None:
+                        raise ValueError("pending scope stop cannot claim a committed delivery")
+                    # Reuse only the already proved preparation event. This
+                    # internal frame grants no delivery or cleanup authority.
+                    receipt = {**receipt, "reason": None,
+                               "history_event_id": preparation.preparation.event["id"]}
+                committed = delivering and not pending
                 token: str | None = CancellationScopeDeliveryReceipt.acknowledge(
-                    receipt, expected, delivering=delivering,
+                    receipt, expected, delivering=committed,
                 )
                 if enforce_authority_deadline:
                     budget.restrict(scope_timestamp(receipt["authority_deadline_at"]))
@@ -5428,12 +5447,12 @@ class Client:
                     history.extend(page["history_events"])
                     token = page["next_history_page_token"]
                 proved = CancellationScopeDeliveryReceipt.from_history(
-                    receipt, history, expected, delivering=delivering,
+                    receipt, history, expected, delivering=committed,
                 )
                 if preparation is not None:
                     proved.assert_original_preparation(preparation)
                 budget.remaining()
-                return proved
+                return proved, pending
             except (ValueError, TypeError, KeyError, NonDeterministicReplayError) as error:
                 raise ServerError(200, {"reason": "invalid_cancellation_scope_boundary"}) from error
 

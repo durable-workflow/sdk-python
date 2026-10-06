@@ -56,6 +56,71 @@ def page(history: list[dict[str, Any]], token: str | None = None) -> dict[str, A
             "next_history_page_token": token}
 
 
+def pending_stop(receipt: dict[str, Any]) -> dict[str, Any]:
+    return {**{key: value for key, value in receipt.items() if key != "history_event_id"},
+            "delivered": False, "reason": "cancellation_scope_activity_stop_not_acknowledged"}
+
+
+async def test_pending_callback_stop_waits_for_delivery_on_the_original_claim_and_preparation() -> None:
+    receipt, history, arguments = exchange()
+    delivered, full_history, delivery_arguments = exchange(True)
+    budget = CancellationScopeBudget.start()
+    async with Client("http://server", namespace=history[0]["namespace"]) as client:
+        with patch.object(client, "_request", new_callable=AsyncMock, side_effect=[
+            receipt, page(history), pending_stop(receipt), page(history), delivered, page(full_history),
+        ]) as send:
+            prepared = await client.cancellation_scope_boundary_on_claim(**arguments, budget=budget)
+            result = await client.cancellation_scope_boundary_on_claim(
+                **delivery_arguments, preparation=prepared, budget=budget,
+            )
+    result.assert_original_preparation(prepared)
+    assert result.delivery is not None
+    assert send.await_args_list[2].kwargs["json"] == send.await_args_list[4].kwargs["json"]
+    assert send.await_args_list[4].kwargs["timeout"] < send.await_args_list[2].kwargs["timeout"]
+
+
+@pytest.mark.parametrize("change", [
+    {"lease_owner": "replacement"}, {"preparation_history_event_id": "borrowed"},
+    {"authority_deadline_at": "2026-10-04T00:00:31.123456Z"}, {"history_event_id": "invented-delivery"},
+])
+async def test_pending_stop_cannot_substitute_authority_or_invent_delivery(change: dict[str, Any]) -> None:
+    receipt, history, arguments = exchange()
+    _, _, delivery_arguments = exchange(True)
+    async with Client("http://server", namespace=history[0]["namespace"]) as client:
+        with patch.object(client, "_request", new_callable=AsyncMock, side_effect=[receipt, page(history)]):
+            prepared = await client.cancellation_scope_boundary_on_claim(
+                **arguments, budget=CancellationScopeBudget.start(),
+            )
+        with patch.object(client, "_request", new_callable=AsyncMock, side_effect=[
+            {**pending_stop(receipt), **change}, page(history),
+        ]) as send:
+            with pytest.raises(ServerError, match="invalid_cancellation_scope_boundary"):
+                await client.cancellation_scope_boundary_on_claim(
+                    **delivery_arguments, preparation=prepared, budget=CancellationScopeBudget.start(),
+                )
+            assert sum(call.args[1].endswith("/deliver") for call in send.await_args_list) == 1
+
+
+async def test_pending_stop_does_not_renew_the_original_budget() -> None:
+    receipt, history, arguments = exchange()
+    _, _, delivery_arguments = exchange(True)
+    async with Client("http://server", namespace=history[0]["namespace"]) as client:
+        with patch.object(client, "_request", new_callable=AsyncMock, side_effect=[receipt, page(history)]):
+            prepared = await client.cancellation_scope_boundary_on_claim(
+                **arguments, budget=CancellationScopeBudget.start(),
+            )
+        async def respond(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            return pending_stop(receipt) if args[1].endswith("/deliver") else page(history)
+        budget = CancellationScopeBudget.start(0.25)
+        original_expiry = budget.expires_at
+        with patch.object(client, "_request", side_effect=respond) as send, pytest.raises(TimeoutError):
+            await client.cancellation_scope_boundary_on_claim(**delivery_arguments, preparation=prepared, budget=budget)
+        assert budget.expires_at == original_expiry
+        mutations = [call for call in send.await_args_list if call.args[1].endswith("/deliver")]
+        assert len(mutations) >= 2
+        assert all(call.kwargs["json"] == mutations[0].kwargs["json"] for call in mutations)
+
+
 @pytest.mark.parametrize("layout", [None, "flat", "nested"])
 async def test_preparation_and_delivery_prove_every_original_claim_page_on_one_budget(layout: str | None) -> None:
     receipt, history, arguments = exchange(layout=layout)
