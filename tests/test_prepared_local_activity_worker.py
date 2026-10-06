@@ -187,7 +187,7 @@ def test_cleanup_admission_and_control_cannot_replace_original_cascade_authority
 ])
 def test_scoped_cleanup_receipts_preserve_all_original_authority_fields(field: str) -> None:
     ceiling = timestamp(20)
-    cleanup = {"scope_id": "scope-1", "operation_scope_id": "scope-1", "request_id": "scope-request",
+    cleanup = {"scope_id": "scope-1", "operation_scope_id": "descendant", "request_id": "scope-request",
                "root_request_id": "root-request", "delivery_history_event_id": "scope-delivery",
                "preparation_history_event_id": "scope-preparation", "cleanup_deadline_at": timestamp(30),
                "authority_deadline_at": ceiling}
@@ -206,11 +206,13 @@ def test_scoped_cleanup_receipts_preserve_all_original_authority_fields(field: s
             {**receipt, "cancellation_cleanup": changed}, task_id="task", run_id="run-1", owner="owner",
             epoch=3, nonce="nonce", heartbeat_timeout=None, cleanup=cleanup, request_started=time.monotonic(),
         )
+    with pytest.raises(LocalActivityExecutionAborted, match="operation scope"):
+        attempt.validate_control(control(receipt, cancellation_scope_id="sibling"))
 
 
 def test_scoped_cleanup_cannot_admit_or_renew_past_its_narrower_original_ceiling() -> None:
     ceiling = timestamp(20)
-    cleanup = {"scope_id": "scope-1", "operation_scope_id": "scope-1", "request_id": "scope-request",
+    cleanup = {"scope_id": "scope-1", "operation_scope_id": "descendant", "request_id": "scope-request",
                "root_request_id": "root-request", "delivery_history_event_id": "scope-delivery",
                "preparation_history_event_id": "scope-preparation", "cleanup_deadline_at": timestamp(30),
                "authority_deadline_at": ceiling}

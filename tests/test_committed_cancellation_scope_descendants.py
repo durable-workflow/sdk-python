@@ -193,15 +193,15 @@ def test_cleanup_timer_retains_original_ancestor_receipt_and_each_scope_authorit
     cls = probe(value, seen, cleanup=target)
     fresh = workflow.commands_to_server_commands(run(cls, value).commands, "queue")
     expected = {
-        "scope_id": value["scopes"][target],
-        "request_id": value["contexts"][target]["lineage"][-1]["request_id"],
+        "scope_id": value["scopes"]["parent"],
+        "request_id": value["contexts"]["parent"]["lineage"][-1]["request_id"],
         "delivery_history_event_id": "ancestor-delivered",
     }
     assert fresh == [
         {
             "type": "start_timer",
             "delay_seconds": 1,
-            "cancellation_scope_id": expected["scope_id"],
+            "cancellation_scope_id": value["scopes"][target],
             "cancellation_cleanup": expected,
         }
     ]
@@ -214,10 +214,10 @@ def test_cleanup_timer_retains_original_ancestor_receipt_and_each_scope_authorit
             "timer_id": "descendant-cleanup",
             "delay_seconds": 1,
             "fire_at": "2026-10-04T00:00:11.123456Z",
-            "cancellation_scope_id": expected["scope_id"],
+            "cancellation_scope_id": value["scopes"][target],
             "cancellation_cleanup": {
                 **expected,
-                "operation_scope_id": expected["scope_id"],
+                "operation_scope_id": value["scopes"][target],
                 "root_request_id": value["contexts"]["parent"]["root_context"]["root_request_id"],
                 "preparation_history_event_id": "ancestor-prepared",
                 "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
@@ -235,7 +235,7 @@ def test_cleanup_timer_retains_original_ancestor_receipt_and_each_scope_authorit
             "sequence": sequence,
             "timer_id": "descendant-cleanup",
             "delay_seconds": 1,
-            "cancellation_scope_id": expected["scope_id"],
+            "cancellation_scope_id": value["scopes"][target],
         },
         "2026-10-04T00:00:11.123456Z",
     )
@@ -283,11 +283,12 @@ def test_changed_authored_subtree_refuses_before_cleanup(change: str) -> None:
 def test_descendant_cleanup_cannot_borrow_or_change_authority_before_workflow_construction(field: str) -> None:
     value = fixture("committed-scope-descendants.json", "timer")
     context = ScopedCancellationContext.from_dict(value["contexts"]["grandchild"])
+    ancestor = ScopedCancellationContext.from_dict(value["contexts"]["parent"])
     snapshot = {
-        "scope_id": context.scope_id,
+        "scope_id": ancestor.scope_id,
         "operation_scope_id": context.scope_id,
-        "request_id": context.request_id,
-        "root_request_id": context.root_request_id,
+        "request_id": ancestor.request_id,
+        "root_request_id": ancestor.root_request_id,
         "delivery_history_event_id": "ancestor-delivered",
         "preparation_history_event_id": "ancestor-prepared",
         "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",

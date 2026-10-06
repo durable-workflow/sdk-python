@@ -5767,9 +5767,10 @@ def _replay_state(
                 raise LocalActivityExecutionAborted("scoped cleanup requires its consumed original delivery")
             original, authority = scope_states[matches[0].context.scope_id][scoped_context.scope_id]
             cleanup = {
-                **proof, "operation_scope_id": original.scope_id, "root_request_id": original.root_request_id,
+                **proof, "operation_scope_id": original.scope_id,
+                "root_request_id": matches[0].context.root_request_id,
                 "preparation_history_event_id": matches[0].event["payload"]["preparation_history_event_id"],
-                "cleanup_deadline_at": original.to_dict()["lineage"][-1]["cleanup_deadline_at"],
+                "cleanup_deadline_at": matches[0].context.to_dict()["lineage"][-1]["cleanup_deadline_at"],
                 "authority_deadline_at": authority.isoformat(timespec="microseconds").replace("+00:00", "Z"),
             }
         elif cancellation.request is not None:
@@ -6018,7 +6019,7 @@ def _replay_state(
         ctx._observe_cancellation_replay_time(delivery.event)
         for scope_id, (original_context, authority_deadline) in states.items():
             ctx._scope_cleanup_proofs[scope_id] = {
-                "scope_id": scope_id, "request_id": original_context.request_id,
+                "scope_id": delivery.context.scope_id, "request_id": delivery.context.request_id,
                 "delivery_history_event_id": delivery_id,
             }
             bound_context = ctx._bind_cancellation_context(original_context, authority_deadline=authority_deadline)

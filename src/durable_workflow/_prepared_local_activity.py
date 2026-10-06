@@ -136,8 +136,10 @@ class PreparedAttempt:
                      else _text(actual[field]) == _text(self.cleanup[field]),
                      "local receipt changed canonical cleanup authority")
         if "scope_id" in self.cleanup:
-            _require(self.cleanup["scope_id"] == self.cleanup["operation_scope_id"],
-                     "local cleanup changed its original operation scope")
+            _require(self.cleanup["scope_id"] != "root" and self.cleanup["operation_scope_id"] != "root",
+                     "local cleanup requires its original scoped delivery and operation")
+            _require(receipt.get("cancellation_scope_id", self.cleanup["operation_scope_id"])
+                     == self.cleanup["operation_scope_id"], "local receipt changed its original operation scope")
         _cleanup_deadline(self.cleanup)
 
     def validate_identity(self, receipt: Mapping[str, Any]) -> None:

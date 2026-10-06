@@ -112,12 +112,13 @@ def _cleanup_operation(event: dict[str, Any], prefix: Sequence[dict[str, Any]], 
     if state is None:
         raise _invalid(operation + " changes its original frozen subtree membership")
     context, authority = state
+    ancestor = ScopedCancellationContext.from_dict(recorded["cancellation"])
     expected = {
-        "scope_id": context.scope_id, "operation_scope_id": context.scope_id,
-        "request_id": context.request_id, "root_request_id": context.root_request_id,
+        "scope_id": ancestor.scope_id, "operation_scope_id": context.scope_id,
+        "request_id": ancestor.request_id, "root_request_id": ancestor.root_request_id,
         "delivery_history_event_id": delivery["id"],
         "preparation_history_event_id": recorded["preparation_history_event_id"],
-        "cleanup_deadline_at": _canonical_time(context.deadline),
+        "cleanup_deadline_at": _canonical_time(ancestor.deadline),
         "authority_deadline_at": _canonical_time(authority),
     }
     sequence = payload.get("sequence")
