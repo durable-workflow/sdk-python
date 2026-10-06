@@ -57,6 +57,41 @@ def _canonical_time(value: datetime) -> str:
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def _cleanup_timer(event: dict[str, Any], prefix: Sequence[dict[str, Any]]) -> bool:
+    payload = event.get("payload", {})
+    snapshot = payload.get("cancellation_cleanup")
+    if "cancellation_cleanup" not in payload:
+        return False
+    if not isinstance(snapshot, dict):
+        raise _invalid("cleanup timer requires its original delivery snapshot")
+    candidates = [row for row in prefix if _kind(row) == "CancellationScopeDelivered"
+                  and row.get("id") == snapshot.get("delivery_history_event_id")]
+    if len(candidates) != 1:
+        raise _invalid("cleanup timer lacks its earlier canonical delivery")
+    delivery = candidates[0]
+    recorded = delivery["payload"]
+    context = ScopedCancellationContext.from_dict(recorded["cancellation"])
+    expected = {
+        "scope_id": context.scope_id, "operation_scope_id": context.scope_id,
+        "request_id": context.request_id, "root_request_id": context.root_request_id,
+        "delivery_history_event_id": delivery["id"],
+        "preparation_history_event_id": recorded["preparation_history_event_id"],
+        "cleanup_deadline_at": _canonical_time(context.deadline),
+        "authority_deadline_at": recorded["authority_deadline_at"],
+    }
+    sequence = payload.get("sequence")
+    deadline = scope_timestamp(expected["authority_deadline_at"])
+    timestamp = scope_timestamp(event.get("timestamp", event.get("recorded_at")))
+    if (snapshot != expected or payload.get("cancellation_scope_id") != context.scope_id
+        or not _positive(sequence) or sequence < recorded["sequence"] + recorded["sequence_span"]
+        or not _positive(event.get("sequence")) or delivery["sequence"] >= event["sequence"]
+        or timestamp < scope_timestamp(delivery.get("timestamp", delivery.get("recorded_at")))
+        or timestamp >= deadline or scope_timestamp(payload.get("fire_at")) >= deadline
+        or payload.get("timer_kind") is not None):
+        raise _invalid("cleanup timer changes its original delivery or authority ceiling")
+    return True
+
+
 def _positive(value: Any) -> bool:
     return type(value) is int and 1 <= value <= 2**63 - 1
 
@@ -199,6 +234,8 @@ def scope_members_from_prefix(
                 activity.get("schedule_to_close_deadline_at"),
             ])})
         if field == "timer_members" and kind == "TimerScheduled" and _address(payload, "timer") == scope_id:
+            if _cleanup_timer(event, prefix):
+                continue
             identity, delay, fire_at = payload.get("timer_id"), payload.get("delay_seconds"), payload.get("fire_at")
             timer_kind = payload.get("timer_kind")
             if (not _positive(sequence) or not scope_identity(identity) or type(delay) is not int or delay < 0
@@ -498,6 +535,8 @@ class CommittedCancellationScopeHistory:
         admissions: dict[str, dict[int, str]] = {}
         for index, event in enumerate(history):
             kind, payload = _kind(event), event.get("payload", {})
+            if kind == "TimerScheduled":
+                _cleanup_timer(event, history[:index])
             if kind == "CancellationScopeOpened":
                 opened.add(payload["scope_id"])
             if kind in _ADMISSIONS and _positive(payload.get("sequence")):

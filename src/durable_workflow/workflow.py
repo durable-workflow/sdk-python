@@ -76,6 +76,19 @@ def _authored_cancellation_scope() -> str:
     return context._cancellation_scope_id if context is not None else "root"
 
 
+def _authored_scope_cleanup() -> dict[str, str] | None:
+    context = _ACTIVE_WORKFLOW_REPLAY.get()
+    if context is None or context._cancellation_shield_depth < 1:
+        return None
+    cancellation = context._cancellation_context
+    if not isinstance(cancellation, ScopedCancellationContext):
+        return None
+    proof = context._scope_cleanup_proofs.get(cancellation.scope_id)
+    if proof is None:
+        raise LocalActivityExecutionAborted("scoped cleanup requires its consumed original delivery")
+    return dict(proof)
+
+
 _REGISTRY: dict[str, type] = {}
 
 MESSAGE_STREAM_SIGNAL = "__durable_workflow_message_stream"
@@ -784,6 +797,9 @@ class StartTimer:
     _cancellation_scope_id: str = field(
         default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
     )
+    _cancellation_cleanup: dict[str, str] | None = field(
+        default_factory=_authored_scope_cleanup, init=False, repr=False, compare=False,
+    )
     _parallel_group_path: list[dict[str, Any]] | None = field(
         default=None,
         init=False,
@@ -1482,6 +1498,9 @@ def _apply_parallel_group_metadata(
     scope_id = getattr(command, "_cancellation_scope_id", "root")
     if scope_id != "root":
         server_command["cancellation_scope_id"] = scope_id
+    cleanup = getattr(command, "_cancellation_cleanup", None)
+    if cleanup is not None:
+        server_command["cancellation_cleanup"] = dict(cleanup)
     path = getattr(command, "_parallel_group_path", None)
     if not path:
         return
@@ -1889,6 +1908,7 @@ class WorkflowContext:
         self._cancellation_request_id: str | None = None
         self._cancellation_context: CancellationContext | ScopedCancellationContext | None = None
         self._scope_cancellation_states: dict[str, ScopedCancellationContext] = {}
+        self._scope_cleanup_proofs: dict[str, dict[str, str]] = {}
         self._cancellation_replay_time: datetime | None = None
         self._cancellation_replay_time_available = False
         self._cancellation_shield_depth = 0
@@ -3599,6 +3619,8 @@ def _activity_type_from_payload(payload: Mapping[str, Any]) -> str | None:
 
 def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
     details: dict[str, Any] = {}
+    if "cancellation_cleanup" in payload:
+        details["cancellation_cleanup"] = payload["cancellation_cleanup"]
     for snapshot in (payload, *(payload.get(name) for name in ("activity", "timer", "child_workflow"))):
         if isinstance(snapshot, Mapping) and "cancellation_scope_id" in snapshot:
             details["cancellation_scope_id"] = snapshot["cancellation_scope_id"]
@@ -3733,6 +3755,12 @@ def _command_diagnostic_shape(command: Any) -> str:
 
 
 def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
+    if isinstance(command, StartTimer):
+        snapshot = step.details.get("cancellation_cleanup")
+        proof = ({field: snapshot[field] for field in ("scope_id", "request_id", "delivery_history_event_id")}
+                 if isinstance(snapshot, dict) else None)
+        if proof != command._cancellation_cleanup:
+            return "cancellation_scope_cleanup_changed: timer changed its original delivery or shielding"
     if isinstance(command, _OpenCancellationScope) and (
         step.details.get("parent_scope_id") != command.parent_scope_id
         or step.details.get("shield_parent") is not command.shield_parent
@@ -5863,6 +5891,14 @@ def _replay_state(
                 and recorded_wait_steps[wait_yield_count].workflow_sequence == boundary.sequence):
                 wait_yield_count += 1
         consumed_scope_deliveries.add(boundary.sequence)
+        delivery_id = delivery.event.get("id")
+        if not isinstance(delivery_id, str) or not delivery_id:
+            raise LocalActivityExecutionAborted("scoped cleanup requires its canonical delivery identity")
+        ctx._scope_cleanup_proofs[delivery.context.scope_id] = {
+            "scope_id": delivery.context.scope_id,
+            "request_id": delivery.context.request_id,
+            "delivery_history_event_id": delivery_id,
+        }
         ctx._observe_cancellation_replay_time(delivery.event)
         bound_context = ctx._bind_cancellation_context(delivery.context, authority_deadline=delivery.authority_deadline)
         assert isinstance(bound_context, ScopedCancellationContext)
