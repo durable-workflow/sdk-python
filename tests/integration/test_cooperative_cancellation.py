@@ -93,7 +93,6 @@ class RunScopeCleanupWorkflow:
             except WorkflowCancelled as error:
                 assert isinstance(error.context, ScopedCancellationContext)
                 context = error.context.to_dict()
-                yield ctx.side_effect(lambda: context)
                 with ctx.cancellation_shield():
                     yield ctx.local_activity(
                         "tests.python-run-scope-cleanup", [marker, "scoped", context],
@@ -106,7 +105,6 @@ class RunScopeCleanupWorkflow:
         except WorkflowCancelled as error:
             assert error.context is not None and not isinstance(error.context, ScopedCancellationContext)
             context = error.context.to_dict()
-            yield ctx.side_effect(lambda: context)
             with ctx.cancellation_shield():
                 yield ctx.local_activity("tests.python-run-scope-cleanup", [marker, "root", context])
         return "finished"
@@ -1170,6 +1168,7 @@ async def test_scoped_cleanup_sigkill_replays_before_root_delivery_with_original
                 await asyncio.wait_for(process.wait(), timeout=10)
             for log in logs:
                 log.close()
+                print(log.name + ": " + Path(log.name).read_text()[-8000:])
             if handle is not None and (await handle.describe()).status not in {
                 "completed", "failed", "cancelled", "terminated", "continued_as_new",
             }:
