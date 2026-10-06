@@ -61,16 +61,23 @@ def failing() -> None:
 
 async def blocked_without_python_progress(marker: str) -> None:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    Path(marker).write_text(str(os.getpid()))
+    publish_pid_marker(marker)
     # PyDLL retains the callback interpreter's GIL during the C call. A Python
     # thread or signal callback in this interpreter cannot supervise this work.
     ctypes.PyDLL(None).sleep(60)
 
 
 def wait_for_release(marker: str) -> None:
-    Path(marker).write_text(str(os.getpid()))
+    publish_pid_marker(marker)
     while not Path(marker + ".release").exists():
         time.sleep(0.02)
+
+
+def publish_pid_marker(marker: str) -> None:
+    path = Path(marker)
+    pending = path.with_name(path.name + ".pid-ready")
+    pending.write_text(str(os.getpid()))
+    pending.replace(path)
 
 
 async def wait_for_file(path: Path) -> None:
