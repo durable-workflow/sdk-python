@@ -10,8 +10,13 @@ import pytest
 
 from durable_workflow import Replayer, Worker, serializer, workflow
 from durable_workflow.client import Client, WorkflowStreamAppendItem
-from durable_workflow.errors import NonDeterministicReplayError, WorkflowPayloadDecodeError
-from durable_workflow.workflow import WorkflowContext, commands_to_server_commands, query_state
+from durable_workflow.errors import NonDeterministicReplayError, WorkflowCancelled, WorkflowPayloadDecodeError
+from durable_workflow.workflow import (
+    LocalActivityExecutionAborted,
+    WorkflowContext,
+    commands_to_server_commands,
+    query_state,
+)
 from tests.test_golden_history_replay import (
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
@@ -212,14 +217,50 @@ class LocalActivityColdResultWorkflow:
         return (yield ctx.local_activity("golden.local", []))
 
 
+@workflow.defn(name="tests.replay.prepared-local-cold-results")
+class PreparedLocalColdResultsWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        first = yield ctx.local_activity("prepared.first", [])
+        second = yield ctx.local_activity("prepared.second", [])
+        return [first, second]
+
+
+@workflow.defn(name="tests.replay.prepared-local-group-cold-results")
+class PreparedLocalGroupColdResultsWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return (yield [ctx.local_activity("prepared.first", []), ctx.local_activity("prepared.second", [])])
+
+
+@workflow.defn(name="tests.replay.cooperative-reopened-condition-cleanup")
+class CooperativeReopenedConditionCleanupWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.wait_condition(lambda: False, key="forward-wait")
+        except WorkflowCancelled as exc:
+            with ctx.cancellation_shield():
+                yield ctx.start_timer(1)
+            return exc.request_id
+        return "not cancelled"
+
+
+@workflow.defn(name="tests.replay.child-policy-author")
+class ChildPolicyAuthorWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return (yield ctx.start_child_workflow("child", []))
+
+
 WORKFLOWS = [
+    ChildPolicyAuthorWorkflow,
     ColdReplacementSatisfiedConditionWorkflow,
+    CooperativeReopenedConditionCleanupWorkflow,
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
     GoldenSingleActivityWorkflow,
     GoldenTimeoutWaitWorkflow,
     GoldenVersionMarkerWorkflow,
     LocalActivityColdResultWorkflow,
+    PreparedLocalColdResultsWorkflow,
+    PreparedLocalGroupColdResultsWorkflow,
     MessageStreamConsumerWorkflow,
     NestedParallelPathWorkflow,
     ParallelMetadataProducerWorkflow,
@@ -380,12 +421,16 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
     expected_error = expected.get("error")
     expected_replay_error = fixture.get("expected_replay_error")
     if isinstance(expected_replay_error, dict):
-        assert expected_replay_error.get("type") == "NonDeterministicReplayError"
         message = expected_replay_error.get("message_contains")
-        workflow_sequence = expected_replay_error.get("workflow_sequence")
         assert isinstance(message, str) and message
-        assert isinstance(workflow_sequence, int)
         assert expected.get("command_sequence") == []
+        if expected_replay_error.get("type") == "LocalActivityExecutionAborted":
+            with pytest.raises(LocalActivityExecutionAborted, match=message):
+                _execute_fixture(fixture)
+            return
+        assert expected_replay_error.get("type") == "NonDeterministicReplayError"
+        workflow_sequence = expected_replay_error.get("workflow_sequence")
+        assert isinstance(workflow_sequence, int)
         with pytest.raises(NonDeterministicReplayError, match=message) as captured:
             _execute_fixture(fixture)
         assert captured.value.workflow_sequence == workflow_sequence

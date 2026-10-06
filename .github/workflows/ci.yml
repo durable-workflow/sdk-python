@@ -6,6 +6,19 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      server_commit:
+        description: Exact public Server candidate SHA, or empty for its default branch
+        type: string
+        default: ""
+      cooperative_qualification:
+        description: Qualify the candidate cooperative protocol 1.20
+        type: boolean
+        default: false
+      native_commit:
+        description: Optional exact public Native source overlay SHA for candidate qualification
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -145,6 +158,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     needs: [lint, test]
+    env:
+      DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION: ${{ inputs.cooperative_qualification && '1.20' || '1.19' }}
+      DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION: ${{ inputs.cooperative_qualification && '1' || '0' }}
+      DURABLE_WORKFLOW_NATIVE_SOURCE: ${{ github.workspace }}/native
+      COMPOSE_FILE: docker-compose.test.yml
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
@@ -153,7 +171,32 @@ jobs:
         with:
           python-version: "3.12"
       - name: Check out public Server integration source
-        run: python sdk-python/scripts/ci/checkout-public-repository.py server server
+        env:
+          SERVER_COMMIT: ${{ inputs.server_commit }}
+        run: python sdk-python/scripts/ci/checkout-public-repository.py server server --commit "$SERVER_COMMIT"
+      - name: Require exact cooperative candidate identities
+        env:
+          COOPERATIVE_REQUESTED: ${{ inputs.cooperative_qualification }}
+          SERVER_COMMIT: ${{ inputs.server_commit }}
+          NATIVE_COMMIT: ${{ inputs.native_commit }}
+        run: |
+          if [ "$COOPERATIVE_REQUESTED" = true ]; then
+            [[ "$SERVER_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          fi
+          if [ -n "$NATIVE_COMMIT" ]; then
+            test "$COOPERATIVE_REQUESTED" = true
+            [[ "$NATIVE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          fi
+      - name: Check out optional exact public Native source
+        if: ${{ inputs.native_commit != '' }}
+        env:
+          NATIVE_COMMIT: ${{ inputs.native_commit }}
+        run: python sdk-python/scripts/ci/checkout-public-repository.py workflow native --commit "$NATIVE_COMMIT"
+      - name: Select readonly Native source qualification
+        if: ${{ inputs.native_commit != '' }}
+        run: |
+          printf 'COMPOSE_FILE=docker-compose.test.yml:docker-compose.native-cancellation.yml\n' >> "$GITHUB_ENV"
+          printf 'DURABLE_WORKFLOW_NATIVE_SOURCE_QUALIFICATION=1\n' >> "$GITHUB_ENV"
       - run: pip install -e '.[dev]'
         working-directory: sdk-python
       - name: Configure isolated Docker project
@@ -162,23 +205,47 @@ jobs:
       - name: Start Server stack
         working-directory: sdk-python
         run: |
-          docker compose --project-name "$COMPOSE_PROJECT_NAME" -f docker-compose.test.yml \
+          docker compose --project-name "$COMPOSE_PROJECT_NAME" \
             up -d --build --wait --timeout 300
+      - name: Retain exact source and published image authority
+        working-directory: sdk-python
+        env:
+          NATIVE_COMMIT: ${{ inputs.native_commit }}
+        run: |
+          docker compose exec -T server cat /app/.package-provenance > integration-package-provenance.txt
+          docker compose images --format json > integration-images.json
+          jq --null-input --arg sdk "$GITHUB_SHA" --arg server "$(git -C ../server rev-parse HEAD)" --arg native "$NATIVE_COMMIT" \
+            '{qualification:"source",sdk_commit:$sdk,server_commit:$server,native_source_overlay:($native | if length > 0 then . else null end)}' \
+            > integration-source-provenance.json
       - name: Select and probe integration endpoint
         working-directory: sdk-python
         run: python scripts/ci/configure-integration-endpoint.py
       - name: Run integration tests
+        shell: bash
         working-directory: sdk-python
         env:
           DURABLE_WORKFLOW_AUTH_TOKEN: test-token
-        run: pytest tests/integration/ -v
+        run: pytest tests/integration/ -v --capture=tee-sys --junitxml=integration-results.xml 2>&1 | tee integration-scenarios.log
+      - name: Retain connected scenario results
+        if: ${{ always() && github.server_url == 'https://github.com' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: connected-integration-${{ github.sha }}
+          path: |
+            sdk-python/integration-results.xml
+            sdk-python/integration-scenarios.log
+            sdk-python/integration-source-provenance.json
+            sdk-python/integration-package-provenance.txt
+            sdk-python/integration-images.json
+          if-no-files-found: warn
+          retention-days: ${{ inputs.cooperative_qualification && 90 || 7 }}
       - name: Emit integration diagnostics
         if: failure()
         working-directory: sdk-python
         run: |
-          for service in bootstrap server worker; do
+          for service in bootstrap server worker repair; do
             echo "::group::$service logs"
-            docker compose --project-name "$COMPOSE_PROJECT_NAME" -f docker-compose.test.yml \
+            docker compose --project-name "$COMPOSE_PROJECT_NAME" \
               logs --no-color --tail 200 "$service" || true
             echo "::endgroup::"
           done
@@ -186,7 +253,7 @@ jobs:
         if: always()
         working-directory: sdk-python
         run: |
-          docker compose --project-name "$COMPOSE_PROJECT_NAME" -f docker-compose.test.yml \
+          docker compose --project-name "$COMPOSE_PROJECT_NAME" \
             down -v --rmi local
 
   target-branch-qualification:

@@ -26,13 +26,31 @@ import math
 import random
 import re
 import uuid
+import weakref
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
 
 from . import serializer
+from ._cancellation_scope import CancellationScopeHistory, scope_identity
+from ._cancellation_scope_history import (
+    CancellationScopeDeliveryIntent,
+    CommittedCancellationScopeHistory,
+    ScopeBoundary,
+)
+from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
+from .cancellation import (
+    CancellationContext,
+    CancellationPolicy,
+    ParentClosePolicy,
+    ScopedCancellationContext,
+    _canonical_activity_policy,
+    _canonical_child_policies,
+    _timestamp,
+)
 from .client import WorkflowStreamAppendItem
 from .errors import (
     ActivityFailed,
@@ -52,6 +70,24 @@ from .nexus import NexusOperationResult, stable_nexus_idempotency_key
 from .worker_session import WorkerSessionOptions
 
 _WorkflowT = TypeVar("_WorkflowT")
+
+def _authored_cancellation_scope() -> str:
+    context = _ACTIVE_WORKFLOW_REPLAY.get()
+    return context._cancellation_scope_id if context is not None else "root"
+
+
+def _authored_scope_cleanup() -> dict[str, str] | None:
+    context = _ACTIVE_WORKFLOW_REPLAY.get()
+    if context is None or context._cancellation_shield_depth < 1:
+        return None
+    cancellation = context._cancellation_context
+    if not isinstance(cancellation, ScopedCancellationContext):
+        return None
+    proof = context._scope_cleanup_proofs.get(cancellation.scope_id)
+    if proof is None:
+        raise LocalActivityExecutionAborted("scoped cleanup requires its consumed original delivery")
+    return dict(proof)
+
 
 _REGISTRY: dict[str, type] = {}
 
@@ -469,12 +505,28 @@ class ScheduleActivity:
     schedule_to_close_timeout: int | None = None
     heartbeat_timeout: int | None = None
     worker_session: WorkerSessionOptions | None = None
+    cancellation_policy: str | CancellationPolicy | None = None
+    _cancellation_scope_id: str = field(
+        default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
+    )
     _parallel_group_path: list[dict[str, Any]] | None = field(
         default=None,
         init=False,
         repr=False,
         compare=False,
     )
+
+    def __post_init__(self) -> None:
+        self._validate_cancellation_policy()
+
+    def _validate_cancellation_policy(self) -> None:
+        self.cancellation_policy = _canonical_activity_policy(self.cancellation_policy)
+        if self.cancellation_policy == CancellationPolicy.ABANDON.value and (
+            not isinstance(self.schedule_to_close_timeout, int)
+            or isinstance(self.schedule_to_close_timeout, bool)
+            or self.schedule_to_close_timeout < 1
+        ):
+            raise ValueError("remote activity Abandon requires a finite positive schedule_to_close_timeout")
 
     def to_server_command(
         self,
@@ -486,6 +538,7 @@ class ScheduleActivity:
         external_storage: ExternalStorageDriver | None = None,
         external_storage_threshold_bytes: int | None = None,
     ) -> dict[str, Any]:
+        self._validate_cancellation_policy()
         self._validate_timeouts()
 
         command: dict[str, Any] = {
@@ -522,6 +575,8 @@ class ScheduleActivity:
             command["heartbeat_timeout"] = self.heartbeat_timeout
         if self.worker_session is not None:
             command["worker_session"] = self.worker_session.to_wire()
+        if self.cancellation_policy is not None:
+            command["cancellation_policy"] = _canonical_activity_policy(self.cancellation_policy)
         return command
 
     def _validate_timeouts(self) -> None:
@@ -567,11 +622,25 @@ class RecordLocalActivity:
     start_to_close_timeout: int | None = None
     schedule_to_close_timeout: int | None = None
     heartbeat_timeout: int | None = None
+    cancellation_policy: str | CancellationPolicy | None = None
+    _cancellation_scope_id: str = field(
+        default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
+    )
     outcome: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _cancellation_cleanup: dict[str, str] | None = field(
+        default_factory=_authored_scope_cleanup, init=False, repr=False, compare=False,
+    )
     arguments_envelope: dict[str, Any] | None = field(default=None, init=False, repr=False)
     result_envelope: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _parallel_group_path: list[dict[str, Any]] | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        try:
+            self.cancellation_policy = _canonical_activity_policy(self.cancellation_policy)
+        except ValueError as error:
+            raise ValueError("local activity cancellation_policy must be a supported prepared policy") from error
+        if self.cancellation_policy == CancellationPolicy.ABANDON.value:
+            raise ValueError("local activity abandon is not supported by prepared callback ownership")
         if not isinstance(self.activity_type, str):
             raise TypeError("local activity type must be a string")
         self.activity_type = self.activity_type.strip()
@@ -605,6 +674,11 @@ class RecordLocalActivity:
         size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
         warning_context: PayloadWarningContext = None,
     ) -> dict[str, Any]:
+        if self.cancellation_policy is not None:
+            raise LocalActivityExecutionAborted(
+                "prepared_local_activity_cancellation_policy_not_supported: "
+                "explicit policies require prepared admission",
+            )
         if self.outcome is None or self.arguments_envelope is None:
             raise ValueError("local activity has no recorded terminal outcome")
         status = self.outcome.get("outcome")
@@ -627,6 +701,63 @@ class RecordLocalActivity:
             if value is not None:
                 command[name] = value
         return command
+
+
+@dataclass(frozen=True)
+class PreparedLocalActivityCall:
+    """An authored local call awaiting admission, with no application execution."""
+
+    command: RecordLocalActivity
+    sequence: int
+    recover: bool = False
+    cleanup: Mapping[str, str] | None = None
+
+    def descriptor(self, payload_codec: str) -> dict[str, Any]:
+        command = self.command
+        descriptor: dict[str, Any] = {
+            "type": "record_local_activity", "activity_type": command.activity_type,
+            "execution_mode": "local", "arguments": serializer.envelope(command.arguments, codec=payload_codec),
+            "payload_codec": payload_codec,
+        }
+        if command.retry_policy is not None:
+            descriptor["retry_policy"] = dict(command.retry_policy)
+        if command.cancellation_policy is not None:
+            descriptor["cancellation_policy"] = command.cancellation_policy
+        for name in ("start_to_close_timeout", "schedule_to_close_timeout", "heartbeat_timeout"):
+            value = getattr(command, name)
+            if value is not None:
+                descriptor[name] = value
+        if self.cleanup is not None:
+            descriptor["cancellation_cleanup"] = {
+                "request_id": self.cleanup["request_id"],
+                "delivery_history_event_id": self.cleanup["delivery_history_event_id"],
+            }
+            if "scope_id" in self.cleanup:
+                descriptor["cancellation_cleanup"]["scope_id"] = self.cleanup["scope_id"]
+        _apply_parallel_group_metadata(command, descriptor)
+        return descriptor
+
+
+@dataclass(frozen=True)
+class PreparedLocalActivityGroup:
+    """A complete ordinary parallel group, with only unresolved local calls."""
+
+    base_sequence: int
+    size: int
+    commands: tuple[Command, ...]
+    calls: tuple[PreparedLocalActivityCall, ...]
+    committed: bool
+
+    def __post_init__(self) -> None:
+        sequences = [call.sequence for call in self.calls]
+        if (
+            self.base_sequence < 1 or not 1 <= self.size <= 100 or not self.calls
+            or len(self.commands) != (0 if self.committed else self.size)
+            or len(set(sequences)) != len(sequences)
+            or any(not self.base_sequence <= call.sequence < self.base_sequence + self.size
+                   or not call.command._parallel_group_path for call in self.calls)
+        ):
+            raise LocalActivityExecutionAborted("prepared group lacks complete bounded authored membership")
 
 
 class LocalActivityExecutionAborted(Exception):
@@ -668,6 +799,12 @@ class StartTimer:
     """Command requesting a durable timer."""
 
     delay_seconds: int
+    _cancellation_scope_id: str = field(
+        default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
+    )
+    _cancellation_cleanup: dict[str, str] | None = field(
+        default_factory=_authored_scope_cleanup, init=False, repr=False, compare=False,
+    )
     _parallel_group_path: list[dict[str, Any]] | None = field(
         default=None,
         init=False,
@@ -916,16 +1053,26 @@ class StartChildWorkflow:
     workflow_type: str
     arguments: list[Any] = field(default_factory=list)
     task_queue: str | None = None
-    parent_close_policy: str | None = None
+    parent_close_policy: str | ParentClosePolicy | None = None
     retry_policy: ChildWorkflowRetryPolicyInput | None = None
     execution_timeout_seconds: int | None = None
     run_timeout_seconds: int | None = None
+    cancellation_policy: str | CancellationPolicy | None = None
+    _cancellation_scope_id: str = field(
+        default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
+    )
     _parallel_group_path: list[dict[str, Any]] | None = field(
         default=None,
         init=False,
         repr=False,
         compare=False,
     )
+
+    def __post_init__(self) -> None:
+        _canonical_child_policies({
+            "parent_close_policy": self.parent_close_policy,
+            "cancellation_policy": self.cancellation_policy,
+        })
 
     def to_server_command(
         self,
@@ -959,8 +1106,10 @@ class StartChildWorkflow:
             cmd["queue"] = self.task_queue
         else:
             cmd["queue"] = task_queue
-        if self.parent_close_policy is not None:
-            cmd["parent_close_policy"] = self.parent_close_policy
+        cmd.update(_canonical_child_policies({
+            "parent_close_policy": self.parent_close_policy,
+            "cancellation_policy": self.cancellation_policy,
+        }))
         if self.retry_policy is not None:
             cmd["retry_policy"] = (
                 self.retry_policy.to_dict()
@@ -1199,6 +1348,9 @@ class WaitCondition:
     condition_key: str | None = None
     condition_definition_fingerprint: str | None = None
     timeout_seconds: int | None = None
+    _cancellation_scope_id: str = field(
+        default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
+    )
     _parallel_group_path: list[dict[str, Any]] | None = field(
         default=None,
         init=False,
@@ -1348,6 +1500,12 @@ def _apply_parallel_group_metadata(
     command: Command,
     server_command: dict[str, Any],
 ) -> None:
+    scope_id = getattr(command, "_cancellation_scope_id", "root")
+    if scope_id != "root":
+        server_command["cancellation_scope_id"] = scope_id
+    cleanup = getattr(command, "_cancellation_cleanup", None)
+    if cleanup is not None:
+        server_command["cancellation_cleanup"] = dict(cleanup)
     path = getattr(command, "_parallel_group_path", None)
     if not path:
         return
@@ -1373,6 +1531,7 @@ def commands_to_server_commands(
 
     for command in commands:
         if isinstance(command, ScheduleActivity):
+            command._validate_cancellation_policy()
             queue = command.queue or task_queue
             server_command: dict[str, Any] = {
                 "type": "schedule_activity",
@@ -1406,6 +1565,8 @@ def commands_to_server_commands(
                 server_command["heartbeat_timeout"] = command.heartbeat_timeout
             if command.worker_session is not None:
                 server_command["worker_session"] = command.worker_session.to_wire()
+            if command.cancellation_policy is not None:
+                server_command["cancellation_policy"] = _canonical_activity_policy(command.cancellation_policy)
             server_commands.append(server_command)
             continue
 
@@ -1489,8 +1650,10 @@ def commands_to_server_commands(
                     task_queue=queue,
                 ),
             ))
-            if command.parent_close_policy is not None:
-                server_command["parent_close_policy"] = command.parent_close_policy
+            server_command.update(_canonical_child_policies({
+                "parent_close_policy": command.parent_close_policy,
+                "cancellation_policy": command.cancellation_policy,
+            }))
             if command.retry_policy is not None:
                 server_command["retry_policy"] = (
                     command.retry_policy.to_dict()
@@ -1680,16 +1843,17 @@ class Saga:
         if self._closed:
             raise RuntimeError("a saga instance can only compensate once")
         self._closed = True
-        for compensation in reversed(self._compensations):
-            try:
-                yield compensation.command
-            except (Exception, WorkflowCancelled) as compensation_failure:
-                raise SagaCompensationFailed(
-                    initiating_failure,
-                    compensation_failure,
-                    compensation_activity_type=compensation.command.activity_type,
-                    compensation_registration_order=compensation.registration_order,
-                ) from compensation_failure
+        with self._context.cancellation_shield():
+            for compensation in reversed(self._compensations):
+                try:
+                    yield compensation.command
+                except (Exception, WorkflowCancelled) as compensation_failure:
+                    raise SagaCompensationFailed(
+                        initiating_failure,
+                        compensation_failure,
+                        compensation_activity_type=compensation.command.activity_type,
+                        compensation_registration_order=compensation.registration_order,
+                    ) from compensation_failure
 
     def run(self, forward: Callable[[Saga], Any]) -> Any:
         """Run ``forward`` and compensate if it fails or is cancelled."""
@@ -1708,6 +1872,24 @@ class Saga:
             raise
 
 
+_ACTIVE_WORKFLOW_REPLAY: ContextVar[WorkflowContext | None] = ContextVar("active_workflow_replay", default=None)
+
+
+@dataclass(frozen=True)
+class CancellationScopeOpening:
+    """An authored opening awaiting proof on the current workflow claim."""
+
+    sequence: int
+    parent_scope_id: str
+    shield_parent: bool
+
+
+@dataclass(frozen=True)
+class _OpenCancellationScope:
+    parent_scope_id: str
+    shield_parent: bool
+
+
 class WorkflowContext:
     """Replay-safe helper surface passed to workflow ``run`` methods."""
 
@@ -1721,12 +1903,22 @@ class WorkflowContext:
         external_storage_cache: ExternalPayloadCache | None = None,
         workflow_command_id: str | None = None,
         cancel_requested: bool = False,
+        allow_cancellation_scope_authoring: bool = False,
     ) -> None:
         self._workflow_id = workflow_id
         self._run_id = run_id
         self._current_time = current_time or datetime.now(timezone.utc)
         self._workflow_command_id = workflow_command_id or run_id or workflow_id
         self._cancel_requested = bool(cancel_requested)
+        self._cancellation_request_id: str | None = None
+        self._cancellation_context: CancellationContext | ScopedCancellationContext | None = None
+        self._scope_cancellation_states: dict[str, ScopedCancellationContext] = {}
+        self._scope_cleanup_proofs: dict[str, dict[str, str]] = {}
+        self._cancellation_replay_time: datetime | None = None
+        self._cancellation_replay_time_available = False
+        self._cancellation_shield_depth = 0
+        self._allow_cancellation_scope_authoring = allow_cancellation_scope_authoring
+        self._cancellation_scope_id = "root"
         seed = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16)
         self._rng = random.Random(seed)
         self._uuid7_counter = 0
@@ -1738,6 +1930,45 @@ class WorkflowContext:
         self._external_storage_cache = external_storage_cache
         self._workflow_stream_command_counter = 0
         self.logger = _ReplayLogger(_REPLAY_LOGGER)
+
+    def cancellation_scope(
+        self, body: Callable[[], Any], *, shield_parent: bool = False,
+    ) -> Generator[Any, Any, Any]:
+        """Run a body inside its original durable scope using ``yield from``.
+
+        Scope authoring remains disabled outside candidate qualification.
+        The body starts only after replay proves the canonical opening.
+        """
+        if _ACTIVE_WORKFLOW_REPLAY.get() is not self or not self._allow_cancellation_scope_authoring:
+            raise LocalActivityExecutionAborted(
+                "cancellation_scope_execution_not_supported: candidate authoring is disabled",
+            )
+        if type(shield_parent) is not bool or not callable(body):
+            raise TypeError("cancellation_scope requires a callable body and boolean shield_parent")
+        parent = self._cancellation_scope_id
+        prior = (self._cancel_requested, self._cancellation_request_id, self._cancellation_context)
+        scope_id = yield _OpenCancellationScope(parent, shield_parent)
+        if not scope_identity(scope_id) or scope_id == "root":
+            raise LocalActivityExecutionAborted("scope body requires its original canonical opening identity")
+        self._cancellation_scope_id = scope_id
+        scoped_context = self._scope_cancellation_states.get(scope_id)
+        self._cancel_requested = scoped_context is not None
+        self._cancellation_request_id = scoped_context.request_id if scoped_context is not None else None
+        self._cancellation_context = scoped_context
+        try:
+            result = body()
+            if isinstance(result, Generator):
+                return (yield from result)
+            return result
+        finally:
+            self._cancellation_scope_id = parent
+            parent_context = self._scope_cancellation_states.get(parent)
+            if parent_context is None:
+                self._cancel_requested, self._cancellation_request_id, self._cancellation_context = prior
+            else:
+                self._cancel_requested = True
+                self._cancellation_request_id = parent_context.request_id
+                self._cancellation_context = parent_context
 
     def message_stream(self, name: str) -> MessageStream:
         """Open an instance-scoped durable input stream by its portable name."""
@@ -1810,17 +2041,70 @@ class WorkflowContext:
 
     @property
     def is_cancellation_requested(self) -> bool:
-        """Whether this task carries a cooperative cancellation request.
+        """Whether cancellation has reached this replay's authored boundary.
 
-        Server's current ``/cancel`` route is terminal and does not set this
-        flag. Service-mode cooperative cancellation is not yet available.
+        Transport observation alone does not set this flag. Server's terminal
+        ``/cancel`` route does not deliver a cooperative workflow exception.
         """
         return self._cancel_requested
 
     def throw_if_cancellation_requested(self) -> None:
         """Raise :class:`WorkflowCancelled` at an explicit safe point."""
-        if self._cancel_requested:
-            raise WorkflowCancelled("workflow cancellation was requested")
+        if self._cancel_requested and self._cancellation_shield_depth == 0:
+            raise WorkflowCancelled(
+                "workflow cancellation was requested", request_id=self._cancellation_request_id,
+                context=self._cancellation_context,
+            )
+
+    @property
+    def cancellation_context(self) -> CancellationContext | ScopedCancellationContext | None:
+        """Original metadata, visible only at committed cancellation delivery."""
+        return self._cancellation_context
+
+    def _observe_cancellation_replay_time(self, event: Mapping[str, Any] | None) -> None:
+        timestamp = event.get("timestamp") if event is not None else None
+        if timestamp is None and event is not None:
+            timestamp = event.get("recorded_at")
+        self._cancellation_replay_time_available = False
+        if not isinstance(timestamp, str):
+            return
+        try:
+            recorded_time = _timestamp(timestamp)
+        except ValueError:
+            return
+        if self._cancellation_replay_time is None or recorded_time > self._cancellation_replay_time:
+            self._cancellation_replay_time = recorded_time
+        self._cancellation_replay_time_available = True
+
+    def _bind_cancellation_context(
+        self, context: CancellationContext | ScopedCancellationContext, *, authority_deadline: datetime | None = None,
+    ) -> CancellationContext | ScopedCancellationContext:
+        reference = weakref.ref(self)
+
+        def replay_time() -> datetime:
+            active = reference()
+            if active is None or _ACTIVE_WORKFLOW_REPLAY.get() is not active:
+                raise RuntimeError("cancellation remaining time requires active workflow replay")
+            if not active._cancellation_replay_time_available or active._cancellation_replay_time is None:
+                raise RuntimeError("cancellation replay boundary requires a recorded timestamp")
+            return active._cancellation_replay_time
+
+        if isinstance(context, ScopedCancellationContext):
+            return context._with_replay_clock(replay_time, authority_deadline)
+        return context._with_replay_clock(replay_time)
+
+    @contextlib.contextmanager
+    def cancellation_shield(self) -> Generator[None, None, None]:
+        """Permit cleanup calls without delivering the same request again.
+
+        The Server still enforces the original cleanup deadline, task lease
+        and termination fence. This scope does not extend any of them.
+        """
+        self._cancellation_shield_depth += 1
+        try:
+            yield
+        finally:
+            self._cancellation_shield_depth -= 1
 
     def saga(self) -> Saga:
         """Create a deterministic reverse-order compensation scope."""
@@ -1838,6 +2122,7 @@ class WorkflowContext:
         schedule_to_close_timeout: int | None = None,
         heartbeat_timeout: int | None = None,
         worker_session: WorkerSessionOptions | None = None,
+        cancellation_policy: str | CancellationPolicy | None = None,
     ) -> ScheduleActivity:
         return ScheduleActivity(
             activity_type=activity_type,
@@ -1849,6 +2134,7 @@ class WorkflowContext:
             schedule_to_close_timeout=schedule_to_close_timeout,
             heartbeat_timeout=heartbeat_timeout,
             worker_session=worker_session,
+            cancellation_policy=cancellation_policy,
         )
 
     def local_activity(
@@ -1860,6 +2146,7 @@ class WorkflowContext:
         start_to_close_timeout: int | None = None,
         schedule_to_close_timeout: int | None = None,
         heartbeat_timeout: int | None = None,
+        cancellation_policy: str | CancellationPolicy | None = None,
     ) -> RecordLocalActivity:
         """Yield an activity executed in this workflow worker process."""
         return RecordLocalActivity(
@@ -1869,6 +2156,7 @@ class WorkflowContext:
             start_to_close_timeout=start_to_close_timeout,
             schedule_to_close_timeout=schedule_to_close_timeout,
             heartbeat_timeout=heartbeat_timeout,
+            cancellation_policy=cancellation_policy,
         )
 
     def start_timer(self, seconds: int) -> StartTimer:
@@ -2053,7 +2341,8 @@ class WorkflowContext:
         arguments: list[Any] | None = None,
         *,
         task_queue: str | None = None,
-        parent_close_policy: str | None = None,
+        parent_close_policy: str | ParentClosePolicy | None = None,
+        cancellation_policy: str | CancellationPolicy | None = None,
         retry_policy: ChildWorkflowRetryPolicyInput | None = None,
         execution_timeout_seconds: int | None = None,
         run_timeout_seconds: int | None = None,
@@ -2063,6 +2352,7 @@ class WorkflowContext:
             arguments=list(arguments) if arguments is not None else [],
             task_queue=task_queue,
             parent_close_policy=parent_close_policy,
+            cancellation_policy=cancellation_policy,
             retry_policy=retry_policy,
             execution_timeout_seconds=execution_timeout_seconds,
             run_timeout_seconds=run_timeout_seconds,
@@ -2241,6 +2531,11 @@ class ReplayOutcome:
     commands: list[Command]
     message_stream_cursors: list[dict[str, Any]] = field(default_factory=list)
     message_stream_waits: list[dict[str, Any]] = field(default_factory=list)
+    cancellation_delivery: CancellationDelivery | None = None
+    prepared_local_activity: PreparedLocalActivityCall | None = None
+    prepared_local_activity_group: PreparedLocalActivityGroup | None = None
+    cancellation_scope_opening: CancellationScopeOpening | None = None
+    cancellation_scope_delivery: CancellationScopeDeliveryIntent | None = None
 
 
 class Replayer:
@@ -2328,6 +2623,7 @@ class _PendingReceiver:
     name: str
     args: list[Any]
     condition_wait_id: str | None = None
+    after_cancellation_delivery: bool = False
 
 
 @dataclass(frozen=True)
@@ -2336,6 +2632,7 @@ class _RecordedStep:
     shape: str
     event_types: list[str]
     details: dict[str, Any]
+    history_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -2611,7 +2908,13 @@ def replay(
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
     cancel_requested: bool = False,
+    cancellation_request: Mapping[str, Any] | None = None,
     local_activity_executor: Callable[[RecordLocalActivity], Any] | None = None,
+    prepare_local_activities: bool = False,
+    prepare_local_activity_groups: bool = False,
+    local_activity_cancellation_policies: tuple[str, ...] = (),
+    allow_cancellation_scope_authoring: bool = False,
+    allow_cancellation_scope_delivery: bool = False,
 ) -> ReplayOutcome:
     return _replay_state(
         workflow_cls,
@@ -2624,7 +2927,13 @@ def replay(
         external_storage=external_storage,
         external_storage_cache=external_storage_cache,
         cancel_requested=cancel_requested,
+        cancellation_request=cancellation_request,
         local_activity_executor=local_activity_executor,
+        prepare_local_activities=prepare_local_activities,
+        prepare_local_activity_groups=prepare_local_activity_groups,
+        local_activity_cancellation_policies=local_activity_cancellation_policies,
+        allow_cancellation_scope_authoring=allow_cancellation_scope_authoring,
+        allow_cancellation_scope_delivery=allow_cancellation_scope_delivery,
     ).outcome
 
 
@@ -2640,6 +2949,9 @@ def query_state(
     payload_codec: str | None = None,
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
+    prepare_local_activities: bool = False,
+    prepare_local_activity_groups: bool = False,
+    local_activity_cancellation_policies: tuple[str, ...] = (),
 ) -> Any:
     """Replay a workflow to current state and invoke a registered query.
 
@@ -2662,6 +2974,9 @@ def query_state(
             external_storage=external_storage,
             external_storage_cache=external_storage_cache,
             stop_at_uncommitted_cancellation=True,
+            prepare_local_activities=prepare_local_activities,
+            prepare_local_activity_groups=prepare_local_activity_groups,
+            local_activity_cancellation_policies=local_activity_cancellation_policies,
         )
     except Exception as exc:
         raise QueryFailed(f"workflow replay failed before query: {exc}") from exc
@@ -2697,6 +3012,9 @@ def apply_update(
     payload_codec: str | None = None,
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
+    prepare_local_activities: bool = False,
+    prepare_local_activity_groups: bool = False,
+    local_activity_cancellation_policies: tuple[str, ...] = (),
 ) -> CompleteUpdate | FailUpdate:
     """Replay current workflow state and run one accepted update handler.
 
@@ -2717,6 +3035,9 @@ def apply_update(
             payload_codec=payload_codec,
             external_storage=external_storage,
             external_storage_cache=external_storage_cache,
+            prepare_local_activities=prepare_local_activities,
+            prepare_local_activity_groups=prepare_local_activity_groups,
+            local_activity_cancellation_policies=local_activity_cancellation_policies,
         )
     except Exception as exc:
         return _fail_update_from_exception(
@@ -2798,6 +3119,9 @@ def validate_update(
     payload_codec: str | None = None,
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
+    prepare_local_activities: bool = False,
+    prepare_local_activity_groups: bool = False,
+    local_activity_cancellation_policies: tuple[str, ...] = (),
 ) -> Any:
     """Replay state and invoke only the declared pre-accept update validator.
 
@@ -2818,6 +3142,9 @@ def validate_update(
             payload_codec=payload_codec,
             external_storage=external_storage,
             external_storage_cache=external_storage_cache,
+            prepare_local_activities=prepare_local_activities,
+            prepare_local_activity_groups=prepare_local_activity_groups,
+            local_activity_cancellation_policies=local_activity_cancellation_policies,
         )
     except Exception as exc:
         raise UpdateValidationFailed(
@@ -3297,6 +3624,18 @@ def _activity_type_from_payload(payload: Mapping[str, Any]) -> str | None:
 
 def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
     details: dict[str, Any] = {}
+    if "cancellation_cleanup" in payload:
+        details["cancellation_cleanup"] = payload["cancellation_cleanup"]
+    local_preparation = payload.get("local_preparation")
+    if isinstance(local_preparation, Mapping) and "cancellation_cleanup" in local_preparation:
+        details["cancellation_cleanup"] = local_preparation["cancellation_cleanup"]
+    for snapshot in (payload, *(payload.get(name) for name in ("activity", "timer", "child_workflow"))):
+        if isinstance(snapshot, Mapping) and "cancellation_scope_id" in snapshot:
+            details["cancellation_scope_id"] = snapshot["cancellation_scope_id"]
+    if "parent_scope_id" in payload:
+        details["parent_scope_id"] = payload["parent_scope_id"]
+    if "shield_parent" in payload:
+        details["shield_parent"] = payload["shield_parent"]
     activity_type = _activity_type_from_payload(payload)
     if activity_type is not None:
         details["activity_type"] = activity_type
@@ -3306,6 +3645,8 @@ def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
     for key in (
         "workflow_type",
         "child_workflow_type",
+        "parent_close_policy",
+        "cancellation_policy",
         "timer_kind",
         "change_id",
         "condition_key",
@@ -3362,6 +3703,7 @@ def _is_resolved_step_event(
     condition_wait_ids_by_sequence: Mapping[int, str] | None = None,
 ) -> bool:
     if event_type in (
+        "CancellationScopeOpened",
         "ActivityCompleted",
         "ActivityFailed",
         "ActivityTimedOut",
@@ -3382,6 +3724,8 @@ def _is_resolved_step_event(
 
 
 def _command_history_shape(command: Any) -> str | None:
+    if isinstance(command, _OpenCancellationScope):
+        return "cancellation scope"
     if isinstance(command, ScheduleActivity | RecordLocalActivity):
         return "activity"
     if isinstance(command, StartTimer):
@@ -3419,6 +3763,25 @@ def _command_diagnostic_shape(command: Any) -> str:
 
 
 def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
+    if isinstance(command, StartTimer) or isinstance(command, RecordLocalActivity) and (
+        command._cancellation_scope_id != "root"
+    ):
+        snapshot = step.details.get("cancellation_cleanup")
+        proof = ({field: snapshot[field] for field in ("scope_id", "request_id", "delivery_history_event_id")}
+                 if isinstance(snapshot, dict) else None)
+        if proof != command._cancellation_cleanup:
+            return "cancellation_scope_cleanup_changed: operation changed its original delivery or shielding"
+    if isinstance(command, _OpenCancellationScope) and (
+        step.details.get("parent_scope_id") != command.parent_scope_id
+        or step.details.get("shield_parent") is not command.shield_parent
+    ):
+        return "cancellation_scope_opening_changed: original parent or shielding changed"
+    if isinstance(command, (
+        ScheduleActivity, RecordLocalActivity, StartTimer, StartChildWorkflow, WaitCondition,
+    )) and (
+        step.details.get("cancellation_scope_id", "root") != command._cancellation_scope_id
+    ):
+        return "cancellation_scope_membership_changed: operation changed its original scope"
     expected_parallel_path = getattr(command, "_parallel_group_path", None)
     recorded_parallel_path = step.details.get("parallel_group_path")
     if (
@@ -3439,6 +3802,13 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
                 f"Recorded activity_type {recorded!r}, but current workflow "
                 f"scheduled {command.activity_type!r}."
             )
+        actual_policy = _canonical_activity_policy(command.cancellation_policy) or "try_cancel"
+        recorded_policy = step.details.get("cancellation_policy", "try_cancel")
+        if recorded_policy != actual_policy:
+            return (
+                f"activity_cancellation_policy_changed: recorded {recorded_policy!r}, "
+                f"but current workflow requested {actual_policy!r}."
+            )
     elif isinstance(command, RecordLocalActivity):
         if step.details.get("execution_mode") != "local":
             return "Recorded remote activity cannot replay as a local activity."
@@ -3448,6 +3818,13 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
                 f"Recorded local activity_type {recorded!r}, but current workflow "
                 f"requested {command.activity_type!r}."
             )
+        actual_policy = command.cancellation_policy or "try_cancel"
+        recorded_policy = step.details.get("cancellation_policy", "try_cancel")
+        if recorded_policy != actual_policy:
+            return (
+                f"local_activity_cancellation_policy_changed: recorded {recorded_policy!r}, "
+                f"but current workflow requested {actual_policy!r}."
+            )
     elif isinstance(command, StartChildWorkflow):
         recorded = step.details.get("workflow_type") or step.details.get("child_workflow_type")
         if isinstance(recorded, str) and recorded != command.workflow_type:
@@ -3455,6 +3832,20 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
                 f"Recorded child workflow_type {recorded!r}, but current workflow "
                 f"started {command.workflow_type!r}."
             )
+        actual_policies = {
+            "parent_close_policy": "abandon", "cancellation_policy": "abandon",
+            **_canonical_child_policies({
+                "parent_close_policy": command.parent_close_policy,
+                "cancellation_policy": command.cancellation_policy,
+            }),
+        }
+        for field, actual_policy in actual_policies.items():
+            recorded_policy = step.details.get(field, "abandon")
+            if recorded_policy != actual_policy:
+                return (
+                    f"child_workflow_policy_changed: recorded {field} {recorded_policy!r}, "
+                    f"but current workflow requested {actual_policy!r}."
+                )
     elif isinstance(command, RecordVersionMarker):
         recorded = step.details.get("change_id")
         if isinstance(recorded, str) and recorded != command.change_id:
@@ -3594,6 +3985,29 @@ def _first_yield_failure(values: Iterable[Any]) -> ActivityFailed | ChildWorkflo
     return None
 
 
+def _assert_cancellation_scope_replay_supported(
+    events: list[dict[str, Any]], *, allow_authoring: bool = False, allow_delivery: bool = False,
+) -> None:
+    """Refuse unqualified scope execution before constructing application code."""
+    for event in events:
+        unsupported = not allow_delivery and _history_event_type(event) in {
+            "CancellationScopeRequested",
+            "CancellationScopeDeliveryPrepared",
+            "CancellationScopeDelivered",
+            "CancellationScopeRequestConflicted",
+        }
+        unsupported = unsupported or (_history_event_type(event) == "CancellationScopeOpened" and not allow_authoring)
+        payload = event.get("payload")
+        if isinstance(payload, Mapping):
+            for container in (payload, *(payload.get(name) for name in ("activity", "timer", "child_workflow"))):
+                if isinstance(container, Mapping) and "cancellation_scope_id" in container:
+                    unsupported = unsupported or (container["cancellation_scope_id"] != "root" and not allow_authoring)
+        if unsupported:
+            raise LocalActivityExecutionAborted(
+                "cancellation_scope_execution_not_supported: Python worker cannot replay scoped cancellation history",
+            )
+
+
 def _replay_state(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
@@ -3606,9 +4020,19 @@ def _replay_state(
     external_storage: ExternalStorageDriver | None = None,
     external_storage_cache: ExternalPayloadCache | None = None,
     cancel_requested: bool = False,
+    cancellation_request: Mapping[str, Any] | None = None,
     local_activity_executor: Callable[[RecordLocalActivity], Any] | None = None,
+    prepare_local_activities: bool = False,
+    prepare_local_activity_groups: bool = False,
+    local_activity_cancellation_policies: tuple[str, ...] = (),
     stop_at_uncommitted_cancellation: bool = False,
+    allow_cancellation_scope_authoring: bool = False,
+    allow_cancellation_scope_delivery: bool = False,
 ) -> _ReplayState:
+    if allow_cancellation_scope_delivery and not allow_cancellation_scope_authoring:
+        raise LocalActivityExecutionAborted("scope delivery requires canonical scope authoring")
+    if prepare_local_activity_groups and not prepare_local_activities:
+        raise LocalActivityExecutionAborted("prepared groups require prepared local activity admission")
     if payload_codec is not None and payload_codec != serializer.AVRO_CODEC:
         try:
             serializer.decode("", codec=payload_codec)
@@ -3622,9 +4046,85 @@ def _replay_state(
             ) from exception
 
     events = list(history_events)
+    _assert_cancellation_scope_replay_supported(
+        events, allow_authoring=allow_cancellation_scope_authoring, allow_delivery=allow_cancellation_scope_delivery,
+    )
+    try:
+        scope_history = (
+            CancellationScopeHistory.read(events, run_id) if allow_cancellation_scope_authoring
+            else CancellationScopeHistory({}, {})
+        )
+    except ValueError as error:
+        raise LocalActivityExecutionAborted(str(error)) from error
+    cancellation = read_cancellation_history(events, run_id=run_id, observation=cancellation_request)
+    if (allow_cancellation_scope_authoring and cancellation.request is not None
+        and not allow_cancellation_scope_delivery):
+        raise LocalActivityExecutionAborted(
+            "cancellation_scope_execution_not_supported: candidate authoring lacks scope delivery",
+        )
+    cancellation_consumed = False
+    cancellation_intent: CancellationDelivery | None = None
+    scope_intent: CancellationScopeDeliveryIntent | None = None
+    consumed_scope_deliveries: set[int] = set()
+    workflow_id = workflow_id or _workflow_id_from_history(events)
+    try:
+        committed_scopes = (
+            CommittedCancellationScopeHistory.read(events, run_id, workflow_id or "", scope_history)
+            if allow_cancellation_scope_delivery else CommittedCancellationScopeHistory({}, {}, {})
+        )
+    except (ValueError, TypeError, KeyError) as error:
+        raise LocalActivityExecutionAborted(str(error)) from error
+    scope_states: dict[str, dict[str, tuple[ScopedCancellationContext, datetime]]] = {}
+    for prepared in committed_scopes.preparations.values():
+        if prepared.boundary.call_kind == "local_activity":
+            raise LocalActivityExecutionAborted(
+                "cancellation_scope_execution_not_supported: scope local callbacks "
+                "require their qualified replay consumers",
+            )
+        try:
+            scope_states[prepared.context.scope_id] = committed_scopes.scope_states_for_boundary(prepared)
+        except (ValueError, TypeError, KeyError) as error:
+            raise LocalActivityExecutionAborted(str(error)) from error
+        for event in events[:events.index(prepared.event)]:
+            member = event.get("payload") or {}
+            sequence = _workflow_sequence(member)
+            if (_history_event_type(event) == "ActivityScheduled"
+                and sequence is not None
+                and scope_history.memberships.get(sequence, "root") in scope_states[prepared.context.scope_id]
+                and (member.get("local_activity") is True or member.get("execution_mode") == "local")):
+                raise LocalActivityExecutionAborted(
+                    "cancellation_scope_execution_not_supported: subtree local callbacks "
+                    "require their qualified replay consumer",
+                )
+        if prepared.boundary.call_kind == "parallel":
+            for event in events[:events.index(prepared.event)]:
+                member = event.get("payload") or {}
+                sequence = _workflow_sequence(member)
+                if sequence is None or not prepared.boundary.interrupts(sequence):
+                    continue
+                if (_history_event_type(event) == "SignalWaitOpened"
+                    or _history_event_type(event) == "ActivityScheduled" and (
+                        member.get("local_activity") is True or member.get("execution_mode") == "local"
+                    )):
+                    raise LocalActivityExecutionAborted(
+                        "cancellation_scope_execution_not_supported: group contains an unqualified member",
+                    )
+    delivered_scopes: set[str] = set()
+    for delivery in committed_scopes.deliveries.values():
+        states = scope_states[delivery.context.scope_id]
+        if delivered_scopes.intersection(states):
+            raise LocalActivityExecutionAborted(
+                "cancellation_scope_execution_not_supported: overlapping subtree deliveries "
+                "require their qualified replay consumer",
+            )
+        delivered_scopes.update(states)
+    authored_sequence = 1
+    current_call_sequence = 1
     workflow_id = workflow_id or _workflow_id_from_history(events)
     event_types_by_sequence: dict[int, list[str]] = {}
     details_by_sequence: dict[int, dict[str, Any]] = {}
+    child_policies_by_sequence: dict[int, dict[str, str]] = {}
+    activity_policies_by_sequence: dict[int, str] = {}
     resolved_sequences: set[int] = set()
     condition_wait_ids_by_sequence: dict[int, str] = {}
     selected_condition_wait_ids_by_sequence: dict[int, str] = {}
@@ -3646,6 +4146,52 @@ def _replay_state(
             # envelopes into the public non-determinism diagnostic.
             recorded_details = {}
         details_by_sequence.setdefault(sequence, {}).update(recorded_details)
+        if event_type in (
+            "ActivityScheduled", "ActivityStarted", "ActivityCompleted",
+            "ActivityFailed", "ActivityTimedOut", "ActivityCancelled",
+        ):
+            policy = activity_policies_by_sequence.get(sequence)
+            snapshot = payload.get("activity")
+            for source in (payload, snapshot if isinstance(snapshot, Mapping) else {}):
+                if "cancellation_policy" not in source:
+                    continue
+                incoming = source["cancellation_policy"]
+                if not isinstance(incoming, str) or incoming not in tuple(item.value for item in CancellationPolicy):
+                    raise NonDeterministicReplayError(
+                        sequence, "activity", [event_type],
+                        detail="invalid_activity_cancellation_policy_history: expected a supported policy.",
+                    )
+                if policy is not None and policy != incoming:
+                    raise NonDeterministicReplayError(
+                        sequence, "activity", [event_type],
+                        detail="activity_cancellation_policy_history_conflict: policy changed between events.",
+                    )
+                policy = incoming
+            activity_policies_by_sequence[sequence] = policy or "try_cancel"
+            details_by_sequence[sequence]["cancellation_policy"] = activity_policies_by_sequence[sequence]
+        if event_type in (
+            "ChildWorkflowScheduled", "ChildRunStarted", "ChildRunCompleted",
+            "ChildRunFailed", "ChildRunCancelled", "ChildRunTerminated",
+        ):
+            try:
+                incoming_policies = _canonical_child_policies(payload)
+            except ValueError as error:
+                raise NonDeterministicReplayError(
+                    sequence, "child workflow", [event_type],
+                    detail=f"invalid_child_workflow_policy_history: {error}",
+                ) from error
+            previous_policies = child_policies_by_sequence.get(sequence)
+            for field, value in incoming_policies.items():
+                if previous_policies is not None and previous_policies[field] != value:
+                    raise NonDeterministicReplayError(
+                        sequence, "child workflow", [event_type],
+                        detail=f"child_workflow_policy_history_conflict: {field} changed between history events.",
+                    )
+            child_policies_by_sequence[sequence] = {
+                "parent_close_policy": "abandon", "cancellation_policy": "abandon",
+                **(previous_policies or {}), **incoming_policies,
+            }
+            details_by_sequence[sequence].update(child_policies_by_sequence[sequence])
         if event_type == "ConditionWaitOpened":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
@@ -3684,6 +4230,9 @@ def _replay_state(
                     workflow_start_time = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
             break
 
+    for sequence, membership in scope_history.memberships.items():
+        details_by_sequence.setdefault(sequence, {})["cancellation_scope_id"] = membership
+
     instance = workflow_cls()
     ctx = WorkflowContext(
         workflow_id=workflow_id or "",
@@ -3693,6 +4242,7 @@ def _replay_state(
         external_storage_cache=external_storage_cache,
         workflow_command_id=workflow_command_id,
         cancel_requested=cancel_requested,
+        allow_cancellation_scope_authoring=allow_cancellation_scope_authoring,
     )
     # Continue-as-new cursor checkpoints describe instance state that predates
     # this run. Seed them before the workflow opens its first stream wait so
@@ -3721,10 +4271,19 @@ def _replay_state(
         ):
             ctx._accept_message_stream(arguments)
 
-    def _state(commands: list[Command]) -> _ReplayState:
+    def _state(
+        commands: list[Command], prepared_local_activity: PreparedLocalActivityCall | None = None,
+        prepared_local_activity_group: PreparedLocalActivityGroup | None = None,
+        cancellation_scope_opening: CancellationScopeOpening | None = None,
+    ) -> _ReplayState:
         return _ReplayState(
             outcome=ReplayOutcome(
                 commands=commands,
+                cancellation_delivery=cancellation_intent,
+                prepared_local_activity=prepared_local_activity,
+                prepared_local_activity_group=prepared_local_activity_group,
+                cancellation_scope_opening=cancellation_scope_opening,
+                cancellation_scope_delivery=scope_intent,
                 message_stream_cursors=[
                     {"stream_name": name, "through_position": position}
                     for name, position in sorted(ctx._message_stream_cursors.items())
@@ -3769,15 +4328,18 @@ def _replay_state(
     # loser complete before or after unrelated successor work without changing
     # replay binding.
     selection_resolutions: dict[int, Any] = {}
+    selection_resolution_indexes: dict[int, int] = {}
     selection_steps: dict[int, list[_RecordedStep]] = {}
     selection_payloads: dict[int, list[dict[str, Any]]] = {}
     selection_opening_payloads: dict[int, dict[str, Any]] = {}
     selection_condition_terminal_payloads: dict[int, list[dict[str, Any]]] = {}
     selection_condition_sequences: dict[str, int] = {}
     selection_markers: list[dict[str, Any]] = []
+    selection_marker_indexes: list[int] = []
     selection_marker_cursor = 0
     consumed_selection_sequences: set[int] = set()
     cancelled_selection_members: dict[tuple[str, int], dict[str, Any]] = {}
+    cancelled_selection_indexes: dict[tuple[str, int], int] = {}
     validated_selection_cancellations: set[tuple[str, int]] = set()
     authored_selection_handles: dict[int, DurableOperationHandle] = {}
 
@@ -3800,9 +4362,11 @@ def _replay_state(
             shape=shape,
             event_types=event_types,
             details=details,
+            history_index=event_index,
         )
         if _selection_group_metadata(payload) is not None:
             selection_resolutions[workflow_sequence] = value
+            selection_resolution_indexes[workflow_sequence] = event_index
             _append_selection_step(shape, event, fallback_sequence=workflow_sequence)
             return
         resolved_results.append(value)
@@ -3832,11 +4396,16 @@ def _replay_state(
             else {}
         )
         details.update(_recorded_step_details(payload))
+        if shape == "child workflow":
+            details.update(child_policies_by_sequence.get(workflow_sequence, {}))
+        if shape == "activity":
+            details["cancellation_policy"] = activity_policies_by_sequence.get(workflow_sequence, "try_cancel")
         return _RecordedStep(
             workflow_sequence=workflow_sequence,
             shape=shape,
             event_types=event_types,
             details=details,
+            history_index=event_index,
         )
 
     def _append_selection_step(
@@ -3898,6 +4467,7 @@ def _replay_state(
             fallback_sequence=selection_sequence,
         )
         selection_resolutions[selection_sequence] = value
+        selection_resolution_indexes[selection_sequence] = event_index
         return True
 
     def _assert_step_matches(command: Any, step: _RecordedStep) -> None:
@@ -3924,6 +4494,15 @@ def _replay_state(
         step_index = result_cursor + offset
         if step_index >= len(recorded_steps):
             return
+        if (
+            (cancellation.request is not None or prepare_local_activities or allow_cancellation_scope_authoring)
+            and recorded_steps[step_index].workflow_sequence != current_call_sequence + offset
+        ):
+            raise NonDeterministicReplayError(
+                current_call_sequence + offset, _command_diagnostic_shape(command),
+                recorded_steps[step_index].event_types,
+                detail="recorded result belongs to a different authored call",
+            )
         _assert_step_matches(command, recorded_steps[step_index])
 
     def _unconsumed_recorded_steps() -> list[_RecordedStep]:
@@ -3946,9 +4525,27 @@ def _replay_state(
         candidates = _unconsumed_recorded_steps()
         if offset >= len(candidates):
             return
+        if (allow_cancellation_scope_authoring
+                and candidates[offset].workflow_sequence != current_call_sequence + offset):
+            raise NonDeterministicReplayError(
+                current_call_sequence + offset, _command_diagnostic_shape(command), candidates[offset].event_types,
+                detail="recorded operation belongs to a different authored call",
+            )
         _assert_step_matches(command, candidates[offset])
 
     def _assert_no_unconsumed_history(terminal_shape: str) -> None:
+        missing_scope = next((delivery for sequence, delivery in committed_scopes.deliveries.items()
+                              if sequence not in consumed_scope_deliveries), None)
+        if missing_scope is not None:
+            raise NonDeterministicReplayError(
+                missing_scope.boundary.sequence, terminal_shape, ["CancellationScopeDelivered"],
+                detail="workflow did not reach the original scoped cancellation boundary",
+            )
+        if cancellation.delivery is not None and not cancellation_consumed:
+            raise NonDeterministicReplayError(
+                cancellation.delivery.sequence, terminal_shape, ["CooperativeCancellationDelivered"],
+                detail="workflow did not reach the committed cancellation boundary",
+            )
         step = _next_unconsumed_recorded_step()
         if step is not None:
             raise NonDeterministicReplayError(
@@ -4007,6 +4604,8 @@ def _replay_state(
         return event_type in ("SignalReceived", "UpdateApplied")
 
     def _receiver_binding_boundary_kind(event_type: str | None, payload: Mapping[str, Any]) -> str | None:
+        if event_type == "CooperativeCancellationDelivered":
+            return "condition" if payload.get("call_kind") == "condition" else "step"
         if event_type in (
             "ConditionWaitSatisfied",
             "ConditionWaitTimedOut",
@@ -4154,6 +4753,28 @@ def _replay_state(
         raw_payload = ev.get("payload") or {}
         payload = dict(raw_payload) if isinstance(raw_payload, Mapping) else {}
         sequence = _workflow_sequence(payload)
+        scoped_interruption = next((delivery.boundary for delivery in committed_scopes.deliveries.values()
+                                    if sequence is not None and delivery.boundary.interrupts(sequence)), None)
+        interruption = scoped_interruption or cancellation.delivery
+        if (
+            interruption is not None and sequence is not None
+            and interruption.interrupts(sequence)
+            and etype in {
+                "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "ActivityFailed", "ActivityTimedOut",
+                "ActivityCancelled", "TimerScheduled", "TimerFired", "TimerCancelled", "ChildWorkflowScheduled",
+                "ChildRunStarted", "ChildRunCompleted", "ChildRunFailed", "ChildRunCancelled", "ChildRunTerminated",
+                "ConditionWaitOpened", "ConditionWaitSatisfied", "ConditionWaitTimedOut", "SignalWaitOpened",
+                "SignalApplied",
+            }
+            and not (interruption.call_kind == "selection_handle" and etype in {
+                "ActivityScheduled", "ActivityStarted", "TimerScheduled", "ChildWorkflowScheduled",
+                "ChildRunStarted", "ConditionWaitOpened", "SignalWaitOpened",
+            })
+            and not (interruption.call_kind == "condition" and etype == "ConditionWaitOpened")
+        ):
+            # The delivery marker owns the interruption. Its activity/timer
+            # terminal rows are not ordinary workflow results or cleanup calls.
+            continue
         if (
             etype
             in {
@@ -4174,7 +4795,9 @@ def _replay_state(
             if delivered == payload:
                 continue
             delivered_terminals[duplicate_key] = dict(payload)
-        if etype == "ActivityCompleted":
+        if etype == "CancellationScopeOpened":
+            _append_resolved_result(payload["scope_id"], "cancellation scope", ev)
+        elif etype == "ActivityCompleted":
             _append_resolved_result(
                 _decode_history_result(
                     payload,
@@ -4243,6 +4866,7 @@ def _replay_state(
         elif etype == "SelectionResolved":
             if isinstance(payload.get("selection_group_id"), str):
                 selection_markers.append(dict(payload))
+                selection_marker_indexes.append(event_index)
         elif etype == "SelectionOperationCancelled":
             group_id = payload.get("selection_group_id")
             member_base = _parallel_group_integer(payload, "member_base_sequence")
@@ -4258,6 +4882,7 @@ def _replay_state(
                         detail="conflicting cancellation markers target the same durable member",
                     )
                 cancelled_selection_members[cancellation_key] = cancellation_payload
+                cancelled_selection_indexes.setdefault(cancellation_key, event_index)
         elif etype in ("SideEffectRecorded", "ChildRunCompleted"):
             shape = "side effect" if etype == "SideEffectRecorded" else "child workflow"
             _append_resolved_result(
@@ -4365,6 +4990,9 @@ def _replay_state(
                         external_storage_cache=external_storage_cache,
                     ),
                     condition_wait_id=condition_wait_id,
+                    after_cancellation_delivery=(
+                        cancellation.delivery_index is not None and event_index > cancellation.delivery_index
+                    ),
                 ))
         elif etype == "UpdateApplied":
             update_name = payload.get("update_name")
@@ -4393,6 +5021,9 @@ def _replay_state(
                         external_storage_cache=external_storage_cache,
                     ),
                     condition_wait_id=condition_wait_id,
+                    after_cancellation_delivery=(
+                        cancellation.delivery_index is not None and event_index > cancellation.delivery_index
+                    ),
                 ))
 
     resolved_results, recorded_steps = _reorder_completed_parallel_groups(
@@ -4428,6 +5059,8 @@ def _replay_state(
         handler(*receiver.args)
 
     def _receiver_due(receiver: _PendingReceiver, *, before_consuming_result: bool) -> bool:
+        if receiver.after_cancellation_delivery and not cancellation_consumed:
+            return False
         if receiver.condition_wait_id is not None:
             return False
         if before_consuming_result:
@@ -4546,7 +5179,7 @@ def _replay_state(
     terminal_condition_reopen_cmd: WaitCondition | None = None
 
     def _parallel_leaf_kind(command: Any) -> str:
-        if isinstance(command, ScheduleActivity):
+        if isinstance(command, ScheduleActivity | RecordLocalActivity):
             return "activity"
         if isinstance(command, StartTimer):
             return "timer"
@@ -4608,6 +5241,8 @@ def _replay_state(
         candidates = _unconsumed_recorded_steps()
         if base_sequence_override is not None:
             base_sequence = base_sequence_override
+        elif cancellation.request is not None or allow_cancellation_scope_authoring:
+            base_sequence = current_call_sequence
         elif candidates:
             base_sequence = candidates[0].workflow_sequence
         else:
@@ -4911,6 +5546,8 @@ def _replay_state(
                     "SelectionResolved with a positive group base sequence",
                     ["SelectionResolved"],
                 )
+        elif cancellation.request is not None or allow_cancellation_scope_authoring:
+            base_sequence = current_call_sequence
         elif candidates:
             base_sequence = candidates[0].workflow_sequence
         elif any(sequence not in consumed_selection_sequences for sequence in selection_steps):
@@ -5034,6 +5671,268 @@ def _replay_state(
                 break
             wait_yield_count += 1
 
+    def _cancellation_boundary(command: Any) -> CancellationDelivery | None:
+        nonlocal authored_sequence, current_call_sequence
+        if cancellation.request is None and not prepare_local_activities and not allow_cancellation_scope_authoring:
+            return None
+        current_call_sequence = authored_sequence
+        kind: str | None = None
+        span = 1
+        operation_sequence: int | None = None
+        operation_span = 1
+        if isinstance(command, ScheduleActivity):
+            kind = "activity"
+        elif isinstance(command, RecordLocalActivity):
+            kind = "local_activity"
+        elif isinstance(command, StartTimer):
+            kind = "timer"
+        elif isinstance(command, StartChildWorkflow):
+            kind = "child"
+        elif isinstance(command, WaitCondition):
+            has_recorded_open = any(
+                _history_event_type(event) == "ConditionWaitOpened"
+                and _workflow_sequence(event.get("payload") or {}) == current_call_sequence
+                for event in events
+            )
+            if has_recorded_open or (
+                cancellation.delivery is not None and cancellation.delivery.sequence == current_call_sequence
+            ) or not command.predicate():
+                kind = "condition"
+        elif isinstance(command, list):
+            kind = "parallel"
+            span = len(_parallel_leaves(command))
+        elif isinstance(command, SelectGroup):
+            kind = "parallel"
+            span = sum(len(_parallel_leaves(operation)) if isinstance(operation, list) else 1
+                       for _, operation in command.operations)
+        elif isinstance(command, DurableOperationHandle):
+            kind = "selection_handle"
+            operation_sequence = command.base_sequence
+            operation_span = command.size
+        if kind != "selection_handle" and (kind is not None or isinstance(
+            command, RecordSideEffect | RecordVersionMarker | UpsertMemo | UpsertSearchAttributes | NexusServiceCall
+            | _OpenCancellationScope,
+        )):
+            authored_sequence += span
+        if kind is None or span == 0 or cancellation.request is None and not allow_cancellation_scope_delivery:
+            return None
+        return CancellationDelivery(
+            cancellation.request.request_id if cancellation.request is not None else "candidate-scope-boundary",
+            current_call_sequence, kind, span,
+            operation_sequence, operation_span,
+        )
+
+    def _contains_local_activity(operation: Any) -> bool:
+        if isinstance(operation, RecordLocalActivity):
+            return True
+        if isinstance(operation, list):
+            return any(_contains_local_activity(member) for member in operation)
+        if isinstance(operation, SelectGroup):
+            return any(_contains_local_activity(member) for _, member in operation.operations)
+        return False
+
+    def _validate_local_activity_policies(operation: Any) -> None:
+        if isinstance(operation, RecordLocalActivity) and operation._cancellation_cleanup is not None and (
+            not prepare_local_activities
+        ):
+            raise LocalActivityExecutionAborted("scoped cleanup requires prepared callback admission")
+        if isinstance(operation, RecordLocalActivity) and operation.cancellation_policy is not None:
+            if (
+                not prepare_local_activities
+                or operation.cancellation_policy not in local_activity_cancellation_policies
+            ):
+                raise LocalActivityExecutionAborted(
+                    "prepared_local_activity_cancellation_policy_not_supported: "
+                    f"{operation.cancellation_policy} requires installed Server discovery and a prepared consumer",
+                )
+        elif isinstance(operation, list):
+            for member in operation:
+                _validate_local_activity_policies(member)
+        elif isinstance(operation, SelectGroup):
+            for _, member in operation.operations:
+                _validate_local_activity_policies(member)
+
+    def _prepared_call(command: RecordLocalActivity, sequence: int) -> PreparedLocalActivityCall:
+        cleanup: dict[str, str] | None = None
+        scoped_context = ctx._cancellation_context
+        if isinstance(scoped_context, ScopedCancellationContext):
+            proof = ctx._scope_cleanup_proofs.get(scoped_context.scope_id)
+            matches = [delivery for number, delivery in committed_scopes.deliveries.items()
+                       if number in consumed_scope_deliveries and proof is not None
+                       and delivery.event["id"] == proof["delivery_history_event_id"]]
+            if (ctx._cancellation_shield_depth < 1 or command._cancellation_cleanup != proof
+                or len(matches) != 1 or proof is None
+                or command._cancellation_scope_id != scoped_context.scope_id
+                or sequence < matches[0].boundary.sequence + matches[0].boundary.sequence_span):
+                raise LocalActivityExecutionAborted("scoped cleanup requires its consumed original delivery")
+            original, authority = scope_states[matches[0].context.scope_id][scoped_context.scope_id]
+            cleanup = {
+                **proof, "operation_scope_id": original.scope_id,
+                "root_request_id": matches[0].context.root_request_id,
+                "preparation_history_event_id": matches[0].event["payload"]["preparation_history_event_id"],
+                "cleanup_deadline_at": matches[0].context.to_dict()["lineage"][-1]["cleanup_deadline_at"],
+                "authority_deadline_at": authority.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+            }
+        elif cancellation.request is not None:
+            delivery = cancellation.delivery
+            context = cancellation.request.context
+            delivery_id = (
+                events[cancellation.delivery_index].get("id")
+                if cancellation.delivery_index is not None else None
+            )
+            if (
+                not cancellation_consumed or ctx._cancellation_shield_depth < 1
+                or delivery is None or context is None
+                or sequence < delivery.sequence + delivery.sequence_span
+                or not isinstance(delivery_id, str) or not delivery_id.strip()
+            ):
+                raise LocalActivityExecutionAborted(
+                    "prepared cleanup requires a shield after canonical cancellation delivery",
+                )
+            cleanup = {
+                "request_id": context.request_id, "root_request_id": context.root_request_id,
+                "delivery_history_event_id": delivery_id,
+                "cleanup_deadline_at": context.to_dict()["cleanup_deadline_at"],
+            }
+        started = False
+        for event in events:
+            if _workflow_sequence(event.get("payload") or {}) != sequence:
+                continue
+            if _history_event_type(event) == "ActivityStarted":
+                started = True
+            elif _history_event_type(event) == "ActivityRetryScheduled":
+                started = False
+        return PreparedLocalActivityCall(command, sequence, started, cleanup)
+
+    def _prepared_group(commands: list[Any]) -> PreparedLocalActivityGroup | None:
+        if not 1 <= len(commands) <= 100:
+            raise LocalActivityExecutionAborted("atomic prepared groups require 1 to 100 authored members")
+        openings = {
+            "ActivityScheduled": "activity", "TimerScheduled": "timer",
+            "ChildWorkflowScheduled": "child workflow", "ChildRunStarted": "child workflow",
+        }
+        present: set[int] = set()
+        for offset, command in enumerate(commands):
+            sequence = current_call_sequence + offset
+            if not isinstance(command, ScheduleActivity | RecordLocalActivity | StartTimer | StartChildWorkflow):
+                raise LocalActivityExecutionAborted("prepared group contains an unsupported admission operation")
+            for event in events:
+                payload = event.get("payload") or {}
+                if _workflow_sequence(payload) != sequence:
+                    continue
+                kind = _history_event_type(event)
+                if kind not in openings:
+                    continue
+                # A complete path is admission authority. Legacy metadata-poor
+                # history cannot authorize fresh Source callbacks.
+                details = {**details_by_sequence.get(sequence, {}), **_recorded_step_details(payload)}
+                if payload.get("parallel_group_path") != command._parallel_group_path:
+                    raise NonDeterministicReplayError(
+                        sequence, "complete authored parallel group path", [kind],
+                        detail="prepared group history changed or omitted its membership",
+                    )
+                _assert_step_matches(command, _RecordedStep(sequence, openings[kind], [kind], details))
+                present.add(sequence)
+        if present and len(present) != len(commands):
+            raise NonDeterministicReplayError(
+                current_call_sequence, "all parallel members scheduled", [],
+                detail="prepared group history is missing a declared member",
+            )
+        # Never reinterpret terminal/started history without its atomic opening.
+        group_sequences = set(range(current_call_sequence, current_call_sequence + len(commands)))
+        if not present and group_sequences.intersection(event_types_by_sequence):
+            raise NonDeterministicReplayError(
+                current_call_sequence, "complete atomic group opening", [],
+                detail="prepared group history lacks its original scheduling batch",
+            )
+        calls = tuple(
+            _prepared_call(command, current_call_sequence + offset)
+            for offset, command in enumerate(commands)
+            if isinstance(command, RecordLocalActivity) and current_call_sequence + offset not in resolved_sequences
+        )
+        if not calls:
+            return None
+        return PreparedLocalActivityGroup(
+            current_call_sequence, len(commands), () if present else tuple(commands), calls, bool(present),
+        )
+
+    def _assert_cancellation_call_matches(command: Any, boundary: CancellationDelivery) -> None:
+        if isinstance(command, list):
+            leaves, _ = _annotate_parallel_commands(command, boundary.sequence)
+        elif isinstance(command, SelectGroup):
+            leaves, _, _ = _annotate_selection(command, None)
+        elif isinstance(command, DurableOperationHandle):
+            _assert_authored_selection_handle(command)
+            return
+        else:
+            leaves = [command]
+        opening_shapes = {
+            "ActivityScheduled": "activity", "ActivityStarted": "activity",
+            "TimerScheduled": "timer", "ChildWorkflowScheduled": "child workflow",
+            "ChildRunStarted": "child workflow", "ConditionWaitOpened": "condition wait",
+        }
+        for offset, leaf in enumerate(leaves):
+            sequence = boundary.sequence + offset
+            for event in events:
+                event_type = _history_event_type(event)
+                payload = event.get("payload") or {}
+                if _workflow_sequence(payload) != sequence or event_type not in opening_shapes:
+                    continue
+                if event_type == "TimerScheduled" and _internal_timeout_timer_kind(
+                    payload, condition_wait_ids_by_sequence,
+                ) is not None:
+                    continue
+                _assert_step_matches(leaf, _RecordedStep(
+                    workflow_sequence=sequence, shape=opening_shapes[event_type],
+                    event_types=[event_type], details={
+                        **details_by_sequence.get(sequence, {}), **_recorded_step_details(payload),
+                    },
+                ))
+                if boundary.call_kind == "parallel" and isinstance(leaf, StartTimer | WaitCondition):
+                    expected = ({"delay_seconds": leaf.delay_seconds} if isinstance(leaf, StartTimer) else {
+                        "condition_key": leaf.condition_key,
+                        "timeout_seconds": leaf.timeout_seconds,
+                        "condition_definition_fingerprint": leaf.condition_definition_fingerprint,
+                    })
+                    if any(field in payload and payload[field] != actual for field, actual in expected.items()):
+                        raise NonDeterministicReplayError(
+                            sequence, "original group member", [event_type],
+                            detail="scoped group changed its original timer or condition definition",
+                        )
+
+    def _scope_call_membership(command: Any) -> str:
+        if isinstance(command, SelectGroup):
+            leaves = [leaf for _, operation in command.operations
+                      for leaf in (_parallel_leaves(operation) if isinstance(operation, list) else [operation])]
+            if any(getattr(leaf, "_cancellation_scope_id", "root") != "root" for leaf in leaves):
+                raise LocalActivityExecutionAborted(
+                    "cancellation_scope_execution_not_supported: scoped selection requires its qualified consumer",
+                )
+            return "root"
+        if not isinstance(command, list):
+            membership = getattr(command, "_cancellation_scope_id", "root")
+            if membership != "root" and membership != ctx._cancellation_scope_id:
+                raise NonDeterministicReplayError(
+                    current_call_sequence, "original active scope", ["CancellationScopeDelivered"],
+                    detail="scoped operation changed its original active scope",
+                )
+            return membership
+        leaves = _parallel_leaves(command)
+        memberships = {getattr(leaf, "_cancellation_scope_id", "root") for leaf in leaves}
+        if memberships == {"root"}:
+            return "root"
+        if not leaves or any(not isinstance(leaf, ScheduleActivity | StartTimer | StartChildWorkflow | WaitCondition)
+                             for leaf in leaves):
+            raise LocalActivityExecutionAborted(
+                "cancellation_scope_execution_not_supported: group contains an unqualified member",
+            )
+        if len(memberships) != 1 or next(iter(memberships)) != ctx._cancellation_scope_id:
+            raise NonDeterministicReplayError(
+                current_call_sequence, "original active scoped group", ["CancellationScopeDelivered"],
+                detail="scoped group changed its original member address or active scope",
+            )
+        return next(iter(memberships))
+
     def _terminal_state(value: Any, *, include_pending: bool) -> _ReplayState:
         _apply_due_receivers()
         _consume_terminal_condition_reopens()
@@ -5044,6 +5943,117 @@ def _replay_state(
         _assert_no_unconsumed_history("complete workflow")
         return _state(commands + [CompleteWorkflow(result=value)])
 
+    def _consume_cancellation(command: Any, boundary: CancellationDelivery) -> _ReplayState | None:
+        nonlocal cancellation_consumed, authored_sequence, wait_yield_count, advanced_cmd
+        if ctx._cancellation_scope_id != "root" or _scope_call_membership(command) != "root":
+            raise NonDeterministicReplayError(
+                boundary.sequence, "original root operation", ["CooperativeCancellationDelivered"],
+                detail="root cancellation cannot replace a scoped operation",
+            )
+        _assert_cancellation_call_matches(command, boundary)
+        if boundary.call_kind == "condition":
+            for event in events:
+                payload = event.get("payload") or {}
+                if (
+                    _history_event_type(event) == "ConditionWaitOpened"
+                    and _workflow_sequence(payload) == boundary.sequence
+                ):
+                    _apply_condition_wait_receivers(payload.get("condition_wait_id"))
+            if (
+                wait_yield_count < len(recorded_wait_steps)
+                and recorded_wait_steps[wait_yield_count].workflow_sequence == boundary.sequence
+            ):
+                wait_yield_count += 1
+        cancellation_consumed = True
+        ctx._cancel_requested = True
+        ctx._cancellation_request_id = boundary.request_id
+        metadata = cancellation.request.context if cancellation.request is not None else None
+        if metadata is not None:
+            ctx._observe_cancellation_replay_time(
+                events[cancellation.delivery_index] if cancellation.delivery_index is not None else None,
+            )
+            ctx._cancellation_context = ctx._bind_cancellation_context(metadata)
+        _apply_due_receivers()
+        if isinstance(command, DurableOperationHandle):
+            authored_sequence += 1
+        try:
+            advanced_cmd = gen.throw(WorkflowCancelled(
+                "workflow cancellation was requested", request_id=boundary.request_id,
+                context=ctx._cancellation_context,
+            ))
+            return None
+        except StopIteration as stop:
+            return _terminal_state(stop.value, include_pending=True)
+
+    def _advance_cancellation_clock(indexes: Iterable[int | None]) -> None:
+        if ctx._cancellation_context is None and not consumed_scope_deliveries:
+            return
+        for index in sorted({index for index in indexes if index is not None}):
+            ctx._observe_cancellation_replay_time(events[index])
+
+    def _consume_scope_delivery(command: Any, delivery: ScopeBoundary) -> _ReplayState | None:
+        nonlocal advanced_cmd, wait_yield_count
+        boundary = delivery.boundary
+        _assert_cancellation_call_matches(command, boundary)
+        membership = _scope_call_membership(command)
+        states = scope_states[delivery.context.scope_id]
+        if (membership not in states or membership != ctx._cancellation_scope_id
+            or ctx._cancellation_shield_depth > 0):
+            raise NonDeterministicReplayError(
+                boundary.sequence, "original unshielded scoped operation", ["CancellationScopeDelivered"],
+                detail="scoped cancellation changed its original operation membership",
+            )
+        if boundary.call_kind == "condition":
+            for event in events:
+                payload = event.get("payload") or {}
+                if (_history_event_type(event) == "ConditionWaitOpened"
+                    and _workflow_sequence(payload) == boundary.sequence):
+                    _apply_condition_wait_receivers(payload.get("condition_wait_id"))
+            if (wait_yield_count < len(recorded_wait_steps)
+                and recorded_wait_steps[wait_yield_count].workflow_sequence == boundary.sequence):
+                wait_yield_count += 1
+        consumed_scope_deliveries.add(boundary.sequence)
+        delivery_id = delivery.event.get("id")
+        if not isinstance(delivery_id, str) or not delivery_id:
+            raise LocalActivityExecutionAborted("scoped cleanup requires its canonical delivery identity")
+        ctx._observe_cancellation_replay_time(delivery.event)
+        for scope_id, (original_context, authority_deadline) in states.items():
+            ctx._scope_cleanup_proofs[scope_id] = {
+                "scope_id": delivery.context.scope_id, "request_id": delivery.context.request_id,
+                "delivery_history_event_id": delivery_id,
+            }
+            bound_context = ctx._bind_cancellation_context(original_context, authority_deadline=authority_deadline)
+            assert isinstance(bound_context, ScopedCancellationContext)
+            ctx._scope_cancellation_states[scope_id] = bound_context
+        active_context = ctx._scope_cancellation_states.get(ctx._cancellation_scope_id)
+        if active_context is None:
+            raise LocalActivityExecutionAborted("scope delivery lacks its original active descendant context")
+        ctx._cancel_requested = True
+        ctx._cancellation_request_id = active_context.request_id
+        ctx._cancellation_context = active_context
+        _apply_due_receivers()
+        try:
+            advanced_cmd = gen.throw(WorkflowCancelled(
+                "scope cancellation was requested", request_id=active_context.request_id, context=active_context,
+            ))
+            return None
+        except StopIteration as stop:
+            return _terminal_state(stop.value, include_pending=True)
+
+    def _advance_selection_clock(base: int, size: int, failure: BaseException | None) -> None:
+        indexes = [
+            selection_resolution_indexes[sequence] for sequence in range(base, base + size)
+            if sequence in selection_resolution_indexes
+        ]
+        if failure is not None:
+            failure_index = next(
+                selection_resolution_indexes[sequence] for sequence in range(base, base + size)
+                if selection_resolutions.get(sequence) is failure
+            )
+            indexes = [index for index in indexes if index <= failure_index]
+        _advance_cancellation_clock(indexes)
+
+    replay_token = _ACTIVE_WORKFLOW_REPLAY.set(ctx)
     try:
         while True:
             # Cursor-0 receivers are start-boundary events. Enter run() once
@@ -5062,6 +6072,131 @@ def _replay_state(
                     return _terminal_state(stop.value, include_pending=True)
                 first = False
             _apply_due_receivers()
+            _validate_local_activity_policies(cmd)
+            if prepare_local_activities and isinstance(cmd, list | SelectGroup) and _contains_local_activity(cmd) and (
+                not prepare_local_activity_groups or isinstance(cmd, SelectGroup)
+            ):
+                raise LocalActivityExecutionAborted(
+                    "prepared local groups require an implemented atomic group consumer",
+                )
+            boundary = _cancellation_boundary(cmd)
+            if (cancellation.delivery is not None and not cancellation_consumed
+                and cancellation.delivery.sequence == current_call_sequence
+                and (isinstance(cmd, _OpenCancellationScope) or ctx._cancellation_scope_id != "root"
+                     or _scope_call_membership(cmd) != "root")):
+                raise NonDeterministicReplayError(
+                    current_call_sequence, "original root operation", ["CooperativeCancellationDelivered"],
+                    detail="root cancellation cannot replace a scoped operation",
+                )
+            if isinstance(cmd, _OpenCancellationScope):
+                if not allow_cancellation_scope_authoring:
+                    raise LocalActivityExecutionAborted(
+                        "cancellation_scope_execution_not_supported: candidate authoring is disabled",
+                    )
+                if result_cursor < len(resolved_results):
+                    _assert_next_step_matches(cmd)
+                    next_value = resolved_results[result_cursor]
+                    result_cursor += 1
+                    continue
+                next_step = _next_unconsumed_recorded_step()
+                if next_step is not None or any(_history_event_type(event) in {
+                    "WorkflowCompleted", "WorkflowFailed", "WorkflowCancelled", "WorkflowTerminated",
+                    "WorkflowContinuedAsNew",
+                } for event in events):
+                    raise NonDeterministicReplayError(
+                        current_call_sequence, "cancellation scope", next_step.event_types if next_step else [],
+                        detail="cancellation_scope_opening_changed: authored scope has no original canonical opening",
+                    )
+                ctx.logger._set_replaying(False)
+                return _state(pending, cancellation_scope_opening=CancellationScopeOpening(
+                    current_call_sequence, cmd.parent_scope_id, cmd.shield_parent,
+                ))
+            for sequence in committed_scopes.deliveries:
+                if sequence in consumed_scope_deliveries or sequence == current_call_sequence:
+                    continue
+                if sequence < current_call_sequence or boundary is not None and boundary.interrupts(sequence):
+                    raise NonDeterministicReplayError(
+                        sequence, "original scoped authored call", ["CancellationScopeDelivered"],
+                        detail="workflow skipped or crossed its original scoped cancellation boundary",
+                    )
+            scoped_delivery = committed_scopes.deliveries.get(current_call_sequence)
+            if scoped_delivery is not None and current_call_sequence not in consumed_scope_deliveries:
+                if boundary is None or (
+                    boundary.call_kind != scoped_delivery.boundary.call_kind
+                    or boundary.sequence_span != scoped_delivery.boundary.sequence_span
+                ):
+                    raise NonDeterministicReplayError(
+                        current_call_sequence, "original scoped authored call", ["CancellationScopeDelivered"],
+                        detail="scoped delivery changes its original call kind or range",
+                    )
+                terminal = _consume_scope_delivery(cmd, scoped_delivery)
+                if terminal is not None:
+                    return terminal
+                continue
+            if allow_cancellation_scope_delivery and boundary is not None:
+                request = committed_scopes.pending_request_for_scope(
+                    _scope_call_membership(cmd), scope_history,
+                )
+                if request is not None and request.context.scope_id not in ctx._scope_cancellation_states:
+                    resolved_before_request = all(any(
+                        _workflow_sequence(event.get("payload") or {}) == member_sequence
+                        and _history_event_type(event) in {
+                            "ActivityCompleted", "ActivityFailed", "ActivityCancelled", "ActivityTimedOut",
+                            "TimerFired", "TimerCancelled", "ConditionWaitSatisfied", "ConditionWaitTimedOut",
+                            "ChildRunCompleted", "ChildRunFailed", "ChildRunCancelled", "ChildRunTerminated",
+                        } for event in events[:request.history_index]
+                    ) for member_sequence in range(
+                        current_call_sequence, current_call_sequence + boundary.sequence_span,
+                    ))
+                    if not resolved_before_request:
+                        if boundary.call_kind not in {"activity", "timer", "condition", "child", "parallel"}:
+                            raise LocalActivityExecutionAborted(
+                                "cancellation_scope_execution_not_supported: this boundary needs its scope consumer",
+                            )
+                        scope_boundary = CancellationDelivery(
+                            request.context.request_id, current_call_sequence, boundary.call_kind,
+                            boundary.sequence_span,
+                        )
+                        preparation = committed_scopes.preparations.get(request.context.scope_id)
+                        if preparation is not None and preparation.boundary != scope_boundary:
+                            raise NonDeterministicReplayError(
+                                current_call_sequence, "original scope preparation",
+                                ["CancellationScopeDeliveryPrepared"],
+                                detail="prepared scope boundary changed its authored position or operation",
+                            )
+                        _assert_cancellation_call_matches(cmd, scope_boundary)
+                        scope_intent = CancellationScopeDeliveryIntent(request.context, scope_boundary, preparation)
+                        return _state(pending)
+            if cancellation.delivery is not None and not cancellation_consumed:
+                cancellation_marker = cancellation.delivery
+                if cancellation_marker.sequence < current_call_sequence:
+                    raise NonDeterministicReplayError(
+                        cancellation_marker.sequence, "committed cancellation boundary",
+                        ["CooperativeCancellationDelivered"],
+                        detail="workflow passed the committed authored call",
+                    )
+                if cancellation_marker.sequence == current_call_sequence:
+                    if boundary != cancellation_marker or ctx._cancellation_shield_depth > 0:
+                        raise NonDeterministicReplayError(
+                            cancellation_marker.sequence, "matching unshielded authored call",
+                            ["CooperativeCancellationDelivered"],
+                            detail="committed cancellation call kind or range changed",
+                        )
+                    terminal = _consume_cancellation(cmd, boundary)
+                    if terminal is not None:
+                        return terminal
+                    continue
+            elif (boundary is not None and not cancellation_consumed and ctx._cancellation_shield_depth == 0
+                  and ctx._cancellation_scope_id == "root" and _scope_call_membership(cmd) == "root"):
+                eligible_sequence = boundary.operation_sequence or boundary.sequence
+                eligible_span = (
+                    boundary.operation_sequence_span
+                    if boundary.operation_sequence is not None else boundary.sequence_span
+                )
+                if cancellation.eligible(eligible_sequence, eligible_span):
+                    _assert_cancellation_call_matches(cmd, boundary)
+                    cancellation_intent = boundary
+                    return _state(pending)
             if isinstance(cmd, SelectGroup):
                 marker = (
                     selection_markers[selection_marker_cursor]
@@ -5152,6 +6287,7 @@ def _replay_state(
                         ["SelectionResolved"],
                         detail="the committed winner has no terminal member history",
                     )
+                _advance_cancellation_clock([selection_marker_indexes[selection_marker_cursor - 1]])
                 for sequence in range(
                     winner.base_sequence,
                     winner.base_sequence + winner.size,
@@ -5176,14 +6312,40 @@ def _replay_state(
                         "ordinary parallel list groups do not support WaitCondition; "
                         "use WorkflowContext.select() for durable condition selection"
                     )
-                cmd, result_shape = _annotate_parallel_commands(cmd)
+                prepared_group = prepare_local_activities and _contains_local_activity(cmd)
+                cmd, result_shape = _annotate_parallel_commands(cmd, current_call_sequence if prepared_group else None)
                 needed = len(cmd)
+                if prepared_group:
+                    group = _prepared_group(cmd)
+                    if group is not None:
+                        ctx.logger._set_replaying(False)
+                        return _state(pending, prepared_local_activity_group=group)
+                    if any(current_call_sequence + offset not in resolved_sequences for offset in range(needed)):
+                        # Local results are durable. Remote members own their
+                        # remaining work, with no repeat scheduling batch.
+                        return _state(pending)
+                elif any(isinstance(command, RecordLocalActivity) for command in cmd) and (
+                    result_cursor + needed > len(resolved_results)
+                ):
+                    raise LocalActivityExecutionAborted("local groups require negotiated atomic prepared admission")
                 if result_cursor + needed <= len(resolved_results):
                     for offset, child_command in enumerate(cmd):
                         _assert_next_step_matches(child_command, offset)
                     vals = resolved_results[result_cursor : result_cursor + needed]
+                    consumed_steps = recorded_steps[result_cursor : result_cursor + needed]
                     result_cursor += needed
                     failed = _first_yield_failure(vals)
+                    consumed_indexes = [step.history_index for step in consumed_steps]
+                    if failed is not None:
+                        failure_index = next(
+                            step.history_index for step, value in zip(consumed_steps, vals, strict=True)
+                            if value is failed
+                        )
+                        consumed_indexes = [
+                            index for index in consumed_indexes
+                            if index is not None and failure_index is not None and index <= failure_index
+                        ]
+                    _advance_cancellation_clock(consumed_indexes)
                     if failed is not None:
                         try:
                             advanced_cmd = gen.throw(failed)
@@ -5200,6 +6362,9 @@ def _replay_state(
             if isinstance(cmd, DurableOperationHandle):
                 _assert_authored_selection_handle(cmd)
                 if _selection_cancellation_for_handle(cmd) is not None:
+                    _advance_cancellation_clock([
+                        cancelled_selection_indexes[(cmd.selection_group_id, cmd.base_sequence)],
+                    ])
                     try:
                         advanced_cmd = gen.throw(
                             DurableOperationCancelled(
@@ -5230,6 +6395,7 @@ def _replay_state(
                 if not resolved:
                     ctx.logger._set_replaying(False)
                     return _state(pending)
+                _advance_selection_clock(cmd.base_sequence, cmd.size, failure)
                 if failure is not None:
                     try:
                         advanced_cmd = gen.throw(failure)
@@ -5342,6 +6508,14 @@ def _replay_state(
                 # activity or condition can be mistaken for the transient
                 # satisfied wait during cold replay.
                 next_opened = wait_opened[wait_yield_count] if wait_yield_count < len(wait_opened) else None
+                if next_opened is not None and allow_cancellation_scope_authoring:
+                    scope_wait_step = recorded_wait_steps[wait_yield_count]
+                    if scope_wait_step.workflow_sequence != current_call_sequence:
+                        raise NonDeterministicReplayError(
+                            current_call_sequence, "condition wait", scope_wait_step.event_types,
+                            detail="recorded condition belongs to a different authored call",
+                        )
+                    _assert_step_matches(cmd, scope_wait_step)
                 next_opened_mismatch = _condition_wait_mismatch(next_opened, cmd) if next_opened is not None else None
                 if next_opened is None or next_opened_mismatch is not None:
                     try:
@@ -5374,6 +6548,39 @@ def _replay_state(
                     resolution: str | None = None
                     opened: dict[str, Any] | None = None
                     if wait_yield_count < len(wait_opened):
+                        if allow_cancellation_scope_authoring:
+                            scope_wait_step = recorded_wait_steps[wait_yield_count]
+                            _assert_step_matches(cmd, scope_wait_step)
+                            current_call_sequence = max(current_call_sequence, scope_wait_step.workflow_sequence)
+                            authored_sequence = max(authored_sequence, current_call_sequence + 1)
+                        if cancellation.request is not None and wait_yield_count < len(recorded_wait_steps):
+                            physical_sequence = recorded_wait_steps[wait_yield_count].workflow_sequence
+                            if physical_sequence > current_call_sequence:
+                                current_call_sequence = physical_sequence
+                                authored_sequence = max(authored_sequence, physical_sequence + 1)
+                                physical_boundary = CancellationDelivery(
+                                    cancellation.request.request_id, physical_sequence, "condition",
+                                )
+                                if (
+                                    cancellation.delivery is not None and not cancellation_consumed
+                                    and cancellation.delivery.sequence == physical_sequence
+                                ):
+                                    if cancellation.delivery != physical_boundary or ctx._cancellation_shield_depth > 0:
+                                        raise NonDeterministicReplayError(
+                                            physical_sequence, "matching unshielded reopened condition",
+                                            ["CooperativeCancellationDelivered"],
+                                        )
+                                    terminal = _consume_cancellation(cmd, physical_boundary)
+                                    if terminal is not None:
+                                        return terminal
+                                    break
+                                if (
+                                    cancellation.delivery is None and not cancellation_consumed
+                                    and ctx._cancellation_shield_depth == 0 and cancellation.eligible(physical_sequence)
+                                ):
+                                    _assert_cancellation_call_matches(cmd, physical_boundary)
+                                    cancellation_intent = physical_boundary
+                                    return _state(pending)
                         if wait_yield_count < len(recorded_wait_steps):
                             _assert_step_matches(cmd, recorded_wait_steps[wait_yield_count])
                         opened = wait_opened[wait_yield_count]
@@ -5384,6 +6591,8 @@ def _replay_state(
                         if isinstance(opened_id, str):
                             resolution = wait_resolutions.get(opened_id)
                             _apply_condition_wait_receivers(opened_id)
+                            if resolution is not None:
+                                _advance_cancellation_clock([condition_wait_terminal_indexes.get(opened_id)])
                     next_wait_index = wait_yield_count + 1
                     has_reopened_same_wait = (
                         opened is not None
@@ -5445,6 +6654,8 @@ def _replay_state(
                 if result_cursor < len(resolved_results):
                     _assert_next_step_matches(cmd)
                     val = resolved_results[result_cursor]
+                    if not isinstance(cmd, RecordLocalActivity) or prepare_local_activities:
+                        _advance_cancellation_clock([recorded_steps[result_cursor].history_index])
                     result_cursor += 1
                     if isinstance(val, ActivityFailed | ChildWorkflowFailed):
                         try:
@@ -5456,6 +6667,8 @@ def _replay_state(
                     continue
                 ctx.logger._set_replaying(False)
                 _assert_pending_step_matches(cmd)
+                if isinstance(cmd, RecordLocalActivity) and prepare_local_activities:
+                    return _state(pending, _prepared_call(cmd, current_call_sequence))
                 if isinstance(cmd, RecordLocalActivity) and local_activity_executor is not None:
                     local_result = local_activity_executor(cmd)
                     if cmd.outcome is None or cmd.arguments_envelope is None:
@@ -5487,3 +6700,5 @@ def _replay_state(
         return _state(pending + [_fail_workflow_from_exception(exc)])
     except Exception as exc:
         return _state(pending + [_fail_workflow_from_exception(exc)])
+    finally:
+        _ACTIVE_WORKFLOW_REPLAY.reset(replay_token)

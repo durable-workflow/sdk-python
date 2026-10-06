@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "python-activity-cancellation-policy-changed",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {"type": "golden.single-activity", "input": ["Ada"], "payload_codec": "avro"},
+  "history": [
+    {"event_type": "ActivityScheduled", "payload": {"sequence": 1, "activity": {"type": "golden.greet", "cancellation_policy": "wait_cancellation_completed"}}}
+  ],
+  "expected": {"command_sequence": []},
+  "expected_replay_error": {"type": "NonDeterministicReplayError", "message_contains": "activity_cancellation_policy_changed", "workflow_sequence": 1}
+}

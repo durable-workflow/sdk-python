@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "cancellation-scope-unqualified-worker-rejected",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "golden.single-activity",
+    "input": ["Ada"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "CancellationScopeOpened",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope/v1",
+        "workflow_run_id": "scope-admission-run",
+        "scope_id": "scope-one",
+        "parent_scope_id": "root",
+        "sequence": 1,
+        "shield_parent": false
+      }
+    }
+  ],
+  "expected_replay_error": {
+    "type": "LocalActivityExecutionAborted",
+    "message_contains": "cancellation_scope_execution_not_supported.*Python"
+  },
+  "expected": {
+    "command_sequence": []
+  }
+}
