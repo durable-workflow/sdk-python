@@ -13,6 +13,21 @@ from tests.test_committed_cancellation_scope_history import fixture
 from tests.test_committed_cancellation_scope_replay import append_cleanup_event, run
 
 
+@pytest.mark.parametrize("layout", ["flat", "nested"])
+def test_timer_fence_does_not_move_the_prepared_group_boundary(layout: str) -> None:
+    value = fixture("populated-scope-groups.json", layout)
+    value["history"] = [row for row in value["history"] if row["event_type"] != "CancellationScopeDelivered"]
+    original = next(row["payload"] for row in value["history"]
+                    if row["event_type"] == "TimerScheduled" and row["payload"]["sequence"] == 5)
+    append_cleanup_event(value, "TimerCancelled", deepcopy(original), "2026-10-04T00:00:09.123456Z")
+    contexts: list[ScopedCancellationContext] = []
+    result = run(probe(value, contexts), value)
+    assert result.commands == [] and contexts == []
+    assert result.cancellation_scope_delivery is not None
+    assert result.cancellation_scope_delivery.boundary.sequence == 4
+    assert result.cancellation_scope_delivery.boundary.sequence_span == 4
+
+
 def probe(value: dict[str, Any], contexts: list[ScopedCancellationContext], *, change: str = "",
           satisfied: bool = False, cleanup: bool = False, expected_remaining: float = 21.0) -> type:
     original = next(row["payload"] for row in value["history"] if row["event_type"] == "ConditionWaitOpened")

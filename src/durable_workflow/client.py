@@ -5363,8 +5363,9 @@ class Client:
             task_id, run_id, workflow_id, lease_owner, scope_id, boundary.request_id, self.namespace,
         )) or scope_id == "root" or type(workflow_task_attempt) is not int or workflow_task_attempt < 1
             or phase not in {"prepare", "deliver"} or delivering != (preparation is not None)
-            or boundary.call_kind not in {"activity", "local_activity", "timer", "condition", "child"}
-            or boundary.sequence_span != 1 or boundary.operation_sequence is not None
+            or boundary.call_kind not in {"activity", "local_activity", "timer", "condition", "child", "parallel"}
+            or boundary.call_kind != "parallel" and boundary.sequence_span != 1
+            or boundary.operation_sequence is not None
             or boundary.operation_sequence_span != 1):
             raise ValueError("scope boundaries require their original claim, authored call and proved preparation")
         # Also validate directly constructed internal boundary values.

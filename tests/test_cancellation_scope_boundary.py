@@ -24,8 +24,11 @@ def protocol(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
 
 
-def exchange(delivering: bool = False) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
-    value = fixture("committed-scope-delivery.json", "unshielded")
+def exchange(
+    delivering: bool = False, layout: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    value = (fixture("committed-scope-delivery.json", "unshielded") if layout is None
+             else fixture("populated-scope-groups.json", layout))
     history = value["history"] if delivering else value["history"][:-1]
     event = history[-1]
     preparation = value["history"][-2]
@@ -53,9 +56,10 @@ def page(history: list[dict[str, Any]], token: str | None = None) -> dict[str, A
             "next_history_page_token": token}
 
 
-async def test_preparation_and_delivery_prove_every_original_claim_page_on_one_budget() -> None:
-    receipt, history, arguments = exchange()
-    delivered_receipt, delivered_history, delivered_arguments = exchange(True)
+@pytest.mark.parametrize("layout", [None, "flat", "nested"])
+async def test_preparation_and_delivery_prove_every_original_claim_page_on_one_budget(layout: str | None) -> None:
+    receipt, history, arguments = exchange(layout=layout)
+    delivered_receipt, delivered_history, delivered_arguments = exchange(True, layout)
     budget = CancellationScopeBudget.start()
     async with Client("http://server", namespace=history[0]["namespace"]) as client:
         with patch.object(client, "_request", new_callable=AsyncMock, side_effect=[
@@ -77,6 +81,10 @@ async def test_preparation_and_delivery_prove_every_original_claim_page_on_one_b
         assert 0 < call.kwargs["timeout"] <= 5
     assert send.await_args_list[0].args[1] == "/worker/workflow-tasks/task%2Fone/cancellation-scopes/prepare"
     assert send.await_args_list[3].args[1] == "/worker/workflow-tasks/task%2Fone/cancellation-scopes/deliver"
+    if layout is not None:
+        for index in (0, 3):
+            assert send.await_args_list[index].kwargs["json"]["call_kind"] == "parallel"
+            assert send.await_args_list[index].kwargs["json"]["sequence_span"] == 4
 
 
 @pytest.mark.parametrize("change", [
