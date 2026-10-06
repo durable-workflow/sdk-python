@@ -245,6 +245,23 @@ Results preserve authored nested positions despite settlement order. A cleanup
 group requires a shield after canonical delivery and every local member retains
 the same original root, delivery event and immutable deadline.
 
+## Candidate scope delivery
+
+The explicit scope source opt-in supports scalar calls and fully admitted flat
+or nested all-groups. One ancestor delivery restores each included descendant's
+accepted request and context as workflow code unwinds. Shielded branches remain
+unaffected. Cleanup timers in any included scope bind that scope's own request,
+the original ancestor delivery and preparation, and its narrower authority
+ceiling. Replacement replay retains the original clock and immutable metadata.
+Invalid snapshots fail before application construction. Pending ancestor requests
+retain their original authored boundary without entering cleanup.
+
+Original-claim preparation and delivery use complete canonical history pages.
+Incomplete groups, local or selected scope groups, subtree local callbacks,
+competing roots, overlapping deliveries and root/scope composition remain gated.
+This profile defaults off and does not advertise general scope execution.
+Source qualification is separate from the published acceptance scenario.
+
 ## Remaining qualification
 
 ### Python deadline and remaining time

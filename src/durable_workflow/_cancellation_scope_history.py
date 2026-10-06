@@ -57,6 +57,20 @@ def _canonical_time(value: datetime) -> str:
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def _boundary_scope_states(
+    context: ScopedCancellationContext, preparation: dict[str, Any],
+) -> dict[str, tuple[ScopedCancellationContext, datetime]]:
+    states = {context.scope_id: (context, scope_timestamp(preparation["authority_deadline_at"]))}
+    for member in preparation["descendant_members"]:
+        descendant = ScopedCancellationContext.from_dict(member["cancellation"])
+        if (descendant.root_context != context.root_context
+            or descendant.lineage[:len(context.lineage)] != context.lineage
+            or descendant.scope_id in states):
+            raise _invalid("scope descendant changes its original root or accepted lineage")
+        states[descendant.scope_id] = (descendant, scope_timestamp(member["authority_deadline_at"]))
+    return states
+
+
 def _cleanup_timer(event: dict[str, Any], prefix: Sequence[dict[str, Any]]) -> bool:
     payload = event.get("payload", {})
     snapshot = payload.get("cancellation_cleanup")
@@ -71,13 +85,22 @@ def _cleanup_timer(event: dict[str, Any], prefix: Sequence[dict[str, Any]]) -> b
     delivery = candidates[0]
     recorded = delivery["payload"]
     context = ScopedCancellationContext.from_dict(recorded["cancellation"])
+    preparations = [row for row in prefix if _kind(row) == "CancellationScopeDeliveryPrepared"
+                    and row.get("id") == recorded["preparation_history_event_id"]]
+    if len(preparations) != 1 or preparations[0]["sequence"] >= delivery["sequence"]:
+        raise _invalid("cleanup timer lacks its original canonical preparation")
+    states = _boundary_scope_states(context, preparations[0]["payload"])
+    state = states.get(payload.get("cancellation_scope_id"))
+    if state is None:
+        raise _invalid("cleanup timer changes its original frozen subtree membership")
+    context, authority = state
     expected = {
         "scope_id": context.scope_id, "operation_scope_id": context.scope_id,
         "request_id": context.request_id, "root_request_id": context.root_request_id,
         "delivery_history_event_id": delivery["id"],
         "preparation_history_event_id": recorded["preparation_history_event_id"],
         "cleanup_deadline_at": _canonical_time(context.deadline),
-        "authority_deadline_at": recorded["authority_deadline_at"],
+        "authority_deadline_at": _canonical_time(authority),
     }
     sequence = payload.get("sequence")
     deadline = scope_timestamp(expected["authority_deadline_at"])
@@ -535,11 +558,10 @@ class CommittedCancellationScopeHistory:
         admissions: dict[str, dict[int, str]] = {}
         for index, event in enumerate(history):
             kind, payload = _kind(event), event.get("payload", {})
-            if kind == "TimerScheduled":
-                _cleanup_timer(event, history[:index])
+            timer_cleanup = kind == "TimerScheduled" and _cleanup_timer(event, history[:index])
             if kind == "CancellationScopeOpened":
                 opened.add(payload["scope_id"])
-            if kind in _ADMISSIONS and _positive(payload.get("sequence")):
+            if kind in _ADMISSIONS and _positive(payload.get("sequence")) and not timer_cleanup:
                 admissions.setdefault(kind, {})[payload["sequence"]] = scopes.memberships.get(
                     payload["sequence"], "root",
                 )
@@ -666,6 +688,11 @@ class CommittedCancellationScopeHistory:
         return cls(preparations, dict(sorted(deliveries.items())), {
             identity: request for identity, request in requests.items() if identity not in covered
         })
+
+    def scope_states_for_boundary(
+        self, boundary: ScopeBoundary,
+    ) -> dict[str, tuple[ScopedCancellationContext, datetime]]:
+        return _boundary_scope_states(boundary.context, self.preparations[boundary.context.scope_id].event["payload"])
 
     def pending_request_for_scope(self, scope_id: str, scopes: CancellationScopeHistory) -> ScopeRequest | None:
         addresses = {opening["scope_id"]: opening for opening in scopes.openings.values()}

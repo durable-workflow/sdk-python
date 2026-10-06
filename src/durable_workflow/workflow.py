@@ -4063,13 +4063,28 @@ def _replay_state(
         )
     except (ValueError, TypeError, KeyError) as error:
         raise LocalActivityExecutionAborted(str(error)) from error
+    scope_states: dict[str, dict[str, tuple[ScopedCancellationContext, datetime]]] = {}
     for prepared in committed_scopes.preparations.values():
-        payload = prepared.event["payload"]
-        if prepared.boundary.call_kind == "local_activity" or payload["descendant_members"]:
+        if prepared.boundary.call_kind == "local_activity":
             raise LocalActivityExecutionAborted(
-                "cancellation_scope_execution_not_supported: scope local callbacks and descendants "
+                "cancellation_scope_execution_not_supported: scope local callbacks "
                 "require their qualified replay consumers",
             )
+        try:
+            scope_states[prepared.context.scope_id] = committed_scopes.scope_states_for_boundary(prepared)
+        except (ValueError, TypeError, KeyError) as error:
+            raise LocalActivityExecutionAborted(str(error)) from error
+        for event in events[:events.index(prepared.event)]:
+            member = event.get("payload") or {}
+            sequence = _workflow_sequence(member)
+            if (_history_event_type(event) == "ActivityScheduled"
+                and sequence is not None
+                and scope_history.memberships.get(sequence, "root") in scope_states[prepared.context.scope_id]
+                and (member.get("local_activity") is True or member.get("execution_mode") == "local")):
+                raise LocalActivityExecutionAborted(
+                    "cancellation_scope_execution_not_supported: subtree local callbacks "
+                    "require their qualified replay consumer",
+                )
         if prepared.boundary.call_kind == "parallel":
             for event in events[:events.index(prepared.event)]:
                 member = event.get("payload") or {}
@@ -4083,6 +4098,15 @@ def _replay_state(
                     raise LocalActivityExecutionAborted(
                         "cancellation_scope_execution_not_supported: group contains an unqualified member",
                     )
+    delivered_scopes: set[str] = set()
+    for delivery in committed_scopes.deliveries.values():
+        states = scope_states[delivery.context.scope_id]
+        if delivered_scopes.intersection(states):
+            raise LocalActivityExecutionAborted(
+                "cancellation_scope_execution_not_supported: overlapping subtree deliveries "
+                "require their qualified replay consumer",
+            )
+        delivered_scopes.update(states)
     authored_sequence = 1
     current_call_sequence = 1
     workflow_id = workflow_id or _workflow_id_from_history(events)
@@ -5919,7 +5943,9 @@ def _replay_state(
         boundary = delivery.boundary
         _assert_cancellation_call_matches(command, boundary)
         membership = _scope_call_membership(command)
-        if membership != delivery.context.scope_id or ctx._cancellation_shield_depth > 0:
+        states = scope_states[delivery.context.scope_id]
+        if (membership not in states or membership != ctx._cancellation_scope_id
+            or ctx._cancellation_shield_depth > 0):
             raise NonDeterministicReplayError(
                 boundary.sequence, "original unshielded scoped operation", ["CancellationScopeDelivered"],
                 detail="scoped cancellation changed its original operation membership",
@@ -5937,24 +5963,25 @@ def _replay_state(
         delivery_id = delivery.event.get("id")
         if not isinstance(delivery_id, str) or not delivery_id:
             raise LocalActivityExecutionAborted("scoped cleanup requires its canonical delivery identity")
-        ctx._scope_cleanup_proofs[delivery.context.scope_id] = {
-            "scope_id": delivery.context.scope_id,
-            "request_id": delivery.context.request_id,
-            "delivery_history_event_id": delivery_id,
-        }
         ctx._observe_cancellation_replay_time(delivery.event)
-        bound_context = ctx._bind_cancellation_context(delivery.context, authority_deadline=delivery.authority_deadline)
-        assert isinstance(bound_context, ScopedCancellationContext)
-        ctx._scope_cancellation_states[bound_context.scope_id] = bound_context
+        for scope_id, (original_context, authority_deadline) in states.items():
+            ctx._scope_cleanup_proofs[scope_id] = {
+                "scope_id": scope_id, "request_id": original_context.request_id,
+                "delivery_history_event_id": delivery_id,
+            }
+            bound_context = ctx._bind_cancellation_context(original_context, authority_deadline=authority_deadline)
+            assert isinstance(bound_context, ScopedCancellationContext)
+            ctx._scope_cancellation_states[scope_id] = bound_context
         active_context = ctx._scope_cancellation_states.get(ctx._cancellation_scope_id)
-        if active_context is not None:
-            ctx._cancel_requested = True
-            ctx._cancellation_request_id = active_context.request_id
-            ctx._cancellation_context = active_context
+        if active_context is None:
+            raise LocalActivityExecutionAborted("scope delivery lacks its original active descendant context")
+        ctx._cancel_requested = True
+        ctx._cancellation_request_id = active_context.request_id
+        ctx._cancellation_context = active_context
         _apply_due_receivers()
         try:
             advanced_cmd = gen.throw(WorkflowCancelled(
-                "scope cancellation was requested", request_id=boundary.request_id, context=bound_context,
+                "scope cancellation was requested", request_id=active_context.request_id, context=active_context,
             ))
             return None
         except StopIteration as stop:

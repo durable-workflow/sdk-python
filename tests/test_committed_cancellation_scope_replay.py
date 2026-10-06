@@ -222,7 +222,7 @@ def test_pending_and_prepared_scope_request_stop_before_cleanup_and_keep_the_ori
     assert cleanup == ["cleanup"]
 
 
-@pytest.mark.parametrize("failure", ["default", "authoring_only", "missing_authoring", "unsupported_projection"])
+@pytest.mark.parametrize("failure", ["default", "authoring_only", "missing_authoring", "competing_roots"])
 def test_unqualified_scope_paths_refuse_before_constructing_application(failure: str) -> None:
     entered: list[str] = []
     value = fixture("committed-scope-delivery.json", "unshielded")
@@ -231,8 +231,8 @@ def test_unqualified_scope_paths_refuse_before_constructing_application(failure:
         options["allow_cancellation_scope_authoring"] = True
     elif failure == "missing_authoring":
         options["allow_cancellation_scope_delivery"] = True
-    elif failure == "unsupported_projection":
-        value = fixture("committed-scope-operation-projections.json", "descendants")
+    elif failure == "competing_roots":
+        value = fixture("committed-scope-operation-projections.json", "competing")
         options = {"allow_cancellation_scope_authoring": True, "allow_cancellation_scope_delivery": True}
 
     class Probe:

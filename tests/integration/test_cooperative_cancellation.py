@@ -534,6 +534,7 @@ async def test_candidate_scope_authoring_replays_nested_tree_and_deferred_member
 @workflow.defn(name="tests.python-candidate-scope-cleanup")
 class CandidateScopeCleanupWorkflow:
     grouped = False
+    descendants = False
 
     def run(self, ctx: workflow.WorkflowContext):  # type: ignore[no-untyped-def]
         yield ctx.side_effect(lambda: "original prefix")
@@ -553,7 +554,22 @@ class CandidateScopeCleanupWorkflow:
                     yield ctx.start_timer(1)
                 return {"context": cancellation.to_dict(), "remaining": cancellation.remaining()}
 
-        result = yield from ctx.cancellation_scope(body)
+        def parent():  # type: ignore[no-untyped-def]
+            result = yield from ctx.cancellation_scope(body)
+            try:
+                ctx.throw_if_cancellation_requested()
+                pytest.fail("the parent must retain its accepted ancestor request")
+            except WorkflowCancelled as error:
+                assert isinstance(error.context, ScopedCancellationContext)
+                assert error.context is ctx.cancellation_context
+                assert error.context.root_context.to_dict() == result["context"]["root_context"]
+                cancellation = error.context
+                with ctx.cancellation_shield():
+                    yield ctx.start_timer(1)
+                return {"context": cancellation.to_dict(), "remaining": cancellation.remaining(),
+                        "descendant_context": result["context"]}
+
+        result = yield from ctx.cancellation_scope(parent if self.descendants else body)
         assert not ctx.is_cancellation_requested and ctx.cancellation_context is None
         yield ctx.start_timer(1)
         return result
@@ -562,6 +578,17 @@ class CandidateScopeCleanupWorkflow:
 @workflow.defn(name="tests.python-candidate-scope-group-cleanup")
 class CandidateScopeGroupCleanupWorkflow(CandidateScopeCleanupWorkflow):
     grouped = True
+
+
+@workflow.defn(name="tests.python-candidate-scope-descendant-cleanup")
+class CandidateScopeDescendantCleanupWorkflow(CandidateScopeCleanupWorkflow):
+    descendants = True
+
+
+@workflow.defn(name="tests.python-candidate-scope-descendant-group-cleanup")
+class CandidateScopeDescendantGroupCleanupWorkflow(CandidateScopeCleanupWorkflow):
+    grouped = True
+    descendants = True
 
 
 async def request_native_scope_fixture(run_id: str, workflow_id: str, scope_id: str) -> dict[str, Any]:
@@ -585,14 +612,17 @@ async def request_native_scope_fixture(run_id: str, workflow_id: str, scope_id: 
 
 
 @pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize("descendants", [False, True])
 async def test_candidate_scope_cleanup_keeps_original_delivery_and_budget_after_replacement(
-    server_url: str, server_token: str, grouped: bool,
+    server_url: str, server_token: str, grouped: bool, descendants: bool,
 ) -> None:
     if os.environ.get("DURABLE_WORKFLOW_NATIVE_SOURCE_QUALIFICATION") != "1":
         pytest.skip("scope delivery requires the exact Native source overlay")
     queue = f"py-cooperative-scope-boundary-{uuid.uuid4().hex[:8]}"
-    cls = CandidateScopeGroupCleanupWorkflow if grouped else CandidateScopeCleanupWorkflow
-    workflow_type = "tests.python-candidate-scope-group-cleanup" if grouped else "tests.python-candidate-scope-cleanup"
+    cls = {(False, False): CandidateScopeCleanupWorkflow, (True, False): CandidateScopeGroupCleanupWorkflow,
+           (False, True): CandidateScopeDescendantCleanupWorkflow,
+           (True, True): CandidateScopeDescendantGroupCleanupWorkflow}[grouped, descendants]
+    workflow_type = str(cls.__workflow_name__)
     async with Client(server_url, token=server_token, namespace="default") as client:
         original = Worker(client, task_queue=queue, worker_id=f"{queue}-original",
                           workflows=[cls], capabilities=["cooperative_cancellation"])
@@ -622,7 +652,7 @@ async def test_candidate_scope_cleanup_keeps_original_delivery_and_budget_after_
             assert wire is not None and [command["type"] for command in wire] == ["record_side_effect", "start_timer"]
             await original.stop()
             await replacement._register()
-            for expected in ("start_timer", "complete_workflow"):
+            for expected in (["start_timer"] * (2 if descendants else 1) + ["complete_workflow"]):
                 wire = await replacement._run_workflow_task(await poll_claim(client, replacement))
                 assert wire is not None and [command["type"] for command in wire] == [expected]
             result = await handle.result(timeout=10)
@@ -630,12 +660,22 @@ async def test_candidate_scope_cleanup_keeps_original_delivery_and_budget_after_
             assert 0 < result["remaining"] < 30
             history = await events(handle)
             kinds = [row["event_type"] for row in history]
-            for kind in ("CancellationScopeOpened", "CancellationScopeRequested", "CancellationScopeDeliveryPrepared",
-                         "CancellationScopeDelivered", "WorkflowCompleted"):
+            for kind in ("CancellationScopeDeliveryPrepared", "CancellationScopeDelivered", "WorkflowCompleted"):
                 assert kinds.count(kind) == 1
+            for kind in ("CancellationScopeOpened", "CancellationScopeRequested"):
+                assert kinds.count(kind) == (2 if descendants else 1)
+            if descendants:
+                child_request = next(
+                    row["payload"]["cancellation"] for row in history
+                    if row["event_type"] == "CancellationScopeRequested" and row["payload"]["scope_id"] != scope
+                )
+                assert result["descendant_context"] == child_request
+                assert child_request["root_context"] == result["context"]["root_context"]
+                assert child_request["lineage"][:-1] == result["context"]["lineage"]
             assert kinds.count("TimerCancelled") == (2 if grouped else 1)
             assert kinds.count("SideEffectRecorded") == 2
-            assert kinds.count("TimerScheduled") == (4 if grouped else 3) and kinds.count("TimerFired") == 2
+            assert kinds.count("TimerScheduled") == (4 if grouped else 3) + int(descendants)
+            assert kinds.count("TimerFired") == 2 + int(descendants)
             assert "CooperativeCancellationRequested" not in kinds and "WorkflowCancelled" not in kinds
             assert "WorkflowFailed" not in kinds
             print(f"Native scope cleanup and replacement replay: {json.dumps(history)}")
