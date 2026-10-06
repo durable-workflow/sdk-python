@@ -627,6 +627,9 @@ class RecordLocalActivity:
         default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
     )
     outcome: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _cancellation_cleanup: dict[str, str] | None = field(
+        default_factory=_authored_scope_cleanup, init=False, repr=False, compare=False,
+    )
     arguments_envelope: dict[str, Any] | None = field(default=None, init=False, repr=False)
     result_envelope: dict[str, Any] | None = field(default=None, init=False, repr=False)
     _parallel_group_path: list[dict[str, Any]] | None = field(default=None, init=False, repr=False, compare=False)
@@ -729,6 +732,8 @@ class PreparedLocalActivityCall:
                 "request_id": self.cleanup["request_id"],
                 "delivery_history_event_id": self.cleanup["delivery_history_event_id"],
             }
+            if "scope_id" in self.cleanup:
+                descriptor["cancellation_cleanup"]["scope_id"] = self.cleanup["scope_id"]
         _apply_parallel_group_metadata(command, descriptor)
         return descriptor
 
@@ -3621,6 +3626,9 @@ def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
     details: dict[str, Any] = {}
     if "cancellation_cleanup" in payload:
         details["cancellation_cleanup"] = payload["cancellation_cleanup"]
+    local_preparation = payload.get("local_preparation")
+    if isinstance(local_preparation, Mapping) and "cancellation_cleanup" in local_preparation:
+        details["cancellation_cleanup"] = local_preparation["cancellation_cleanup"]
     for snapshot in (payload, *(payload.get(name) for name in ("activity", "timer", "child_workflow"))):
         if isinstance(snapshot, Mapping) and "cancellation_scope_id" in snapshot:
             details["cancellation_scope_id"] = snapshot["cancellation_scope_id"]
@@ -3755,12 +3763,14 @@ def _command_diagnostic_shape(command: Any) -> str:
 
 
 def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
-    if isinstance(command, StartTimer):
+    if isinstance(command, StartTimer) or isinstance(command, RecordLocalActivity) and (
+        command._cancellation_scope_id != "root"
+    ):
         snapshot = step.details.get("cancellation_cleanup")
         proof = ({field: snapshot[field] for field in ("scope_id", "request_id", "delivery_history_event_id")}
                  if isinstance(snapshot, dict) else None)
         if proof != command._cancellation_cleanup:
-            return "cancellation_scope_cleanup_changed: timer changed its original delivery or shielding"
+            return "cancellation_scope_cleanup_changed: operation changed its original delivery or shielding"
     if isinstance(command, _OpenCancellationScope) and (
         step.details.get("parent_scope_id") != command.parent_scope_id
         or step.details.get("shield_parent") is not command.shield_parent
@@ -4047,7 +4057,8 @@ def _replay_state(
     except ValueError as error:
         raise LocalActivityExecutionAborted(str(error)) from error
     cancellation = read_cancellation_history(events, run_id=run_id, observation=cancellation_request)
-    if allow_cancellation_scope_authoring and cancellation.request is not None:
+    if (allow_cancellation_scope_authoring and cancellation.request is not None
+        and not allow_cancellation_scope_delivery):
         raise LocalActivityExecutionAborted(
             "cancellation_scope_execution_not_supported: candidate authoring lacks scope delivery",
         )
@@ -5721,6 +5732,10 @@ def _replay_state(
         return False
 
     def _validate_local_activity_policies(operation: Any) -> None:
+        if isinstance(operation, RecordLocalActivity) and operation._cancellation_cleanup is not None and (
+            not prepare_local_activities
+        ):
+            raise LocalActivityExecutionAborted("scoped cleanup requires prepared callback admission")
         if isinstance(operation, RecordLocalActivity) and operation.cancellation_policy is not None:
             if (
                 not prepare_local_activities
@@ -5739,7 +5754,25 @@ def _replay_state(
 
     def _prepared_call(command: RecordLocalActivity, sequence: int) -> PreparedLocalActivityCall:
         cleanup: dict[str, str] | None = None
-        if cancellation.request is not None:
+        scoped_context = ctx._cancellation_context
+        if isinstance(scoped_context, ScopedCancellationContext):
+            proof = ctx._scope_cleanup_proofs.get(scoped_context.scope_id)
+            matches = [delivery for number, delivery in committed_scopes.deliveries.items()
+                       if number in consumed_scope_deliveries and proof is not None
+                       and delivery.event["id"] == proof["delivery_history_event_id"]]
+            if (ctx._cancellation_shield_depth < 1 or command._cancellation_cleanup != proof
+                or len(matches) != 1 or proof is None
+                or command._cancellation_scope_id != scoped_context.scope_id
+                or sequence < matches[0].boundary.sequence + matches[0].boundary.sequence_span):
+                raise LocalActivityExecutionAborted("scoped cleanup requires its consumed original delivery")
+            original, authority = scope_states[matches[0].context.scope_id][scoped_context.scope_id]
+            cleanup = {
+                **proof, "operation_scope_id": original.scope_id, "root_request_id": original.root_request_id,
+                "preparation_history_event_id": matches[0].event["payload"]["preparation_history_event_id"],
+                "cleanup_deadline_at": original.to_dict()["lineage"][-1]["cleanup_deadline_at"],
+                "authority_deadline_at": authority.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+            }
+        elif cancellation.request is not None:
             delivery = cancellation.delivery
             context = cancellation.request.context
             delivery_id = (
@@ -5867,8 +5900,22 @@ def _replay_state(
                         )
 
     def _scope_call_membership(command: Any) -> str:
+        if isinstance(command, SelectGroup):
+            leaves = [leaf for _, operation in command.operations
+                      for leaf in (_parallel_leaves(operation) if isinstance(operation, list) else [operation])]
+            if any(getattr(leaf, "_cancellation_scope_id", "root") != "root" for leaf in leaves):
+                raise LocalActivityExecutionAborted(
+                    "cancellation_scope_execution_not_supported: scoped selection requires its qualified consumer",
+                )
+            return "root"
         if not isinstance(command, list):
-            return getattr(command, "_cancellation_scope_id", "root")
+            membership = getattr(command, "_cancellation_scope_id", "root")
+            if membership != "root" and membership != ctx._cancellation_scope_id:
+                raise NonDeterministicReplayError(
+                    current_call_sequence, "original active scope", ["CancellationScopeDelivered"],
+                    detail="scoped operation changed its original active scope",
+                )
+            return membership
         leaves = _parallel_leaves(command)
         memberships = {getattr(leaf, "_cancellation_scope_id", "root") for leaf in leaves}
         if memberships == {"root"}:
@@ -5897,6 +5944,11 @@ def _replay_state(
 
     def _consume_cancellation(command: Any, boundary: CancellationDelivery) -> _ReplayState | None:
         nonlocal cancellation_consumed, authored_sequence, wait_yield_count, advanced_cmd
+        if ctx._cancellation_scope_id != "root" or _scope_call_membership(command) != "root":
+            raise NonDeterministicReplayError(
+                boundary.sequence, "original root operation", ["CooperativeCancellationDelivered"],
+                detail="root cancellation cannot replace a scoped operation",
+            )
         _assert_cancellation_call_matches(command, boundary)
         if boundary.call_kind == "condition":
             for event in events:
@@ -6027,6 +6079,14 @@ def _replay_state(
                     "prepared local groups require an implemented atomic group consumer",
                 )
             boundary = _cancellation_boundary(cmd)
+            if (cancellation.delivery is not None and not cancellation_consumed
+                and cancellation.delivery.sequence == current_call_sequence
+                and (isinstance(cmd, _OpenCancellationScope) or ctx._cancellation_scope_id != "root"
+                     or _scope_call_membership(cmd) != "root")):
+                raise NonDeterministicReplayError(
+                    current_call_sequence, "original root operation", ["CooperativeCancellationDelivered"],
+                    detail="root cancellation cannot replace a scoped operation",
+                )
             if isinstance(cmd, _OpenCancellationScope):
                 if not allow_cancellation_scope_authoring:
                     raise LocalActivityExecutionAborted(
@@ -6125,7 +6185,8 @@ def _replay_state(
                     if terminal is not None:
                         return terminal
                     continue
-            elif boundary is not None and not cancellation_consumed and ctx._cancellation_shield_depth == 0:
+            elif (boundary is not None and not cancellation_consumed and ctx._cancellation_shield_depth == 0
+                  and ctx._cancellation_scope_id == "root" and _scope_call_membership(cmd) == "root"):
                 eligible_sequence = boundary.operation_sequence or boundary.sequence
                 eligible_span = (
                     boundary.operation_sequence_span

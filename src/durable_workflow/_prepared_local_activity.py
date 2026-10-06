@@ -49,6 +49,15 @@ def _same_deadline(actual: Any, expected: Any) -> bool:
     return actual is None if expected is None else _timestamp(actual) == _timestamp(expected)
 
 
+def _cleanup_deadline(cleanup: Mapping[str, str]) -> datetime:
+    deadline = _timestamp(cleanup["cleanup_deadline_at"])
+    if "authority_deadline_at" in cleanup:
+        authority = _timestamp(cleanup["authority_deadline_at"])
+        _require(authority <= deadline, "local cleanup authority exceeds its original deadline")
+        deadline = authority
+    return deadline
+
+
 class PreparedCancellationObserved(LocalActivityExecutionAborted):
     """Cancellation was fenced and its original callback physically joined."""
 
@@ -91,7 +100,7 @@ class PreparedAttempt:
         attempt.validate_cleanup(receipt)
         server_time = _timestamp(receipt.get("server_time"))
         _require(_timestamp(receipt.get("lease_expires_at")) > server_time, "local admission has an expired lease")
-        cleanup_deadline = _timestamp(cleanup["cleanup_deadline_at"]) if cleanup is not None else None
+        cleanup_deadline = _cleanup_deadline(cleanup) if cleanup is not None else None
         for field, deadline in deadlines.items():
             _require(field in receipt and (deadline is None or _timestamp(deadline) > server_time),
                      "local admission omitted or exhausted an execution deadline")
@@ -118,12 +127,18 @@ class PreparedAttempt:
             _require(actual is None, "local receipt invented cleanup authority")
             return
         fields = {"request_id", "root_request_id", "delivery_history_event_id", "cleanup_deadline_at"}
+        if "scope_id" in self.cleanup:
+            fields |= {"scope_id", "operation_scope_id", "preparation_history_event_id", "authority_deadline_at"}
         if not isinstance(actual, Mapping) or set(actual) != fields or set(self.cleanup) != fields:
             raise LocalActivityExecutionAborted("local receipt changed canonical cleanup authority")
         for field in fields:
-            _require(_same_deadline(actual[field], self.cleanup[field]) if field == "cleanup_deadline_at"
+            _require(_same_deadline(actual[field], self.cleanup[field]) if field.endswith("deadline_at")
                      else _text(actual[field]) == _text(self.cleanup[field]),
                      "local receipt changed canonical cleanup authority")
+        if "scope_id" in self.cleanup:
+            _require(self.cleanup["scope_id"] == self.cleanup["operation_scope_id"],
+                     "local cleanup changed its original operation scope")
+        _cleanup_deadline(self.cleanup)
 
     def validate_identity(self, receipt: Mapping[str, Any]) -> None:
         _require(
@@ -167,7 +182,7 @@ class PreparedAttempt:
                      and _timestamp(updated) >= _timestamp(self.deadlines["heartbeat_deadline_at"])
                      and _timestamp(updated) <= server_time + timedelta(seconds=self.heartbeat_timeout)
                      and (self.cleanup is None
-                          or _timestamp(updated) <= _timestamp(self.cleanup["cleanup_deadline_at"])),
+                          or _timestamp(updated) <= _cleanup_deadline(self.cleanup)),
                      "application heartbeat extended a fixed budget or revived an expired deadline")
         else:
             _require(_same_deadline(updated, self.deadlines["heartbeat_deadline_at"]),
@@ -179,7 +194,7 @@ class PreparedAttempt:
                 _require(deadline is None or _timestamp(deadline) > server_time,
                          "local control returned active after an execution deadline")
             if self.cleanup is not None:
-                _require(_timestamp(self.cleanup["cleanup_deadline_at"]) > server_time,
+                _require(_cleanup_deadline(self.cleanup) > server_time,
                          "local control returned active after the original cleanup deadline")
         if heartbeat and active:
             self.deadlines["heartbeat_deadline_at"] = updated
@@ -209,6 +224,8 @@ class PreparedAttempt:
         )]
         if self.cleanup is not None:
             values.append(self.cleanup["cleanup_deadline_at"])
+            if "authority_deadline_at" in self.cleanup:
+                values.append(self.cleanup["authority_deadline_at"])
         self.authority_deadline = min(
             min(self.clock_origin + _timestamp(value).timestamp(),
                 started + _timestamp(value).timestamp() - server_time)

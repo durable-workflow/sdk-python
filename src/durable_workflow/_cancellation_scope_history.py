@@ -71,42 +71,46 @@ def _boundary_scope_states(
     return states
 
 
-def _cleanup_timer(event: dict[str, Any], prefix: Sequence[dict[str, Any]]) -> bool:
+def _delivery_scope_states(
+    delivery: dict[str, Any], prefix: Sequence[dict[str, Any]],
+) -> dict[str, tuple[ScopedCancellationContext, datetime]]:
+    recorded = delivery["payload"]
+    preparations = [row for row in prefix if _kind(row) == "CancellationScopeDeliveryPrepared"
+                    and row.get("id") == recorded.get("preparation_history_event_id")]
+    if len(preparations) != 1 or preparations[0]["sequence"] >= delivery["sequence"]:
+        raise _invalid("cleanup operation lacks its original canonical preparation")
+    context = ScopedCancellationContext.from_dict(recorded["cancellation"])
+    return _boundary_scope_states(context, preparations[0]["payload"])
+
+
+def _cleanup_operation(event: dict[str, Any], prefix: Sequence[dict[str, Any]], *, local: bool = False) -> bool:
     payload = event.get("payload", {})
-    snapshot = payload.get("cancellation_cleanup")
-    if "cancellation_cleanup" not in payload:
-        scope_id = payload.get("cancellation_scope_id")
+    operation = "cleanup local activity" if local else "cleanup timer"
+    preparation = payload.get("local_preparation") if local else payload
+    snapshot = preparation.get("cancellation_cleanup") if isinstance(preparation, dict) else None
+    scope_id = _address(payload, "activity" if local else "timer")
+    if local and isinstance(snapshot, dict) and "scope_id" not in snapshot and scope_id == "root":
+        return False
+    if not isinstance(preparation, dict) or "cancellation_cleanup" not in preparation:
         for delivery in prefix:
             if (_kind(delivery) != "CancellationScopeDelivered"
                 or not _positive(delivery.get("sequence")) or not _positive(event.get("sequence"))
                 or delivery["sequence"] >= event["sequence"]):
                 continue
-            recorded = delivery["payload"]
-            preparations = [row for row in prefix if _kind(row) == "CancellationScopeDeliveryPrepared"
-                            and row.get("id") == recorded.get("preparation_history_event_id")]
-            if len(preparations) != 1:
-                raise _invalid("cleanup timer lacks its original canonical preparation")
-            context = ScopedCancellationContext.from_dict(recorded["cancellation"])
-            if scope_id in _boundary_scope_states(context, preparations[0]["payload"]):
-                raise _invalid("cleanup timer omits its original delivery snapshot")
+            if scope_id in _delivery_scope_states(delivery, prefix):
+                raise _invalid(operation + " omits its original delivery snapshot")
         return False
     if not isinstance(snapshot, dict):
-        raise _invalid("cleanup timer requires its original delivery snapshot")
+        raise _invalid(operation + " requires its original delivery snapshot")
     candidates = [row for row in prefix if _kind(row) == "CancellationScopeDelivered"
                   and row.get("id") == snapshot.get("delivery_history_event_id")]
     if len(candidates) != 1:
-        raise _invalid("cleanup timer lacks its earlier canonical delivery")
+        raise _invalid(operation + " lacks its earlier canonical delivery")
     delivery = candidates[0]
     recorded = delivery["payload"]
-    context = ScopedCancellationContext.from_dict(recorded["cancellation"])
-    preparations = [row for row in prefix if _kind(row) == "CancellationScopeDeliveryPrepared"
-                    and row.get("id") == recorded["preparation_history_event_id"]]
-    if len(preparations) != 1 or preparations[0]["sequence"] >= delivery["sequence"]:
-        raise _invalid("cleanup timer lacks its original canonical preparation")
-    states = _boundary_scope_states(context, preparations[0]["payload"])
-    state = states.get(payload.get("cancellation_scope_id"))
+    state = _delivery_scope_states(delivery, prefix).get(scope_id)
     if state is None:
-        raise _invalid("cleanup timer changes its original frozen subtree membership")
+        raise _invalid(operation + " changes its original frozen subtree membership")
     context, authority = state
     expected = {
         "scope_id": context.scope_id, "operation_scope_id": context.scope_id,
@@ -119,14 +123,27 @@ def _cleanup_timer(event: dict[str, Any], prefix: Sequence[dict[str, Any]]) -> b
     sequence = payload.get("sequence")
     deadline = scope_timestamp(expected["authority_deadline_at"])
     timestamp = scope_timestamp(event.get("timestamp", event.get("recorded_at")))
-    if (snapshot != expected or payload.get("cancellation_scope_id") != context.scope_id
+    if (snapshot != expected or scope_id != context.scope_id
         or not _positive(sequence) or sequence < recorded["sequence"] + recorded["sequence_span"]
         or not _positive(event.get("sequence")) or delivery["sequence"] >= event["sequence"]
         or timestamp < scope_timestamp(delivery.get("timestamp", delivery.get("recorded_at")))
-        or timestamp >= deadline or not timestamp <= scope_timestamp(payload.get("fire_at")) < deadline
-        or payload.get("timer_kind") is not None):
-        raise _invalid("cleanup timer changes its original delivery or authority ceiling")
+        or timestamp >= deadline or not local and (
+            not timestamp <= scope_timestamp(payload.get("fire_at")) < deadline
+            or payload.get("timer_kind") is not None
+        )):
+        raise _invalid(operation + " changes its original delivery or authority ceiling")
     return True
+
+
+def _cleanup_timer(event: dict[str, Any], prefix: Sequence[dict[str, Any]]) -> bool:
+    return _cleanup_operation(event, prefix)
+
+
+def _cleanup_local_activity(event: dict[str, Any], prefix: Sequence[dict[str, Any]]) -> bool:
+    payload = event.get("payload", {})
+    return (payload.get("local_activity") is True or payload.get("execution_mode") == "local") and (
+        _cleanup_operation(event, prefix, local=True)
+    )
 
 
 def _positive(value: Any) -> bool:
@@ -254,6 +271,8 @@ def scope_members_from_prefix(
             activity_ids.add(identity)
             activity_sequences.add(sequence)
             if _address(payload, "activity") != scope_id:
+                continue
+            if _cleanup_local_activity(event, prefix):
                 continue
             for preparation in ("local_preparation", "local_group_admission"):
                 if isinstance(payload.get(preparation), dict) and isinstance(
@@ -572,10 +591,12 @@ class CommittedCancellationScopeHistory:
         admissions: dict[str, dict[int, str]] = {}
         for index, event in enumerate(history):
             kind, payload = _kind(event), event.get("payload", {})
-            timer_cleanup = kind == "TimerScheduled" and _cleanup_timer(event, history[:index])
+            cleanup = (kind == "TimerScheduled" and _cleanup_timer(event, history[:index])
+                       or kind in {"ActivityScheduled", "ActivityStarted"}
+                       and _cleanup_local_activity(event, history[:index]))
             if kind == "CancellationScopeOpened":
                 opened.add(payload["scope_id"])
-            if kind in _ADMISSIONS and _positive(payload.get("sequence")) and not timer_cleanup:
+            if kind in _ADMISSIONS and _positive(payload.get("sequence")) and not cleanup:
                 admissions.setdefault(kind, {})[payload["sequence"]] = scopes.memberships.get(
                     payload["sequence"], "root",
                 )

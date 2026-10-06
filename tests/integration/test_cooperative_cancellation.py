@@ -84,6 +84,58 @@ def candidate_worker(client: Client, queue: str, **kwargs: Any) -> Worker:
     )
 
 
+@workflow.defn(name="tests.python-run-scope-cleanup")
+class RunScopeCleanupWorkflow:
+    def run(self, ctx: Any, marker: str) -> Any:
+        def scoped() -> Any:
+            try:
+                yield ctx.start_timer(300)
+            except WorkflowCancelled as error:
+                assert isinstance(error.context, ScopedCancellationContext)
+                context = error.context.to_dict()
+                yield ctx.side_effect(lambda: context)
+                with ctx.cancellation_shield():
+                    yield ctx.local_activity(
+                        "tests.python-run-scope-cleanup", [marker, "scoped", context],
+                        retry_policy={"max_attempts": 2, "backoff_seconds": [0]},
+                    )
+
+        yield from ctx.cancellation_scope(scoped)
+        try:
+            yield ctx.start_timer(300)
+        except WorkflowCancelled as error:
+            assert error.context is not None and not isinstance(error.context, ScopedCancellationContext)
+            context = error.context.to_dict()
+            yield ctx.side_effect(lambda: context)
+            with ctx.cancellation_shield():
+                yield ctx.local_activity("tests.python-run-scope-cleanup", [marker, "root", context])
+        return "finished"
+
+
+@activity.defn(name="tests.python-run-scope-cleanup")
+async def run_scope_cleanup(marker: str, phase: str, context: dict[str, Any]) -> dict[str, Any]:
+    info = activity.context().info
+    path = Path(marker + "." + phase + "." + info.worker_id)
+    pending = path.with_suffix(path.suffix + ".writing")
+    pending.write_text(json.dumps({"callback_pid": os.getpid(), "context": context,
+                                   "activity_attempt_id": info.activity_attempt_id}))
+    pending.replace(path)
+    if phase == "scoped" and os.environ.get("DW_PREPARED_FIXTURE_MODE") == "hold":
+        await asyncio.Event().wait()
+    return {"phase": phase, "context": context}
+
+
+def scope_prepared_worker(client: Client, queue: str, **kwargs: Any) -> Worker:
+    worker = Worker(
+        client, task_queue=queue, worker_id=kwargs.pop("worker_id", queue + "-owner"),
+        workflows=[RunScopeCleanupWorkflow], activities=[run_scope_cleanup],
+        capabilities=["cooperative_cancellation", "prepared_local_activities"], **kwargs,
+    )
+    worker._allow_cancellation_scope_authoring = True
+    worker._allow_cancellation_scope_delivery = True
+    return worker
+
+
 async def poll_claim(client: Client, worker: Worker) -> dict[str, Any]:
     async def poll() -> dict[str, Any]:
         while True:
@@ -1031,6 +1083,97 @@ async def test_killed_remote_owner_cannot_publish_after_cold_workflow_delivery(
                 if process.returncode is None:
                     process.kill()
                     await process.wait()
+            await seed.stop()
+
+
+async def test_scoped_cleanup_sigkill_replays_before_root_delivery_with_original_30_second_deadline(
+    server_url: str, server_token: str, tmp_path: Path,
+) -> None:
+    if os.environ.get("DURABLE_WORKFLOW_NATIVE_SOURCE_QUALIFICATION") != "1":
+        pytest.skip("scoped prepared cleanup requires the exact Native overlay")
+    queue = "py-run-scope-recovery-" + uuid.uuid4().hex[:8]
+    marker = str(tmp_path / "cleanup")
+    trace = tmp_path / "prepared.jsonl"
+    processes: list[asyncio.subprocess.Process] = []
+    logs: list[Any] = []
+
+    async def owner(name: str, mode: str) -> asyncio.subprocess.Process:
+        log = (tmp_path / (name + ".log")).open("wb")
+        logs.append(log)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "tests.integration.prepared_worker", queue, name, mode, str(trace),
+            stdout=log, stderr=log,
+        )
+        processes.append(process)
+        return process
+
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        seed = scope_prepared_worker(client, queue, worker_id=queue + "-seed")
+        handle = None
+        try:
+            await seed._register()
+            handle = await client.start_workflow(workflow_type="tests.python-run-scope-cleanup",
+                                                 workflow_id=queue, task_queue=queue, input=[marker])
+            wire = await seed._run_workflow_task(await poll_claim(client, seed))
+            assert wire is not None and [command["type"] for command in wire] == ["start_timer"]
+            accepted = await handle.request_cancellation(cleanup_timeout_seconds=30)
+            original = accepted["cancellation_request"]
+            first = await owner(queue + "-first", "scope-hold")
+            entered = await remote_marker(Path(marker + ".scoped." + queue + "-first"))
+            before = await events(handle)
+            assert [row["event_type"] for row in before].count("CancellationScopeDelivered") == 1
+            assert "CooperativeCancellationDelivered" not in [row["event_type"] for row in before]
+            first.kill()
+            assert await asyncio.wait_for(first.wait(), timeout=10) == -9
+            await callback_gone(entered["callback_pid"])
+            duplicate = await handle.request_cancellation(cleanup_timeout_seconds=90)
+            for field in ("request_id", "requested_at", "cleanup_deadline_at"):
+                assert duplicate["cancellation_request"][field] == original[field]
+            await owner(queue + "-replacement", "scope-finish")
+            deadline = datetime.fromisoformat(original["cleanup_deadline_at"].replace("Z", "+00:00"))
+            timeout = (deadline - datetime.now(deadline.tzinfo)).total_seconds()
+            assert timeout > 0
+            with pytest.raises(WorkflowCancelled):
+                await handle.result(timeout=timeout)
+            history = await events(handle)
+            kinds = [row["event_type"] for row in history]
+            for kind in ("CancellationScopeDeliveryPrepared", "CancellationScopeDelivered",
+                         "CooperativeCancellationDelivered", "WorkflowCancelled"):
+                assert kinds.count(kind) == 1
+            assert kinds.count("ActivityCompleted") == 2 and "ActivityHeartbeatRecorded" not in kinds
+            assert "WorkflowFailed" not in kinds
+            resumed = await remote_marker(Path(marker + ".scoped." + queue + "-replacement"))
+            assert resumed["context"] == entered["context"]
+            assert resumed["activity_attempt_id"] != entered["activity_attempt_id"]
+            root = await remote_marker(Path(marker + ".root." + queue + "-replacement"))
+            assert resumed["context"]["root_context"] == root["context"]
+            assert root["context"]["root_request_id"] == original["request_id"]
+            terminal = next(row for row in history if row["event_type"] == "WorkflowCancelled")
+            assert datetime.fromisoformat(terminal["timestamp"].replace("Z", "+00:00")) < deadline
+            receipts = [json.loads(line) for line in trace.read_text().splitlines()]
+            scoped = [row["receipt"] for row in receipts if row["operation"] == "prepare"
+                      and row["receipt"].get("cancellation_cleanup", {}).get("scope_id")]
+            assert len(scoped) == 2
+            assert scoped[0]["cancellation_cleanup"] == scoped[1]["cancellation_cleanup"]
+            assert scoped[0]["cancellation_cleanup"]["cleanup_deadline_at"] == original["cleanup_deadline_at"]
+            assert any(row["operation"] == "recover" for row in receipts)
+            await callback_gone(resumed["callback_pid"])
+            await callback_gone(root["callback_pid"])
+            print("scoped SIGKILL and root convergence: " + json.dumps({
+                "original_cleanup": entered, "replacement_cleanup": resumed, "root_cleanup": root,
+                "receipts": receipts, "history": history,
+            }))
+        finally:
+            for process in processes:
+                if process.returncode is None:
+                    process.kill()
+                await asyncio.wait_for(process.wait(), timeout=10)
+            for log in logs:
+                log.close()
+            if handle is not None and (await handle.describe()).status not in {
+                "completed", "failed", "cancelled", "terminated", "continued_as_new",
+            }:
+                await handle.terminate(reason="scoped cleanup source qualification complete")
             await seed.stop()
 
 

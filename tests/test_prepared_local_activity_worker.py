@@ -181,6 +181,56 @@ def test_cleanup_admission_and_control_cannot_replace_original_cascade_authority
         )
 
 
+@pytest.mark.parametrize("field", [
+    "scope_id", "operation_scope_id", "request_id", "root_request_id", "delivery_history_event_id",
+    "preparation_history_event_id", "cleanup_deadline_at", "authority_deadline_at",
+])
+def test_scoped_cleanup_receipts_preserve_all_original_authority_fields(field: str) -> None:
+    ceiling = timestamp(20)
+    cleanup = {"scope_id": "scope-1", "operation_scope_id": "scope-1", "request_id": "scope-request",
+               "root_request_id": "root-request", "delivery_history_event_id": "scope-delivery",
+               "preparation_history_event_id": "scope-preparation", "cleanup_deadline_at": timestamp(30),
+               "authority_deadline_at": ceiling}
+    receipt = admission(cancellation_cleanup=cleanup, heartbeat_deadline_at=ceiling,
+                        start_to_close_deadline_at=ceiling, schedule_to_close_deadline_at=ceiling)
+    attempt = PreparedAttempt.admitted(
+        receipt, task_id="task", run_id="run-1", owner="owner", epoch=3, nonce="nonce",
+        heartbeat_timeout=None, cleanup=cleanup, request_started=time.monotonic(),
+    )
+    attempt.validate_control(control(receipt))
+    changed = {**cleanup, field: timestamp(40) if field.endswith("deadline_at") else "replacement"}
+    with pytest.raises(LocalActivityExecutionAborted, match="cleanup authority"):
+        attempt.validate_control(control(receipt, cancellation_cleanup=changed))
+    with pytest.raises(LocalActivityExecutionAborted, match="cleanup authority"):
+        PreparedAttempt.admitted(
+            {**receipt, "cancellation_cleanup": changed}, task_id="task", run_id="run-1", owner="owner",
+            epoch=3, nonce="nonce", heartbeat_timeout=None, cleanup=cleanup, request_started=time.monotonic(),
+        )
+
+
+def test_scoped_cleanup_cannot_admit_or_renew_past_its_narrower_original_ceiling() -> None:
+    ceiling = timestamp(20)
+    cleanup = {"scope_id": "scope-1", "operation_scope_id": "scope-1", "request_id": "scope-request",
+               "root_request_id": "root-request", "delivery_history_event_id": "scope-delivery",
+               "preparation_history_event_id": "scope-preparation", "cleanup_deadline_at": timestamp(30),
+               "authority_deadline_at": ceiling}
+    receipt = admission(cancellation_cleanup=cleanup, heartbeat_deadline_at=ceiling,
+                        start_to_close_deadline_at=ceiling, schedule_to_close_deadline_at=ceiling)
+    attempt = PreparedAttempt.admitted(
+        receipt, task_id="task", run_id="run-1", owner="owner", epoch=3, nonce="nonce",
+        heartbeat_timeout=None, cleanup=cleanup, request_started=time.monotonic(),
+    )
+    with pytest.raises(LocalActivityExecutionAborted, match="deadline|budget"):
+        attempt.validate_control(control(receipt, server_time=timestamp(21), lease_expires_at=timestamp(25),
+                                         workflow_lease_expires_at=timestamp(25)))
+    with pytest.raises(LocalActivityExecutionAborted, match="cleanup budget"):
+        PreparedAttempt.admitted(
+            {**receipt, "schedule_to_close_deadline_at": timestamp(25)}, task_id="task", run_id="run-1",
+            owner="owner", epoch=3, nonce="nonce", heartbeat_timeout=None, cleanup=cleanup,
+            request_started=time.monotonic(),
+        )
+
+
 def test_replay_captures_a_fresh_local_call_before_invoking_its_executor() -> None:
     outcome = replay(SequentialWorkflow, [], ["unused", True], prepare_local_activities=True,
                      local_activity_executor=lambda _: pytest.fail("callback ran before admission"))
