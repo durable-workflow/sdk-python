@@ -115,6 +115,21 @@ capabilities with Server at startup. Use stable `2.x` SDK and Server channels
 for new applications. The [compatibility guide](https://durable-workflow.com/docs/2.0/compatibility/)
 documents protocol and upgrade guarantees.
 
+## Cooperative cancellation release candidate
+
+Use `request_cancellation()` for bounded, replayable workflow cleanup. Opt in
+against a Server that advertises protocol 1.20 and the required capabilities:
+set `DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION=1.20` and include
+`cooperative_cancellation` in the Worker's `capabilities`. Durable local callback
+admission also needs `prepared_local_activities`, with
+`prepared_local_activity_cancellation_policies` for explicit local policies.
+Independently cancellable scopes remain disabled.
+
+The cooperative worker supervises async and synchronous activity callbacks
+independently of application heartbeats. Existing terminal cancellation remains
+available. See the [cancellation guide](docs/cooperative-cancellation-design.md)
+for immutable context, operation policies, shielded cleanup and recovery.
+
 ## Development
 
 ```bash
