@@ -533,12 +533,17 @@ async def test_candidate_scope_authoring_replays_nested_tree_and_deferred_member
 
 @workflow.defn(name="tests.python-candidate-scope-cleanup")
 class CandidateScopeCleanupWorkflow:
+    grouped = False
+
     def run(self, ctx: workflow.WorkflowContext):  # type: ignore[no-untyped-def]
         yield ctx.side_effect(lambda: "original prefix")
 
         def body():  # type: ignore[no-untyped-def]
             try:
-                yield ctx.start_timer(300)
+                if self.grouped:
+                    yield [ctx.start_timer(300), [ctx.start_timer(600)]]
+                else:
+                    yield ctx.start_timer(300)
             except WorkflowCancelled as error:
                 assert isinstance(error.context, ScopedCancellationContext)
                 assert error.context is ctx.cancellation_context
@@ -552,6 +557,11 @@ class CandidateScopeCleanupWorkflow:
         assert not ctx.is_cancellation_requested and ctx.cancellation_context is None
         yield ctx.start_timer(1)
         return result
+
+
+@workflow.defn(name="tests.python-candidate-scope-group-cleanup")
+class CandidateScopeGroupCleanupWorkflow(CandidateScopeCleanupWorkflow):
+    grouped = True
 
 
 async def request_native_scope_fixture(run_id: str, workflow_id: str, scope_id: str) -> dict[str, Any]:
@@ -574,17 +584,20 @@ async def request_native_scope_fixture(run_id: str, workflow_id: str, scope_id: 
     return json.loads(stdout)  # type: ignore[no-any-return]
 
 
+@pytest.mark.parametrize("grouped", [False, True])
 async def test_candidate_scope_cleanup_keeps_original_delivery_and_budget_after_replacement(
-    server_url: str, server_token: str,
+    server_url: str, server_token: str, grouped: bool,
 ) -> None:
     if os.environ.get("DURABLE_WORKFLOW_NATIVE_SOURCE_QUALIFICATION") != "1":
         pytest.skip("scope delivery requires the exact Native source overlay")
     queue = f"py-cooperative-scope-boundary-{uuid.uuid4().hex[:8]}"
+    cls = CandidateScopeGroupCleanupWorkflow if grouped else CandidateScopeCleanupWorkflow
+    workflow_type = "tests.python-candidate-scope-group-cleanup" if grouped else "tests.python-candidate-scope-cleanup"
     async with Client(server_url, token=server_token, namespace="default") as client:
         original = Worker(client, task_queue=queue, worker_id=f"{queue}-original",
-                          workflows=[CandidateScopeCleanupWorkflow], capabilities=["cooperative_cancellation"])
+                          workflows=[cls], capabilities=["cooperative_cancellation"])
         replacement = Worker(client, task_queue=queue, worker_id=f"{queue}-replacement",
-                             workflows=[CandidateScopeCleanupWorkflow], capabilities=["cooperative_cancellation"])
+                             workflows=[cls], capabilities=["cooperative_cancellation"])
         for worker in (original, replacement):
             worker._allow_cancellation_scope_authoring = True
             worker._allow_cancellation_scope_delivery = True
@@ -592,11 +605,11 @@ async def test_candidate_scope_cleanup_keeps_original_delivery_and_budget_after_
         try:
             await original._register()
             handle = await client.start_workflow(
-                workflow_type="tests.python-candidate-scope-cleanup", workflow_id=queue, task_queue=queue, input=[],
+                workflow_type=workflow_type, workflow_id=queue, task_queue=queue, input=[],
             )
-            for expected in ("record_side_effect", "start_timer"):
+            for expected in (["record_side_effect"], ["start_timer"] * (2 if grouped else 1)):
                 wire = await original._run_workflow_task(await poll_claim(client, original))
-                assert wire is not None and [command["type"] for command in wire] == [expected]
+                assert wire is not None and [command["type"] for command in wire] == expected
             history = await events(handle)
             scope = next(row["payload"]["scope_id"] for row in history
                          if row["event_type"] == "CancellationScopeOpened")
@@ -618,10 +631,11 @@ async def test_candidate_scope_cleanup_keeps_original_delivery_and_budget_after_
             history = await events(handle)
             kinds = [row["event_type"] for row in history]
             for kind in ("CancellationScopeOpened", "CancellationScopeRequested", "CancellationScopeDeliveryPrepared",
-                         "CancellationScopeDelivered", "TimerCancelled", "WorkflowCompleted"):
+                         "CancellationScopeDelivered", "WorkflowCompleted"):
                 assert kinds.count(kind) == 1
+            assert kinds.count("TimerCancelled") == (2 if grouped else 1)
             assert kinds.count("SideEffectRecorded") == 2
-            assert kinds.count("TimerScheduled") == 3 and kinds.count("TimerFired") == 2
+            assert kinds.count("TimerScheduled") == (4 if grouped else 3) and kinds.count("TimerFired") == 2
             assert "CooperativeCancellationRequested" not in kinds and "WorkflowCancelled" not in kinds
             assert "WorkflowFailed" not in kinds
             print(f"Native scope cleanup and replacement replay: {json.dumps(history)}")

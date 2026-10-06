@@ -4065,11 +4065,24 @@ def _replay_state(
         raise LocalActivityExecutionAborted(str(error)) from error
     for prepared in committed_scopes.preparations.values():
         payload = prepared.event["payload"]
-        if prepared.boundary.call_kind in {"local_activity", "parallel"} or payload["descendant_members"]:
+        if prepared.boundary.call_kind == "local_activity" or payload["descendant_members"]:
             raise LocalActivityExecutionAborted(
-                "cancellation_scope_execution_not_supported: scope groups, local callbacks and descendants "
+                "cancellation_scope_execution_not_supported: scope local callbacks and descendants "
                 "require their qualified replay consumers",
             )
+        if prepared.boundary.call_kind == "parallel":
+            for event in events[:events.index(prepared.event)]:
+                member = event.get("payload") or {}
+                sequence = _workflow_sequence(member)
+                if sequence is None or not prepared.boundary.interrupts(sequence):
+                    continue
+                if (_history_event_type(event) == "SignalWaitOpened"
+                    or _history_event_type(event) == "ActivityScheduled" and (
+                        member.get("local_activity") is True or member.get("execution_mode") == "local"
+                    )):
+                    raise LocalActivityExecutionAborted(
+                        "cancellation_scope_execution_not_supported: group contains an unqualified member",
+                    )
     authored_sequence = 1
     current_call_sequence = 1
     workflow_id = workflow_id or _workflow_id_from_history(events)
@@ -5817,6 +5830,36 @@ def _replay_state(
                         **details_by_sequence.get(sequence, {}), **_recorded_step_details(payload),
                     },
                 ))
+                if boundary.call_kind == "parallel" and isinstance(leaf, StartTimer | WaitCondition):
+                    expected = ({"delay_seconds": leaf.delay_seconds} if isinstance(leaf, StartTimer) else {
+                        "condition_key": leaf.condition_key,
+                        "timeout_seconds": leaf.timeout_seconds,
+                        "condition_definition_fingerprint": leaf.condition_definition_fingerprint,
+                    })
+                    if any(field in payload and payload[field] != actual for field, actual in expected.items()):
+                        raise NonDeterministicReplayError(
+                            sequence, "original group member", [event_type],
+                            detail="scoped group changed its original timer or condition definition",
+                        )
+
+    def _scope_call_membership(command: Any) -> str:
+        if not isinstance(command, list):
+            return getattr(command, "_cancellation_scope_id", "root")
+        leaves = _parallel_leaves(command)
+        memberships = {getattr(leaf, "_cancellation_scope_id", "root") for leaf in leaves}
+        if memberships == {"root"}:
+            return "root"
+        if not leaves or any(not isinstance(leaf, ScheduleActivity | StartTimer | StartChildWorkflow | WaitCondition)
+                             for leaf in leaves):
+            raise LocalActivityExecutionAborted(
+                "cancellation_scope_execution_not_supported: group contains an unqualified member",
+            )
+        if len(memberships) != 1 or next(iter(memberships)) != ctx._cancellation_scope_id:
+            raise NonDeterministicReplayError(
+                current_call_sequence, "original active scoped group", ["CancellationScopeDelivered"],
+                detail="scoped group changed its original member address or active scope",
+            )
+        return next(iter(memberships))
 
     def _terminal_state(value: Any, *, include_pending: bool) -> _ReplayState:
         _apply_due_receivers()
@@ -5875,7 +5918,7 @@ def _replay_state(
         nonlocal advanced_cmd, wait_yield_count
         boundary = delivery.boundary
         _assert_cancellation_call_matches(command, boundary)
-        membership = getattr(command, "_cancellation_scope_id", "root")
+        membership = _scope_call_membership(command)
         if membership != delivery.context.scope_id or ctx._cancellation_shield_depth > 0:
             raise NonDeterministicReplayError(
                 boundary.sequence, "original unshielded scoped operation", ["CancellationScopeDelivered"],
@@ -5980,6 +6023,14 @@ def _replay_state(
                 return _state(pending, cancellation_scope_opening=CancellationScopeOpening(
                     current_call_sequence, cmd.parent_scope_id, cmd.shield_parent,
                 ))
+            for sequence in committed_scopes.deliveries:
+                if sequence in consumed_scope_deliveries or sequence == current_call_sequence:
+                    continue
+                if sequence < current_call_sequence or boundary is not None and boundary.interrupts(sequence):
+                    raise NonDeterministicReplayError(
+                        sequence, "original scoped authored call", ["CancellationScopeDelivered"],
+                        detail="workflow skipped or crossed its original scoped cancellation boundary",
+                    )
             scoped_delivery = committed_scopes.deliveries.get(current_call_sequence)
             if scoped_delivery is not None and current_call_sequence not in consumed_scope_deliveries:
                 if boundary is None or (
@@ -5996,24 +6047,27 @@ def _replay_state(
                 continue
             if allow_cancellation_scope_delivery and boundary is not None:
                 request = committed_scopes.pending_request_for_scope(
-                    getattr(cmd, "_cancellation_scope_id", "root"), scope_history,
+                    _scope_call_membership(cmd), scope_history,
                 )
                 if request is not None and request.context.scope_id not in ctx._scope_cancellation_states:
-                    resolved_before_request = any(
-                        _workflow_sequence(event.get("payload") or {}) == current_call_sequence
+                    resolved_before_request = all(any(
+                        _workflow_sequence(event.get("payload") or {}) == member_sequence
                         and _history_event_type(event) in {
                             "ActivityCompleted", "ActivityFailed", "ActivityCancelled", "ActivityTimedOut",
                             "TimerFired", "TimerCancelled", "ConditionWaitSatisfied", "ConditionWaitTimedOut",
                             "ChildRunCompleted", "ChildRunFailed", "ChildRunCancelled", "ChildRunTerminated",
                         } for event in events[:request.history_index]
-                    )
+                    ) for member_sequence in range(
+                        current_call_sequence, current_call_sequence + boundary.sequence_span,
+                    ))
                     if not resolved_before_request:
-                        if boundary.call_kind not in {"activity", "timer", "condition", "child"}:
+                        if boundary.call_kind not in {"activity", "timer", "condition", "child", "parallel"}:
                             raise LocalActivityExecutionAborted(
                                 "cancellation_scope_execution_not_supported: this boundary needs its scope consumer",
                             )
                         scope_boundary = CancellationDelivery(
                             request.context.request_id, current_call_sequence, boundary.call_kind,
+                            boundary.sequence_span,
                         )
                         preparation = committed_scopes.preparations.get(request.context.scope_id)
                         if preparation is not None and preparation.boundary != scope_boundary:
