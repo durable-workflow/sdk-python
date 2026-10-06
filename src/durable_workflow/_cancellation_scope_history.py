@@ -67,7 +67,10 @@ def _kind(event: dict[str, Any]) -> Any:
 
 def _hash(values: list[Any]) -> str:
     # Native/PHP hashes JSON descriptors, with PHP's default slash escaping.
-    encoded = json.dumps(values, ensure_ascii=True, separators=(",", ":"), allow_nan=False).replace("/", "\\/")
+    encoded = json.dumps(values, ensure_ascii=False, separators=(",", ":"), allow_nan=False).replace("/", "\\/")
+    # PHP escapes non-ASCII code points but leaves ASCII DEL literal. Preserve
+    # already serialized escapes, including an application string "\\u007f".
+    encoded = "".join(json.dumps(char, ensure_ascii=True)[1:-1] if ord(char) > 0x7f else char for char in encoded)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 

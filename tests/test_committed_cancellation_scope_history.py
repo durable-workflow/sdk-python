@@ -8,9 +8,23 @@ from typing import Any
 import pytest
 
 from durable_workflow._cancellation_scope import CancellationScopeHistory
-from durable_workflow._cancellation_scope_history import CommittedCancellationScopeHistory, normalize_scope_members
+from durable_workflow._cancellation_scope_history import (
+    CommittedCancellationScopeHistory,
+    _hash,
+    normalize_scope_members,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_descriptor_hash_matches_native_php_unicode_slashes_del_and_group_order() -> None:
+    assert _hash(["scope/é😀", "event/a", "\x7f", "x\u2028y", True, None]) == (
+        "afde5922dded878e86ff3e376d9ebd20804265c8df877ac50bcd6d3ca0b22aa8"
+    )
+    assert _hash([{
+        "parallel_group_id": "parallel-calls:scope/é😀", "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 3, "parallel_group_size": 2, "parallel_group_index": 0,
+    }]) == "c31d38786755cb4d32824eb8b765e305757bb627eaa7433eb6f82926928a970a"
 
 
 def fixture(name: str, variant: str) -> dict[str, Any]:
