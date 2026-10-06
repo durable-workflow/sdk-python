@@ -275,6 +275,9 @@ def test_changed_authored_subtree_refuses_before_cleanup(change: str) -> None:
         "preparation_history_event_id",
         "cleanup_deadline_at",
         "authority_deadline_at",
+        "omitted",
+        "null",
+        "retrograde",
     ],
 )
 def test_descendant_cleanup_cannot_borrow_or_change_authority_before_workflow_construction(field: str) -> None:
@@ -290,18 +293,22 @@ def test_descendant_cleanup_cannot_borrow_or_change_authority_before_workflow_co
         "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
         "authority_deadline_at": "2026-10-04T00:00:26.123456Z",
     }
-    snapshot[field] = "changed"
+    if field not in {"omitted", "null", "retrograde"}:
+        snapshot[field] = "changed"
+    payload: dict[str, Any] = {
+        "sequence": 9,
+        "timer_id": "descendant-cleanup",
+        "delay_seconds": 1,
+        "fire_at": "2026-10-04T00:00:09.123456Z" if field == "retrograde"
+        else "2026-10-04T00:00:11.123456Z",
+        "cancellation_scope_id": context.scope_id,
+    }
+    if field != "omitted":
+        payload["cancellation_cleanup"] = None if field == "null" else snapshot
     append_cleanup_event(
         value,
         "TimerScheduled",
-        {
-            "sequence": 9,
-            "timer_id": "descendant-cleanup",
-            "delay_seconds": 1,
-            "fire_at": "2026-10-04T00:00:11.123456Z",
-            "cancellation_scope_id": context.scope_id,
-            "cancellation_cleanup": snapshot,
-        },
+        payload,
         "2026-10-04T00:00:10.123456Z",
     )
     entered: list[bool] = []

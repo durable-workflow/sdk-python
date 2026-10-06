@@ -75,6 +75,20 @@ def _cleanup_timer(event: dict[str, Any], prefix: Sequence[dict[str, Any]]) -> b
     payload = event.get("payload", {})
     snapshot = payload.get("cancellation_cleanup")
     if "cancellation_cleanup" not in payload:
+        scope_id = payload.get("cancellation_scope_id")
+        for delivery in prefix:
+            if (_kind(delivery) != "CancellationScopeDelivered"
+                or not _positive(delivery.get("sequence")) or not _positive(event.get("sequence"))
+                or delivery["sequence"] >= event["sequence"]):
+                continue
+            recorded = delivery["payload"]
+            preparations = [row for row in prefix if _kind(row) == "CancellationScopeDeliveryPrepared"
+                            and row.get("id") == recorded.get("preparation_history_event_id")]
+            if len(preparations) != 1:
+                raise _invalid("cleanup timer lacks its original canonical preparation")
+            context = ScopedCancellationContext.from_dict(recorded["cancellation"])
+            if scope_id in _boundary_scope_states(context, preparations[0]["payload"]):
+                raise _invalid("cleanup timer omits its original delivery snapshot")
         return False
     if not isinstance(snapshot, dict):
         raise _invalid("cleanup timer requires its original delivery snapshot")
@@ -109,7 +123,7 @@ def _cleanup_timer(event: dict[str, Any], prefix: Sequence[dict[str, Any]]) -> b
         or not _positive(sequence) or sequence < recorded["sequence"] + recorded["sequence_span"]
         or not _positive(event.get("sequence")) or delivery["sequence"] >= event["sequence"]
         or timestamp < scope_timestamp(delivery.get("timestamp", delivery.get("recorded_at")))
-        or timestamp >= deadline or scope_timestamp(payload.get("fire_at")) >= deadline
+        or timestamp >= deadline or not timestamp <= scope_timestamp(payload.get("fire_at")) < deadline
         or payload.get("timer_kind") is not None):
         raise _invalid("cleanup timer changes its original delivery or authority ceiling")
     return True
