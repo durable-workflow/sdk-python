@@ -5,6 +5,8 @@ from typing import Any
 import pytest
 
 from durable_workflow import serializer, workflow
+from durable_workflow._cancellation_scope import CancellationScopeHistory
+from durable_workflow._cancellation_scope_history import CommittedCancellationScopeHistory
 from durable_workflow.cancellation import ScopedCancellationContext
 from durable_workflow.errors import NonDeterministicReplayError, WorkflowCancelled
 from durable_workflow.workflow import LocalActivityExecutionAborted
@@ -141,9 +143,9 @@ def test_ancestor_delivery_restores_each_original_context_and_preserves_outer_an
 
 
 @pytest.mark.parametrize("layout", ["timer", "group"])
-@pytest.mark.parametrize("prepared", [False, True])
+@pytest.mark.parametrize("prepared, inherited", [(False, False), (False, True), (True, True)])
 def test_pending_ancestor_retains_original_identity_range_and_preparation_without_cleanup(
-    layout: str, prepared: bool
+    layout: str, prepared: bool, inherited: bool
 ) -> None:
     value = fixture("committed-scope-descendants.json", layout)
     value["history"] = [
@@ -151,6 +153,8 @@ def test_pending_ancestor_retains_original_identity_range_and_preparation_withou
         for row in value["history"]
         if row["event_type"] != "CancellationScopeDelivered"
         and (prepared or row["event_type"] != "CancellationScopeDeliveryPrepared")
+        and (inherited or row["event_type"] != "CancellationScopeRequested"
+             or row["payload"]["scope_id"] == value["scopes"]["parent"])
     ]
     seen: dict[str, ScopedCancellationContext] = {}
     cls = probe(value, seen)
@@ -164,6 +168,21 @@ def test_pending_ancestor_retains_original_identity_range_and_preparation_withou
     value["task"].update({"lease_owner": "replacement", "workflow_task_attempt": 17})
     assert run(cls, value).cancellation_scope_delivery == intent
     assert seen == {}
+
+
+def test_pending_ancestor_cannot_bypass_a_competing_intermediate_request() -> None:
+    value = fixture("committed-scope-operation-projections.json", "competing")
+    value["history"] = [
+        row for row in value["history"]
+        if row["event_type"] not in {"CancellationScopeDeliveryPrepared", "CancellationScopeDelivered"}
+        and (row["event_type"] != "CancellationScopeRequested" or row["payload"]["scope_id"] != "desc-grandchild")
+    ]
+    scopes = CancellationScopeHistory.read(value["history"], value["task"]["run_id"])
+    committed = CommittedCancellationScopeHistory.read(
+        value["history"], value["task"]["run_id"], value["task"]["workflow_id"], scopes,
+    )
+    with pytest.raises(ValueError, match="original ancestor lineage"):
+        committed.pending_request_for_scope("desc-grandchild", scopes)
 
 
 @pytest.mark.parametrize("layout", ["timer", "group"])

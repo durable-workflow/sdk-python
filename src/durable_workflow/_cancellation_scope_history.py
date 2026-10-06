@@ -696,14 +696,16 @@ class CommittedCancellationScopeHistory:
 
     def pending_request_for_scope(self, scope_id: str, scopes: CancellationScopeHistory) -> ScopeRequest | None:
         addresses = {opening["scope_id"]: opening for opening in scopes.openings.values()}
-        request = active = self.pending_requests.get(scope_id)
+        request = self.pending_requests.get(scope_id)
         while scope_id in addresses and not addresses[scope_id]["shield_parent"]:
             scope_id = addresses[scope_id]["parent_scope_id"]
             ancestor = self.pending_requests.get(scope_id)
             if ancestor is None:
                 continue
-            if (active is None or ancestor.context.root_context != active.context.root_context
-                or active.context.lineage[:len(ancestor.context.lineage)] != ancestor.context.lineage):
+            if request is not None and (
+                ancestor.context.root_context != request.context.root_context
+                or request.context.lineage[:len(ancestor.context.lineage)] != ancestor.context.lineage
+            ):
                 raise _invalid("pending scope selection changes its original ancestor lineage")
             request = ancestor
         return request
