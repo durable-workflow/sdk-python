@@ -661,6 +661,130 @@ async def request_native_scope_fixture(run_id: str, workflow_id: str, scope_id: 
     return json.loads(stdout)  # type: ignore[no-any-return]
 
 
+@workflow.defn(name="tests.python-scoped-remote")
+class ScopedRemoteWorkflow:
+    def run(self, ctx: Any, policy: str, grouped: bool) -> Any:
+        def body() -> Any:
+            try:
+                operation = ctx.schedule_activity(
+                    "tests.python-cooperative-work", [], cancellation_policy=policy,
+                    schedule_to_close_timeout=60,
+                )
+                if grouped:
+                    yield [operation, [ctx.start_timer(300)]]
+                else:
+                    yield operation
+            except WorkflowCancelled as error:
+                assert isinstance(error.context, ScopedCancellationContext)
+                assert error.context is ctx.cancellation_context
+                with ctx.cancellation_shield():
+                    yield ctx.start_timer(1)
+                return error.context.to_dict()
+            pytest.fail("blocked scoped callback completed without cancellation")
+
+        result = yield from ctx.cancellation_scope(body)
+        assert not ctx.is_cancellation_requested and ctx.cancellation_context is None
+        yield ctx.start_timer(1)
+        return result
+
+
+@pytest.mark.parametrize("handler_kind", ["async", "sync"])
+@pytest.mark.parametrize("grouped,policy", [
+    (False, CancellationPolicy.TRY_CANCEL),
+    (False, CancellationPolicy.WAIT_CANCELLATION_COMPLETED),
+    (True, CancellationPolicy.WAIT_CANCELLATION_COMPLETED),
+])
+async def test_scoped_remote_callback_stop_leaves_parent_available(
+    server_url: str, server_token: str, handler_kind: str, grouped: bool,
+    policy: CancellationPolicy, tmp_path: Path,
+) -> None:
+    if os.environ.get("DURABLE_WORKFLOW_NATIVE_SOURCE_QUALIFICATION") != "1":
+        pytest.skip("scope callback supervision requires the exact Native overlay")
+    queue = "py-cooperative-scope-boundary-" + uuid.uuid4().hex[:8]
+    marker = tmp_path / "remote"
+    async with ObservedOwnerClient(server_url, token=server_token, namespace="default") as client:
+        worker = Worker(client, task_queue=queue, worker_id=queue + "-owner",
+                        workflows=[ScopedRemoteWorkflow], activities=[cooperative_work],
+                        capabilities=["cooperative_cancellation"], max_concurrent_activity_tasks=1)
+        worker._allow_cancellation_scope_authoring = True
+        worker._allow_cancellation_scope_delivery = True
+        worker.activities["tests.python-cooperative-work"] = (
+            AsyncRemoteQualification(str(marker)) if handler_kind == "async"
+            else SyncRemoteQualification(str(marker))
+        )
+        running = asyncio.create_task(worker.run())
+        handle = None
+        try:
+            handle = await client.start_workflow(workflow_type="tests.python-scoped-remote",
+                                                 workflow_id=queue, task_queue=queue,
+                                                 input=[policy.value, grouped])
+            entered = await remote_marker(marker)
+            await asyncio.wait_for(client.owner_heartbeat.wait(), timeout=15)
+            fence = {key: entered[key] for key in ("task_id", "activity_attempt_id", "lease_owner")}
+            initial = await events(handle)
+            scope = next(row["payload"]["scope_id"] for row in initial
+                         if row["event_type"] == "CancellationScopeOpened")
+            run_id = (await handle.describe()).run_id
+            assert run_id is not None
+            accepted = await request_native_scope_fixture(run_id, queue, scope)
+            assert accepted == await request_native_scope_fixture(run_id, queue, scope)
+            original = accepted["payload"]["cancellation"]["root_context"]
+            assert await handle.result(timeout=20) == accepted["payload"]["cancellation"]
+            await callback_gone(entered["callback_pid"])
+            proof = await observed_stop_receipt(client, fence)
+            assert proof["request_id"] == accepted["payload"]["request_id"]
+            assert proof["root_request_id"] == original["root_request_id"]
+            assert proof["cleanup_deadline_at"] == original["cleanup_deadline_at"]
+            assert proof["received_after_deadline"] is False
+            duplicate = await client.acknowledge_activity_cancellation(
+                **fence, request_id=accepted["payload"]["request_id"],
+            )
+            assert duplicate["duplicate"] is True
+            assert duplicate["history_event_id"] == proof["history_event_id"]
+            history = await events(handle)
+            kinds = [row["event_type"] for row in history]
+            for kind in ("CancellationScopeRequested", "CancellationScopeDeliveryPrepared",
+                         "CancellationScopeDelivered", "ActivityCancelled",
+                         "ActivityCancellationAcknowledged", "WorkflowCompleted"):
+                assert kinds.count(kind) == 1
+            for kind in ("CooperativeCancellationRequested", "CooperativeCancellationDelivered",
+                         "WorkflowCancelled", "WorkflowFailed", "ActivityHeartbeatRecorded", "ActivityCompleted"):
+                assert kind not in kinds
+            assert kinds.count("TimerCancelled") == int(grouped)
+            assert kinds.count("TimerScheduled") == 2 + int(grouped)
+            assert kinds.count("TimerFired") == 2
+            if policy == CancellationPolicy.WAIT_CANCELLATION_COMPLETED:
+                assert kinds.index("ActivityCancellationAcknowledged") < kinds.index("CancellationScopeDelivered")
+            acknowledged = next(row["payload"] for row in history
+                                if row["event_type"] == "ActivityCancellationAcknowledged")
+            assert acknowledged["activity_attempt_id"] == fence["activity_attempt_id"]
+            assert acknowledged["lease_owner"] == fence["lease_owner"]
+            assert acknowledged["evidence_source"] == "activity_worker"
+            for key in ("request_id", "root_request_id", "cleanup_deadline_at", "acknowledged_at"):
+                assert acknowledged[key] == proof[key]
+            terminal = next(row for row in history if row["event_type"] == "WorkflowCompleted")
+            assert datetime.fromisoformat(terminal["timestamp"].replace("Z", "+00:00")) < (
+                datetime.fromisoformat(original["cleanup_deadline_at"].replace("Z", "+00:00"))
+            )
+            with pytest.raises(ServerError) as completion:
+                await client.complete_activity_task(**fence, result="late")
+            assert completion.value.status == 409
+            with pytest.raises(ServerError) as failure:
+                await client.fail_activity_task(**fence, message="late", failure_type="LateQualification")
+            assert failure.value.status == 409
+            assert await events(handle) == history
+            print("Actual scoped callback stop and unchanged parent: " + json.dumps({
+                "callback": entered, "receipt": proof, "history": history,
+            }))
+        finally:
+            if handle is not None and (await handle.describe()).status not in {
+                "completed", "failed", "cancelled", "terminated", "continued_as_new",
+            }:
+                await handle.terminate(reason="scoped callback qualification complete")
+            await worker.stop()
+            await asyncio.wait_for(running, timeout=10)
+
+
 @pytest.mark.parametrize("grouped", [False, True])
 @pytest.mark.parametrize("descendants", [False, True])
 async def test_candidate_scope_cleanup_keeps_original_delivery_and_budget_after_replacement(

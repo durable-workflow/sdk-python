@@ -257,8 +257,14 @@ Invalid snapshots fail before application construction. Pending ancestor request
 retain their original authored boundary without entering cleanup.
 
 Original-claim preparation and delivery use complete canonical history pages.
+Run cancellation composes with scoped delivery. Scalar prepared local or timer
+cleanup can replay before root delivery, keeping the original root identity,
+deadline and narrower scope ceiling. Root cleanup begins after leaving the scope.
+Physical workflow-worker SIGKILL during prepared scoped cleanup is qualified
+with fresh replacement replay and callback loss before the original deadline.
+
 Incomplete groups, local or selected scope groups, subtree local callbacks,
-competing roots, overlapping deliveries and root/scope composition remain gated.
+competing roots and overlapping deliveries remain gated.
 This profile defaults off and does not advertise general scope execution.
 Source qualification is separate from the published acceptance scenario.
 
