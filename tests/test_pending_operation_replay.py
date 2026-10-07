@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
-from durable_workflow import serializer, workflow
+from durable_workflow import Client, Worker, serializer, workflow
 from durable_workflow.errors import NonDeterministicReplayError
 from durable_workflow.workflow import CompleteWorkflow, WorkflowContext, query_state, replay
 
@@ -76,6 +78,43 @@ def test_signal_replay_does_not_reschedule_pending_operation(kind: str) -> None:
             serializer.decode_envelope(event["payload"]["arguments"])[0]
             for event in history if event["event_type"] == "SignalReceived"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", OPENINGS)
+async def test_worker_acknowledges_pending_signal_replay_with_original_lease(kind: str) -> None:
+    history = initial_history() + [OPENINGS[kind], {
+        "event_type": "SignalReceived", "payload": {
+            "signal_name": "increment", "arguments": serializer.envelope([7]),
+        },
+    }]
+    requests = []
+
+    async def server(method, path, **kwargs):  # type: ignore[no-untyped-def]
+        body = kwargs["json"]
+        requests.append((method, path, body, kwargs["headers"]["Authorization"]))
+        if path.endswith("/complete") and not body["commands"]:
+            return httpx.Response(422, json={"message": "The commands field is required."},
+                                  request=httpx.Request(method, "http://test" + path))
+        assert path.endswith("/fail")
+        return httpx.Response(200, json={"outcome": "waiting_for_history", "recorded": True},
+                              request=httpx.Request(method, "http://test" + path))
+
+    async with Client("http://test", worker_token="worker-token") as client:
+        worker = Worker(client, task_queue="queue", worker_id="original-owner", workflows=[PendingOperation])
+        with patch.object(client._http, "request", new=AsyncMock(side_effect=server)):
+            commands = await worker._run_workflow_task({
+                "task_id": "original-task", "workflow_task_attempt": 4, "run_id": "original-run",
+                "workflow_type": "tests.replay.pending-operation", "history_events": history,
+                "payload_codec": "avro", "arguments": serializer.envelope([kind]),
+            })
+
+    assert commands == []
+    assert requests == [("POST", "/api/worker/workflow-tasks/original-task/fail", {
+        "lease_owner": "original-owner", "workflow_task_attempt": 4,
+        "failure": {"message": "Workflow task waiting for scheduled history.",
+                    "type": "WorkflowTaskWaitingForHistory"},
+    }, "Bearer worker-token")]
 
 
 @pytest.mark.parametrize("kind", OPENINGS)

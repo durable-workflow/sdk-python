@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.2] - 2026-10-07
+
+### Fixed
+- Acknowledge replay waiting on an already pending timer, activity or child
+  through the existing waiting-for-history protocol. Empty command lists no
+  longer produce rejected workflow task completions.
+- Reject message-stream completion metadata without commands before sending a
+  waiting acknowledgement, preventing stream progress from being discarded.
+
 ## [2.4.1] - 2026-10-07
 
 ### Fixed

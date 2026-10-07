@@ -12,6 +12,13 @@ in-process `WorkflowEnvironment` test harness, and invocable activity carriers.
 
 Python workers execute server-routed query tasks after the Server advertises the query-tasks capability through cluster discovery.
 
+When replay is waiting on an already scheduled operation, the worker acknowledges
+waiting for history with its original lease and attempt. It does not schedule the
+operation again or fail the workflow. Low-level adapters calling
+`complete_workflow_task(commands=[])` use the same acknowledgement. Message-stream
+completion metadata requires nonempty commands so this path cannot discard stream
+progress.
+
 ## Install
 
 ```bash

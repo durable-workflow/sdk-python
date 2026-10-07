@@ -2904,6 +2904,25 @@ class TestFailWorkflowTask:
         assert mock.call_args.kwargs["json"] == fixture["request"]["body"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("metadata", [
+        {"message_stream_cursors": [{"stream_name": "input", "sequence": 7}]},
+        {"message_stream_waits": [{"stream_name": "input"}]},
+    ])
+    async def test_empty_completion_does_not_discard_message_stream_metadata(
+        self, client: Client, metadata: dict
+    ) -> None:
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock,
+                         return_value=_mock_response(200, {"completed": True})) as mock,
+            pytest.raises(ValueError, match="nonempty commands"),
+        ):
+            await client.complete_workflow_task(
+                task_id="task", lease_owner="owner", workflow_task_attempt=3,
+                commands=[], **metadata,
+            )
+        mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_fail_workflow_task_matches_polyglot_fixture(self, client: Client) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "workflow-task-fail-parity.json"
         fixture = json.loads(fixture_path.read_text())
