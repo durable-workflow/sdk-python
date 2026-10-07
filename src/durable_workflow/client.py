@@ -5115,10 +5115,22 @@ class Client:
 
         Worker-plane endpoint, called by :class:`~durable_workflow.Worker`.
         ``commands`` is the list of serialized commands the workflow yielded
-        for this task.
+        for this task. An empty list acknowledges waiting for already scheduled
+        history without reporting a workflow failure or scheduling another operation.
         """
         if (message_stream_cursors or message_stream_waits) and not _worker_protocol_supports_message_streams():
             raise ValueError("message stream completion metadata requires worker protocol 1.15 or newer")
+
+        if not commands:
+            if message_stream_cursors or message_stream_waits:
+                raise ValueError("Message stream completion metadata requires nonempty commands.")
+            return await self.fail_workflow_task(
+                task_id=task_id,
+                lease_owner=lease_owner,
+                workflow_task_attempt=workflow_task_attempt,
+                message="Workflow task waiting for scheduled history.",
+                failure_type="WorkflowTaskWaitingForHistory",
+            )
 
         body: dict[str, Any] = {
             "lease_owner": lease_owner,
