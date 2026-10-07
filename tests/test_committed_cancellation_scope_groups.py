@@ -217,7 +217,8 @@ def test_group_cleanup_timer_replays_original_receipt_and_narrower_authority(lay
         "cancellation_cleanup": snapshot,
     }, "2026-10-04T00:00:09.123456Z")
     value["task"].update({"workflow_task_attempt": 23, "lease_owner": "replacement"})
-    assert workflow.commands_to_server_commands(run(cls, value).commands, "queue") == first
+    assert run(cls, value).commands == []
+    assert run(cls, value).commands == []
     append_cleanup_event(value, "TimerFired", {
         "sequence": 8, "timer_id": "cleanup-timer", "delay_seconds": 1,
         "cancellation_scope_id": original.scope_id,

@@ -76,7 +76,10 @@ def test_scoped_cleanup_timer_carries_original_delivery_and_replays_without_exte
         field: snapshot[field] for field in ("scope_id", "request_id", "delivery_history_event_id")
     }
     assert wire[0]["cancellation_scope_id"] == snapshot["scope_id"]
-    assert workflow.commands_to_server_commands(run(Probe, value).commands, "queue") == wire
+    # The original cleanup timer and its authority are already durable.
+    # Cold replay waits for it rather than starting a second timer.
+    assert run(Probe, value).commands == []
+    assert run(Probe, value).commands == []
     append_cleanup_event(value, "TimerFired", {
         "sequence": 4, "timer_id": "cleanup-timer", "delay_seconds": 1,
         "cancellation_scope_id": snapshot["scope_id"],

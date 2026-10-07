@@ -1,0 +1,52 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "pending-timer-after-signal-avro",
+  "protocol_version": "1.19",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.pending-operation",
+    "input": [
+      "timer"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "echo",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoMc2FtcGxl"
+        }
+      }
+    },
+    {
+      "event_type": "TimerScheduled",
+      "payload": {
+        "sequence": 2,
+        "timer_id": "original-timer",
+        "delay_seconds": 120,
+        "fire_at": "2026-10-07T06:02:00Z"
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_name": "increment",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCBA4A"
+        },
+        "payload_codec": "avro"
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": []
+  }
+}

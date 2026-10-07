@@ -460,13 +460,13 @@ class TestUpdateSignalConditionReplay:
         expected_commands = [
             StartTimer,
             StartTimer,
-            StartTimer,
+            None,
             ScheduleActivity,
+            None,
+            None,
             ScheduleActivity,
-            ScheduleActivity,
-            ScheduleActivity,
-            ScheduleActivity,
-            ScheduleActivity,
+            None,
+            None,
             WaitCondition,
             WaitCondition,
             WaitCondition,
@@ -475,8 +475,8 @@ class TestUpdateSignalConditionReplay:
             WaitCondition,
             ScheduleActivity,
             ScheduleActivity,
-            ScheduleActivity,
-            ScheduleActivity,
+            None,
+            None,
             WaitCondition,
             WaitCondition,
             WaitCondition,
@@ -492,6 +492,9 @@ class TestUpdateSignalConditionReplay:
                 [],
             )
 
+            if expected_command is None:
+                assert outcome.commands == [], prefix_length
+                continue
             assert len(outcome.commands) == 1, prefix_length
             assert isinstance(outcome.commands[0], expected_command), prefix_length
             if prefix_length in (15, 16, 17, 18):

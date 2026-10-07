@@ -506,6 +506,21 @@ constraining throughput.
 
 ## Replay captured histories
 
+Signals can update workflow state while a timer, remote activity or child is
+pending. Replaying that state waits for the recorded operation. It keeps the
+original timer deadline and does not schedule another activity or child.
+
+Python SDK 2.4.1 fixes duplicate scheduling during these wakeups. Upgrade every
+Python worker on an affected queue. For a run created by an older worker,
+inspect its history for extra `TimerScheduled`, `ActivityScheduled` or
+`ChildWorkflowScheduled` events before the original operation completed.
+The fix prevents new duplicates and does not rewrite existing history. An
+extra completed timer can still produce `NonDeterministicReplayError` when
+replay reaches the next authored operation. Capture that history with the
+workflow code and reconcile any activity or child side effects before
+terminating and replacing an affected run. Do not delete history rows or skip
+recorded operations to force replay to succeed.
+
 Use `Replayer` to debug a captured history without connecting to a live server:
 
 ```python

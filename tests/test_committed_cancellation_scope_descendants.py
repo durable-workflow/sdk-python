@@ -227,7 +227,8 @@ def test_cleanup_timer_retains_original_ancestor_receipt_and_each_scope_authorit
         "2026-10-04T00:00:10.123456Z",
     )
     value["task"].update({"lease_owner": "replacement", "workflow_task_attempt": 17})
-    assert workflow.commands_to_server_commands(run(cls, value).commands, "queue") == fresh
+    assert run(cls, value).commands == []
+    assert run(cls, value).commands == []
     append_cleanup_event(
         value,
         "TimerFired",
