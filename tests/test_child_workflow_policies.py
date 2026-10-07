@@ -104,9 +104,8 @@ def test_existing_positional_constructor_and_omitted_wire_fields_are_preserved()
     result = replay(workflow("sequential", {
         "parent_close_policy": ParentClosePolicy.ABANDON, "cancellation_policy": CancellationPolicy.ABANDON,
     }), scheduled([StartChildWorkflow("child", ["argument"])]), [])
-    assert len(result.commands) == 1
-    assert isinstance(result.commands[0], StartChildWorkflow)
-    assert result.commands[0].cancellation_policy == CancellationPolicy.ABANDON
+    # Omitted historical fields retain their defaults, without starting another child.
+    assert result.commands == []
 
 
 @pytest.mark.parametrize("mode", ["sequential", "parallel", "selection"])
@@ -120,7 +119,7 @@ def test_changed_policies_fail_cold_replay_and_cancellation_delivery(mode: str, 
         assert replay(workflow(mode, policies), history, [], run_id="run-1").commands == [CompleteWorkflow("request-1")]
     else:
         cold = replay(workflow(mode, policies), history, [])
-        if mode == "selection":
+        if mode in ("sequential", "selection"):
             assert cold.commands == []
         else:
             assert scheduled(cold.commands) == history

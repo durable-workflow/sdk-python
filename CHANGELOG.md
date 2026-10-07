@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-10-07
+
+### Fixed
+- Keep already scheduled scalar timers, remote activities and child workflows
+  pending during signal wakeups and cold worker replay. Replay no longer emits
+  another scheduling command for the same recorded operation, including
+  shielded cancellation cleanup timers.
+- Reject changed timer delays when history records the original delay, while
+  preserving compatibility with older histories that omit it.
+
 ## [2.3.9] - 2026-10-04
 
 ### Fixed

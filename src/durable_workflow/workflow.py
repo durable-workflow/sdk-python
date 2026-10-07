@@ -3624,6 +3624,8 @@ def _activity_type_from_payload(payload: Mapping[str, Any]) -> str | None:
 
 def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
     details: dict[str, Any] = {}
+    if "delay_seconds" in payload:
+        details["delay_seconds"] = payload["delay_seconds"]
     if "cancellation_cleanup" in payload:
         details["cancellation_cleanup"] = payload["cancellation_cleanup"]
     local_preparation = payload.get("local_preparation")
@@ -3846,6 +3848,12 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
                     f"child_workflow_policy_changed: recorded {field} {recorded_policy!r}, "
                     f"but current workflow requested {actual_policy!r}."
                 )
+    elif isinstance(command, StartTimer):
+        if "delay_seconds" in step.details and step.details["delay_seconds"] != command.delay_seconds:
+            return (
+                f"Recorded delay_seconds {step.details['delay_seconds']!r}, but current workflow "
+                f"requested {command.delay_seconds!r}."
+            )
     elif isinstance(command, RecordVersionMarker):
         recorded = step.details.get("change_id")
         if isinstance(recorded, str) and recorded != command.change_id:
@@ -6667,6 +6675,11 @@ def _replay_state(
                     continue
                 ctx.logger._set_replaying(False)
                 _assert_pending_step_matches(cmd)
+                if not isinstance(cmd, RecordLocalActivity) and _next_unconsumed_recorded_step() is not None:
+                    # A signal may wake a workflow while its existing operation is
+                    # still pending. Reissuing it allocates a new durable sequence
+                    # and can move a timer's deadline or duplicate external work.
+                    return _state(pending)
                 if isinstance(cmd, RecordLocalActivity) and prepare_local_activities:
                     return _state(pending, _prepared_call(cmd, current_call_sequence))
                 if isinstance(cmd, RecordLocalActivity) and local_activity_executor is not None:
