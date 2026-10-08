@@ -12,7 +12,7 @@ CacheKey = tuple[str, str, str]
 
 
 def complete_history(history: list[dict[str, Any]]) -> bool:
-    if not history:
+    if not history or any(not isinstance(event, dict) for event in history):
         return False
     types = [event.get("event_type") for event in history[:2]]
     if types[0] != "WorkflowStarted" and types != ["StartAccepted", "WorkflowStarted"]:
@@ -75,7 +75,10 @@ class StickyWorkflowCache:
         self.discard(key)
         if not self.enabled or not complete_history(history):
             return False
-        encoded = json.dumps(history, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        try:
+            encoded = json.dumps(history, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError):
+            return False
         if len(encoded) > self.max_bytes:
             return False
         while self._entries and (len(self._entries) >= self.capacity or self._bytes + len(encoded) > self.max_bytes):

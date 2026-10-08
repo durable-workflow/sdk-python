@@ -5,6 +5,8 @@ Enable it for a worker with `sticky_cache_capacity`. The default of zero leaves
 the cache disabled. Workflow code still replays from durable history.
 
 ```python
+from durable_workflow import Worker
+
 worker = Worker(
     client,
     task_queue="orders",
@@ -23,6 +25,11 @@ either capacity limit is reached.
 Cache eviction, expiry, another build and worker replacement use cold replay.
 The worker validates the cached prefix before using it and fetches authoritative
 history on a mismatch. Application correctness must never depend on the cache.
+
+For histories spanning several pages, the worker can reuse a Server-issued page
+cursor and download the tail after validating the inline prefix. Short histories
+still arrive with the task. This cache reduces repeated history downloads. It
+does not skip deterministic replay or promise a throughput increase.
 
 `worker.sticky_cache_metrics()` reports hits, misses, evictions, forced cold
 replays, retained entries and encoded history bytes.
