@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -44,9 +45,10 @@ async def wait_phase(handle: Any, phase: int) -> None:
 
 
 async def start_worker(client: Client, queue: str, *, worker_id: str,
-                       capacity: int = 2, max_bytes: int = 16 * 1024 * 1024) -> tuple[Worker, asyncio.Task[None]]:
+                       capacity: int = 2, max_bytes: int = 16 * 1024 * 1024,
+                       build_id: str | None = None) -> tuple[Worker, asyncio.Task[None]]:
     worker = Worker(client, task_queue=queue, workflows=[StickyHistoryWorkflow], worker_id=worker_id,
-                    sticky_cache_capacity=capacity, sticky_cache_max_bytes=max_bytes)
+                    sticky_cache_capacity=capacity, sticky_cache_max_bytes=max_bytes, build_id=build_id)
     runner = asyncio.create_task(worker.run())
     await asyncio.wait_for(worker._registration_done.wait(), timeout=20)
     if runner.done():
@@ -67,6 +69,8 @@ async def test_warm_paged_history_skips_retained_middle_pages(server_url: str, s
         with patch.object(client, "workflow_task_history", new_callable=AsyncMock,
                           wraps=client.workflow_task_history) as pages:
             worker, runner = await start_worker(client, queue, worker_id=f"sticky-holder-{suffix}")
+            load = AsyncMock(wraps=worker._load_workflow_claim_history)
+            worker._load_workflow_claim_history = load
             try:
                 handle = await client.start_workflow(workflow_type="tests.python-sticky-history", task_queue=queue,
                                                      workflow_id=f"sticky-run-{suffix}", input=[600])
@@ -82,7 +86,19 @@ async def test_warm_paged_history_skips_retained_middle_pages(server_url: str, s
                 assert retained[2] >= 1000
                 await handle.signal("advance", [3])
                 assert await handle.result(timeout=60) == {"total": 359400, "stage": 3}
-                assert pages.await_count - before == 1
+                last_task = load.await_args.args[0]
+                differences = [(index, sorted(set(event) | set(retained[0][index])))
+                               for index, event in enumerate(last_task["history_events"])
+                               if index < len(retained[0]) and event != retained[0][index]]
+                assert pages.await_count - before == 1, json.dumps({
+                    "new_cursors": [call.kwargs["next_history_page_token"]
+                                    for call in pages.await_args_list[before:]],
+                    "retained_cursor": retained[1], "retained_offset": retained[2],
+                    "retained_events": len(retained[0]), "metrics": worker.sticky_cache_metrics(),
+                    "mode": last_task.get("sticky_replay_mode"),
+                    "last": last_task.get("last_history_sequence"), "count": last_task.get("total_history_events"),
+                    "inline_differences": differences[:1], "inline_first": last_task["history_events"][0]["event_type"],
+                })
                 assert pages.await_args.kwargs["next_history_page_token"] == retained[1]
                 assert worker.sticky_cache_metrics()["hit"] >= 3
                 assert worker.sticky_cache_metrics()["entries"] == 0
@@ -125,11 +141,17 @@ async def test_eviction_or_oversized_cache_uses_cold_history(
 
 
 @pytest.mark.asyncio
-async def test_replacement_replays_original_run_without_retained_state(server_url: str, server_token: str) -> None:
+@pytest.mark.parametrize("replacement_build", [None, "build-after"])
+async def test_replacement_replays_original_run_without_retained_state(
+    server_url: str, server_token: str, replacement_build: str | None,
+) -> None:
     suffix = uuid.uuid4().hex[:8]
     queue = f"sticky-replace-{suffix}"
     async with Client(server_url, token=server_token, namespace="default") as client:
-        original, original_runner = await start_worker(client, queue, worker_id=f"sticky-before-{suffix}")
+        original, original_runner = await start_worker(
+            client, queue, worker_id=f"sticky-before-{suffix}",
+            build_id="build-before" if replacement_build is not None else None,
+        )
         try:
             handle = await client.start_workflow(workflow_type="tests.python-sticky-history", task_queue=queue,
                                                  workflow_id=f"sticky-replace-run-{suffix}", input=[2])
@@ -138,11 +160,27 @@ async def test_replacement_replays_original_run_without_retained_state(server_ur
             assert original.sticky_cache_metrics()["entries"] == 1
         finally:
             await stop_worker(original, original_runner)
-        replacement, runner = await start_worker(client, queue, worker_id=f"sticky-after-{suffix}")
+        replacement, runner = await start_worker(
+            client, queue, worker_id=f"sticky-after-{suffix}", build_id=replacement_build,
+        )
         try:
             assert replacement.sticky_cache_metrics()["entries"] == 0
+            if replacement_build is not None:
+                # Existing runs keep their build pin. A different build cannot take
+                # their task or turn affinity into permission to change workflow code.
+                await handle.signal("advance", [1])
+                assert await client.poll_workflow_task(
+                    worker_id=replacement.worker_id, task_queue=queue, build_id=replacement_build, timeout=0,
+                ) is None
+                assert (await handle.describe()).memo == {"sticky_phase": 1}
+                assert replacement.sticky_cache_metrics()["miss"] == 0
+                await stop_worker(replacement, runner)
+                replacement, runner = await start_worker(
+                    client, queue, worker_id=f"sticky-compatible-{suffix}", build_id="build-before",
+                )
             for phase in (1, 2, 3):
-                await handle.signal("advance", [phase])
+                if phase != 1 or replacement_build is None:
+                    await handle.signal("advance", [phase])
                 if phase < 3:
                     await wait_phase(handle, phase + 1)
             assert await handle.result(timeout=30) == {"total": 2, "stage": 3}

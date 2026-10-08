@@ -1,5 +1,7 @@
 # Sticky execution
 
+Use Python SDK 2.5.0 and Server 2.5.10 or newer for this feature.
+
 Sticky execution keeps a bounded, process-local copy of durable workflow history.
 Enable it for a worker with `sticky_cache_capacity`. The default of zero leaves
 the cache disabled. Workflow code still replays from durable history.
@@ -33,3 +35,15 @@ does not skip deterministic replay or promise a throughput increase.
 
 `worker.sticky_cache_metrics()` reports hits, misses, evictions, forced cold
 replays, retained entries and encoded history bytes.
+
+## Run an example
+
+With a local Server and the SDK installed, run the
+[complete example](https://github.com/durable-workflow/sdk-python/blob/main/examples/sticky_execution.py):
+
+```bash
+SERVER_URL=http://localhost:8080 WORKFLOW_TOKEN=dev-token python examples/sticky_execution.py
+```
+
+It records a side effect, waits for two timers and prints the cache counters.
+Shutting down clears retained history. The recorded result remains in Server.

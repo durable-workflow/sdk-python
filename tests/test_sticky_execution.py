@@ -114,6 +114,7 @@ async def test_warm_history_reuses_server_cursor_on_current_lease_and_advances_b
         {"history_events": history(8)[6:], "next_history_page_token": None},
     ]
     current = task(history(8)[:2], last=8, token="server-cursor-two")
+    current["total_history_events"] = current.pop("last_history_sequence")
     assert await worker._load_workflow_claim_history(current) == history(8)
     assert [call.kwargs["next_history_page_token"] for call in client.workflow_task_history.await_args_list] == [
         "server-cursor-four", "server-cursor-six",

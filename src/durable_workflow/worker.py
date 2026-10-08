@@ -1549,7 +1549,9 @@ class Worker:
         if cached is not None and key is not None:
             prefix, resume_token, resume_offset = cached
             overlap = min(len(inline), len(prefix))
-            raw_last_sequence = task.get("last_history_sequence")
+            # Published Server responses also express the boundary as an event count.
+            # Retained histories are contiguous from sequence 1, so the two agree.
+            raw_last_sequence = task.get("last_history_sequence", task.get("total_history_events"))
             last_sequence = raw_last_sequence if isinstance(raw_last_sequence, int) else -1
             anchored = (
                 complete_history(inline) and inline[:overlap] == prefix[:overlap]
