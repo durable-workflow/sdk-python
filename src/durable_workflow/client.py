@@ -87,7 +87,7 @@ PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST: dict[str, dict[str, str | bool]] =
     "sticky_execution": {
         "supported": False,
         "minimum_protocol_version": "1.18",
-        "reason": "python_worker_uses_complete_durable_history_replay",
+        "reason": "sticky_cache_disabled",
     },
 }
 _MESSAGE_STREAMS_CAPABILITY = "message_streams"
@@ -5112,6 +5112,7 @@ class Client:
         commands: list[dict[str, Any]],
         message_stream_cursors: list[dict[str, Any]] | None = None,
         message_stream_waits: list[dict[str, Any]] | None = None,
+        sticky_cache: dict[str, Any] | None = None,
     ) -> Any:
         """Report successful execution of a workflow task with its emitted commands.
 
@@ -5143,6 +5144,8 @@ class Client:
             body["message_stream_cursors"] = message_stream_cursors
         if message_stream_waits:
             body["message_stream_waits"] = message_stream_waits
+        if sticky_cache is not None:
+            body["sticky_cache"] = sticky_cache
         return await self._request(
             "POST", f"/worker/workflow-tasks/{task_id}/complete", worker=True, json=body
         )

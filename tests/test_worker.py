@@ -447,7 +447,7 @@ class TestWorkerRegistration:
                 "sticky_execution": {
                     "supported": False,
                     "minimum_protocol_version": "1.18",
-                    "reason": "python_worker_uses_complete_durable_history_replay",
+                    "reason": "sticky_cache_disabled",
                 },
             },
             "task_slots": {
@@ -1194,6 +1194,33 @@ class TestWorkerRegistration:
         with pytest.raises(RuntimeError, match="unable to read /api/cluster/info"):
             await worker._register()
         mock_client.register_worker.assert_not_called()
+
+
+class TestStickyWorkerRegistration:
+    @pytest.mark.asyncio
+    async def test_only_enabled_worker_advertises_sticky_support(self, mock_client: AsyncMock) -> None:
+        info = compatible_cluster_info()
+        info["worker_protocol"]["server_capabilities"]["sticky_execution"] = {"supported": True}  # type: ignore[index]
+        mock_client.get_cluster_info.return_value = info
+        worker = Worker(mock_client, task_queue="q", sticky_cache_capacity=2)
+        await worker._register()
+        registration = mock_client.register_worker.await_args.kwargs
+        assert registration["capabilities"].count("sticky_execution") == 1
+        assert registration["capability_manifest"]["sticky_execution"] == {
+            "supported": True, "minimum_protocol_version": "1.18", "implementation": "bounded_durable_history_cache",
+        }
+        await worker.stop()
+
+    @pytest.mark.asyncio
+    async def test_enabled_cache_requires_server_support(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q", sticky_cache_capacity=2)
+        with pytest.raises(RuntimeError, match="advertised sticky_execution support"):
+            await worker._register()
+        mock_client.register_worker.assert_not_awaited()
+
+    def test_manual_capability_cannot_advertise_disabled_cache(self, mock_client: AsyncMock) -> None:
+        with pytest.raises(ValueError, match="positive sticky_cache_capacity"):
+            Worker(mock_client, task_queue="q", capabilities=["sticky_execution"])
 
 
 class TestWorkflowTaskExecution:

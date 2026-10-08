@@ -489,6 +489,27 @@ async def test_worker_replays_recorded_side_effects_across_history_pages() -> No
     assert serializer.decode_envelope(commands[0]["result"]) == 198
 
 
+@pytest.mark.asyncio
+async def test_replacement_with_sticky_suffix_fetches_cold_history_before_replay() -> None:
+    fixture = json.loads((FIXTURE_DIR / "sticky-cold-prefix-side-effects-avro.json").read_text(encoding="utf-8"))
+    history = fixture["history"]
+    client = AsyncMock(spec=Client)
+    client.workflow_task_history.return_value = {"history_events": history, "next_history_page_token": None}
+    worker = Worker(client, task_queue="cold-sticky", workflows=[PagedRecordedSideEffectsWorkflow])
+    commands = await worker._run_workflow_task_core({
+        "task_id": "replacement-task", "workflow_id": "cold-sticky", "run_id": "original-run",
+        "workflow_type": fixture["workflow"]["type"], "workflow_task_attempt": 2,
+        "history_events": history[-1:], "sticky_replay_mode": "sticky_hit_expected",
+        "arguments": serializer.encode([], codec="avro"), "payload_codec": "avro",
+    })
+    client.workflow_task_history.assert_awaited_once_with(
+        task_id="replacement-task", next_history_page_token="MA==", lease_owner=worker.worker_id,
+        workflow_task_attempt=2,
+    )
+    assert commands is not None
+    assert serializer.decode_envelope(commands[0]["result"]) == 198
+
+
 @pytest.mark.parametrize(
     "fixture",
     [

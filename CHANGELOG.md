@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-08
+
+### Added
+- Opt-in sticky execution with bounded entries, encoded history bytes and TTL.
+  Retain durable history and validate prefixes before reusing Server-issued
+  page cursors. Eviction, expiry, replacement and mismatches use cold replay.
+- Cache counters and a runnable sticky execution example. Server 2.5.10 exposes
+  the replay modes needed for warm history reuse. Workers keep the cache disabled
+  unless `sticky_cache_capacity` is positive.
+
 ## [2.4.3] - 2026-10-08
 
 ### Fixed

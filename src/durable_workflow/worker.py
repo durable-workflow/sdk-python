@@ -41,6 +41,7 @@ from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProc
 from ._cancellation_scope_history import CancellationScopeBudget, CancellationScopeDeliveryReceipt
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
 from ._prepared_local_activity import PreparedAttempt, PreparedCancellationObserved, PreparedLocalRunner
+from ._sticky_workflow_cache import CacheKey, StickyWorkflowCache, complete_history
 from .activity import ActivityContext, ActivityInfo, _set_context
 from .auth_composition import (
     AUTH_COMPOSITION_CONTRACT_SCHEMA,
@@ -53,6 +54,7 @@ from .client import (
     CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA,
     CONTROL_PLANE_REQUEST_CONTRACT_VERSION,
     CONTROL_PLANE_VERSION,
+    DEFAULT_SDK_VERSION,
     PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
     PROTOCOL_VERSION,
     Client,
@@ -1008,6 +1010,9 @@ class Worker:
         max_concurrent_workflow_tasks: int = 10,
         max_concurrent_activity_tasks: int = 10,
         max_concurrent_worker_sessions: int = 10,
+        sticky_cache_capacity: int = 0,
+        sticky_cache_max_bytes: int = 16 * 1024 * 1024,
+        sticky_cache_ttl_seconds: int = 300,
         shutdown_timeout: float = 30.0,
         heartbeat_interval: float = 60.0,
         metrics: MetricsRecorder | None = None,
@@ -1029,6 +1034,11 @@ class Worker:
         }
         self.activities = {_activity_name(a): a for a in activities}
         self.capabilities = tuple(dict.fromkeys(capability.strip() for capability in capabilities))
+        self._sticky_cache = StickyWorkflowCache(
+            sticky_cache_capacity, sticky_cache_max_bytes, sticky_cache_ttl_seconds,
+        )
+        if "sticky_execution" in self.capabilities and not self._sticky_cache.enabled:
+            raise ValueError("sticky_execution requires a positive sticky_cache_capacity")
         self._cooperative_cancellation_supported = False
         self._prepared_local_activities_supported = False
         self._prepared_local_activity_groups_supported = False
@@ -1211,6 +1221,13 @@ class Worker:
         _validate_server_compatibility(info)
         protocol = info.get("worker_protocol")
         server_capabilities = protocol.get("server_capabilities") if isinstance(protocol, Mapping) else None
+        sticky_support = (
+            server_capabilities.get("sticky_execution") if isinstance(server_capabilities, Mapping) else None
+        )
+        if self._sticky_cache.enabled and (
+            not isinstance(sticky_support, Mapping) or sticky_support.get("supported") is not True
+        ):
+            raise RuntimeError("sticky execution requires Server's advertised sticky_execution support")
         self._cooperative_cancellation_supported = (
             "cooperative_cancellation" in self.capabilities
             and isinstance(protocol, Mapping)
@@ -1292,6 +1309,15 @@ class Worker:
             capabilities.append("prepared_local_activity_cancellation_policies")
         if PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST["worker_sessions"]["supported"]:
             capabilities.append("worker_sessions")
+        affinity_manifest = {name: dict(entry) for name, entry in PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST.items()}
+        if self._sticky_cache.enabled:
+            if "sticky_execution" not in capabilities:
+                capabilities.append("sticky_execution")
+            affinity_manifest["sticky_execution"] = {
+                "supported": True,
+                "minimum_protocol_version": "1.18",
+                "implementation": "bounded_durable_history_cache",
+            }
 
         ack = await self.client.register_worker(
             worker_id=self.worker_id,
@@ -1306,7 +1332,7 @@ class Worker:
             build_id=self.build_id,
             capabilities=capabilities,
             capability_manifest={
-                **PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+                **affinity_manifest,
                 **({"prepared_local_activities": {
                     "supported": True, "minimum_protocol_version": "1.20",
                     "implementation": "durable_sequential_admission",
@@ -1514,8 +1540,65 @@ class Worker:
     async def _load_workflow_claim_history(
         self, task: dict[str, Any], *, first_page_token: str | None = None,
     ) -> list[dict[str, Any]]:
-        history = [] if first_page_token is not None else list(task.get("history_events", []))
-        token = first_page_token if first_page_token is not None else task.get("next_history_page_token")
+        if first_page_token is not None:
+            return await self._fetch_workflow_claim_history_pages(task, [], first_page_token)
+        inline = list(task.get("history_events", []))
+        key = self._sticky_cache_key(task)
+        mode = task.get("sticky_replay_mode")
+        cached = self._sticky_cache.lookup(key) if key is not None and mode == "sticky_hit_expected" else None
+        if cached is not None and key is not None:
+            prefix, resume_token, resume_offset = cached
+            overlap = min(len(inline), len(prefix))
+            # Published Server responses also express the boundary as an event count.
+            # Retained histories are contiguous from sequence 1, so the two agree.
+            raw_last_sequence = task.get("last_history_sequence", task.get("total_history_events"))
+            last_sequence = raw_last_sequence if isinstance(raw_last_sequence, int) else -1
+            anchored = (
+                complete_history(inline) and inline[:overlap] == prefix[:overlap]
+                and type(raw_last_sequence) is int and last_sequence >= len(prefix)
+            )
+            if anchored:
+                if resume_token is not None and resume_offset >= len(inline) and len(inline) < len(prefix):
+                    try:
+                        tail = await self._fetch_workflow_claim_history_pages(task, [], resume_token)
+                    except (InvalidArgument, LocalActivityExecutionAborted):
+                        tail = []
+                    except ServerError as error:
+                        if error.status != 400 or error.reason() != "invalid_page_token":
+                            raise
+                        tail = []
+                    if tail[:len(prefix) - resume_offset] == prefix[resume_offset:]:
+                        history = prefix[:resume_offset] + tail
+                        if complete_history(history) and len(history) >= last_sequence:
+                            # Paging measured the offset within the tail; retain its absolute boundary.
+                            task["_sticky_resume_offset"] += resume_offset
+                            self._sticky_cache.record_replay(hit=True)
+                            return history
+                else:
+                    history = await self._fetch_workflow_claim_history_pages(
+                        task, inline, task.get("next_history_page_token"),
+                    )
+                    if complete_history(history) and history[:len(prefix)] == prefix and len(history) >= last_sequence:
+                        self._sticky_cache.record_replay(hit=True)
+                        return history
+            # A cached prefix must never replace an inconsistent authoritative page.
+            self._sticky_cache.discard(key)
+        if key is not None:
+            self._sticky_cache.record_replay(
+                hit=False, forced=mode in {"sticky_hit_expected", "forced_cold_replay"},
+            )
+        if mode in {"sticky_hit_expected", "forced_cold_replay"} and not complete_history(inline):
+            history = await self._fetch_workflow_claim_history_pages(task, [], "MA==")
+            if not complete_history(history):
+                raise LocalActivityExecutionAborted("cold replay lacks a complete canonical history prefix")
+            return history
+        return await self._fetch_workflow_claim_history_pages(task, inline, task.get("next_history_page_token"))
+
+    async def _fetch_workflow_claim_history_pages(
+        self, task: dict[str, Any], history: list[dict[str, Any]], token: Any,
+    ) -> list[dict[str, Any]]:
+        task["_sticky_resume_token"] = None
+        task["_sticky_resume_offset"] = 0
         seen: set[str] = set()
         while token is not None:
             if not isinstance(token, str) or not token or token in seen:
@@ -1529,9 +1612,45 @@ class Worker:
                 raise LocalActivityExecutionAborted("workflow history page was not acknowledged")
             if any(not isinstance(event, dict) for event in page["history_events"]):
                 raise LocalActivityExecutionAborted("workflow history page contains a malformed event")
+            task["_sticky_resume_token"] = token
+            task["_sticky_resume_offset"] = len(history)
             history.extend(page["history_events"])
             token = page.get("next_history_page_token")
         return history
+
+    def _sticky_cache_key(self, task: dict[str, Any]) -> CacheKey | None:
+        if not self._sticky_cache.enabled:
+            return None
+        workflow_id, run_id = task.get("workflow_id"), task.get("run_id")
+        if not isinstance(workflow_id, str) or not workflow_id or not isinstance(run_id, str) or not run_id:
+            return None
+        return workflow_id, run_id, self.build_id.strip() if self.build_id is not None else DEFAULT_SDK_VERSION
+
+    def _sticky_cache_claim(
+        self, task: dict[str, Any], history: list[dict[str, Any]], commands: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        key = self._sticky_cache_key(task)
+        if key is None:
+            return None
+        if any(command.get("type") in {"complete_workflow", "fail_workflow", "continue_as_new"}
+               for command in commands):
+            self._sticky_cache.discard(key)
+            return None
+        if not self._sticky_cache.remember(
+            key, history, resume_token=task.get("_sticky_resume_token"),
+            resume_offset=task.get("_sticky_resume_offset", 0),
+        ):
+            return None
+        return {
+            "worker_id": self.worker_id, "workflow_id": key[0], "run_id": key[1], "build_id": key[2],
+            "ttl_seconds": self._sticky_cache.ttl_seconds,
+            "metrics": {name: self._sticky_cache.metrics()[name]
+                        for name in ("hit", "miss", "eviction", "forced_cold_replay")},
+        }
+
+    def sticky_cache_metrics(self) -> dict[str, int]:
+        """Return replay counters, retained entries and encoded history bytes."""
+        return self._sticky_cache.metrics()
 
     async def _refresh_cancellation_history(
         self, task: dict[str, Any], observed: CancellationRequest,
@@ -2416,6 +2535,7 @@ class Worker:
                     task_id=task_id,
                     attempt=attempt,
                     commands=[command],
+                    sticky_cache=self._sticky_cache_claim(task, history, [command]),
                 )
             except Exception as e:
                 log.warning("failed to complete workflow update task %s: %s", task_id, e)
@@ -2622,6 +2742,7 @@ class Worker:
                 commands=commands,
                 message_stream_cursors=outcome.message_stream_cursors,
                 message_stream_waits=outcome.message_stream_waits,
+                sticky_cache=self._sticky_cache_claim(task, history, commands),
             )
         except Exception as e:
             log.warning("failed to complete workflow task %s: %s", task_id, e)
@@ -2640,9 +2761,11 @@ class Worker:
         commands: list[dict[str, Any]],
         message_stream_cursors: list[dict[str, Any]] | None = None,
         message_stream_waits: list[dict[str, Any]] | None = None,
+        sticky_cache: dict[str, Any] | None = None,
     ) -> None:
         for completion_attempt in range(1, _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS + 1):
             try:
+                completion_kwargs = {"sticky_cache": sticky_cache} if sticky_cache is not None else {}
                 await self.client.complete_workflow_task(
                     task_id=task_id,
                     lease_owner=self.worker_id,
@@ -2650,6 +2773,7 @@ class Worker:
                     commands=commands,
                     message_stream_cursors=message_stream_cursors,
                     message_stream_waits=message_stream_waits,
+                    **completion_kwargs,
                 )
                 return
             except Exception as error:
@@ -4353,6 +4477,7 @@ class Worker:
             await self.client.deregister_worker_registration(self.worker_id)
             self._registered = False
             log.info("worker %s deregistered", self.worker_id)
+        self._sticky_cache.clear()
 
     @staticmethod
     def _remaining_shutdown_time(deadline: float) -> float:
