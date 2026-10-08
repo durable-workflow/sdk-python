@@ -30,6 +30,7 @@ from durable_workflow.errors import (
     ServerError,
     SignalFailed,
     Unauthorized,
+    UpdateFailed,
     UpdateRejected,
     WorkflowAlreadyStarted,
     WorkflowNotFound,
@@ -3090,6 +3091,34 @@ class TestHeartbeatActivityTask:
 
 
 class TestUpdateWorkflow:
+    @pytest.mark.asyncio
+    async def test_failed_update_retries_preserve_failure_identity(self, client: Client) -> None:
+        body = {
+            "update_status": "failed", "accepted": True,
+            "failure_message": "inventory unavailable", "workflow_id": "wf-1",
+            "run_id": "run-1", "update_id": "update-1", "failure_id": "failure-1",
+        }
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=_mock_response(422, body),
+        ) as request:
+            failures = []
+            for _ in range(2):
+                with pytest.raises(UpdateFailed) as exc_info:
+                    await client.update_workflow(
+                        "wf-1", "reserve", wait_for="completed", request_id="request-1",
+                    )
+                failures.append(exc_info.value)
+            assert request.await_count == 2
+            assert all(call.kwargs["json"]["request_id"] == "request-1"
+                       for call in request.await_args_list)
+        for error in failures:
+            assert str(error) == "inventory unavailable"
+            assert error.status == 422
+            assert error.body == body
+            assert (error.workflow_id, error.run_id, error.update_id, error.failure_id) == (
+                "wf-1", "run-1", "update-1", "failure-1",
+            )
+
     @pytest.mark.asyncio
     async def test_unsupported_wait_stage_raises_typed_error_before_update(self) -> None:
         client = Client("http://localhost:8080", token="test-token")

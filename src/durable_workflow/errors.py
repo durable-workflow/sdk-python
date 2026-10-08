@@ -453,6 +453,29 @@ class NonDeterministicReplayError(DurableWorkflowError):
         self.recorded_event_types = list(recorded_event_types)
 
 
+class UpdateFailed(InvalidArgument):
+    """An accepted workflow update failed during handler execution.
+
+    ``body`` preserves the Server response, including its durable failure
+    identity. This inherits from :class:`InvalidArgument` to preserve catches
+    written for earlier SDK versions that mapped all HTTP 422 responses there.
+    """
+
+    def __init__(self, message: str, *, status: int, body: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.status = status
+        self.body = body
+        self.workflow_id = self._identity(body, "workflow_id")
+        self.run_id = self._identity(body, "run_id")
+        self.update_id = self._identity(body, "update_id")
+        self.failure_id = self._identity(body, "failure_id")
+
+    @staticmethod
+    def _identity(body: dict[str, Any], name: str) -> str | None:
+        value = body.get(name)
+        return value if isinstance(value, str) and value.strip() else None
+
+
 class UpdateRejected(DurableWorkflowError):
     """A workflow update was rejected by the workflow's validator."""
 
@@ -859,6 +882,13 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
             raise signal_failed("signal argument validation failed")
         if reason == "invalid_query_arguments":
             raise query_failed("query argument validation failed")
+        if isinstance(body, dict) and body.get("update_status") == "failed":
+            failure_message = body.get("failure_message")
+            if not isinstance(failure_message, str) or not failure_message.strip():
+                failure_message = message
+            if not isinstance(failure_message, str) or not failure_message.strip():
+                failure_message = "workflow update failed"
+            raise UpdateFailed(failure_message, status=status, body=body)
         errors = None
         if isinstance(body, dict):
             errors = body.get("errors") or body.get("validation_errors")

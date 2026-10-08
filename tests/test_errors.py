@@ -13,6 +13,7 @@ from durable_workflow.errors import (
     ServerError,
     SignalFailed,
     Unauthorized,
+    UpdateFailed,
     UpdateRejected,
     UpdateValidationFailed,
     WorkflowAlreadyStarted,
@@ -102,6 +103,56 @@ class TestRaiseForStatus:
         with pytest.raises(InvalidArgument) as exc_info:
             _raise_for_status(422, {"message": "bad", "errors": {"f": ["req"]}})
         assert exc_info.value.errors == {"f": ["req"]}
+        assert type(exc_info.value) is InvalidArgument
+
+    def test_422_accepted_update_failure_preserves_diagnostics_and_legacy_catch(self) -> None:
+        body = {
+            "update_status": "failed", "accepted": True,
+            "failure_message": "inventory unavailable", "message": "generic failure",
+            "workflow_id": "wf-1", "run_id": "run-1", "update_id": "update-1",
+            "failure_id": "failure-1",
+        }
+        with pytest.raises(InvalidArgument) as exc_info:
+            _raise_for_status(422, body)
+        error = exc_info.value
+        assert isinstance(error, UpdateFailed)
+        assert str(error) == "inventory unavailable"
+        assert error.status == 422
+        assert error.body is body
+        assert error.errors is None
+        assert (error.workflow_id, error.run_id, error.update_id, error.failure_id) == (
+            "wf-1", "run-1", "update-1", "failure-1",
+        )
+
+    @pytest.mark.parametrize("failure_message", [None, "", "  ", 42])
+    @pytest.mark.parametrize("message", ["handler failed", None, "", "  ", 42])
+    def test_update_failure_message_fallback(self, failure_message: object, message: object) -> None:
+        with pytest.raises(UpdateFailed) as exc_info:
+            _raise_for_status(422, {
+                "update_status": "failed", "failure_message": failure_message, "message": message,
+            })
+        assert str(exc_info.value) == (
+            message if message == "handler failed" else "workflow update failed"
+        )
+
+    def test_update_failure_missing_or_malformed_identities_remain_absent(self) -> None:
+        with pytest.raises(UpdateFailed) as exc_info:
+            _raise_for_status(422, {
+                "update_status": "failed", "workflow_id": 42, "run_id": " ", "update_id": None,
+            })
+        error = exc_info.value
+        assert (error.workflow_id, error.run_id, error.update_id, error.failure_id) == (
+            None, None, None, None,
+        )
+
+    def test_rejected_update_arguments_are_not_handler_failure(self) -> None:
+        with pytest.raises(InvalidArgument) as exc_info:
+            _raise_for_status(422, {
+                "update_status": "rejected", "message": "invalid arguments",
+                "validation_errors": {"quantity": ["must be positive"]},
+            })
+        assert type(exc_info.value) is InvalidArgument
+        assert exc_info.value.errors == {"quantity": ["must be positive"]}
 
     def test_422_update_validator_rejected_is_typed(self) -> None:
         with pytest.raises(UpdateRejected) as exc_info:
@@ -109,6 +160,7 @@ class TestRaiseForStatus:
                 422,
                 {
                     "reason": "update_validator_rejected",
+                    "update_status": "failed",
                     "message": "approval required",
                     "validation_errors": {"approved": ["must be true"]},
                 },
@@ -132,6 +184,7 @@ class TestRaiseForStatus:
                 status,
                 {
                     "reason": reason,
+                    "update_status": "failed",
                     "message": "validation could not complete",
                     "retryable": retryable,
                 },
