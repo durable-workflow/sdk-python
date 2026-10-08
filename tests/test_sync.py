@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from durable_workflow import serializer
+from durable_workflow import InvalidArgument, UpdateFailed, serializer
 from durable_workflow.client import WorkflowHandle
 from durable_workflow.external_storage import ExternalPayloadCache, LocalFilesystemExternalStorage
 from durable_workflow.sync import Client, SyncStandaloneActivityHandle, SyncWorkflowHandle
@@ -581,6 +581,34 @@ class TestSyncClientMaintenance:
 
 
 class TestSyncClientUpdate:
+    def test_failed_update_preserves_diagnostics(self) -> None:
+        body = {
+            "update_status": "failed", "failure_message": "inventory unavailable",
+            "workflow_id": "wf-1", "run_id": "run-1", "update_id": "update-1",
+            "failure_id": "failure-1",
+        }
+        with Client("http://localhost:8080") as client:
+            client._async._cluster_info = {
+                "control_plane": {"request_contract": {"operations": {"update": {
+                    "fields": {"wait_for": {"canonical_values": ["accepted", "completed"]}},
+                }}}},
+            }
+            with (
+                patch.object(client._async._http, "request", new_callable=AsyncMock,
+                             return_value=_mock_response(422, body)) as request,
+                pytest.raises(InvalidArgument) as exc_info,
+            ):
+                client.update_workflow("wf-1", "reserve", request_id="request-1")
+            error = exc_info.value
+            assert isinstance(error, UpdateFailed)
+            assert str(error) == "inventory unavailable"
+            assert error.status == 422
+            assert error.body == body
+            assert (error.workflow_id, error.run_id, error.update_id, error.failure_id) == (
+                "wf-1", "run-1", "update-1", "failure-1",
+            )
+            assert request.call_args.kwargs["json"]["request_id"] == "request-1"
+
     def test_update(self) -> None:
         client = Client("http://localhost:8080")
         client._async._cluster_info = {

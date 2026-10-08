@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-10-08
+
+### Fixed
+- Preserve accepted update handler failures as `UpdateFailed`, including the
+  failure message, HTTP status, Server response and workflow, run, update and
+  failure identities. Existing `InvalidArgument` catches remain compatible.
+
 ## [2.4.2] - 2026-10-07
 
 ### Fixed

@@ -4349,7 +4349,9 @@ class Client:
         :class:`~durable_workflow.errors.UpdateRejected` when the workflow's
         validator rejects the update, or
         :class:`~durable_workflow.errors.UpdateValidationFailed` when the
-        declared validation boundary cannot be enforced.
+        declared validation boundary cannot be enforced. An accepted update
+        whose handler fails raises :class:`~durable_workflow.errors.UpdateFailed`
+        with the failure message, Server response and durable identities.
         """
         await self._require_update_wait_stage(wait_for or "accepted")
         body: dict[str, Any] = {}
