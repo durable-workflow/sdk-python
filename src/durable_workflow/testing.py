@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from . import serializer
-from .errors import WorkflowCancelled, WorkflowFailed, WorkflowTerminated
+from .errors import DuplicateRegistrationError, WorkflowCancelled, WorkflowFailed, WorkflowTerminated
 from .workflow import (
     CompleteWorkflow,
     ContinueAsNew,
@@ -136,6 +136,8 @@ class WorkflowEnvironment:
                 "decorate it with @workflow.defn(name=...) first."
             )
         _validate_workflow_entrypoint(workflow_cls)
+        if name in self._registered_workflows and self._registered_workflows[name] is not workflow_cls:
+            raise DuplicateRegistrationError("workflow", name, self._registered_workflows[name], workflow_cls)
         self._registered_workflows[name] = workflow_cls
 
     def signal(

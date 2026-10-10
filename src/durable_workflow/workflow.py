@@ -58,6 +58,7 @@ from .errors import (
     ChildWorkflowCancelled,
     ChildWorkflowFailed,
     ChildWorkflowTerminated,
+    DuplicateRegistrationError,
     DurableOperationCancelled,
     InvalidWorkflowDefinition,
     NexusOperationFailed,
@@ -140,6 +141,15 @@ def defn(*, name: str) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
         queries: dict[str, str] = {}
         updates: dict[str, str] = {}
         update_validators: dict[str, str] = {}
+
+        def register_handler(kind: str, handlers: dict[str, str], wire_name: str, attr: str) -> None:
+            if wire_name in handlers:
+                owner = f"{cls.__module__}.{cls.__qualname__}"
+                raise DuplicateRegistrationError(
+                    kind, wire_name, f"{owner}.{handlers[wire_name]}", f"{owner}.{attr}",
+                )
+            handlers[wire_name] = attr
+
         for attr in dir(cls):
             if attr.startswith("_"):
                 continue
@@ -148,16 +158,16 @@ def defn(*, name: str) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
             if isinstance(signal_name, str) and signal_name:
                 if signal_name == MESSAGE_STREAM_SIGNAL:
                     raise ValueError(f"signal name {signal_name!r} is reserved by the workflow runtime")
-                signals[signal_name] = attr
+                register_handler("signal", signals, signal_name, attr)
             query_name = getattr(member, "__query_name__", None)
             if isinstance(query_name, str) and query_name:
-                queries[query_name] = attr
+                register_handler("query", queries, query_name, attr)
             update_name = getattr(member, "__update_name__", None)
             if isinstance(update_name, str) and update_name:
-                updates[update_name] = attr
+                register_handler("update", updates, update_name, attr)
             update_validator_name = getattr(member, "__update_validator_name__", None)
             if isinstance(update_validator_name, str) and update_validator_name:
-                update_validators[update_validator_name] = attr
+                register_handler("update_validator", update_validators, update_validator_name, attr)
         cls.__workflow_signals__ = signals  # type: ignore[attr-defined]
         cls.__workflow_queries__ = queries  # type: ignore[attr-defined]
         cls.__workflow_updates__ = updates  # type: ignore[attr-defined]
@@ -2580,7 +2590,9 @@ class Replayer:
         for workflow_cls in workflows:
             workflow_type = str(getattr(workflow_cls, "__workflow_name__", workflow_cls.__name__))
             if workflow_type in self._workflows:
-                raise ValueError(f"duplicate workflow type registered with Replayer: {workflow_type!r}")
+                raise DuplicateRegistrationError(
+                    "workflow", workflow_type, self._workflows[workflow_type], workflow_cls,
+                )
             self._workflows[workflow_type] = workflow_cls
         if not self._workflows:
             raise ValueError("Replayer requires at least one workflow class")
