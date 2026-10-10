@@ -31,6 +31,10 @@ class ConditionRecoveryWorkflow:
     def approve(self) -> None:
         self.approved = True
 
+    @workflow.update("acknowledge")
+    def acknowledge(self) -> str:
+        return "acknowledged"
+
     def run(self, ctx: Any) -> Any:
         # Deliberately unsafe configuration drift keeps the class fingerprint
         # stable, exercising the recorded condition's own identity protection.
@@ -53,6 +57,9 @@ async def execute_one() -> None:
             max_concurrent_workflow_tasks=1,
         )
         await worker._register()
+        if os.environ.get("CONDITION_RECOVERY_REGISTER_ONLY") == "1":
+            print(json.dumps({"registered": True}), flush=True)
+            return
         expect_empty = os.environ.get("CONDITION_RECOVERY_EXPECT_EMPTY") == "1"
         task = await client.poll_workflow_task(
             worker_id=worker.worker_id, task_queue=worker.task_queue, timeout=1 if expect_empty else 20,
@@ -66,6 +73,7 @@ async def execute_one() -> None:
         print(json.dumps({
             "task_id": task["task_id"], "run_id": task["run_id"],
             "attempt": task["workflow_task_attempt"], "commands": commands,
+            "update_id": task.get("workflow_update_id"),
             "fingerprint": worker.workflow_definition_fingerprints,
             "sdk_version": importlib.metadata.version("durable-workflow"),
             "replay_source_sha256": hashlib.sha256(
@@ -76,13 +84,14 @@ async def execute_one() -> None:
 
 async def cold_worker(
     server_url: str, token: str, queue: str, mode: str, *, expect_empty: bool = False,
-    python_executable: str | None = None,
+    python_executable: str | None = None, register_only: bool = False,
 ) -> dict[str, Any]:
     environment = {
         **os.environ, "DURABLE_WORKFLOW_SERVER_URL": server_url,
         "DURABLE_WORKFLOW_AUTH_TOKEN": token, "CONDITION_RECOVERY_QUEUE": queue,
         "CONDITION_RECOVERY_MODE": mode,
         "CONDITION_RECOVERY_EXPECT_EMPTY": "1" if expect_empty else "0",
+        "CONDITION_RECOVERY_REGISTER_ONLY": "1" if register_only else "0",
         "CONDITION_RECOVERY_WORKER": f"condition-worker-{uuid.uuid4().hex}",
     }
     process = await asyncio.create_subprocess_exec(
@@ -108,12 +117,17 @@ def history_events(document: dict[str, Any]) -> list[dict[str, Any]]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("drift", ["key", "fingerprint"])
+@pytest.mark.parametrize("consumer", ["workflow", "update"])
 async def test_bad_deployment_then_cold_replacement_resumes_original_run(
-    server_url: str, server_token: str, drift: str,
+    server_url: str, server_token: str, drift: str, consumer: str,
 ) -> None:
     suffix = uuid.uuid4().hex
     queue = f"condition-recovery-{suffix}"
     async with Client(server_url, token=server_token, namespace="default") as client:
+        assert await cold_worker(
+            server_url, server_token, queue, "correct", register_only=True,
+            python_executable=os.environ.get("CONDITION_RECOVERY_INITIAL_PYTHON"),
+        ) == {"registered": True}
         handle = await client.start_workflow(
             workflow_type="tests.condition-deployment-recovery", task_queue=queue,
             workflow_id=f"condition-recovery-{suffix}", input=[],
@@ -124,7 +138,10 @@ async def test_bad_deployment_then_cold_replacement_resumes_original_run(
         )
         assert [command["type"] for command in initial["commands"]] == ["open_condition_wait"]
         original_history = history_events(await handle.get_history())
-        await handle.signal("wake")
+        if consumer == "update":
+            await handle.update("acknowledge", wait_for="accepted", request_id=f"ack-{suffix}")
+        else:
+            await handle.signal("wake")
 
         rejected = await cold_worker(server_url, server_token, queue, drift)
         assert rejected["commands"] is None
@@ -134,13 +151,18 @@ async def test_bad_deployment_then_cold_replacement_resumes_original_run(
         after_rejection = history_events(await handle.get_history())
         assert after_rejection[:len(original_history)] == original_history
         assert all(event["event_type"] != "WorkflowFailed" for event in after_rejection)
+        assert all(event["event_type"] != "UpdateFailed" for event in after_rejection)
 
         assert await cold_worker(server_url, server_token, queue, "correct", expect_empty=True) == {"empty": True}
         await handle.repair()
         resumed = await cold_worker(server_url, server_token, queue, "correct")
         assert resumed["run_id"] == handle.run_id
         assert resumed["fingerprint"] == initial["fingerprint"]
-        assert [command["type"] for command in resumed["commands"]] == ["open_condition_wait"]
+        expected_command = "complete_update" if consumer == "update" else "open_condition_wait"
+        assert [command["type"] for command in resumed["commands"]] == [expected_command]
+        if consumer == "update":
+            assert resumed["update_id"] == rejected["update_id"]
+            assert resumed["update_id"] is not None
         assert resumed["attempt"] > rejected["attempt"]
         await handle.signal("approve")
         finished = await cold_worker(server_url, server_token, queue, "correct")
@@ -151,8 +173,11 @@ async def test_bad_deployment_then_cold_replacement_resumes_original_run(
         kinds = [event["event_type"] for event in final_history]
         assert "WorkflowFailed" not in kinds
         assert kinds.count("WorkflowCompleted") == 1
+        if consumer == "update":
+            assert kinds.count("UpdateCompleted") == 1
+            assert "UpdateFailed" not in kinds
         print(json.dumps({
-            "drift": drift, "initial": initial, "rejected": rejected,
+            "drift": drift, "consumer": consumer, "initial": initial, "rejected": rejected,
             "resumed": resumed, "finished": finished,
             "preserved_prefix_events": len(original_history),
             "workflow_failed_events": 0, "workflow_completed_events": 1,
