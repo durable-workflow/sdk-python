@@ -24,6 +24,7 @@ from tests.test_golden_history_replay import (
     GoldenTimeoutWaitWorkflow,
     GoldenVersionMarkerWorkflow,
 )
+from tests.test_patch_history import PatchCancellationWorkflow, PatchInsertionWorkflow, RepeatedPatchWorkflow
 from tests.test_pending_operation_replay import PendingOperation
 from tests.test_update_signal_condition_replay import (
     PostConditionReceiversWorkflow,
@@ -266,6 +267,9 @@ WORKFLOWS = [
     NestedParallelPathWorkflow,
     ParallelMetadataProducerWorkflow,
     ParallelResultBindingWorkflow,
+    PatchCancellationWorkflow,
+    PatchInsertionWorkflow,
+    RepeatedPatchWorkflow,
     PendingOperation,
     PagedRecordedSideEffectsWorkflow,
     PostConditionReceiversWorkflow,

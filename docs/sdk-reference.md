@@ -511,6 +511,38 @@ dispatch-rate limits, so automation can detect whether local worker slots,
 queue caps, namespace caps, or downstream dispatch budget groups are
 constraining throughput.
 
+## Evolve workflow code with patches
+
+Use a stable change ID when adding a branch to a workflow that already has
+running executions:
+
+```python
+def run(self, ctx):
+    if (yield ctx.patched("require-review")):
+        yield ctx.schedule_activity("review", [])
+    return (yield ctx.schedule_activity("fulfil", []))
+```
+
+New histories record version `1` and take the patched branch. An old unmarked
+history that already reached the next operation takes the legacy branch, with
+version `-1`, and keeps that operation's original sequence. A pending activity
+is awaited without scheduling it again.
+
+Each change ID has one decision per replay. Repeated `patched()` calls reuse
+that decision. `get_version()` also keeps the first selected version, even if a
+later call raises its maximum. Every call's supported range must include the
+recorded decision. Keep change IDs stable and do not switch an ID between
+`get_version()` and the patch helpers.
+
+After retiring the legacy branch, use `yield ctx.deprecate_patch("require-review")`
+at the same code boundary. It retains the marker without returning a branch
+decision. Keep it while retained histories still need that boundary.
+
+Earlier Python SDKs could record repeated markers for one change ID. Replay
+accepts consistent duplicates and retains their stored positions, including
+committed cancellation boundaries. Conflicting decisions remain a typed replay
+error. Existing histories are not rewritten or discarded.
+
 ## Replay captured histories
 
 Signals can update workflow state while a timer, remote activity or child is

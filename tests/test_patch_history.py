@@ -77,14 +77,15 @@ class PatchCancellationWorkflow:
 @pytest.mark.parametrize("completed", [False, True])
 def test_inserted_patch_preserves_unmarked_activity(completed: bool) -> None:
     outcome = replay(PatchInsertionWorkflow, old_activity(1, completed), [])
-    assert len(outcome.commands) == 1
-    command = outcome.commands[0]
     if completed:
+        assert len(outcome.commands) == 1
+        command = outcome.commands[0]
         assert isinstance(command, CompleteWorkflow)
         assert command.result == "recorded"
     else:
-        assert isinstance(command, ScheduleActivity)
-        assert command.activity_type == "old"
+        # The old activity is already scheduled. Await it without duplicating
+        # that command or introducing the new patched activity.
+        assert outcome.commands == []
 
 
 def test_repeated_patch_emits_one_marker_on_new_history() -> None:

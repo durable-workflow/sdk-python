@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "retained-duplicate-patch-markers",
+  "protocol_version": "1.19",
+  "bindings": ["python"],
+  "workflow": {"type": "tests.patch.repeated", "input": [false], "payload_codec": "avro"},
+  "history": [
+    {"event_type": "VersionMarkerRecorded", "payload": {
+      "sequence": 1, "change_id": "same", "version": 1, "min_supported": -1, "max_supported": 1
+    }},
+    {"event_type": "VersionMarkerRecorded", "payload": {
+      "sequence": 2, "change_id": "same", "version": 1, "min_supported": -1, "max_supported": 1
+    }},
+    {"event_type": "ActivityScheduled", "payload": {"sequence": 3, "activity_type": "old"}},
+    {"event_type": "ActivityCompleted", "payload": {
+      "sequence": 3, "activity_type": "old", "payload_codec": "avro",
+      "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwTGAQ=="}
+    }}
+  ],
+  "expected": {"type": "complete_workflow", "result": [true, true, 99]}
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "patch-cancellation-boundary-after-one-marker",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {"type": "tests.patch.cancellation", "input": [], "payload_codec": "avro"},
+  "history": [
+    {"event_type": "VersionMarkerRecorded", "payload": {
+      "sequence": 1, "change_id": "same", "version": 1, "min_supported": -1, "max_supported": 1
+    }},
+    {"event_type": "ActivityScheduled", "payload": {"sequence": 2, "activity_type": "old"}},
+    {
+      "event_type": "CooperativeCancellationRequested",
+      "workflow_command_id": "request-1",
+      "recorded_at": "2026-09-30T12:00:00.000120Z",
+      "payload": {
+        "workflow_command_id": "request-1", "workflow_run_id": "run-1",
+        "cleanup_deadline_at": "2026-09-30T12:10:00Z"
+      }
+    },
+    {
+      "event_type": "CooperativeCancellationDelivered",
+      "workflow_command_id": "request-1",
+      "payload": {
+        "workflow_command_id": "request-1", "workflow_run_id": "run-1",
+        "sequence": 2, "call_kind": "activity"
+      }
+    }
+  ],
+  "expected": {"type": "complete_workflow", "result": [[true, true], "cancelled"]}
+}

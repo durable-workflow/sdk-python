@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "unmarked-patch-before-completed-activity",
+  "protocol_version": "1.19",
+  "bindings": ["python"],
+  "workflow": {"type": "tests.patch.insertion", "input": [], "payload_codec": "avro"},
+  "history": [
+    {"event_type": "ActivityScheduled", "payload": {"sequence": 1, "activity_type": "old"}},
+    {"event_type": "ActivityCompleted", "payload": {
+      "sequence": 1, "activity_type": "old", "payload_codec": "avro",
+      "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwTGAQ=="}
+    }}
+  ],
+  "expected": {"type": "complete_workflow", "result": 99}
+}
