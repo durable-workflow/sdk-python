@@ -100,10 +100,13 @@ MESSAGE_STREAM_MAX_BATCH = 100
 
 
 def _validate_workflow_entrypoint(cls: type) -> None:
-    entrypoint = inspect.unwrap(getattr(cls, "run", None))
-    if callable(entrypoint) and not inspect.isroutine(entrypoint):
-        entrypoint = inspect.unwrap(entrypoint.__call__)
-    if inspect.iscoroutinefunction(entrypoint) or inspect.isasyncgenfunction(entrypoint):
+    entrypoint = getattr(cls, "run", None)
+    if not callable(entrypoint):
+        return
+    targets = [inspect.unwrap(entrypoint)]
+    if not inspect.isroutine(targets[0]):
+        targets.append(inspect.unwrap(targets[0].__call__))
+    if any(inspect.iscoroutinefunction(target) or inspect.isasyncgenfunction(target) for target in targets):
         name = getattr(cls, "__workflow_name__", cls.__name__)
         raise InvalidWorkflowDefinition(
             f"unsupported_workflow_entrypoint: workflow {name!r} ({cls.__qualname__}.run) "
