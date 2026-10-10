@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-10-10
+
+### Fixed
+- Select the legacy patch branch when an existing unmarked history has already
+  reached its next durable operation, preserving pending activities without
+  scheduling them again.
+- Reuse one version decision per change ID and validate each call's supported
+  range. Repeated patch calls now record one marker on new histories.
+- Replay consistent duplicate markers written by earlier Python SDKs without
+  rewriting their histories or shifting committed cancellation boundaries.
+  Conflicting decisions remain explicit replay errors.
+
 ## [2.5.0] - 2026-10-08
 
 ### Added
