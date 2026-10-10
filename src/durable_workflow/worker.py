@@ -104,6 +104,7 @@ from .workflow import (
     ScheduleActivity,
     StartChildWorkflow,
     UpsertMemo,
+    _validate_workflow_entrypoint,
     apply_update,
     commands_to_server_commands,
     query_state,
@@ -1023,7 +1024,10 @@ class Worker:
     ) -> None:
         self.client = client
         self.task_queue = task_queue
-        self.workflows = {_workflow_name(w): w for w in workflows}
+        self.workflows: dict[str, type] = {}
+        for definition in workflows:
+            _validate_workflow_entrypoint(definition)
+            self.workflows[_workflow_name(definition)] = definition
         self.workflow_definition_fingerprints = {
             workflow_type: _workflow_definition_fingerprint(workflow_cls)
             for workflow_type, workflow_cls in self.workflows.items()

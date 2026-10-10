@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import inspect
 import logging
 import math
 import random
@@ -58,6 +59,7 @@ from .errors import (
     ChildWorkflowFailed,
     ChildWorkflowTerminated,
     DurableOperationCancelled,
+    InvalidWorkflowDefinition,
     NexusOperationFailed,
     NonDeterministicReplayError,
     QueryFailed,
@@ -97,6 +99,31 @@ MESSAGE_STREAM_CURSOR_SCHEMA = "durable-workflow.v2.message-stream.cursor"
 MESSAGE_STREAM_MAX_BATCH = 100
 
 
+def _validate_workflow_entrypoint(cls: type) -> None:
+    entrypoint = getattr(cls, "run", None)
+    if not callable(entrypoint):
+        return
+    targets = [inspect.unwrap(entrypoint)]
+    if not inspect.isroutine(targets[0]):
+        targets.append(inspect.unwrap(targets[0].__call__))
+    if any(inspect.iscoroutinefunction(target) or inspect.isasyncgenfunction(target) for target in targets):
+        name = getattr(cls, "__workflow_name__", cls.__name__)
+        raise InvalidWorkflowDefinition(
+            f"unsupported_workflow_entrypoint: workflow {name!r} ({cls.__qualname__}.run) "
+            "must use a synchronous function or generator; yield durable commands instead of async def."
+        )
+
+
+def _validate_workflow_result(value: Any, cls: type) -> None:
+    if inspect.isawaitable(value) or inspect.isasyncgen(value):
+        if inspect.iscoroutine(value):
+            value.close()
+        raise InvalidWorkflowDefinition(
+            f"unsupported_workflow_result: {cls.__qualname__}.run returned an async value; "
+            "use a synchronous result or yield durable commands."
+        )
+
+
 def defn(*, name: str) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
     """Register a class as a workflow type under a language-neutral name.
 
@@ -108,6 +135,7 @@ def defn(*, name: str) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
 
     def wrap(cls: type[_WorkflowT]) -> type[_WorkflowT]:
         cls.__workflow_name__ = name  # type: ignore[attr-defined]
+        _validate_workflow_entrypoint(cls)
         signals: dict[str, str] = {}
         queries: dict[str, str] = {}
         updates: dict[str, str] = {}
@@ -4037,6 +4065,7 @@ def _replay_state(
     allow_cancellation_scope_authoring: bool = False,
     allow_cancellation_scope_delivery: bool = False,
 ) -> _ReplayState:
+    _validate_workflow_entrypoint(workflow_cls)
     if allow_cancellation_scope_delivery and not allow_cancellation_scope_authoring:
         raise LocalActivityExecutionAborted("scope delivery requires canonical scope authoring")
     if prepare_local_activity_groups and not prepare_local_activities:
@@ -5172,6 +5201,7 @@ def _replay_state(
     except Exception as exc:
         return _state([_fail_workflow_from_exception(exc)])
     if not hasattr(gen, "__next__"):
+        _validate_workflow_result(gen, workflow_cls)
         if isinstance(gen, ContinueAsNew):
             _assert_no_unconsumed_history("continue as new")
             return _state([gen])
@@ -6032,6 +6062,7 @@ def _replay_state(
         return next(iter(memberships))
 
     def _terminal_state(value: Any, *, include_pending: bool) -> _ReplayState:
+        _validate_workflow_result(value, workflow_cls)
         _apply_due_receivers()
         _consume_terminal_condition_reopens()
         commands = list(pending) if include_pending else []
@@ -6784,10 +6815,10 @@ def _replay_state(
         try:
             return _terminal_state(stop.value, include_pending=True)
         except Exception as exc:
-            if isinstance(exc, NonDeterministicReplayError):
+            if isinstance(exc, (NonDeterministicReplayError, InvalidWorkflowDefinition)):
                 raise
             return _state(pending + [_fail_workflow_from_exception(exc)])
-    except NonDeterministicReplayError:
+    except (NonDeterministicReplayError, InvalidWorkflowDefinition):
         raise
     except LocalActivityExecutionAborted:
         raise

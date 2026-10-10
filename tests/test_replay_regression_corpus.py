@@ -251,7 +251,15 @@ class ChildPolicyAuthorWorkflow:
         return (yield ctx.start_child_workflow("child", []))
 
 
+class UnsupportedAsyncWorkflow:
+    __workflow_name__ = "tests.replay.unsupported-async"
+
+    async def run(self, ctx: WorkflowContext) -> str:
+        return "body was never executed"
+
+
 WORKFLOWS = [
+    UnsupportedAsyncWorkflow,
     ChildPolicyAuthorWorkflow,
     ColdReplacementSatisfiedConditionWorkflow,
     CooperativeReopenedConditionCleanupWorkflow,

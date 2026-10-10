@@ -51,6 +51,7 @@ from .workflow import (
     StartChildWorkflow,
     StartTimer,
     UpsertSearchAttributes,
+    _validate_workflow_entrypoint,
     registry,
     replay,
 )
@@ -134,6 +135,7 @@ class WorkflowEnvironment:
                 f"{workflow_cls!r} is not a workflow class; "
                 "decorate it with @workflow.defn(name=...) first."
             )
+        _validate_workflow_entrypoint(workflow_cls)
         self._registered_workflows[name] = workflow_cls
 
     def signal(
