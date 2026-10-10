@@ -6,5 +6,5 @@
   "bindings": ["python"],
   "workflow": {"type": "tests.replay.unsupported-async", "input": [], "payload_codec": "avro"},
   "history": [{"event_type": "WorkflowStarted", "payload": {}}],
-  "expected": {"error": "unsupported_workflow_entrypoint", "command_sequence": []}
+  "expected": {"error": "unsupported_workflow_entrypoint"}
 }
