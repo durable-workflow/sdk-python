@@ -66,6 +66,7 @@ from .errors import (
     ActivityCancelled,
     ActivityFailed,
     AvroNotInstalledError,
+    DuplicateRegistrationError,
     DurableWorkflowError,
     ExternalPayloadError,
     InvalidArgument,
@@ -106,6 +107,7 @@ from .workflow import (
     StartChildWorkflow,
     UpsertMemo,
     _validate_workflow_entrypoint,
+    _workflow_handler_registries,
     apply_update,
     commands_to_server_commands,
     query_state,
@@ -1028,7 +1030,11 @@ class Worker:
         self.workflows: dict[str, type] = {}
         for definition in workflows:
             _validate_workflow_entrypoint(definition)
-            self.workflows[_workflow_name(definition)] = definition
+            _workflow_handler_registries(definition)
+            name = _workflow_name(definition)
+            if name in self.workflows:
+                raise DuplicateRegistrationError("workflow", name, self.workflows[name], definition)
+            self.workflows[name] = definition
         self.workflow_definition_fingerprints = {
             workflow_type: _workflow_definition_fingerprint(workflow_cls)
             for workflow_type, workflow_cls in self.workflows.items()
@@ -1037,7 +1043,12 @@ class Worker:
             workflow_type: _workflow_command_contract(workflow_cls)
             for workflow_type, workflow_cls in self.workflows.items()
         }
-        self.activities = {_activity_name(a): a for a in activities}
+        self.activities: dict[str, Callable[..., Any]] = {}
+        for activity_definition in activities:
+            name = _activity_name(activity_definition)
+            if name in self.activities:
+                raise DuplicateRegistrationError("activity", name, self.activities[name], activity_definition)
+            self.activities[name] = activity_definition
         self.capabilities = tuple(dict.fromkeys(capability.strip() for capability in capabilities))
         self._sticky_cache = StickyWorkflowCache(
             sticky_cache_capacity, sticky_cache_max_bytes, sticky_cache_ttl_seconds,

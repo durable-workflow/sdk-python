@@ -31,6 +31,30 @@ class InvalidWorkflowDefinition(DurableWorkflowError, ValueError):
     """Workflow authoring uses an unsupported entry point or result."""
 
 
+class DuplicateRegistrationError(DurableWorkflowError, ValueError):
+    """One registration scope assigns a wire name to multiple definitions."""
+
+    def __init__(
+        self, registration_kind: str, wire_name: str,
+        first_definition: object, second_definition: object,
+    ) -> None:
+        def label(definition: object) -> str:
+            if isinstance(definition, str):
+                return definition
+            module = getattr(definition, "__module__", type(definition).__module__)
+            name = getattr(definition, "__qualname__", type(definition).__qualname__)
+            return f"{module}.{name}"
+
+        self.registration_kind = registration_kind
+        self.wire_name = wire_name
+        self.first_definition = label(first_definition)
+        self.second_definition = label(second_definition)
+        super().__init__(
+            f"duplicate {registration_kind} name {wire_name!r}: "
+            f"{self.first_definition} conflicts with {self.second_definition}"
+        )
+
+
 class DurableOperationCancelled(DurableWorkflowError):
     """A durable selection member was explicitly cancelled."""
 

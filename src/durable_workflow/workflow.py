@@ -58,6 +58,7 @@ from .errors import (
     ChildWorkflowCancelled,
     ChildWorkflowFailed,
     ChildWorkflowTerminated,
+    DuplicateRegistrationError,
     DurableOperationCancelled,
     InvalidWorkflowDefinition,
     NexusOperationFailed,
@@ -124,6 +125,29 @@ def _validate_workflow_result(value: Any, cls: type) -> None:
         )
 
 
+def _workflow_handler_registries(
+    cls: type,
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+    handlers: dict[str, dict[str, str]] = {kind: {} for kind in ("signal", "query", "update", "update_validator")}
+    for attr in dir(cls):
+        if attr.startswith("_"):
+            continue
+        member = getattr(cls, attr, None)
+        for kind, registry in handlers.items():
+            wire_name = getattr(member, f"__{kind}_name__", None)
+            if not isinstance(wire_name, str) or not wire_name:
+                continue
+            if kind == "signal" and wire_name == MESSAGE_STREAM_SIGNAL:
+                raise ValueError(f"signal name {wire_name!r} is reserved by the workflow runtime")
+            if wire_name in registry:
+                owner = f"{cls.__module__}.{cls.__qualname__}"
+                raise DuplicateRegistrationError(
+                    kind, wire_name, f"{owner}.{registry[wire_name]}", f"{owner}.{attr}",
+                )
+            registry[wire_name] = attr
+    return handlers["signal"], handlers["query"], handlers["update"], handlers["update_validator"]
+
+
 def defn(*, name: str) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
     """Register a class as a workflow type under a language-neutral name.
 
@@ -136,28 +160,7 @@ def defn(*, name: str) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
     def wrap(cls: type[_WorkflowT]) -> type[_WorkflowT]:
         cls.__workflow_name__ = name  # type: ignore[attr-defined]
         _validate_workflow_entrypoint(cls)
-        signals: dict[str, str] = {}
-        queries: dict[str, str] = {}
-        updates: dict[str, str] = {}
-        update_validators: dict[str, str] = {}
-        for attr in dir(cls):
-            if attr.startswith("_"):
-                continue
-            member = getattr(cls, attr, None)
-            signal_name = getattr(member, "__signal_name__", None)
-            if isinstance(signal_name, str) and signal_name:
-                if signal_name == MESSAGE_STREAM_SIGNAL:
-                    raise ValueError(f"signal name {signal_name!r} is reserved by the workflow runtime")
-                signals[signal_name] = attr
-            query_name = getattr(member, "__query_name__", None)
-            if isinstance(query_name, str) and query_name:
-                queries[query_name] = attr
-            update_name = getattr(member, "__update_name__", None)
-            if isinstance(update_name, str) and update_name:
-                updates[update_name] = attr
-            update_validator_name = getattr(member, "__update_validator_name__", None)
-            if isinstance(update_validator_name, str) and update_validator_name:
-                update_validators[update_validator_name] = attr
+        signals, queries, updates, update_validators = _workflow_handler_registries(cls)
         cls.__workflow_signals__ = signals  # type: ignore[attr-defined]
         cls.__workflow_queries__ = queries  # type: ignore[attr-defined]
         cls.__workflow_updates__ = updates  # type: ignore[attr-defined]
@@ -2578,9 +2581,12 @@ class Replayer:
     def __init__(self, *, workflows: Iterable[type]) -> None:
         self._workflows: dict[str, type] = {}
         for workflow_cls in workflows:
+            _workflow_handler_registries(workflow_cls)
             workflow_type = str(getattr(workflow_cls, "__workflow_name__", workflow_cls.__name__))
             if workflow_type in self._workflows:
-                raise ValueError(f"duplicate workflow type registered with Replayer: {workflow_type!r}")
+                raise DuplicateRegistrationError(
+                    "workflow", workflow_type, self._workflows[workflow_type], workflow_cls,
+                )
             self._workflows[workflow_type] = workflow_cls
         if not self._workflows:
             raise ValueError("Replayer requires at least one workflow class")

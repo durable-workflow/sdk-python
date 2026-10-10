@@ -368,8 +368,18 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
 
     query = workflow.get("query")
     query_result: Any = None
+    registered_workflows = [WORKFLOW_TYPES[workflow_type]]
+    worker_registrations = workflow.get("worker_registrations")
+    if worker_registrations is not None:
+        assert isinstance(worker_registrations, list) and worker_registrations
+        assert all(isinstance(name, str) and name in WORKFLOW_TYPES for name in worker_registrations)
+        worker = Worker(
+            AsyncMock(spec=Client), task_queue="regression-corpus",
+            workflows=[WORKFLOW_TYPES[name] for name in worker_registrations],
+        )
+        registered_workflows = list(worker.workflows.values())
     if query is None:
-        outcome = Replayer(workflows=[WORKFLOW_TYPES[workflow_type]]).replay(
+        outcome = Replayer(workflows=registered_workflows).replay(
             history,
             start_input,
             workflow_type=workflow_type,

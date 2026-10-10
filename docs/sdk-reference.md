@@ -411,6 +411,22 @@ entry points are rejected with `InvalidWorkflowDefinition` during definition or
 worker registration. Async activity handlers remain supported. Direct replay
 also rejects async entry points and awaitable results.
 
+Workers reject duplicate workflow or activity wire names with
+`DuplicateRegistrationError` before contacting Server or polling work. Each
+Worker and offline Replayer has its own registration scope. Distinct names
+remain supported, and separate workers may use different implementations of
+the same name. The error identifies the kind, wire name and both definitions.
+
+Within a workflow class, signal, query, update and validator names are checked
+independently. One name may be shared across these kinds. Python's normal
+method resolution applies to inheritance: overriding the same Python attribute
+is allowed, while two resolved attributes with the same handler kind and wire
+name are rejected at decoration time and at Worker, Replayer and test-environment
+admission, including programmatically defined classes. The test environment rejects a different
+workflow class replacing an existing name, while repeated registration of the
+same class remains idempotent for automatic execution. Explicit activity mock
+and canned-result setters continue to support replacement.
+
 ## Workflow signals, queries, and updates
 
 Signals mutate workflow state during replay:
