@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Generator
-from functools import wraps
+from functools import partial, wraps
 from typing import Any
 
 import pytest
@@ -20,19 +20,35 @@ class AsyncGeneratorWorkflow:
         yield "unsupported"
 
 
-@pytest.mark.parametrize("definition", [CoroutineWorkflow, AsyncGeneratorWorkflow])
+class AsyncCallable:
+    async def __call__(self, ctx: Any) -> str:
+        return "unsupported"
+
+
+class CallableWorkflow:
+    run = AsyncCallable()
+
+
+class PartialWorkflow:
+    run = staticmethod(partial(CoroutineWorkflow.run, object()))
+
+
+ASYNC_DEFINITIONS = [CoroutineWorkflow, AsyncGeneratorWorkflow, CallableWorkflow, PartialWorkflow]
+
+
+@pytest.mark.parametrize("definition", ASYNC_DEFINITIONS)
 def test_definition_rejects_async_entrypoints(definition: type) -> None:
     with pytest.raises(ValueError, match="unsupported_workflow_entrypoint.*synchronous"):
         workflow.defn(name="invalid-async")(definition)
 
 
-@pytest.mark.parametrize("definition", [CoroutineWorkflow, AsyncGeneratorWorkflow])
+@pytest.mark.parametrize("definition", ASYNC_DEFINITIONS)
 def test_worker_rejects_undecorated_async_entrypoints_before_network(definition: type) -> None:
     with pytest.raises(ValueError, match=definition.__name__):
         Worker(Client("http://127.0.0.1:1"), task_queue="unused", workflows=[definition])
 
 
-@pytest.mark.parametrize("definition", [CoroutineWorkflow, AsyncGeneratorWorkflow])
+@pytest.mark.parametrize("definition", ASYNC_DEFINITIONS)
 def test_direct_replay_rejects_async_without_creating_a_coroutine(definition: type) -> None:
     with pytest.raises(ValueError, match="unsupported_workflow_entrypoint"):
         workflow.replay(definition, [], [])
