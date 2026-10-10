@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "unsupported-async-workflow-entrypoint",
+  "protocol_version": "1.19",
+  "bindings": ["python"],
+  "workflow": {"type": "tests.replay.unsupported-async", "input": [], "payload_codec": "avro"},
+  "history": [{"event_type": "WorkflowStarted", "payload": {}}],
+  "expected": {"error": "unsupported_workflow_entrypoint", "command_sequence": []}
+}

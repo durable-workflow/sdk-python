@@ -27,6 +27,10 @@ class DurableWorkflowError(Exception):
     """Base class for every exception raised by the SDK."""
 
 
+class InvalidWorkflowDefinition(DurableWorkflowError, ValueError):
+    """Workflow authoring uses an unsupported entry point or result."""
+
+
 class DurableOperationCancelled(DurableWorkflowError):
     """A durable selection member was explicitly cancelled."""
 

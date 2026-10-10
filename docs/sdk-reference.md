@@ -405,6 +405,12 @@ language, target service language, operation name, request payload,
 service-call id, response or failure surface, and optional artifact metadata
 to the recorded result.
 
+Workflow entry points use synchronous `def run(...)` methods, either returning
+a result directly or yielding durable commands. `async def` and async-generator
+entry points are rejected with `InvalidWorkflowDefinition` during definition or
+worker registration. Async activity handlers remain supported. Direct replay
+also rejects async entry points and awaitable results.
+
 ## Workflow signals, queries, and updates
 
 Signals mutate workflow state during replay:
