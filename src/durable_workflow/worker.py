@@ -107,6 +107,7 @@ from .workflow import (
     StartChildWorkflow,
     UpsertMemo,
     _validate_workflow_entrypoint,
+    _workflow_handler_registries,
     apply_update,
     commands_to_server_commands,
     query_state,
@@ -1029,6 +1030,7 @@ class Worker:
         self.workflows: dict[str, type] = {}
         for definition in workflows:
             _validate_workflow_entrypoint(definition)
+            _workflow_handler_registries(definition)
             name = _workflow_name(definition)
             if name in self.workflows:
                 raise DuplicateRegistrationError("workflow", name, self.workflows[name], definition)

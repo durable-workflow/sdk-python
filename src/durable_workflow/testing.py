@@ -52,6 +52,7 @@ from .workflow import (
     StartTimer,
     UpsertSearchAttributes,
     _validate_workflow_entrypoint,
+    _workflow_handler_registries,
     registry,
     replay,
 )
@@ -136,6 +137,7 @@ class WorkflowEnvironment:
                 "decorate it with @workflow.defn(name=...) first."
             )
         _validate_workflow_entrypoint(workflow_cls)
+        _workflow_handler_registries(workflow_cls)
         if name in self._registered_workflows and self._registered_workflows[name] is not workflow_cls:
             raise DuplicateRegistrationError("workflow", name, self._registered_workflows[name], workflow_cls)
         self._registered_workflows[name] = workflow_cls

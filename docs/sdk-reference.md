@@ -421,7 +421,8 @@ Within a workflow class, signal, query, update and validator names are checked
 independently. One name may be shared across these kinds. Python's normal
 method resolution applies to inheritance: overriding the same Python attribute
 is allowed, while two resolved attributes with the same handler kind and wire
-name are rejected at decoration time. The test environment rejects a different
+name are rejected at decoration time and at Worker, Replayer and test-environment
+admission, including programmatically defined classes. The test environment rejects a different
 workflow class replacing an existing name, while repeated registration of the
 same class remains idempotent for automatic execution. Explicit activity mock
 and canned-result setters continue to support replacement.

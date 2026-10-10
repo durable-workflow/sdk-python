@@ -114,6 +114,34 @@ def test_overriding_the_same_python_attribute_is_unambiguous(kind: str) -> None:
     assert child().handler() == "replacement"
 
 
+@pytest.mark.parametrize("kind", ["signal", "query", "update", "update_validator"])
+@pytest.mark.parametrize("consumer", ["worker", "replayer", "environment"])
+def test_programmatic_workflow_admission_cannot_bypass_handler_validation(kind: str, consumer: str) -> None:
+    decorate: Callable[..., Any] = getattr(workflow, kind)
+    def first_handler(self: Any) -> None:
+        pass
+
+    def second_handler(self: Any) -> None:
+        pass
+
+    cls = type("ProgrammaticWorkflow", (), {
+        "__workflow_name__": "programmatic-workflow", "run": run,
+        "first_handler": decorate("approve")(first_handler),
+        "second_handler": decorate("approve")(second_handler),
+    })
+    client = AsyncMock(spec=Client)
+    with pytest.raises(DuplicateRegistrationError) as captured:
+        if consumer == "worker":
+            Worker(client, task_queue="registration", workflows=[cls])
+        elif consumer == "replayer":
+            workflow.Replayer(workflows=[cls])
+        else:
+            WorkflowEnvironment().register_workflow(cls)
+    assert captured.value.registration_kind == kind
+    assert captured.value.wire_name == "approve"
+    assert client.mock_calls == []
+
+
 def test_handler_names_are_scoped_by_kind() -> None:
     cls = definition("scoped-handlers", "ScopedHandlers", {
         "signal": workflow.signal("approve")(lambda self: None),
@@ -157,7 +185,8 @@ def test_mock_replacement_is_an_explicit_test_setting() -> None:
 
 def test_duplicate_error_is_a_public_structured_sdk_error() -> None:
     error = DuplicateRegistrationError("workflow", "duplicate", run, first)
-    assert isinstance(error, (DurableWorkflowError, ValueError))
+    assert isinstance(error, DurableWorkflowError)
+    assert isinstance(error, ValueError)
     assert error.registration_kind == "workflow"
     assert error.wire_name == "duplicate"
     assert error.first_definition.endswith(".run")
