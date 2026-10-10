@@ -3067,6 +3067,8 @@ def apply_update(
             prepare_local_activity_groups=prepare_local_activity_groups,
             local_activity_cancellation_policies=local_activity_cancellation_policies,
         )
+    except NonDeterministicReplayError:
+        raise
     except Exception as exc:
         return _fail_update_from_exception(
             update_id,
@@ -5144,16 +5146,20 @@ def _replay_state(
         for _ in range(boundary):
             _apply_receiver(pending_receivers.pop(0))
 
-    def _condition_wait_mismatch(opened: Mapping[str, Any], cmd: WaitCondition) -> FailWorkflow | None:
+    def _condition_wait_mismatch(
+        opened: Mapping[str, Any], cmd: WaitCondition,
+    ) -> NonDeterministicReplayError | None:
+        step = recorded_wait_steps[wait_yield_count]
+        identity = f"condition wait {opened.get('condition_wait_id')!r}"
         opened_key = opened.get("condition_key")
         if isinstance(opened_key, str) and opened_key != (cmd.condition_key or ""):
-            return FailWorkflow(
-                message=(
-                    "wait_condition key changed during replay: "
+            return NonDeterministicReplayError(
+                step.workflow_sequence, "condition wait", step.event_types,
+                detail=(
+                    f"condition_key_changed: {identity} wait_condition key changed during replay: "
                     f"history has {opened_key!r}, workflow yielded "
                     f"{cmd.condition_key!r}"
                 ),
-                exception_type="NonDeterministicWaitCondition",
             )
 
         opened_fingerprint = opened.get("condition_definition_fingerprint")
@@ -5161,13 +5167,14 @@ def _replay_state(
             isinstance(opened_fingerprint, str)
             and cmd.condition_definition_fingerprint != opened_fingerprint
         ):
-            return FailWorkflow(
-                message=(
+            return NonDeterministicReplayError(
+                step.workflow_sequence, "condition wait", step.event_types,
+                detail=(
+                    f"condition_fingerprint_changed: {identity} "
                     "wait_condition predicate fingerprint changed during replay: "
                     f"history has {opened_fingerprint!r}, workflow yielded "
                     f"{cmd.condition_definition_fingerprint!r}"
                 ),
-                exception_type="NonDeterministicWaitCondition",
             )
 
         return None
@@ -6655,7 +6662,7 @@ def _replay_state(
                         next_value = True
                         continue
                     if next_opened_mismatch is not None:
-                        return _state([next_opened_mismatch])
+                        raise next_opened_mismatch
                     step = _next_unconsumed_recorded_step()
                     if step is not None:
                         _assert_step_matches(cmd, step)
@@ -6707,7 +6714,7 @@ def _replay_state(
                         opened = wait_opened[wait_yield_count]
                         mismatch = _condition_wait_mismatch(opened, cmd)
                         if mismatch is not None:
-                            return _state([mismatch])
+                            raise mismatch
                         opened_id = opened.get("condition_wait_id")
                         if isinstance(opened_id, str):
                             resolution = wait_resolutions.get(opened_id)

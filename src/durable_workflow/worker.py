@@ -69,6 +69,7 @@ from .errors import (
     DurableWorkflowError,
     ExternalPayloadError,
     InvalidArgument,
+    NonDeterministicReplayError,
     NonRetryableError,
     QueryFailed,
     ServerError,
@@ -2502,20 +2503,35 @@ class Worker:
 
         update_id = task.get("workflow_update_id")
         if isinstance(update_id, str) and update_id:
-            update_command = apply_update(
-                cls,
-                history,
-                start_input,
-                update_id,
-                workflow_id=task.get("workflow_id"),
-                run_id=run_id,
-                payload_codec=codec,
-                external_storage=self.external_storage,
-                external_storage_cache=self.external_storage_cache,
-                prepare_local_activities=self._prepared_local_activities_supported,
-                prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
-                local_activity_cancellation_policies=self._local_activity_cancellation_policies,
-            )
+            try:
+                update_command = apply_update(
+                    cls,
+                    history,
+                    start_input,
+                    update_id,
+                    workflow_id=task.get("workflow_id"),
+                    run_id=run_id,
+                    payload_codec=codec,
+                    external_storage=self.external_storage,
+                    external_storage_cache=self.external_storage_cache,
+                    prepare_local_activities=self._prepared_local_activities_supported,
+                    prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
+                    local_activity_cancellation_policies=self._local_activity_cancellation_policies,
+                )
+            except NonDeterministicReplayError as exc:
+                log.exception("workflow update task %s replay failed for run %s", task_id, run_id)
+                try:
+                    await self.client.fail_workflow_task(
+                        task_id=task_id,
+                        lease_owner=self.worker_id,
+                        workflow_task_attempt=attempt,
+                        message=f"workflow replay failed before update {update_id!r}: {exc}",
+                        failure_type=type(exc).__name__,
+                        stack_trace=traceback.format_exc(),
+                    )
+                except Exception as failure_error:
+                    log.warning("failed to report update replay failure: %s", failure_error)
+                return None
             command = update_command.to_server_command(
                 self.task_queue,
                 payload_codec=command_codec,

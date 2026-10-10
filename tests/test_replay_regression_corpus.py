@@ -17,6 +17,7 @@ from durable_workflow.workflow import (
     commands_to_server_commands,
     query_state,
 )
+from tests.test_condition_replay_drift import ConditionIdentityWorkflow
 from tests.test_golden_history_replay import (
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
@@ -291,6 +292,7 @@ WORKFLOWS = [
     YieldedContinueAfterMetadataWorkflow,
 ]
 WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__)): workflow for workflow in WORKFLOWS}
+WORKFLOW_TYPES["tests.replay.condition-identity"] = ConditionIdentityWorkflow
 
 
 def _fixture_paths() -> list[Path]:

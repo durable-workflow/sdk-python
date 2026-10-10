@@ -6,7 +6,6 @@ from durable_workflow import serializer, workflow
 from durable_workflow.errors import NonDeterministicReplayError
 from durable_workflow.workflow import (
     CompleteWorkflow,
-    FailWorkflow,
     WaitCondition,
     WorkflowContext,
     query_state,
@@ -1052,14 +1051,12 @@ class TestReplayWaitCondition:
             },
         ]
 
-        outcome = replay(WaitUntilApproved, history, [])
+        with pytest.raises(NonDeterministicReplayError, match="key changed") as captured:
+            replay(WaitUntilApproved, history, [])
 
-        assert len(outcome.commands) == 1
-        assert not isinstance(outcome.commands[0], CompleteWorkflow)
-        cmd = outcome.commands[0]
-        assert isinstance(cmd, FailWorkflow)
-        assert cmd.exception_type == "NonDeterministicWaitCondition"
-        assert "key changed" in cmd.message
+        assert captured.value.workflow_sequence == 1
+        assert "old-key" in str(captured.value)
+        assert "approved" in str(captured.value)
 
     def test_replay_rejects_changed_condition_fingerprint(self) -> None:
         initial = replay(WaitUntilApproved, [], [])
@@ -1077,14 +1074,12 @@ class TestReplayWaitCondition:
             },
         ]
 
-        outcome = replay(WaitUntilApproved, history, [])
+        with pytest.raises(NonDeterministicReplayError, match="predicate fingerprint changed") as captured:
+            replay(WaitUntilApproved, history, [])
 
-        assert len(outcome.commands) == 1
-        cmd = outcome.commands[0]
-        assert isinstance(cmd, FailWorkflow)
-        assert cmd.exception_type == "NonDeterministicWaitCondition"
-        assert "predicate fingerprint changed" in cmd.message
-        assert fingerprint in cmd.message
+        assert captured.value.workflow_sequence == 1
+        assert "sha256:different" in str(captured.value)
+        assert fingerprint in str(captured.value)
 
     def test_replay_accepts_matching_condition_fingerprint(self) -> None:
         initial = replay(WaitUntilApproved, [], [])

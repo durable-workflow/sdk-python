@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "python-condition-fingerprint-drift-task-failure",
+  "protocol_version": "1.19",
+  "bindings": ["python"],
+  "workflow": {"type": "tests.replay.condition-identity", "input": [], "payload_codec": "avro"},
+  "history": [
+    {"event_type": "ConditionWaitOpened", "payload": {"sequence": 7, "condition_wait_id": "wait-original", "condition_key": "approved", "condition_definition_fingerprint": "sha256:different"}}
+  ],
+  "expected": {"command_sequence": []},
+  "expected_replay_error": {"type": "NonDeterministicReplayError", "message_contains": "condition_fingerprint_changed", "workflow_sequence": 7}
+}
