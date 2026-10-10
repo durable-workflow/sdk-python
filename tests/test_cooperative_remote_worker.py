@@ -47,22 +47,29 @@ def stop_receipt() -> dict[str, Any]:
             "heartbeat_recorded": False, "history_event_id": "receipt-event"}
 
 
+def write_pid_marker(marker: str) -> None:
+    target = Path(marker)
+    pending = target.with_name(target.name + ".pending")
+    pending.write_text(str(os.getpid()))
+    pending.replace(target)
+
+
 async def blocked_async(marker: str, heartbeat: bool = False) -> None:
     if heartbeat:
         await activity.context().heartbeat({"authored": True})
-    Path(marker).write_text(str(os.getpid()))
+    write_pid_marker(marker)
     await asyncio.Event().wait()
 
 
 def blocked_sync(marker: str, heartbeat: bool = False) -> None:
     if heartbeat:
         asyncio.run(activity.context().heartbeat({"authored": True}))
-    Path(marker).write_text(str(os.getpid()))
+    write_pid_marker(marker)
     time.sleep(60)
 
 
 def released_sync(marker: str) -> bytes:
-    Path(marker).write_text(str(os.getpid()))
+    write_pid_marker(marker)
     while not Path(marker + ".release").exists():
         time.sleep(0.02)
     return b"late result"

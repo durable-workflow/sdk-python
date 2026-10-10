@@ -5214,9 +5214,14 @@ def _replay_state(
 
     def _consume_duplicate_version_markers() -> None:
         nonlocal result_cursor, authored_sequence
-        while (step := _next_unconsumed_recorded_step()) is not None:
+        if not version_decisions:
+            return
+        while result_cursor < len(recorded_steps):
+            step = recorded_steps[result_cursor]
             change_id = step.details.get("change_id")
             if step.shape != "version marker" or change_id not in version_decisions:
+                return
+            if _next_unconsumed_recorded_step() is not step:
                 return
             version = _recorded_version(step)
             if version != version_decisions[change_id][0]:
