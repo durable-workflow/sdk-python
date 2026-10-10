@@ -491,8 +491,10 @@ durable wait command and rejects replay if history records a different wait
 key or predicate fingerprint. A mismatch raises `NonDeterministicReplayError`
 with the original wait identity, workflow sequence and both definitions. The
 worker fails the current task without recording a terminal workflow failure.
-Deploy compatible code to resume the original run. Accepted updates also remain
-available for retry when their state replay encounters this error. Query replay
+Deploy compatible code, then use `await handle.repair()` to release the blocked
+task for the original run. The Server holds replay failures instead of
+continuously retrying incompatible code. Accepted updates also remain available
+for repair when their state replay encounters this error. Query replay
 reports a query failure with the mismatch as its cause. Exceptions raised by
 application predicates remain ordinary workflow failures.
 

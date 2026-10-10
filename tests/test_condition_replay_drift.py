@@ -102,3 +102,31 @@ def test_application_predicate_failure_remains_terminal() -> None:
     command = outcome.commands[0].to_server_command("condition-drift")
     assert command["type"] == "fail_workflow"
     assert command["exception_type"] == "ValueError"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["condition_key", "condition_definition_fingerprint"])
+async def test_query_worker_reports_unavailable_state_without_changing_the_run(field: str) -> None:
+    client = AsyncMock(spec=Client)
+    worker = Worker(client, task_queue="condition-drift", workflows=[ConditionIdentityWorkflow])
+    outcome = await worker._run_query_task({
+        "query_task_id": "query-original",
+        "query_task_attempt": 2,
+        "workflow_id": "workflow-original",
+        "run_id": "run-original",
+        "workflow_type": "tests.replay.condition-identity",
+        "query_name": "state",
+        "history_events": condition_history(field),
+        "workflow_arguments": serializer.envelope([], codec="avro"),
+        "query_arguments": serializer.envelope([], codec="avro"),
+        "payload_codec": "avro",
+    })
+
+    assert outcome == "failed"
+    client.complete_query_task.assert_not_awaited()
+    client.complete_workflow_task.assert_not_awaited()
+    client.fail_workflow_task.assert_not_awaited()
+    client.fail_query_task.assert_awaited_once()
+    report = client.fail_query_task.await_args.kwargs
+    assert report["reason"] == "query_workflow_state_unavailable"
+    assert "wait-original" in report["message"]

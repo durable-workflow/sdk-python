@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import importlib.metadata
+import inspect
 import json
 import os
 import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -49,27 +53,40 @@ async def execute_one() -> None:
             max_concurrent_workflow_tasks=1,
         )
         await worker._register()
+        expect_empty = os.environ.get("CONDITION_RECOVERY_EXPECT_EMPTY") == "1"
         task = await client.poll_workflow_task(
-            worker_id=worker.worker_id, task_queue=worker.task_queue, timeout=20,
+            worker_id=worker.worker_id, task_queue=worker.task_queue, timeout=1 if expect_empty else 20,
         )
+        if expect_empty:
+            assert task is None
+            print(json.dumps({"empty": True}), flush=True)
+            return
         assert task is not None
         commands = await worker._run_workflow_task(task)
         print(json.dumps({
             "task_id": task["task_id"], "run_id": task["run_id"],
             "attempt": task["workflow_task_attempt"], "commands": commands,
             "fingerprint": worker.workflow_definition_fingerprints,
+            "sdk_version": importlib.metadata.version("durable-workflow"),
+            "replay_source_sha256": hashlib.sha256(
+                Path(inspect.getfile(workflow)).read_bytes(),
+            ).hexdigest(),
         }), flush=True)
 
 
-async def cold_worker(server_url: str, token: str, queue: str, mode: str) -> dict[str, Any]:
+async def cold_worker(
+    server_url: str, token: str, queue: str, mode: str, *, expect_empty: bool = False,
+    python_executable: str | None = None,
+) -> dict[str, Any]:
     environment = {
         **os.environ, "DURABLE_WORKFLOW_SERVER_URL": server_url,
         "DURABLE_WORKFLOW_AUTH_TOKEN": token, "CONDITION_RECOVERY_QUEUE": queue,
         "CONDITION_RECOVERY_MODE": mode,
+        "CONDITION_RECOVERY_EXPECT_EMPTY": "1" if expect_empty else "0",
         "CONDITION_RECOVERY_WORKER": f"condition-worker-{uuid.uuid4().hex}",
     }
     process = await asyncio.create_subprocess_exec(
-        sys.executable, "-c",
+        python_executable or sys.executable, "-c",
         "import asyncio; from tests.integration.test_condition_recovery import execute_one; asyncio.run(execute_one())",
         env=environment, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
@@ -101,7 +118,10 @@ async def test_bad_deployment_then_cold_replacement_resumes_original_run(
             workflow_type="tests.condition-deployment-recovery", task_queue=queue,
             workflow_id=f"condition-recovery-{suffix}", input=[],
         )
-        initial = await cold_worker(server_url, server_token, queue, "correct")
+        initial = await cold_worker(
+            server_url, server_token, queue, "correct",
+            python_executable=os.environ.get("CONDITION_RECOVERY_INITIAL_PYTHON"),
+        )
         assert [command["type"] for command in initial["commands"]] == ["open_condition_wait"]
         original_history = history_events(await handle.get_history())
         await handle.signal("wake")
@@ -115,6 +135,8 @@ async def test_bad_deployment_then_cold_replacement_resumes_original_run(
         assert after_rejection[:len(original_history)] == original_history
         assert all(event["event_type"] != "WorkflowFailed" for event in after_rejection)
 
+        assert await cold_worker(server_url, server_token, queue, "correct", expect_empty=True) == {"empty": True}
+        await handle.repair()
         resumed = await cold_worker(server_url, server_token, queue, "correct")
         assert resumed["run_id"] == handle.run_id
         assert resumed["fingerprint"] == initial["fingerprint"]
@@ -129,3 +151,10 @@ async def test_bad_deployment_then_cold_replacement_resumes_original_run(
         kinds = [event["event_type"] for event in final_history]
         assert "WorkflowFailed" not in kinds
         assert kinds.count("WorkflowCompleted") == 1
+        print(json.dumps({
+            "drift": drift, "initial": initial, "rejected": rejected,
+            "resumed": resumed, "finished": finished,
+            "preserved_prefix_events": len(original_history),
+            "workflow_failed_events": 0, "workflow_completed_events": 1,
+            "explicit_repair": True, "same_run": True,
+        }), flush=True)
