@@ -5185,6 +5185,96 @@ def _replay_state(
     pending: list[Command] = []
     advanced_cmd: Any = None
     terminal_condition_reopen_cmd: WaitCondition | None = None
+    version_decisions: dict[str, tuple[int, str]] = {}
+
+    def _version_error(detail: str, step: _RecordedStep | None = None) -> NonDeterministicReplayError:
+        return NonDeterministicReplayError(
+            step.workflow_sequence if step is not None else authored_sequence,
+            "compatible version marker",
+            step.event_types if step is not None else [],
+            detail=detail,
+        )
+
+    def _recorded_version(step: _RecordedStep) -> int:
+        if step.history_index is None:
+            raise _version_error("Version marker is missing its history position.", step)
+        payload = events[step.history_index].get("payload") or {}
+        version = payload.get("version")
+        if type(version) is not int:
+            raise _version_error("Version marker must contain an integer version.", step)
+        change_id = payload.get("change_id")
+        if "change_id" in payload and (not isinstance(change_id, str) or not change_id.strip()):
+            raise _version_error("Version marker must retain a non-empty change ID.", step)
+        if "min_supported" in payload or "max_supported" in payload:
+            minimum, maximum = payload.get("min_supported"), payload.get("max_supported")
+            if (type(minimum) is not int or type(maximum) is not int
+                    or not minimum <= version <= maximum):
+                raise _version_error("Recorded version marker has an invalid supported range.", step)
+        return version
+
+    def _consume_duplicate_version_markers() -> None:
+        nonlocal result_cursor, authored_sequence
+        if not version_decisions:
+            return
+        while result_cursor < len(recorded_steps):
+            step = recorded_steps[result_cursor]
+            change_id = step.details.get("change_id")
+            if step.shape != "version marker" or change_id not in version_decisions:
+                return
+            if _next_unconsumed_recorded_step() is not step:
+                return
+            version = _recorded_version(step)
+            if version != version_decisions[change_id][0]:
+                raise _version_error(f"Conflicting recorded decisions for change ID {change_id!r}.", step)
+            # Earlier SDKs emitted a marker for every invocation. Consume these
+            # aliases while retaining their physical positions for cancellation
+            # and prepared operations. The stored history itself is unchanged.
+            result_cursor += 1
+            authored_sequence = max(authored_sequence, step.workflow_sequence + 1)
+
+    def _resolve_version(command: RecordVersionMarker) -> Any:
+        nonlocal result_cursor, authored_sequence
+        change_id = command.change_id
+        if not isinstance(change_id, str) or not change_id.strip():
+            raise _version_error("Version markers require a stable non-empty change ID.")
+        if (type(command.min_supported) is not int or type(command.max_supported) is not int
+                or command.min_supported > command.max_supported):
+            raise _version_error(f"Invalid supported range for change ID {change_id!r}.")
+        family = "version" if command.result_kind == "version" else "patch"
+        decision = version_decisions.get(change_id)
+        step = _next_unconsumed_recorded_step()
+        if decision is not None:
+            version, original_family = decision
+            if original_family != family:
+                raise _version_error(f"Change ID {change_id!r} cannot switch between version and patch helpers.", step)
+        elif step is not None and step.shape == "version marker":
+            _assert_step_matches(command, step)
+            version = _recorded_version(step)
+            result_cursor += 1
+            authored_sequence = max(authored_sequence, step.workflow_sequence + 1)
+        elif step is not None or (cancellation.delivery is not None and not cancellation_consumed) or any(
+            sequence not in consumed_scope_deliveries for sequence in committed_scopes.deliveries
+        ) or any(_history_event_type(event) in {
+            "WorkflowCompleted", "WorkflowFailed", "WorkflowCancelled", "WorkflowTerminated",
+            "WorkflowContinuedAsNew", "WorkflowTimedOut",
+        } for event in events):
+            # An unmarked recorded command proves this history passed the new
+            # patch site. Leave that command available for its original call.
+            version = -1
+        else:
+            version = command.version
+            if type(version) is not int:
+                raise _version_error(f"Invalid version for change ID {change_id!r}.")
+            ctx.logger._set_replaying(False)
+            pending.append(command)
+            authored_sequence += 1
+        if not command.min_supported <= version <= command.max_supported:
+            raise _version_error(
+                f"Recorded version {version} for change ID {change_id!r} is outside "
+                f"the supported range {command.min_supported}..{command.max_supported}.", step,
+            )
+        version_decisions.setdefault(change_id, (version, family))
+        return _version_marker_result(command, version)
 
     def _parallel_leaf_kind(command: Any) -> str:
         if isinstance(command, ScheduleActivity | RecordLocalActivity):
@@ -6064,6 +6154,7 @@ def _replay_state(
     replay_token = _ACTIVE_WORKFLOW_REPLAY.set(ctx)
     try:
         while True:
+            _consume_duplicate_version_markers()
             # Cursor-0 receivers are start-boundary events. Enter run() once
             # before applying them so workflow initialization observes the
             # same WorkflowStarted-before-Signal/Update ordering the server
@@ -6081,6 +6172,9 @@ def _replay_state(
                 first = False
             _apply_due_receivers()
             _validate_local_activity_policies(cmd)
+            if isinstance(cmd, RecordVersionMarker):
+                next_value = _resolve_version(cmd)
+                continue
             if prepare_local_activities and isinstance(cmd, list | SelectGroup) and _contains_local_activity(cmd) and (
                 not prepare_local_activity_groups or isinstance(cmd, SelectGroup)
             ):
@@ -6496,18 +6590,6 @@ def _replay_state(
                 _assert_pending_step_matches(cmd)
                 pending.append(cmd)
                 next_value = None
-                continue
-            if isinstance(cmd, RecordVersionMarker):
-                if result_cursor < len(resolved_results):
-                    _assert_next_step_matches(cmd)
-                    val = resolved_results[result_cursor]
-                    result_cursor += 1
-                    next_value = _version_marker_result(cmd, val)
-                    continue
-                ctx.logger._set_replaying(False)
-                _assert_pending_step_matches(cmd)
-                pending.append(cmd)
-                next_value = _version_marker_result(cmd, cmd.version)
                 continue
             if isinstance(cmd, WaitCondition):
                 # A condition that is already true is not persisted. Apply
