@@ -34,8 +34,8 @@ def old_activity(sequence: int, completed: bool = True) -> list[dict[str, Any]]:
 class PatchInsertionWorkflow:
     def run(self, ctx):  # type: ignore[no-untyped-def]
         if (yield ctx.patched("same")):
-            yield ctx.schedule_activity("new")
-        return (yield ctx.schedule_activity("old"))
+            yield ctx.schedule_activity("new", [])
+        return (yield ctx.schedule_activity("old", []))
 
 
 @workflow.defn(name="tests.patch.repeated")
@@ -43,7 +43,7 @@ class RepeatedPatchWorkflow:
     def run(self, ctx, repeat=True):  # type: ignore[no-untyped-def]
         first = yield ctx.patched("same")
         second = (yield ctx.patched("same")) if repeat else first
-        result = yield ctx.schedule_activity("old")
+        result = yield ctx.schedule_activity("old", [])
         return [first, second, result]
 
 
@@ -51,7 +51,7 @@ class RepeatedPatchWorkflow:
 class InterleavedPatchWorkflow:
     def run(self, ctx, repeat=True):  # type: ignore[no-untyped-def]
         first = yield ctx.patched("same")
-        result = yield ctx.schedule_activity("old")
+        result = yield ctx.schedule_activity("old", [])
         second = (yield ctx.patched("same")) if repeat else first
         return [first, second, result]
 
@@ -69,7 +69,7 @@ class PatchCancellationWorkflow:
     def run(self, ctx):  # type: ignore[no-untyped-def]
         decisions = [(yield ctx.patched("same")), (yield ctx.patched("same"))]
         try:
-            yield ctx.schedule_activity("old")
+            yield ctx.schedule_activity("old", [])
         except WorkflowCancelled:
             return [decisions, "cancelled"]
 
