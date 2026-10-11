@@ -2647,9 +2647,12 @@ class _ServiceCallDelivery:
                 response, codec=self.payload.get("payload_codec", serializer.AVRO_CODEC),
                 external_storage=external_storage, external_storage_cache=external_storage_cache,
             )
-        surface.setdefault("message", self.payload.get("message") or surface.get("failure_message"))
-        surface.setdefault("caller_observed_error_type", self.payload.get("exception_type"))
-        surface.setdefault("reason", surface.get("outcome_reason"))
+        if not surface.get("message"):
+            surface["message"] = self.payload.get("message") or surface.get("failure_message")
+        if not surface.get("caller_observed_error_type"):
+            surface["caller_observed_error_type"] = self.payload.get("exception_type")
+        if not surface.get("reason"):
+            surface["reason"] = surface.get("outcome_reason")
         request = {
             "idempotency_key": command.idempotency_key,
             "arguments": self.payload.get("request_payload"),

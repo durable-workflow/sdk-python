@@ -108,7 +108,8 @@ class CatchingNexusCaller:
 @pytest.mark.parametrize("status,event_type", [("failed", "ServiceCallFailed"), ("cancelled", "ServiceCallCancelled")])
 def test_terminal_failure_is_delivered_at_the_original_yield(status: str, event_type: str) -> None:
     terminal = _service_event(event_type, status)
-    terminal["payload"]["service_call"]["caller_observed_error_type"] = "service_call_" + status
+    terminal["payload"]["service_call"]["caller_observed_error_type"] = None
+    terminal["payload"]["exception_type"] = "service_call_" + status
     outcome = replay(CatchingNexusCaller, [_service_event("ServiceCallStarted", "started"), terminal], [],
                      workflow_id="caller", run_id="caller-run")
     assert isinstance(outcome.commands[0], CompleteWorkflow)
