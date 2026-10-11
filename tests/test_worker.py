@@ -4403,6 +4403,8 @@ class TestWorkerShutdown:
                 client,
                 task_queue="orders",
                 worker_id="worker-only",
+                workflows=[TestWorkflow],
+                activities=[echo_activity],
                 poll_timeout=0.01,
                 heartbeat_interval=0.01,
             )
@@ -4597,7 +4599,7 @@ class TestWorkerShutdown:
             },
         )
         mock_client.deregister_worker_registration.side_effect = cleanup_error
-        worker = Worker(mock_client, task_queue="q1")
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow])
         worker._poll_workflow_tasks = AsyncMock(  # type: ignore[method-assign]
             side_effect=RuntimeError("worker loop failed")
         )
