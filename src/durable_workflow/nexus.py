@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import serializer
 from .errors import NexusOperationFailed
 
 NEXUS_OPERATION_RESULT_SCHEMA = "durable-workflow.v2.sdk-python.nexus-operation-result"
@@ -87,9 +88,10 @@ def nexus_request_payload(
     duplicate_start_policy: str | None = None,
 ) -> dict[str, Any]:
     """Build the server execute-operation request body."""
+    codec = payload_codec or serializer.AVRO_CODEC
     return _clean_dict({
-        "arguments": list(arguments),
-        "payload_codec": payload_codec,
+        "arguments": serializer.encode(list(arguments), codec=codec),
+        "payload_codec": codec,
         "mode_override": mode,
         "wait_for": wait_for,
         "wait_timeout_seconds": wait_timeout_seconds,
