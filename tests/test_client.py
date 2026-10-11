@@ -289,7 +289,8 @@ class TestNexusOperations:
             "/api/service-endpoints/greeter/services/shared/operations/greet/execute",
         )
         body = mock.call_args.kwargs["json"]
-        assert body["arguments"] == ["Ada"]
+        assert body["payload_codec"] == "avro"
+        assert serializer.decode(body["arguments"], codec=body["payload_codec"]) == ["Ada"]
         assert body["mode_override"] == "sync"
         assert body["wait_for"] == "completed"
         assert body["idempotency_key"] == "idem-1"
@@ -303,7 +304,7 @@ class TestNexusOperations:
         assert recorded["caller_sdk_language"] == "sdk-python"
         assert recorded["service_sdk_language"] == "workflow-php"
         assert recorded["operation_name"] == "greet"
-        assert recorded["request_payload"]["arguments"] == ["Ada"]
+        assert serializer.decode(recorded["request_payload"]["arguments"], codec="avro") == ["Ada"]
         assert recorded["response_or_failure_surface"]["result"] == {"greeting": "hello Ada"}
         assert recorded["service_call_id"] == "svc-call-1"
         assert recorded["artifact_tuple"]["sdk-python"] == "0.4.95"

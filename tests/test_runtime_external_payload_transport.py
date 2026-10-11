@@ -310,6 +310,52 @@ def runtime_envelope(server: FakeRuntimePayloadServer, value: Any) -> dict[str, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("threshold_bytes", [1, 4096])
+async def test_nexus_arguments_offload_without_changing_recorded_arguments(threshold_bytes: int) -> None:
+    server = FakeRuntimePayloadServer(threshold_bytes=threshold_bytes)
+    path = "/api/service-endpoints/greeter/services/shared/operations/greet/execute"
+    server.responses[("POST", path)] = {"accepted": True, "id": "call-1", "status": "started"}
+    client = runtime_client(server)
+    arguments = ["hello" * 32, {"binary": b"\x00\xff"}]
+    try:
+        result = await client.execute_nexus_operation(
+            "greeter", "shared", "greet", arguments, caller_namespace="caller",
+            idempotency_key="original-call",
+        )
+    finally:
+        await client.aclose()
+
+    body = next(body for method, route, body in server.requests if method == "POST" and route == path)
+    if threshold_bytes == 1:
+        reference = body["arguments"]["external_payload"]
+        assert body["arguments"]["codec"] == "avro"
+        assert serializer.decode(server.payloads[reference["reference_id"]].decode(), codec="avro") == arguments
+        assert server.upload_count == 1
+        assert "external_storage" not in json.dumps(body)
+    else:
+        assert serializer.decode(body["arguments"], codec="avro") == arguments
+        assert server.upload_count == 0
+    assert body["caller_namespace"] == "caller"
+    assert body["idempotency_key"] == "original-call"
+    assert client.namespace == "billing"
+    assert serializer.decode(result.request_payload["arguments"], codec="avro") == arguments
+    assert result.request_payload["idempotency_key"] == "original-call"
+
+
+@pytest.mark.asyncio
+async def test_nexus_oversized_arguments_fail_before_upload_or_admission() -> None:
+    server = FakeRuntimePayloadServer(threshold_bytes=1, max_payload_bytes=32)
+    client = runtime_client(server)
+    try:
+        with pytest.raises(ExternalPayloadOversized):
+            await client.execute_nexus_operation("greeter", "shared", "greet", ["x" * 128])
+    finally:
+        await client.aclose()
+    assert server.upload_count == 0
+    assert not server.requests
+
+
+@pytest.mark.asyncio
 async def test_client_start_and_result_use_runtime_credentials_without_provider_setup() -> None:
     server = FakeRuntimePayloadServer()
     result_envelope = runtime_envelope(server, {"result": "x" * 128})

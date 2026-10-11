@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "nexus-target-namespace-changed",
+  "protocol_version": "1.19",
+  "bindings": ["python"],
+  "workflow": {"type": "tests.replay.nexus-target", "input": [], "payload_codec": "avro"},
+  "history": [{"event_type": "SideEffectRecorded", "payload": {
+    "sequence": 1,
+    "payload_codec": "avro",
+    "result": "wwHioz3/VYAiNw4WDHNjaGVtYQpqZHVyYWJsZS13b3JrZmxvdy52Mi5zZGstcHl0aG9uLm5leHVzLW9wZXJhdGlvbi1yZXN1bHQOdmVyc2lvbgQCEGFjY2VwdGVkAgEec2VydmljZV9jYWxsX2lkCiBvcmlnaW5hbC1jYWxsLWlkGmVuZHBvaW50X25hbWUKDmdyZWV0ZXIYc2VydmljZV9uYW1lCgxzaGFyZWQcb3BlcmF0aW9uX25hbWUKCmdyZWV0HmlkZW1wb3RlbmN5X2tleQoab3JpZ2luYWwtY2FsbCB0YXJnZXRfbmFtZXNwYWNlCgxzaGFyZWQMc3RhdHVzChJjb21wbGV0ZWQMcmVzdWx0ChpzZXJ2aWNlLXZhbHVlAA=="
+  }}],
+  "expected": {"command_sequence": []},
+  "expected_replay_error": {
+    "type": "NonDeterministicReplayError",
+    "message_contains": "nexus_target_namespace_changed",
+    "workflow_sequence": 1
+  }
+}

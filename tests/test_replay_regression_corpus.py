@@ -259,7 +259,18 @@ class UnsupportedAsyncWorkflow:
         return "body was never executed"
 
 
+@workflow.defn(name="tests.replay.nexus-target")
+class NexusTargetWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        result = yield ctx.call_nexus_service(
+            "greeter", "shared", "greet", ["Ada"],
+            target_namespace="other", idempotency_key="original-call",
+        )
+        return result.service_call_id
+
+
 WORKFLOWS = [
+    NexusTargetWorkflow,
     UnsupportedAsyncWorkflow,
     ChildPolicyAuthorWorkflow,
     ColdReplacementSatisfiedConditionWorkflow,

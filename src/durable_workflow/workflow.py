@@ -1196,6 +1196,7 @@ class NexusServiceCall:
     memo: dict[str, Any] | None = None
     search_attributes: dict[str, Any] | None = None
     duplicate_start_policy: str | None = None
+    target_namespace: str | None = None
 
     def to_server_command(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         raise RuntimeError(
@@ -1209,6 +1210,7 @@ class NexusServiceCall:
             "service_name": self.service_name,
             "operation_name": self.operation_name,
             "idempotency_key": self.idempotency_key,
+            "target_namespace": self.target_namespace,
         }
 
     def recorded_result(self, value: Any) -> NexusOperationResult:
@@ -2402,6 +2404,7 @@ class WorkflowContext:
         wait_for: str | None = "completed",
         wait_timeout_seconds: int | None = None,
         caller_namespace: str | None = None,
+        target_namespace: str | None = None,
         service_sdk_language: str | None = None,
         artifact_tuple: Mapping[str, Any] | None = None,
         published_artifact_worker_execution: bool | None = None,
@@ -2420,7 +2423,12 @@ class WorkflowContext:
         If the service reports a typed failure, replay raises
         :class:`~durable_workflow.errors.NexusOperationFailed` at the yield
         point so workflow code can compensate or let the workflow fail.
+
+        ``target_namespace`` addresses a service in another namespace and
+        participates in the durable call identity and replay checks.
         """
+        if target_namespace is not None and not target_namespace.strip():
+            raise ValueError("target_namespace must be nonempty")
         args = list(arguments) if arguments is not None else []
         if idempotency_key is None:
             idempotency_key = stable_nexus_idempotency_key(
@@ -2431,6 +2439,7 @@ class WorkflowContext:
                 service_name=service_name,
                 operation_name=operation_name,
                 arguments=args,
+                target_namespace=target_namespace,
             )
         self._nexus_call_counter += 1
         return NexusServiceCall(
@@ -2444,6 +2453,7 @@ class WorkflowContext:
             wait_for=wait_for,
             wait_timeout_seconds=wait_timeout_seconds,
             caller_namespace=caller_namespace,
+            target_namespace=target_namespace,
             service_sdk_language=service_sdk_language,
             artifact_tuple=dict(artifact_tuple) if artifact_tuple is not None else None,
             published_artifact_worker_execution=published_artifact_worker_execution,
@@ -6589,6 +6599,14 @@ def _replay_state(
                 if result_cursor < len(resolved_results):
                     _assert_next_step_matches(cmd)
                     recorded_value = resolved_results[result_cursor]
+                    if (
+                        isinstance(recorded_value, Mapping)
+                        and recorded_value.get("target_namespace") != cmd.target_namespace
+                    ):
+                        raise NonDeterministicReplayError(
+                            current_call_sequence, "NexusServiceCall", ["SideEffectRecorded"],
+                            detail="nexus_target_namespace_changed: recorded target differs from the workflow command",
+                        )
                     result_cursor += 1
                     try:
                         next_value = cmd.recorded_result(recorded_value)
