@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from durable_workflow import Replayer, Worker, serializer, workflow
-from durable_workflow.client import Client, WorkflowStreamAppendItem
+from durable_workflow.client import PROTOCOL_VERSION, Client, WorkflowExecution, WorkflowStreamAppendItem
 from durable_workflow.errors import NonDeterministicReplayError, WorkflowCancelled, WorkflowPayloadDecodeError
 from durable_workflow.workflow import (
     LocalActivityExecutionAborted,
@@ -31,6 +31,7 @@ from tests.test_update_signal_condition_replay import (
     PostConditionReceiversWorkflow,
     UpdateSignalConditionTimerWorkflow,
 )
+from tests.test_worker import compatible_cluster_info
 
 FIXTURE_SCHEMA = "durable-workflow.replay-regression/v1"
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "replay_regressions"
@@ -487,6 +488,46 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
         return
 
     _execute_fixture(fixture)
+
+
+@pytest.mark.asyncio
+async def test_workflow_only_driver_resumes_external_activity_without_activity_polling() -> None:
+    fixture = json.loads(
+        (FIXTURE_DIR / "workflow-only-worker-resumes-external-activity.json").read_text(encoding="utf-8")
+    )
+    client = AsyncMock(spec=Client)
+    client.get_cluster_info.return_value = compatible_cluster_info(worker_protocol={"version": PROTOCOL_VERSION})
+    client.register_worker.return_value = {"registered": True}
+    client.deregister_worker_registration.return_value = {"outcome": "deregistered"}
+    client.poll_activity_task.side_effect = AssertionError("workflow-only worker must not poll activities")
+    client.poll_workflow_task.side_effect = [None, {
+        "task_id": "external-activity-resume-task", "workflow_id": "external-activity-caller",
+        "run_id": "original-run", "workflow_type": fixture["workflow"]["type"],
+        "workflow_task_attempt": 1, "history_events": fixture["history"],
+        "arguments": serializer.encode(fixture["workflow"]["input"], codec="avro"),
+        "payload_codec": "avro",
+    }]
+    client.complete_workflow_task.return_value = {"outcome": "completed"}
+
+    async def describe(workflow_id: str) -> WorkflowExecution:
+        return WorkflowExecution(
+            workflow_id=workflow_id, run_id="original-run", workflow_type=fixture["workflow"]["type"],
+            status="completed" if client.complete_workflow_task.await_count else "running",
+        )
+
+    client.describe_workflow.side_effect = describe
+    worker = Worker(client, task_queue="external-activity", workflows=[GoldenSingleActivityWorkflow], activities=[])
+
+    result = await worker.run_until(workflow_id="external-activity-caller", timeout=1, poll_interval=0.01)
+
+    assert result.status == "completed"
+    assert result.run_id == "original-run"
+    assert client.poll_workflow_task.await_count == 2
+    client.poll_activity_task.assert_not_awaited()
+    client.complete_workflow_task.assert_awaited_once()
+    commands = client.complete_workflow_task.call_args.kwargs["commands"]
+    assert [command["type"] for command in commands] == [fixture["expected"]["type"]]
+    assert serializer.decode_envelope(commands[0]["result"]) == fixture["expected"]["result"]
 
 
 @pytest.mark.asyncio
