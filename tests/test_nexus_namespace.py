@@ -22,7 +22,9 @@ async def test_target_requests_and_concurrent_worker_heartbeat_keep_separate_sco
             return httpx.Response(200, json={"namespace": {"name": request.headers["x-namespace"]}})
         return httpx.Response(200, json={"accepted": True, "id": "call-1", "status": "started"})
 
-    async with Client("https://runtime.example", namespace="tenant-b", control_token="control", worker_token="worker") as client:
+    async with Client(
+        "https://runtime.example", namespace="tenant-b", control_token="control", worker_token="worker",
+    ) as client:
         await client._http.aclose()
         client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(handler))
         client._cluster_info = {"namespace": {"name": "tenant-b"}}
@@ -71,12 +73,16 @@ async def test_cross_namespace_payload_discovery_upload_and_admission_use_target
             })
         return httpx.Response(200, json={"accepted": True, "id": "call-1", "status": "started"})
 
-    async with Client("https://runtime.example", namespace="tenant-b", control_token="control", worker_token="worker") as client:
+    async with Client(
+        "https://runtime.example", namespace="tenant-b", control_token="control", worker_token="worker",
+    ) as client:
         await client._http.aclose()
         client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(handler))
         client._cluster_info = {"namespace": {"name": "tenant-b"}}
         client._runtime_external_payload_transport_resolved = True
-        result = await client.execute_nexus_operation("greeter", "shared", "greet", ["Ada" * 128], target_namespace="shared")
+        result = await client.execute_nexus_operation(
+            "greeter", "shared", "greet", ["Ada" * 128], target_namespace="shared",
+        )
         assert client.namespace == "tenant-b"
         assert client._runtime_external_payload_transport_cache is None
 
@@ -125,7 +131,9 @@ def test_original_target_replays_and_changed_target_is_refused(target):
     history = [{"event_type": "SideEffectRecorded", "payload": {
         "sequence": 1, "payload_codec": "avro", "result": serializer.encode(result.to_recorded_payload(), codec="avro"),
     }}]
-    outcome = replay(NexusTargetCaller, history, [target], workflow_id="caller", run_id="original-run", payload_codec="avro")
+    outcome = replay(
+        NexusTargetCaller, history, [target], workflow_id="caller", run_id="original-run", payload_codec="avro",
+    )
     assert isinstance(outcome.commands[0], CompleteWorkflow)
     assert outcome.commands[0].result == "call-1"
     changed = "other" if target else "shared"

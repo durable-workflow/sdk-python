@@ -6599,10 +6599,13 @@ def _replay_state(
                 if result_cursor < len(resolved_results):
                     _assert_next_step_matches(cmd)
                     recorded_value = resolved_results[result_cursor]
-                    if isinstance(recorded_value, Mapping) and recorded_value.get("target_namespace") != cmd.target_namespace:
+                    if (
+                        isinstance(recorded_value, Mapping)
+                        and recorded_value.get("target_namespace") != cmd.target_namespace
+                    ):
                         raise NonDeterministicReplayError(
                             current_call_sequence, "NexusServiceCall", ["SideEffectRecorded"],
-                            detail="nexus_target_namespace_changed: recorded target differs from the current workflow command",
+                            detail="nexus_target_namespace_changed: recorded target differs from the workflow command",
                         )
                     result_cursor += 1
                     try:
