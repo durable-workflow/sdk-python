@@ -19,6 +19,7 @@ methods without repeating the id on every call.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json as json_module
 import math
@@ -2672,6 +2673,26 @@ class Client:
         """
         return WorkflowHandle(self, workflow_id=workflow_id, run_id=run_id, workflow_type=workflow_type)
 
+    def _nexus_target_client(self, target_namespace: str | None) -> Client:
+        if target_namespace is not None and not target_namespace.strip():
+            raise ValueError("target_namespace must be nonempty")
+        if target_namespace is None or target_namespace == self.namespace:
+            return self
+        self._auth_token(worker=False)
+        scoped = copy.copy(self)
+        scoped.namespace = target_namespace
+        # Share the HTTP pool, never the caller's namespace discovery or
+        # provider credentials. The worker keeps using the original client.
+        scoped.worker_token = None
+        scoped._cluster_info = None
+        scoped._cluster_info_lock = asyncio.Lock()
+        scoped._runtime_external_payload_transport_cache = None
+        scoped._runtime_external_payload_transport_resolved = False
+        scoped.external_storage = None
+        scoped.external_storage_threshold_bytes = None
+        scoped.external_storage_cache = ExternalPayloadCache()
+        return scoped
+
     async def execute_nexus_operation(
         self,
         endpoint_name: str,
@@ -2685,6 +2706,7 @@ class Client:
         idempotency_key: str | None = None,
         payload_codec: str | None = None,
         caller_namespace: str | None = None,
+        target_namespace: str | None = None,
         caller_workflow_instance_id: str | None = None,
         caller_workflow_run_id: str | None = None,
         service_sdk_language: str | None = None,
@@ -2708,7 +2730,11 @@ class Client:
         the worker uses this client method to make the single durable
         execute request and records the returned service-call surface into
         workflow history.
+
+        ``target_namespace`` selects the service catalog and its payload
+        storage. The caller identity and worker namespace are preserved.
         """
+        execution_client = self._nexus_target_client(target_namespace)
         request_body = nexus_request_payload(
             arguments=list(arguments) if arguments is not None else [],
             payload_codec=payload_codec,
@@ -2737,9 +2763,9 @@ class Client:
         context = f"{endpoint_name}/{service_name}/{operation_name}"
 
         wire_body = request_body
-        transport = await self._runtime_external_payload_transport()
+        transport = await execution_client._runtime_external_payload_transport()
         if transport is not None:
-            arguments_envelope = await self._externalize_runtime_payloads(
+            arguments_envelope = await execution_client._externalize_runtime_payloads(
                 {"codec": request_body["payload_codec"], "blob": request_body["arguments"]},
                 worker=False,
                 transport=transport,
@@ -2750,7 +2776,7 @@ class Client:
                 wire_body = {**request_body, "arguments": arguments_envelope}
 
         try:
-            data = await self._request("POST", path, json=wire_body, context=context)
+            data = await execution_client._request("POST", path, json=wire_body, context=context)
         except ServerError as exc:
             if exc.status != 409 or not isinstance(exc.body, dict):
                 raise
@@ -2760,6 +2786,7 @@ class Client:
                 service_name=service_name,
                 operation_name=operation_name,
                 request_payload=request_body,
+                target_namespace=target_namespace,
                 service_sdk_language=service_sdk_language,
                 artifact_tuple=artifact_tuple,
                 published_artifact_worker_execution=published_artifact_worker_execution,
@@ -2783,6 +2810,7 @@ class Client:
             service_name=service_name,
             operation_name=operation_name,
             request_payload=request_body,
+            target_namespace=target_namespace,
             service_sdk_language=service_sdk_language,
             artifact_tuple=artifact_tuple,
             published_artifact_worker_execution=published_artifact_worker_execution,

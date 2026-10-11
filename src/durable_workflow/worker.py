@@ -1462,6 +1462,7 @@ class Worker:
                     idempotency_key=command.idempotency_key,
                     payload_codec=command.payload_codec,
                     caller_namespace=command.caller_namespace,
+                    target_namespace=command.target_namespace,
                     caller_workflow_instance_id=_string_or_none(task.get("workflow_id")),
                     caller_workflow_run_id=_string_or_none(task.get("run_id")),
                     service_sdk_language=command.service_sdk_language,
