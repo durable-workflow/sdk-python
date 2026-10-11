@@ -50,6 +50,7 @@ def stable_nexus_idempotency_key(
     service_name: str,
     operation_name: str,
     arguments: Sequence[Any],
+    target_namespace: str | None = None,
 ) -> str:
     """Return a deterministic idempotency key for one workflow-side Nexus call."""
     source = {
@@ -62,6 +63,8 @@ def stable_nexus_idempotency_key(
         "operation_name": operation_name,
         "arguments": list(arguments),
     }
+    if target_namespace is not None:
+        source["target_namespace"] = target_namespace
     encoded = json.dumps(source, sort_keys=True, separators=(",", ":"), default=_json_default)
     return f"dw-py-nexus-{hashlib.sha256(encoded.encode()).hexdigest()}"
 
@@ -136,6 +139,7 @@ class NexusOperationResult:
     caller_observed_error_type: str | None = None
     typed_error_message: str | None = None
     result: Any = None
+    target_namespace: str | None = None
 
     @classmethod
     def from_response(
@@ -149,6 +153,7 @@ class NexusOperationResult:
         service_sdk_language: str | None = None,
         artifact_tuple: Mapping[str, Any] | None = None,
         published_artifact_worker_execution: bool | None = None,
+        target_namespace: str | None = None,
     ) -> NexusOperationResult:
         call = data.get("service_call")
         source = call if isinstance(call, Mapping) else data
@@ -190,6 +195,7 @@ class NexusOperationResult:
             typed_error_message=_optional_str(source.get("typed_error_message"))
             or _optional_str(data.get("typed_error_message")),
             result=response_value,
+            target_namespace=target_namespace,
         )
 
     @classmethod
@@ -200,6 +206,9 @@ class NexusOperationResult:
             raise ValueError("recorded Nexus operation result schema is not recognized")
         if value.get("version") != NEXUS_OPERATION_RESULT_VERSION:
             raise ValueError("recorded Nexus operation result version is not supported")
+
+        if value.get("target_namespace") != expected.get("target_namespace"):
+            raise ValueError("recorded Nexus target namespace does not match the current workflow command")
 
         for key in ("endpoint_name", "service_name", "operation_name", "idempotency_key"):
             expected_value = expected.get(key)
@@ -237,6 +246,7 @@ class NexusOperationResult:
             caller_observed_error_type=_optional_str(value.get("caller_observed_error_type")),
             typed_error_message=_optional_str(value.get("typed_error_message")),
             result=value.get("result"),
+            target_namespace=_optional_str(value.get("target_namespace")),
         )
         if result.is_failure:
             raise result.to_failure()
@@ -289,6 +299,7 @@ class NexusOperationResult:
             "endpoint_name": self.endpoint_name,
             "service_name": self.service_name,
             "operation_name": self.operation_name,
+            "target_namespace": self.target_namespace,
             "idempotency_key": self.request_payload.get("idempotency_key"),
             "caller_workflow_instance_id": self.caller_workflow_instance_id,
             "caller_workflow_run_id": self.caller_workflow_run_id,
