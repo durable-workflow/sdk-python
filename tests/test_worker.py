@@ -124,12 +124,13 @@ class TwoCrossQueueWorkflow:
 
 @workflow.defn(name="nexus-worker-wf")
 class NexusWorkerWorkflow:
-    def run(self, ctx):  # type: ignore[no-untyped-def]
+    def run(self, ctx, target=None):  # type: ignore[no-untyped-def]
         result = yield ctx.call_nexus_service(
             "greeter",
             "shared",
             "greet",
             ["Ada"],
+            target_namespace=target,
             service_sdk_language="workflow-php",
             artifact_tuple={"sdk-python": "0.4.95"},
             published_artifact_worker_execution=True,
@@ -1823,8 +1824,9 @@ class TestWorkflowTaskExecution:
         assert serializer.decode(commands[0]["result"]["blob"], codec="avro") == "done"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("target", [None, "shared"])
     async def test_workflow_nexus_service_call_records_side_effect_and_resumes(
-        self, mock_client: AsyncMock
+        self, mock_client: AsyncMock, target: str | None,
     ) -> None:
         async def fake_execute(endpoint_name: str, service_name: str, operation_name: str, arguments: list, **kwargs):
             return NexusOperationResult(
@@ -1836,6 +1838,7 @@ class TestWorkflowTaskExecution:
                 caller_workflow_instance_id=kwargs["caller_workflow_instance_id"],
                 caller_workflow_run_id=kwargs["caller_workflow_run_id"],
                 service_sdk_language=kwargs["service_sdk_language"],
+                target_namespace=kwargs["target_namespace"],
                 request_payload={
                     "arguments": list(arguments),
                     "idempotency_key": kwargs["idempotency_key"],
@@ -1858,7 +1861,7 @@ class TestWorkflowTaskExecution:
             "workflow_type": "nexus-worker-wf",
             "workflow_task_attempt": 1,
             "history_events": [],
-            "arguments": serializer.encode([], codec="avro"),
+            "arguments": serializer.encode([target], codec="avro"),
             "payload_codec": "avro",
         }
 
@@ -1869,6 +1872,7 @@ class TestWorkflowTaskExecution:
         assert execute_call.args[:4] == ("greeter", "shared", "greet", ["Ada"])
         assert execute_call.kwargs["caller_workflow_instance_id"] == "wf-caller"
         assert execute_call.kwargs["caller_workflow_run_id"] == "run-caller"
+        assert execute_call.kwargs["target_namespace"] == target
         assert execute_call.kwargs["service_sdk_language"] == "workflow-php"
         assert execute_call.kwargs["raise_on_failure"] is False
         assert execute_call.kwargs["idempotency_key"].startswith("dw-py-nexus-")
