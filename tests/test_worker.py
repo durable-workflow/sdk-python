@@ -4689,6 +4689,31 @@ class TestWorkerShutdown:
 
 class TestPollLoops:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("has_workflows,has_activities", [(True, False), (False, True), (False, False)])
+    async def test_run_polls_only_registered_task_families(
+        self, mock_client: AsyncMock, has_workflows: bool, has_activities: bool,
+    ) -> None:
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow] if has_workflows else [],
+            activities=[echo_activity] if has_activities else [],
+            poll_timeout=0.01,
+        )
+        run_task = asyncio.create_task(worker.run())
+        try:
+            await asyncio.sleep(0.05)
+        finally:
+            await worker.stop()
+            await run_task
+
+        assert bool(mock_client.poll_workflow_task.await_count) is has_workflows
+        assert bool(mock_client.poll_activity_task.await_count) is has_activities
+        assert bool(mock_client.poll_query_task.await_count) is has_workflows
+        mock_client.register_worker.assert_awaited_once()
+        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+
+    @pytest.mark.asyncio
     async def test_run_starts_both_loops(self, mock_client: AsyncMock) -> None:
         worker = Worker(
             mock_client,
@@ -4949,6 +4974,33 @@ class TestWorkerHeartbeats:
 
 
 class TestRunUntil:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("has_workflows,has_activities", [(True, False), (False, True), (False, False)])
+    async def test_run_until_polls_only_registered_task_families(
+        self, mock_client: AsyncMock, has_workflows: bool, has_activities: bool,
+    ) -> None:
+        mock_client.describe_workflow = AsyncMock(side_effect=[
+            WorkflowExecution(workflow_id="wf-1", run_id="run-1", workflow_type="test-wf", status="running"),
+            WorkflowExecution(workflow_id="wf-1", run_id="run-1", workflow_type="test-wf", status="running"),
+            WorkflowExecution(workflow_id="wf-1", run_id="run-1", workflow_type="test-wf", status="completed"),
+        ])
+        worker = Worker(
+            mock_client,
+            task_queue="q1",
+            workflows=[TestWorkflow] if has_workflows else [],
+            activities=[echo_activity] if has_activities else [],
+            poll_timeout=0.01,
+        )
+
+        result = await worker.run_until(workflow_id="wf-1", timeout=1.0, poll_interval=0.01)
+
+        assert result.status == "completed"
+        assert bool(mock_client.poll_workflow_task.await_count) is has_workflows
+        assert bool(mock_client.poll_activity_task.await_count) is has_activities
+        if not has_workflows:
+            mock_client.poll_query_task.assert_not_awaited()
+        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+
     @pytest.mark.asyncio
     async def test_run_until_returns_terminal_description(self, mock_client: AsyncMock) -> None:
         mock_client.describe_workflow = AsyncMock(
