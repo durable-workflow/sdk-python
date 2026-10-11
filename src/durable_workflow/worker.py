@@ -3956,11 +3956,12 @@ class Worker:
         try:
             if self._stop.is_set():
                 return
-            wf_loop = asyncio.create_task(self._poll_workflow_tasks())
-            act_loop = asyncio.create_task(self._poll_activity_tasks())
-            hb_loop = asyncio.create_task(self._heartbeat_loop())
-            loops = [wf_loop, act_loop, hb_loop]
-            if self._query_tasks_supported:
+            loops = [asyncio.create_task(self._heartbeat_loop())]
+            if self.workflows:
+                loops.append(asyncio.create_task(self._poll_workflow_tasks()))
+            if self.activities:
+                loops.append(asyncio.create_task(self._poll_activity_tasks()))
+            if self.workflows and self._query_tasks_supported:
                 if self._can_clone_client_for_query_tasks():
                     self._start_query_task_thread()
                 else:
@@ -4122,7 +4123,7 @@ class Worker:
             if self._stop.is_set():
                 raise asyncio.CancelledError
             background_tasks.append(asyncio.create_task(self._heartbeat_loop()))
-            if self._query_tasks_supported:
+            if self.workflows and self._query_tasks_supported:
                 if self._can_clone_client_for_query_tasks():
                     self._start_query_task_thread()
                 else:
@@ -4174,7 +4175,7 @@ class Worker:
                     f"workflow {workflow_id} not terminal after {timeout}s (status={desc.status})"
                 )
 
-            if next_task_kind == "workflow":
+            if self.workflows and (next_task_kind == "workflow" or not self.activities):
                 await self._reserve_workflow_capacity()
                 try:
                     poll_start = time.perf_counter()
@@ -4226,6 +4227,9 @@ class Worker:
                     next_task_kind = "workflow"
                 continue
 
+            if not self.activities:
+                await asyncio.sleep(poll_interval)
+                continue
             self._validate_cooperative_activity_handlers()
             if len(self._remote_activity_processes) >= self.max_concurrent_activity_tasks:
                 next_task_kind = "workflow"
