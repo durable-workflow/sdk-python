@@ -300,8 +300,8 @@ def _contains_inline_payload_envelope(value: object) -> bool:
         if set(value) == {"codec", "blob"} and isinstance(value.get("blob"), str):
             return True
         if (
-            value.get("type") == "record_side_effect"
-            and isinstance(value.get("result"), str)
+            (value.get("type") == "record_side_effect" and isinstance(value.get("result"), str))
+            or (value.get("type") == "start_service_operation" and isinstance(value.get("request_payload"), str))
         ):
             return True
         return any(_contains_inline_payload_envelope(item) for item in value.values())
@@ -2080,21 +2080,23 @@ class Client:
         slot: tuple[str | int, ...] = (),
     ) -> Any:
         if isinstance(value, dict):
-            if (
-                value.get("type") == "record_side_effect"
-                and isinstance(value.get("result"), str)
-            ):
+            command_type = value.get("type")
+            blob_key = (
+                {"record_side_effect": "result", "start_service_operation": "request_payload"}.get(command_type)
+                if isinstance(command_type, str) else None
+            )
+            if blob_key is not None and isinstance(value.get(blob_key), str):
                 normalized_command = dict(value)
                 externalized_result = await self._externalize_runtime_payloads(
-                    {"codec": serializer.AVRO_CODEC, "blob": value["result"]},
+                    {"codec": value.get("payload_codec", serializer.AVRO_CODEC), "blob": value[blob_key]},
                     worker=worker,
                     transport=transport,
                     uploaded=uploaded,
                     completion=completion,
-                    slot=(*slot, "result"),
+                    slot=(*slot, blob_key),
                 )
                 if "external_payload" in externalized_result:
-                    normalized_command["result"] = externalized_result
+                    normalized_command[blob_key] = externalized_result
                 value = normalized_command
 
             if set(value) == {"codec", "blob"} and isinstance(value.get("blob"), str):

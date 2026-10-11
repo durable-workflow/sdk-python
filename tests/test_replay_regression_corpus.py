@@ -269,7 +269,18 @@ class NexusTargetWorkflow:
         return result.service_call_id
 
 
+@workflow.defn(name="tests.replay.nexus-terminal-delivery")
+class NexusTerminalDeliveryWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        result = yield ctx.call_nexus_service(
+            "greeter", "shared", "greet", ["Ada"],
+            target_namespace="shared", idempotency_key="original-call",
+        )
+        return result.result
+
+
 WORKFLOWS = [
+    NexusTerminalDeliveryWorkflow,
     NexusTargetWorkflow,
     UnsupportedAsyncWorkflow,
     ChildPolicyAuthorWorkflow,
