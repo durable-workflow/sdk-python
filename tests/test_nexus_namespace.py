@@ -8,6 +8,7 @@ from durable_workflow import Client, serializer, workflow
 from durable_workflow.errors import NonDeterministicReplayError
 from durable_workflow.nexus import NexusOperationResult, stable_nexus_idempotency_key
 from durable_workflow.workflow import CompleteWorkflow, NexusServiceCall, WorkflowContext, replay
+from tests.test_runtime_external_payload_transport import FakeRuntimePayloadServer
 
 
 @pytest.mark.asyncio
@@ -45,6 +46,49 @@ async def test_target_requests_and_concurrent_worker_heartbeat_keep_separate_sco
     assert body["caller_workflow_run_id"] == "original-run"
     assert result.target_namespace == "shared"
     assert result.to_recorded_payload()["target_namespace"] == "shared"
+
+
+@pytest.mark.asyncio
+async def test_cross_namespace_payload_discovery_upload_and_admission_use_target_scope():
+    server = FakeRuntimePayloadServer(threshold_bytes=1)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        assert request.headers["x-namespace"] == "shared"
+        assert request.headers["authorization"] == "Bearer control"
+        if request.url.path == "/api/cluster/info":
+            info = server.cluster_info()
+            info["namespace"]["name"] = "shared"
+            return httpx.Response(200, json=info)
+        if request.url.path == "/api/external-payloads/v1":
+            reference = server.seed(request.content.decode())
+            assert int(request.headers["x-durable-workflow-payload-size"]) == reference["size_bytes"]
+            assert request.headers["x-durable-workflow-payload-sha256"] == reference["sha256"]
+            return httpx.Response(201, json={
+                "schema": "durable-workflow.v2.runtime-external-payload-upload.v1",
+                "transport_version": 1, "reference": reference,
+            })
+        return httpx.Response(200, json={"accepted": True, "id": "call-1", "status": "started"})
+
+    async with Client("https://runtime.example", namespace="tenant-b", control_token="control", worker_token="worker") as client:
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(handler))
+        client._cluster_info = {"namespace": {"name": "tenant-b"}}
+        client._runtime_external_payload_transport_resolved = True
+        result = await client.execute_nexus_operation("greeter", "shared", "greet", ["Ada" * 128], target_namespace="shared")
+        assert client.namespace == "tenant-b"
+        assert client._runtime_external_payload_transport_cache is None
+
+    assert [request.url.path for request in requests] == [
+        "/api/cluster/info", "/api/external-payloads/v1",
+        "/api/service-endpoints/greeter/services/shared/operations/greet/execute",
+    ]
+    body = json.loads(requests[-1].content)
+    reference = body["arguments"]["external_payload"]
+    assert serializer.decode(server.payloads[reference["reference_id"]].decode(), codec="avro") == ["Ada" * 128]
+    assert body["caller_namespace"] == "tenant-b"
+    assert serializer.decode(result.request_payload["arguments"], codec="avro") == ["Ada" * 128]
 
 
 @pytest.mark.asyncio

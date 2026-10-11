@@ -2762,8 +2762,21 @@ class Client:
         )
         context = f"{endpoint_name}/{service_name}/{operation_name}"
 
+        wire_body = request_body
+        transport = await execution_client._runtime_external_payload_transport()
+        if transport is not None:
+            arguments_envelope = await execution_client._externalize_runtime_payloads(
+                {"codec": request_body["payload_codec"], "blob": request_body["arguments"]},
+                worker=False,
+                transport=transport,
+                uploaded={},
+                slot=("arguments",),
+            )
+            if "external_payload" in arguments_envelope:
+                wire_body = {**request_body, "arguments": arguments_envelope}
+
         try:
-            data = await execution_client._request("POST", path, json=request_body, context=context)
+            data = await execution_client._request("POST", path, json=wire_body, context=context)
         except ServerError as exc:
             if exc.status != 409 or not isinstance(exc.body, dict):
                 raise
