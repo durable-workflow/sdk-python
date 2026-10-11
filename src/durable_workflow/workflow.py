@@ -1169,9 +1169,8 @@ class StartChildWorkflow:
 class NexusServiceCall:
     """Command requesting a durable Nexus service operation from workflow code.
 
-    The Python worker executes the operation through the service-catalog API,
-    records the response or typed failure as a side-effect marker, and then
-    resumes replay from that recorded marker.
+    Admission is committed with the leased workflow task. Completion waits
+    resume from durable service history, including on a replacement worker.
     """
 
     endpoint_name: str
@@ -1198,11 +1197,54 @@ class NexusServiceCall:
     duplicate_start_policy: str | None = None
     target_namespace: str | None = None
 
-    def to_server_command(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        raise RuntimeError(
-            "NexusServiceCall is resolved by the Python worker before workflow commands "
-            "are serialized to the server"
-        )
+    def to_server_command(
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
+        external_storage: ExternalStorageDriver | None = None,
+        external_storage_threshold_bytes: int | None = None,
+    ) -> dict[str, Any]:
+        codec = self.payload_codec or payload_codec
+        metadata = {
+            "caller_sdk_language": "sdk-python",
+            **{key: value for key, value in {
+                "target_namespace": self.target_namespace,
+                "service_sdk_language": self.service_sdk_language,
+                "artifact_tuple": self.artifact_tuple,
+                "published_artifact_worker_execution": self.published_artifact_worker_execution,
+            }.items() if value is not None},
+        }
+        return {
+            "type": "start_service_operation",
+            "endpoint_name": self.endpoint_name,
+            "service_name": self.service_name,
+            "operation_name": self.operation_name,
+            "payload_codec": codec,
+            "request_payload": _payload_blob_or_external_envelope(
+                self.arguments, payload_codec=codec, size_warning=size_warning,
+                warning_context=_payload_warning_context(warning_context, kind="nexus_input", task_queue=task_queue),
+                external_storage=external_storage,
+                external_storage_threshold_bytes=external_storage_threshold_bytes,
+            ),
+            "metadata": metadata,
+            **{key: value for key, value in {
+                "namespace": self.target_namespace,
+                "caller_namespace": self.caller_namespace,
+                "idempotency_key": self.idempotency_key,
+                "mode_override": self.mode,
+                "wait_for": self.wait_for,
+                "wait_timeout_seconds": self.wait_timeout_seconds,
+                "target_workflow_instance_id": self.target_workflow_instance_id,
+                "target_workflow_run_id": self.target_workflow_run_id,
+                "connection": self.connection, "queue": self.queue,
+                "business_key": self.business_key, "labels": self.labels,
+                "memo": self.memo, "search_attributes": self.search_attributes,
+                "duplicate_start_policy": self.duplicate_start_policy,
+            }.items() if value is not None},
+        }
 
     def expected_recorded_metadata(self) -> dict[str, Any]:
         return {
@@ -1698,6 +1740,14 @@ def commands_to_server_commands(
             if command.run_timeout_seconds is not None:
                 server_command["run_timeout_seconds"] = command.run_timeout_seconds
             server_commands.append(server_command)
+            continue
+
+        if isinstance(command, NexusServiceCall):
+            server_commands.append(command.to_server_command(
+                task_queue, payload_codec=payload_codec, size_warning=size_warning,
+                warning_context=warning_context, external_storage=external_storage,
+                external_storage_threshold_bytes=external_storage_threshold_bytes,
+            ))
             continue
 
         server_commands.append(command.to_server_command(
@@ -2577,6 +2627,48 @@ class ReplayOutcome:
     prepared_local_activity_group: PreparedLocalActivityGroup | None = None
     cancellation_scope_opening: CancellationScopeOpening | None = None
     cancellation_scope_delivery: CancellationScopeDeliveryIntent | None = None
+
+
+@dataclass(frozen=True)
+class _ServiceCallDelivery:
+    payload: Mapping[str, Any]
+
+    def result(
+        self, command: NexusServiceCall, *, external_storage: ExternalStorageDriver | None,
+        external_storage_cache: ExternalPayloadCache | None,
+    ) -> NexusOperationResult:
+        surface = self.payload.get("service_call")
+        surface = dict(surface) if isinstance(surface, Mapping) else dict(self.payload)
+        response = self.payload.get("response_payload")
+        if response is None:
+            response = surface.get("result_envelope")
+        if response is not None:
+            surface["result"] = serializer.decode_envelope(
+                response, codec=self.payload.get("payload_codec", serializer.AVRO_CODEC),
+                external_storage=external_storage, external_storage_cache=external_storage_cache,
+            )
+        if not surface.get("message"):
+            surface["message"] = self.payload.get("message") or surface.get("failure_message")
+        if not surface.get("caller_observed_error_type"):
+            surface["caller_observed_error_type"] = self.payload.get("exception_type")
+        if not surface.get("reason"):
+            surface["reason"] = surface.get("outcome_reason")
+        request = {
+            "idempotency_key": command.idempotency_key,
+            "arguments": self.payload.get("request_payload"),
+            "caller_workflow_instance_id": self.payload.get("caller_workflow_instance_id"),
+            "caller_workflow_run_id": self.payload.get("caller_workflow_run_id"),
+        }
+        result = NexusOperationResult.from_response(
+            {"service_call": surface}, endpoint_name=command.endpoint_name,
+            service_name=command.service_name, operation_name=command.operation_name,
+            request_payload=request, target_namespace=command.target_namespace,
+            service_sdk_language=command.service_sdk_language, artifact_tuple=command.artifact_tuple,
+            published_artifact_worker_execution=command.published_artifact_worker_execution,
+        )
+        if result.is_failure:
+            raise result.to_failure()
+        return result
 
 
 class Replayer:
@@ -3670,6 +3762,14 @@ def _activity_type_from_payload(payload: Mapping[str, Any]) -> str | None:
 
 def _recorded_step_details(payload: Mapping[str, Any]) -> dict[str, Any]:
     details: dict[str, Any] = {}
+    service_call = payload.get("service_call")
+    if isinstance(service_call, Mapping):
+        for key in ("endpoint_name", "service_name", "operation_name", "target_namespace", "idempotency_key"):
+            if key in service_call:
+                details[key] = service_call[key]
+    for key in ("endpoint_name", "service_name", "operation_name", "operation_mode", "wait_for"):
+        if key in payload:
+            details[key] = payload[key]
     if "delay_seconds" in payload:
         details["delay_seconds"] = payload["delay_seconds"]
     if "cancellation_cleanup" in payload:
@@ -3764,8 +3864,13 @@ def _is_resolved_step_event(
         "VersionMarkerRecorded",
         "MemoUpserted",
         "SearchAttributesUpserted",
+        "ServiceCallCompleted",
+        "ServiceCallFailed",
+        "ServiceCallCancelled",
     ):
         return True
+    if event_type == "ServiceCallStarted":
+        return payload.get("wait_for") == "accepted" or payload.get("operation_mode") == "async"
     if event_type == "TimerFired":
         return _internal_timeout_timer_kind(payload, condition_wait_ids_by_sequence) is None
     return False
@@ -3781,7 +3886,7 @@ def _command_history_shape(command: Any) -> str | None:
     if isinstance(command, StartChildWorkflow):
         return "child workflow"
     if isinstance(command, NexusServiceCall):
-        return "side effect"
+        return "service operation"
     if isinstance(command, RecordSideEffect):
         return "side effect"
     if isinstance(command, RecordVersionMarker):
@@ -3811,6 +3916,21 @@ def _command_diagnostic_shape(command: Any) -> str:
 
 
 def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
+    if isinstance(command, NexusServiceCall):
+        for key in ("endpoint_name", "service_name", "operation_name", "idempotency_key"):
+            recorded = step.details.get(key)
+            if recorded is not None and recorded != getattr(command, key):
+                return f"nexus_{key}_changed: recorded service intent differs from the workflow command"
+        recorded_target = step.details.get("target_namespace")
+        if (
+            command.target_namespace is not None and recorded_target is not None
+            and recorded_target != command.target_namespace
+        ):
+            return "nexus_target_namespace_changed: recorded target differs from the workflow command"
+        for key, current in (("operation_mode", command.mode), ("wait_for", command.wait_for)):
+            recorded = step.details.get(key)
+            if recorded is not None and current is not None and recorded != current:
+                return f"nexus_{key}_changed: recorded waiting policy differs from the workflow command"
     if isinstance(command, StartTimer) or isinstance(command, RecordLocalActivity) and (
         command._cancellation_scope_id != "root"
     ):
@@ -4529,7 +4649,8 @@ def _replay_state(
         expected_shape = _command_history_shape(command)
         if expected_shape is None:
             return
-        if step.shape != expected_shape:
+        legacy_nexus_result = isinstance(command, NexusServiceCall) and step.shape == "side effect"
+        if step.shape != expected_shape and not legacy_nexus_result:
             raise NonDeterministicReplayError(
                 step.workflow_sequence,
                 expected_shape,
@@ -4938,6 +5059,11 @@ def _replay_state(
                     )
                 cancelled_selection_members[cancellation_key] = cancellation_payload
                 cancelled_selection_indexes.setdefault(cancellation_key, event_index)
+        elif etype in ("ServiceCallStarted", "ServiceCallCompleted", "ServiceCallFailed", "ServiceCallCancelled"):
+            if etype != "ServiceCallStarted" or _is_resolved_step_event(etype, payload):
+                _append_resolved_result(_ServiceCallDelivery(payload), "service operation", ev)
+            else:
+                _append_pending_step("service operation", ev)
         elif etype in ("SideEffectRecorded", "ChildRunCompleted"):
             shape = "side effect" if etype == "SideEffectRecorded" else "child workflow"
             _append_resolved_result(
@@ -6609,7 +6735,13 @@ def _replay_state(
                         )
                     result_cursor += 1
                     try:
-                        next_value = cmd.recorded_result(recorded_value)
+                        next_value = (
+                            recorded_value.result(
+                                cmd, external_storage=external_storage,
+                                external_storage_cache=external_storage_cache,
+                            ) if isinstance(recorded_value, _ServiceCallDelivery)
+                            else cmd.recorded_result(recorded_value)
+                        )
                     except NexusOperationFailed as exc:
                         try:
                             advanced_cmd = gen.throw(exc)

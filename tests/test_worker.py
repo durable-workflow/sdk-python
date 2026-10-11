@@ -34,7 +34,6 @@ from durable_workflow.interceptors import (
     WorkflowTaskHandler,
     WorkflowTaskInterceptorContext,
 )
-from durable_workflow.nexus import NEXUS_OPERATION_RESULT_SCHEMA, NexusOperationResult
 from durable_workflow.worker import (
     DURABLE_SELECTION_CAPABILITY,
     MEMO_UPSERTS_CAPABILITY,
@@ -1404,7 +1403,7 @@ class TestWorkflowTaskExecution:
         assert commands[0]["outcome"] == "completed"
 
     @pytest.mark.asyncio
-    async def test_local_record_is_committed_when_following_nexus_call_cannot_resolve(
+    async def test_local_record_and_following_nexus_admission_share_the_workflow_completion(
         self, mock_client: AsyncMock,
     ) -> None:
         mock_client.heartbeat_workflow_task.return_value = {
@@ -1421,9 +1420,9 @@ class TestWorkflowTaskExecution:
             "arguments": serializer.encode(["Ada"], codec="avro"), "payload_codec": "avro",
         })
         assert commands is not None
-        assert [command["type"] for command in commands] == ["record_local_activity", "fail_workflow"]
+        assert [command["type"] for command in commands] == ["record_local_activity", "start_service_operation"]
         assert commands[0]["outcome"] == "completed"
-        assert "Nexus resolution after local activity failed" in commands[1]["message"]
+        assert serializer.decode(commands[1]["request_payload"], codec="avro") == ["Ada"]
         mock_client.execute_nexus_operation.assert_not_awaited()
         mock_client.fail_workflow_task.assert_not_awaited()
 
@@ -1825,34 +1824,9 @@ class TestWorkflowTaskExecution:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("target", [None, "shared"])
-    async def test_workflow_nexus_service_call_records_side_effect_and_resumes(
+    async def test_workflow_nexus_service_call_submits_only_fenced_admission(
         self, mock_client: AsyncMock, target: str | None,
     ) -> None:
-        async def fake_execute(endpoint_name: str, service_name: str, operation_name: str, arguments: list, **kwargs):
-            return NexusOperationResult(
-                accepted=True,
-                service_call_id="svc-call-1",
-                endpoint_name=endpoint_name,
-                service_name=service_name,
-                operation_name=operation_name,
-                caller_workflow_instance_id=kwargs["caller_workflow_instance_id"],
-                caller_workflow_run_id=kwargs["caller_workflow_run_id"],
-                service_sdk_language=kwargs["service_sdk_language"],
-                target_namespace=kwargs["target_namespace"],
-                request_payload={
-                    "arguments": list(arguments),
-                    "idempotency_key": kwargs["idempotency_key"],
-                    "caller_workflow_instance_id": kwargs["caller_workflow_instance_id"],
-                    "caller_workflow_run_id": kwargs["caller_workflow_run_id"],
-                },
-                response_or_failure_surface={"status": "completed", "result": {"greeting": "hello Ada"}},
-                artifact_tuple=kwargs["artifact_tuple"],
-                published_artifact_worker_execution=kwargs["published_artifact_worker_execution"],
-                status="completed",
-                result={"greeting": "hello Ada"},
-            )
-
-        mock_client.execute_nexus_operation = AsyncMock(side_effect=fake_execute)
         worker = Worker(mock_client, task_queue="q1", workflows=[NexusWorkerWorkflow], activities=[])
         task = {
             "task_id": "t-nexus",
@@ -1867,34 +1841,19 @@ class TestWorkflowTaskExecution:
 
         await worker._run_workflow_task(task)
 
-        mock_client.execute_nexus_operation.assert_awaited_once()
-        execute_call = mock_client.execute_nexus_operation.await_args
-        assert execute_call.args[:4] == ("greeter", "shared", "greet", ["Ada"])
-        assert execute_call.kwargs["caller_workflow_instance_id"] == "wf-caller"
-        assert execute_call.kwargs["caller_workflow_run_id"] == "run-caller"
-        assert execute_call.kwargs["target_namespace"] == target
-        assert execute_call.kwargs["service_sdk_language"] == "workflow-php"
-        assert execute_call.kwargs["raise_on_failure"] is False
-        assert execute_call.kwargs["idempotency_key"].startswith("dw-py-nexus-")
-
+        mock_client.execute_nexus_operation.assert_not_awaited()
         mock_client.complete_workflow_task.assert_called_once()
-        commands = mock_client.complete_workflow_task.call_args.kwargs["commands"]
-        assert [command["type"] for command in commands] == ["record_side_effect", "complete_workflow"]
-        recorded = serializer.decode(commands[0]["result"], codec="avro")
-        assert recorded["schema"] == NEXUS_OPERATION_RESULT_SCHEMA
-        assert recorded["caller_workflow_instance_id"] == "wf-caller"
-        assert recorded["caller_workflow_run_id"] == "run-caller"
-        assert recorded["caller_sdk_language"] == "sdk-python"
-        assert recorded["service_sdk_language"] == "workflow-php"
-        assert recorded["operation_name"] == "greet"
-        assert recorded["request_payload"]["arguments"] == ["Ada"]
-        assert recorded["response_or_failure_surface"]["result"] == {"greeting": "hello Ada"}
-        assert recorded["service_call_id"] == "svc-call-1"
-        assert recorded["artifact_tuple"]["sdk-python"] == "0.4.95"
-        assert recorded["published_artifact_worker_execution"] is True
-        assert serializer.decode(commands[1]["result"]["blob"], codec="avro") == {
-            "service_call_id": "svc-call-1",
-        }
+        completion = mock_client.complete_workflow_task.call_args.kwargs
+        assert completion["task_id"] == "t-nexus"
+        assert completion["workflow_task_attempt"] == 1
+        commands = completion["commands"]
+        assert [command["type"] for command in commands] == ["start_service_operation"]
+        admission = commands[0]
+        assert admission.get("namespace") == target
+        assert admission["idempotency_key"].startswith("dw-py-nexus-")
+        assert serializer.decode(admission["request_payload"], codec="avro") == ["Ada"]
+        assert admission["metadata"]["caller_sdk_language"] == "sdk-python"
+        assert admission["metadata"]["service_sdk_language"] == "workflow-php"
 
     @pytest.mark.asyncio
     async def test_cross_queue_second_activity_uses_completed_first_result(

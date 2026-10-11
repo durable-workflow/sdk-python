@@ -6,9 +6,11 @@ Workflow retry and timeout settings are durable command budgets. Use
 attempts. Use `TransportRetryPolicy` only for client HTTP retries.
 
 Use `ctx.call_nexus_service(...)` from workflow code to start a Nexus service
-operation durably. The Python worker records the accepted response or typed
-service failure as a side-effect marker, then replay resumes with
-`NexusOperationResult` or raises `NexusOperationFailed` at the yield point.
+operation durably. Admission uses the leased workflow command. Synchronous
+completion waits remain suspended until a durable terminal service event,
+then replay returns `NexusOperationResult` or raises `NexusOperationFailed`
+at the yield point. Use `ctx.start_nexus_operation(...)` to return after
+acceptance. Older recorded Nexus side-effect results still replay.
 
 Yield a list for deterministic parallel composition. Lists may nest and may
 mix activity, child-workflow, and timer commands; the resolved value has the

@@ -378,10 +378,12 @@ registration order as structured fields.
 ## Nexus service calls
 
 Workflow code can call a registered Nexus service operation through
-`WorkflowContext.call_nexus_service(...)`. The worker executes the service
-operation through the service-catalog API, records the response or typed
-failure as a durable side-effect marker, and resumes replay from that marker
-on subsequent workflow tasks.
+`WorkflowContext.call_nexus_service(...)`. The worker submits admission with
+its leased workflow task. A synchronous completion wait stays suspended until
+the Server records `ServiceCallCompleted`, `ServiceCallFailed` or
+`ServiceCallCancelled`. Replacement workers replay the same durable result.
+`start_nexus_operation(...)` returns after acceptance. Existing histories with
+recorded Nexus side-effect results remain readable.
 
 ```python
 from durable_workflow import NexusOperationFailed
