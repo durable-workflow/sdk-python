@@ -94,7 +94,7 @@ async def application_failure(kind: str) -> None:
 
 @pytest_asyncio.fixture
 async def owner(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
+    monkeypatch.delenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", raising=False)
     client = AsyncMock(spec=Client)
     client.get_cluster_info.return_value = compatible_cluster_info(worker_protocol={
         "version": "1.20", "server_capabilities": {"cooperative_cancellation": True},
@@ -317,8 +317,8 @@ async def test_client_observation_keeps_worker_credentials_namespace_and_fence(m
         assert send.await_args.kwargs["json"] == {"activity_attempt_id": "attempt", "lease_owner": "owner"}
 
 
-async def test_client_observation_requires_explicit_protocol_before_io(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", raising=False)
+async def test_client_observation_refuses_previous_protocol_before_io(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.19")
     async with Client("http://runtime.test") as client:
         with (patch.object(client._http, "request", new_callable=AsyncMock) as send,
               pytest.raises(ValueError, match="1.20")):
