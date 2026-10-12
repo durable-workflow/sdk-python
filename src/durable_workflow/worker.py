@@ -1775,17 +1775,20 @@ class Worker:
                     operation_sequence_span=intent.operation_sequence_span,
                 )
                 if delivery_reply.get("delivered") is False:
-                    pending_reason = {
-                        "service_operation": "cancellation_waiting_for_service_operation",
-                        "child": "cancellation_waiting_for_child",
-                        "parallel": "cancellation_waiting_for_child",
-                        "selection_handle": "cancellation_waiting_for_child",
-                    }.get(intent.call_kind)
-                    if (pending_reason is None or delivery_reply.get("reason") != pending_reason
+                    pending_reasons = {
+                        "service_operation": {"cancellation_waiting_for_service_operation"},
+                        "child": {"cancellation_waiting_for_child"},
+                        "activity": {"cancellation_waiting_for_activity"},
+                        "local_activity": {"cancellation_waiting_for_activity"},
+                        "parallel": {"cancellation_waiting_for_child", "cancellation_waiting_for_activity"},
+                        "selection_handle": {"cancellation_waiting_for_child", "cancellation_waiting_for_activity"},
+                    }.get(intent.call_kind, set())
+                    if (delivery_reply.get("reason") not in pending_reasons
                             or delivery_reply.get("claim_released") is not True
-                            or delivery_reply.get("task_id") != task["task_id"]):
+                            or delivery_reply.get("task_id") != task["task_id"]
+                            or delivery_reply.get("workflow_run_id") != task["run_id"]):
                         raise LocalActivityExecutionAborted("pending cancellation lacks this claim's release receipt")
-                    raise _WorkflowClaimDeferred(f"{pending_reason}: target cleanup continues on a new claim")
+                    raise _WorkflowClaimDeferred("pending cancellation: target cleanup continues on a new claim")
             except _WorkflowClaimDeferred:
                 raise
             except Exception as error:

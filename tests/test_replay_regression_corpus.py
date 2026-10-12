@@ -282,13 +282,16 @@ class NexusTerminalDeliveryWorkflow:
 
 @workflow.defn(name="tests.replay.nexus-cooperative-delivery")
 class NexusCooperativeDeliveryWorkflow:
-    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+    def run(self, ctx: WorkflowContext, cleanup_seconds: int = 0):  # type: ignore[no-untyped-def]
         try:
             yield ctx.call_nexus_service(
                 "greeter", "shared", "greet", ["Ada"],
                 target_namespace="shared", idempotency_key="original-call",
             )
         except WorkflowCancelled as error:
+            if cleanup_seconds:
+                with ctx.cancellation_shield():
+                    yield ctx.start_timer(cleanup_seconds)
             return error.request_id
 
 
