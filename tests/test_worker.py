@@ -4917,7 +4917,7 @@ class TestWorkerHeartbeats:
         recovered = asyncio.Event()
         attempts = 0
 
-        async def heartbeat(**kwargs: Any) -> dict[str, bool]:
+        async def heartbeat(**kwargs: object) -> dict[str, bool]:
             nonlocal attempts
             attempts += 1
             if attempts == 1:
