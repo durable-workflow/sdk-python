@@ -134,7 +134,7 @@ class ClaimServer:
         return {"outcome": "completed"}
 
     async def worker(self, monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> Worker:
-        monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.20")
+        monkeypatch.delenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", raising=False)
         # These transport/replay fixtures use local callbacks that share mock
         # state with this process. They never poll or advertise remote handlers.
         local_callbacks = kwargs.pop("activities", [])

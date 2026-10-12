@@ -159,7 +159,6 @@ jobs:
     timeout-minutes: 25
     needs: [lint, test]
     env:
-      DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION: ${{ inputs.cooperative_qualification && '1.20' || '1.19' }}
       DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION: ${{ inputs.cooperative_qualification && '1' || '0' }}
       DURABLE_WORKFLOW_NATIVE_SOURCE: ${{ github.workspace }}/native
       COMPOSE_FILE: docker-compose.test.yml
