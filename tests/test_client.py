@@ -164,9 +164,14 @@ class TestHeaders:
 
     def test_worker_headers(self, client: Client) -> None:
         h = client._headers(worker=True)
-        assert PROTOCOL_VERSION == "1.19"
+        assert PROTOCOL_VERSION == "1.20"
         assert h["X-Durable-Workflow-Protocol-Version"] == PROTOCOL_VERSION
         assert "X-Durable-Workflow-Control-Plane-Version" not in h
+
+    def test_explicit_previous_worker_protocol(self, client: Client, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.19")
+        assert client._headers(worker=True)["X-Durable-Workflow-Protocol-Version"] == "1.19"
+        assert client._headers(worker=False)["X-Durable-Workflow-Control-Plane-Version"] == "2"
 
     def test_conformance_protocol_header_overrides(self, client: Client, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DURABLE_WORKFLOW_CONTROL_PLANE_VERSION", "3")

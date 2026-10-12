@@ -55,6 +55,7 @@ from .client import (
     CONTROL_PLANE_REQUEST_CONTRACT_VERSION,
     CONTROL_PLANE_VERSION,
     DEFAULT_SDK_VERSION,
+    MINIMUM_WORKER_PROTOCOL_VERSION,
     PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
     PROTOCOL_VERSION,
     Client,
@@ -874,6 +875,16 @@ def _server_protocol_compatible(server_version: str, sdk_version: str) -> bool:
 
 
 def _validate_server_compatibility(info: dict[str, Any]) -> None:
+    requested_protocol = _protocol_version_from_env(
+        "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+    )
+    if requested_protocol not in (MINIMUM_WORKER_PROTOCOL_VERSION, PROTOCOL_VERSION):
+        raise RuntimeError(
+            "Server compatibility error: sdk-python supports worker protocol "
+            f"{MINIMUM_WORKER_PROTOCOL_VERSION} or protocol {PROTOCOL_VERSION}; "
+            f"requested {requested_protocol!r}."
+        )
+
     control_plane = info.get("control_plane")
     if not isinstance(control_plane, dict):
         raise RuntimeError(
@@ -911,15 +922,15 @@ def _validate_server_compatibility(info: dict[str, Any]) -> None:
     if not isinstance(worker_protocol, dict):
         raise RuntimeError(
             "Server compatibility error: missing worker_protocol manifest; "
-            f"sdk-python requires worker_protocol.version {PROTOCOL_VERSION}."
+            f"sdk-python requires worker_protocol.version {requested_protocol}."
         )
 
     worker_protocol_version = _manifest_version(worker_protocol)
-    if not _server_protocol_compatible(worker_protocol_version, PROTOCOL_VERSION):
+    if not _server_protocol_compatible(worker_protocol_version, requested_protocol):
         raise RuntimeError(
             "Server compatibility error: incompatible worker_protocol.version "
             f"{worker_protocol_version!r}; sdk-python requires major-equal and "
-            f"minor>={PROTOCOL_VERSION!r}."
+            f"minor>={requested_protocol!r}."
         )
 
     auth_composition = info.get("auth_composition_contract")

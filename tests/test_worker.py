@@ -1114,6 +1114,39 @@ class TestWorkerRegistration:
         mock_client.register_worker.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_register_accepts_explicit_previous_protocol(
+        self, mock_client: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.19")
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(worker_protocol={"version": "1.19"})
+        )
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        await worker._register()
+        mock_client.register_worker.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_default_protocol_refuses_previous_server_before_registration(self, mock_client: AsyncMock) -> None:
+        mock_client.get_cluster_info = AsyncMock(
+            return_value=compatible_cluster_info(worker_protocol={"version": "1.19"})
+        )
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        with pytest.raises(RuntimeError, match="minor>='1.20'"):
+            await worker._register()
+        mock_client.register_worker.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("version", ["1.18", "1.21", "2.0"])
+    async def test_register_rejects_unsupported_protocol_override(
+        self, mock_client: AsyncMock, monkeypatch: pytest.MonkeyPatch, version: str,
+    ) -> None:
+        monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", version)
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        with pytest.raises(RuntimeError, match="supports worker protocol 1.19 or protocol 1.20"):
+            await worker._register()
+        mock_client.register_worker.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_register_accepts_higher_compatible_minor_protocol(self, mock_client: AsyncMock) -> None:
         # Server is one minor ahead of the SDK. MINOR bumps in workflow:v2's
         # WorkerProtocolVersion are documented as additive (new optional

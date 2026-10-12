@@ -66,8 +66,8 @@ async def test_invalid_claim_or_authority_never_starts_transport(change: dict[st
             send.assert_not_awaited()
 
 
-async def test_default_protocol_refuses_before_io(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION")
+async def test_previous_protocol_refuses_before_io(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", "1.19")
     async with Client("http://server") as client:
         with patch.object(client, "_request", new_callable=AsyncMock) as send:
             with pytest.raises(ValueError, match="1.20"):
