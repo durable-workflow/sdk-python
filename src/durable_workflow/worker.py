@@ -1109,9 +1109,6 @@ class Worker:
         self._worker_sessions: dict[str, WorkerSession] = {}
         self._stop = asyncio.Event()
         self._local_activity_shutdown = asyncio.Event()
-        payload_observers = getattr(self.client, "_workflow_payload_observers", None)
-        if isinstance(payload_observers, dict):
-            payload_observers[self.worker_id] = self._renew_workflow_payload_lease
         self._local_activity_executor: ThreadPoolExecutor | None = None
         self._remote_activity_executor: ThreadPoolExecutor | None = None
         self._remote_activity_threads: set[Future[Any]] = set()
@@ -4439,6 +4436,9 @@ class Worker:
         if self._stop.is_set():
             raise RuntimeError("worker cannot run after stop() has been called")
         self._run_started = True
+        payload_observers = getattr(self.client, "_workflow_payload_observers", None)
+        if isinstance(payload_observers, dict):
+            payload_observers[self.worker_id] = self._renew_workflow_payload_lease
 
     def worker_session(self, options: WorkerSessionOptions) -> WorkerSession:
         """Return a typed lease handle held by this worker until shutdown."""
@@ -4557,6 +4557,10 @@ class Worker:
             self._registered = False
             log.info("worker %s deregistered", self.worker_id)
         self._sticky_cache.clear()
+        payload_observers = getattr(self.client, "_workflow_payload_observers", None)
+        if (isinstance(payload_observers, dict)
+                and payload_observers.get(self.worker_id) == self._renew_workflow_payload_lease):
+            payload_observers.pop(self.worker_id)
 
     @staticmethod
     def _remaining_shutdown_time(deadline: float) -> float:
