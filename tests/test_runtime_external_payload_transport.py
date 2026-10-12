@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from typing import Any
@@ -7,7 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
-from durable_workflow import Replayer, serializer, workflow
+from durable_workflow import Replayer, Worker, serializer, workflow
 from durable_workflow.client import Client
 from durable_workflow.errors import (
     ExternalPayloadError,
@@ -26,7 +27,7 @@ from durable_workflow.external_storage import (
     ExternalPayloadCache,
 )
 from durable_workflow.retry_policy import TransportRetryPolicy
-from durable_workflow.workflow import CompleteWorkflow, WorkflowContext
+from durable_workflow.workflow import CompleteWorkflow, LocalActivityExecutionAborted, WorkflowContext
 
 
 @workflow.defn(name="runtime-payload-replay")
@@ -307,6 +308,166 @@ def runtime_client(
 def runtime_envelope(server: FakeRuntimePayloadServer, value: Any) -> dict[str, Any]:
     blob = serializer.encode(value)
     return {"codec": "avro", "external_payload": server.seed(blob)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("history_page", [False, True])
+async def test_worker_confirms_original_lease_before_and_after_payload_hydration(history_page: bool) -> None:
+    server = FakeRuntimePayloadServer()
+    client = runtime_client(server)
+    Worker(client, task_queue="billing", worker_id="worker-1", workflows=[RuntimePayloadReplayWorkflow])
+    task = {"task_id": "task-1", "lease_owner": "worker-1", "workflow_task_attempt": 3,
+            "arguments": runtime_envelope(server, ["original-input"])}
+    path = "/api/worker/workflow-tasks/task-1/history" if history_page else "/api/worker/workflow-tasks/poll"
+    server.responses[("POST", path)] = {"history_events": [task]} if history_page else {"task": task}
+    server.responses[("POST", "/api/worker/workflow-tasks/task-1/heartbeat")] = {
+        "task_id": "task-1", "lease_owner": "worker-1", "workflow_task_attempt": 3, "renewed": True,
+    }
+    original_handler = server.handler
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and "/external-payloads/" in request.url.path:
+            assert len([entry for entry in server.requests if entry[1].endswith("/heartbeat")]) == 1
+        return original_handler(request)
+
+    client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(handler))
+    try:
+        if history_page:
+            result = await client.workflow_task_history(task_id="task-1", lease_owner="worker-1",
+                                                        workflow_task_attempt=3, next_history_page_token="page-2")
+            resolved = result["history_events"][0]
+        else:
+            result = await client.poll_workflow_task(worker_id="worker-1", task_queue="billing", timeout=0)
+            resolved = result
+        assert serializer.decode_envelope(resolved["arguments"]) == ["original-input"]
+        heartbeats = [entry for entry in server.requests if entry[1].endswith("/heartbeat")]
+        assert len(heartbeats) == 2
+        assert all(entry[2] == {"lease_owner": "worker-1", "workflow_task_attempt": 3} for entry in heartbeats)
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_fence", [
+    {"workflow_task_attempt": 4}, {"lease_owner": "worker-2"}, {"renewed": False},
+])
+async def test_worker_does_not_fetch_payload_when_original_claim_is_not_confirmed(
+    changed_fence: dict[str, Any],
+) -> None:
+    server = FakeRuntimePayloadServer()
+    client = runtime_client(server)
+    Worker(client, task_queue="billing", worker_id="worker-1", workflows=[RuntimePayloadReplayWorkflow])
+    server.responses[("POST", "/api/worker/workflow-tasks/poll")] = {"task": {
+        "task_id": "task-1", "lease_owner": "worker-1", "workflow_task_attempt": 3,
+        "arguments": runtime_envelope(server, ["never-executed"]),
+    }}
+    server.responses[("POST", "/api/worker/workflow-tasks/task-1/heartbeat")] = {
+        "task_id": "task-1", "lease_owner": "worker-1", "workflow_task_attempt": 3, "renewed": True, **changed_fence,
+    }
+    try:
+        with pytest.raises(LocalActivityExecutionAborted, match="workflow payload lease was not fenced"):
+            await client.poll_workflow_task(worker_id="worker-1", task_queue="billing", timeout=0)
+        assert server.fetch_count == 0
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_payload_renewal_preserves_new_cancellation_for_canonical_delivery() -> None:
+    from tests.test_cooperative_cancellation import observation
+
+    server = FakeRuntimePayloadServer()
+    client = runtime_client(server)
+    worker = Worker(client, task_queue="billing", worker_id="worker-1", workflows=[RuntimePayloadReplayWorkflow],
+                    capabilities=["cooperative_cancellation"])
+    worker._cooperative_cancellation_supported = True
+    original = observation()
+    server.responses[("POST", "/api/worker/workflow-tasks/poll")] = {"task": {
+        "task_id": "task-1", "lease_owner": "worker-1", "workflow_task_attempt": 3,
+        "arguments": runtime_envelope(server, ["original-input"]),
+    }}
+    server.responses[("POST", "/api/worker/workflow-tasks/task-1/heartbeat")] = {
+        "task_id": "task-1", "lease_owner": "worker-1", "workflow_task_attempt": 3, "renewed": True,
+        "cancellation_request": original,
+    }
+    try:
+        result = await client.poll_workflow_task(worker_id="worker-1", task_queue="billing", timeout=0)
+        assert result["cancellation_request"] == original
+        assert "_delivered_cancellation_request_id" not in result
+        assert not any("/cancellation/" in entry[1] for entry in server.requests)
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stopped_worker_does_not_start_claim_payload_download() -> None:
+    server = FakeRuntimePayloadServer()
+    client = runtime_client(server)
+    worker = Worker(client, task_queue="billing", worker_id="worker-1", workflows=[RuntimePayloadReplayWorkflow])
+    worker._stop.set()
+    server.responses[("POST", "/api/worker/workflow-tasks/poll")] = {"task": {
+        "task_id": "task-1", "lease_owner": "worker-1", "workflow_task_attempt": 3,
+        "arguments": runtime_envelope(server, ["never-executed"]),
+    }}
+    try:
+        with pytest.raises(LocalActivityExecutionAborted, match="shutdown stopped"):
+            await client.poll_workflow_task(worker_id="worker-1", task_queue="billing", timeout=0)
+        assert server.fetch_count == 0
+        assert not any(entry[1].endswith("/heartbeat") for entry in server.requests)
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_payload_transfer_is_cancelled_when_its_periodic_lease_observer_loses_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = FakeRuntimePayloadServer()
+    client = runtime_client(server)
+    Worker(client, task_queue="billing", worker_id="worker-1", workflows=[RuntimePayloadReplayWorkflow])
+    server.responses[("POST", "/api/worker/workflow-tasks/poll")] = {"task": {
+        "task_id": "task-1", "lease_owner": "worker-1", "workflow_task_attempt": 3,
+        "arguments": runtime_envelope(server, ["never-executed"]),
+    }}
+    fetch_started = asyncio.Event()
+    fetch_cancelled = asyncio.Event()
+    observations = 0
+
+    async def heartbeat(request: httpx.Request) -> httpx.Response:
+        nonlocal observations
+        if request.url.path.endswith("/heartbeat"):
+            observations += 1
+            if observations > 1:
+                return httpx.Response(409, json={"reason": "lease_expired"})
+            return httpx.Response(200, json={"task_id": "task-1", "lease_owner": "worker-1",
+                                            "workflow_task_attempt": 3, "renewed": True})
+        if request.method == "GET" and "/external-payloads/" in request.url.path:
+            fetch_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                fetch_cancelled.set()
+        return server.handler(request)
+
+    real_sleep = asyncio.sleep
+
+    async def prompt_observation(delay: float) -> None:
+        if delay == 5.0:
+            await fetch_started.wait()
+            await real_sleep(0)
+        else:
+            await real_sleep(delay)
+
+    monkeypatch.setattr("durable_workflow.client.asyncio.sleep", prompt_observation)
+    client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(heartbeat))
+    try:
+        with pytest.raises(ServerError) as failure:
+            await asyncio.wait_for(client.poll_workflow_task(worker_id="worker-1", task_queue="billing", timeout=0), 2)
+        assert failure.value.reason() == "lease_expired"
+        assert fetch_cancelled.is_set()
+        assert observations == 2
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.asyncio

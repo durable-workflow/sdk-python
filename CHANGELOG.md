@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.9] - 2026-10-12
+
+### Fixed
+- Renew the original workflow task lease while downloading authenticated input
+  and history payloads. Stop the transfer when authority is lost or the Worker
+  stops, and preserve cancellation observations for canonical delivery.
+
 ## [2.5.1] - 2026-10-10
 
 ### Fixed

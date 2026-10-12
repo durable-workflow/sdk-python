@@ -28,7 +28,7 @@ import re
 import time
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -1624,6 +1624,7 @@ class Client:
             _RuntimeExternalPayloadTransport | None
         ) = None
         self._runtime_external_payload_transport_resolved = False
+        self._workflow_payload_observers: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {}
 
     async def aclose(self) -> None:
         """Close the underlying ``httpx`` connection pool.
@@ -1631,6 +1632,7 @@ class Client:
         Equivalent to exiting the async-context-manager form of the client.
         Safe to call multiple times.
         """
+        self._workflow_payload_observers.clear()
         await self._http.aclose()
 
     async def __aenter__(self) -> Client:
@@ -1877,10 +1879,12 @@ class Client:
                         "runtime returned an external payload reference without advertising "
                         "the authenticated namespace transport"
                     )
-                result = await self._resolve_runtime_payloads(
+                result = await self._resolve_workflow_claim_payloads(
                     result,
                     worker=worker,
                     transport=transport,
+                    path=path,
+                    request_json=request_json,
                 )
             result = self._hydrate_result_envelopes(result)
             outcome = "ok"
@@ -2250,6 +2254,77 @@ class Client:
             )
         self.external_storage_cache.put(reference, data)
         return reference
+
+    async def _resolve_workflow_claim_payloads(
+        self,
+        value: Any,
+        *,
+        worker: bool,
+        transport: _RuntimeExternalPayloadTransport,
+        path: str,
+        request_json: Any,
+    ) -> Any:
+        lease: dict[str, Any] | None = None
+        owner: Any = None
+        is_poll = worker and path == "/worker/workflow-tasks/poll"
+        history = re.fullmatch(r"/worker/workflow-tasks/([^/]+)/history", path) if worker else None
+        if isinstance(request_json, dict) and isinstance(value, dict):
+            if is_poll and isinstance(value.get("task"), dict):
+                task = value["task"]
+                if task.get("task_kind", "workflow") == "workflow":
+                    lease = dict(task)
+                    owner = request_json.get("worker_id")
+            elif history is not None:
+                lease = dict(value)
+                lease.update({
+                    "task_id": unquote(history.group(1)),
+                    "lease_owner": request_json.get("lease_owner"),
+                    "workflow_task_attempt": request_json.get("workflow_task_attempt"),
+                })
+                owner = request_json.get("lease_owner")
+        observer = self._workflow_payload_observers.get(owner) if isinstance(owner, str) else None
+        if lease is None or observer is None:
+            return await self._resolve_runtime_payloads(value, worker=worker, transport=transport)
+        if (not isinstance(lease.get("task_id"), str) or not lease["task_id"]
+                or lease.get("lease_owner", owner) != owner
+                or type(lease.get("workflow_task_attempt", 1)) is not int
+                or lease.get("workflow_task_attempt", 1) < 1
+                or lease.get("namespace", self.namespace) != self.namespace):
+            raise ExternalPayloadUnsupported("workflow payload response has an invalid task ownership fence")
+        lease.setdefault("lease_owner", owner)
+        lease.setdefault("workflow_task_attempt", 1)
+
+        async def confirm() -> None:
+            await asyncio.wait_for(observer(lease), timeout=5.0)
+
+        async def observe() -> None:
+            while True:
+                await asyncio.sleep(5.0)
+                await confirm()
+
+        # The poll body is now available, but application code cannot run until
+        # its referenced bytes arrive and the same claim is confirmed again.
+        await confirm()
+        resolution = asyncio.create_task(self._resolve_runtime_payloads(value, worker=worker, transport=transport))
+        observation = asyncio.create_task(observe())
+        try:
+            done, _ = await asyncio.wait({resolution, observation}, return_when=asyncio.FIRST_COMPLETED)
+            if observation in done:
+                await observation
+                raise ExternalPayloadUnavailable("workflow payload lease observer stopped")
+            result = await resolution
+            observation.cancel()
+            await asyncio.gather(observation, return_exceptions=True)
+            await confirm()
+            if isinstance(result, dict) and "cancellation_request" in lease:
+                target = result.get("task") if is_poll else result
+                if isinstance(target, dict):
+                    target["cancellation_request"] = lease["cancellation_request"]
+            return result
+        finally:
+            resolution.cancel()
+            observation.cancel()
+            await asyncio.gather(resolution, observation, return_exceptions=True)
 
     async def _resolve_runtime_payloads(
         self,
@@ -2689,6 +2764,7 @@ class Client:
         scoped._cluster_info_lock = asyncio.Lock()
         scoped._runtime_external_payload_transport_cache = None
         scoped._runtime_external_payload_transport_resolved = False
+        scoped._workflow_payload_observers = {}
         scoped.external_storage = None
         scoped.external_storage_threshold_bytes = None
         scoped.external_storage_cache = ExternalPayloadCache()
