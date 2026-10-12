@@ -1110,6 +1110,9 @@ class Worker:
         self._worker_sessions: dict[str, WorkerSession] = {}
         self._stop = asyncio.Event()
         self._local_activity_shutdown = asyncio.Event()
+        payload_observers = getattr(self.client, "_workflow_payload_observers", None)
+        if isinstance(payload_observers, dict):
+            payload_observers[self.worker_id] = self._renew_workflow_payload_lease
         self._local_activity_executor: ThreadPoolExecutor | None = None
         self._remote_activity_executor: ThreadPoolExecutor | None = None
         self._remote_activity_threads: set[Future[Any]] = set()
@@ -1457,6 +1460,28 @@ class Worker:
             handler = call_interceptor
 
         return await handler(context)
+
+    async def _renew_workflow_payload_lease(self, task: dict[str, Any]) -> None:
+        if self._stop.is_set() or self._local_activity_shutdown.is_set():
+            raise LocalActivityExecutionAborted("worker shutdown stopped its workflow payload transfer")
+        response = await self.client.heartbeat_workflow_task(
+            task_id=task["task_id"], lease_owner=self.worker_id,
+            workflow_task_attempt=task["workflow_task_attempt"],
+        )
+        if self._stop.is_set() or self._local_activity_shutdown.is_set():
+            raise LocalActivityExecutionAborted("worker shutdown stopped its workflow payload transfer")
+        if not isinstance(response, Mapping) or any((
+            response.get("task_id") != task["task_id"],
+            response.get("lease_owner") != self.worker_id,
+            response.get("workflow_task_attempt") != task["workflow_task_attempt"],
+            response.get("renewed") is not True,
+        )):
+            raise LocalActivityExecutionAborted("workflow payload lease was not fenced and acknowledged")
+        observation = response.get("cancellation_request")
+        if observation is not None:
+            # Preserve the observation for the normal canonical delivery path.
+            # Hydrating a payload does not deliver or acknowledge cancellation.
+            self._observe_workflow_cancellation(task, observation)
 
     async def _renew_local_workflow_lease(self, task: dict[str, Any]) -> None:
         if self._cooperative_cancellation_supported and self._local_activity_shutdown.is_set():
