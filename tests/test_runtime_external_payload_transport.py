@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import json
+import weakref
 from typing import Any
 
 import httpx
@@ -313,12 +315,20 @@ def runtime_envelope(server: FakeRuntimePayloadServer, value: Any) -> dict[str, 
     return {"codec": "avro", "external_payload": server.seed(blob)}
 
 
+def payload_worker(client: Client, *, capabilities: list[str] | None = None) -> Worker:
+    worker = Worker(client, task_queue="billing", worker_id="worker-1", workflows=[RuntimePayloadReplayWorkflow],
+                    capabilities=capabilities or [])
+    worker._begin_run()
+    worker._registration_done.set()
+    return worker
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("history_page", [False, True])
 async def test_worker_confirms_original_lease_before_and_after_payload_hydration(history_page: bool) -> None:
     server = FakeRuntimePayloadServer()
     client = runtime_client(server)
-    Worker(client, task_queue="billing", worker_id="worker-1", workflows=[RuntimePayloadReplayWorkflow])
+    payload_worker(client)
     task = {"task_id": "task-1", "lease_owner": "worker-1", "workflow_task_attempt": 3,
             "arguments": runtime_envelope(server, ["original-input"])}
     path = "/api/worker/workflow-tasks/task-1/history" if history_page else "/api/worker/workflow-tasks/poll"
@@ -359,7 +369,7 @@ async def test_worker_does_not_fetch_payload_when_original_claim_is_not_confirme
 ) -> None:
     server = FakeRuntimePayloadServer()
     client = runtime_client(server)
-    Worker(client, task_queue="billing", worker_id="worker-1", workflows=[RuntimePayloadReplayWorkflow])
+    payload_worker(client)
     server.responses[("POST", "/api/worker/workflow-tasks/poll")] = {"task": {
         "task_id": "task-1", "lease_owner": "worker-1", "workflow_task_attempt": 3,
         "arguments": runtime_envelope(server, ["never-executed"]),
@@ -381,8 +391,7 @@ async def test_payload_renewal_preserves_new_cancellation_for_canonical_delivery
 
     server = FakeRuntimePayloadServer()
     client = runtime_client(server)
-    worker = Worker(client, task_queue="billing", worker_id="worker-1", workflows=[RuntimePayloadReplayWorkflow],
-                    capabilities=["cooperative_cancellation"])
+    worker = payload_worker(client, capabilities=["cooperative_cancellation"])
     worker._cooperative_cancellation_supported = True
     original = observation()
     server.responses[("POST", "/api/worker/workflow-tasks/poll")] = {"task": {
@@ -406,7 +415,7 @@ async def test_payload_renewal_preserves_new_cancellation_for_canonical_delivery
 async def test_stopped_worker_does_not_start_claim_payload_download() -> None:
     server = FakeRuntimePayloadServer()
     client = runtime_client(server)
-    worker = Worker(client, task_queue="billing", worker_id="worker-1", workflows=[RuntimePayloadReplayWorkflow])
+    worker = payload_worker(client)
     worker._stop.set()
     server.responses[("POST", "/api/worker/workflow-tasks/poll")] = {"task": {
         "task_id": "task-1", "lease_owner": "worker-1", "workflow_task_attempt": 3,
@@ -427,7 +436,9 @@ async def test_payload_transfer_is_cancelled_when_its_periodic_lease_observer_lo
 ) -> None:
     server = FakeRuntimePayloadServer()
     client = runtime_client(server)
-    Worker(client, task_queue="billing", worker_id="worker-1", workflows=[RuntimePayloadReplayWorkflow])
+    payload_worker(client)
+
+
     server.responses[("POST", "/api/worker/workflow-tasks/poll")] = {"task": {
         "task_id": "task-1", "lease_owner": "worker-1", "workflow_task_attempt": 3,
         "arguments": runtime_envelope(server, ["never-executed"]),
@@ -471,6 +482,36 @@ async def test_payload_transfer_is_cancelled_when_its_periodic_lease_observer_lo
         assert observations == 2
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_shared_client_does_not_retain_unstarted_or_stopped_workers() -> None:
+    client = runtime_client(FakeRuntimePayloadServer())
+    worker = Worker(client, task_queue="billing", worker_id="worker-1", workflows=[RuntimePayloadReplayWorkflow])
+    assert client._workflow_payload_observers == {}
+    reference = weakref.ref(worker)
+    worker._begin_run()
+    worker._registration_done.set()
+    assert "worker-1" in client._workflow_payload_observers
+    await worker.stop()
+    assert client._workflow_payload_observers == {}
+    del worker
+    await asyncio.sleep(0)
+    gc.collect()
+    assert reference() is None
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stopping_old_worker_preserves_a_new_worker_observer() -> None:
+    client = runtime_client(FakeRuntimePayloadServer())
+    older = payload_worker(client)
+    newer = payload_worker(client)
+    await older.stop()
+    assert client._workflow_payload_observers["worker-1"] == newer._renew_workflow_payload_lease
+    await newer.stop()
+    assert client._workflow_payload_observers == {}
+    await client.aclose()
 
 
 @pytest.mark.asyncio
