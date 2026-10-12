@@ -115,12 +115,15 @@ capabilities with Server at startup. Use stable `2.x` SDK and Server channels
 for new applications. The [compatibility guide](https://durable-workflow.com/docs/2.0/compatibility/)
 documents protocol and upgrade guarantees.
 
-## Cooperative cancellation release candidate
+## Worker protocol and cooperative cancellation
+
+Workers use protocol 1.20 by default. For a Server that supports only 1.19, set
+`DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION=1.19`. This changes the request protocol
+without enabling optional worker features.
 
 Use `request_cancellation()` for bounded, replayable workflow cleanup. Opt in
 against a Server that advertises protocol 1.20 and the required capabilities:
-set `DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION=1.20` and include
-`cooperative_cancellation` in the Worker's `capabilities`. Durable local callback
+include `cooperative_cancellation` in the Worker's `capabilities`. Durable local callback
 admission also needs `prepared_local_activities`, with
 `prepared_local_activity_cancellation_policies` for explicit local policies.
 Independently cancellable scopes remain disabled.
@@ -156,11 +159,10 @@ to true. CI verifies that checkout, builds the candidate Server, enables protoco
 authority and exact source provenance. An optional exact `native_commit` mounts
 that public Native checkout read-only into the test stack. The image's published
 Composer authority stays intact and the evidence identifies the source overlay.
-These are source qualification runs. For a local
-candidate, set `DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION=1.20` before starting
-Compose and `DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION=1` for pytest. These cases
-fail if the runtime does not discover the required capability. Ordinary CI
-keeps protocol 1.19 and skips this unpublished feature's connected cases.
+These are source qualification runs. For a local candidate, set
+`DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION=1` for pytest. These cases fail if the
+runtime does not discover the required capability. Ordinary CI uses the SDK's
+default protocol and skips the optional connected cooperative cases.
 
 ## License
 
