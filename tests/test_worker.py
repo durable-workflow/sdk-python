@@ -5061,6 +5061,34 @@ class TestRunUntil:
         assert mock_client.poll_workflow_task.call_args.kwargs["history_page_size"] == 500
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("blocked_method", ["get_cluster_info", "register_worker"])
+    async def test_run_until_identifies_startup_timeout_before_polling(
+        self, mock_client: AsyncMock, blocked_method: str
+    ) -> None:
+        started = asyncio.Event()
+
+        async def blocked(*args: object, **kwargs: object) -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        setattr(mock_client, blocked_method, AsyncMock(side_effect=blocked))
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow])
+
+        with pytest.raises(TimeoutError) as failure:
+            await worker.run_until(workflow_id="wf-startup-timeout", timeout=0.05)
+
+        assert started.is_set()
+        assert "startup" in str(failure.value)
+        assert worker.worker_id in str(failure.value)
+        assert "wf-startup-timeout" in str(failure.value)
+        assert isinstance(failure.value.__cause__, asyncio.TimeoutError)
+        assert worker._stop.is_set()
+        assert worker._registration_done.is_set()
+        mock_client.poll_workflow_task.assert_not_awaited()
+        mock_client.poll_activity_task.assert_not_awaited()
+        mock_client.deregister_worker_registration.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_run_until_times_out_and_stops_worker(self, mock_client: AsyncMock) -> None:
         mock_client.describe_workflow = AsyncMock(
             return_value=WorkflowExecution(
@@ -5078,9 +5106,11 @@ class TestRunUntil:
             poll_timeout=0.01,
         )
 
-        with pytest.raises(TimeoutError, match="wf-timeout"):
+        with pytest.raises(TimeoutError, match="wf-timeout") as failure:
             await worker.run_until(workflow_id="wf-timeout", timeout=0.02, poll_interval=0.01)
 
+        assert "not terminal" in str(failure.value)
+        assert "startup" not in str(failure.value)
         assert worker._stop.is_set()
 
     @pytest.mark.asyncio
