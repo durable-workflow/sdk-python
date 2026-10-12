@@ -4940,7 +4940,8 @@ def _replay_state(
                 "ActivityCancelled", "TimerScheduled", "TimerFired", "TimerCancelled", "ChildWorkflowScheduled",
                 "ChildRunStarted", "ChildRunCompleted", "ChildRunFailed", "ChildRunCancelled", "ChildRunTerminated",
                 "ConditionWaitOpened", "ConditionWaitSatisfied", "ConditionWaitTimedOut", "SignalWaitOpened",
-                "SignalApplied",
+                "SignalApplied", "ServiceCallStarted", "ServiceCallCompleted", "ServiceCallFailed",
+                "ServiceCallCancelled",
             }
             and not (interruption.call_kind == "selection_handle" and etype in {
                 "ActivityScheduled", "ActivityStarted", "TimerScheduled", "ChildWorkflowScheduled",
@@ -4948,8 +4949,8 @@ def _replay_state(
             })
             and not (interruption.call_kind == "condition" and etype == "ConditionWaitOpened")
         ):
-            # The delivery marker owns the interruption. Its activity/timer
-            # terminal rows are not ordinary workflow results or cleanup calls.
+            # The delivery marker owns the interruption. Its operation rows
+            # are not ordinary workflow results or cleanup calls.
             continue
         if (
             etype
@@ -5965,6 +5966,17 @@ def _replay_state(
             kind = "timer"
         elif isinstance(command, StartChildWorkflow):
             kind = "child"
+        elif isinstance(command, NexusServiceCall):
+            original = details_by_sequence.get(current_call_sequence, {})
+            mode = command.mode if command.mode is not None else original.get("operation_mode", "sync")
+            wait_for = command.wait_for if command.wait_for is not None else original.get("wait_for", "completed")
+            legacy_result = any(
+                _history_event_type(event) == "SideEffectRecorded"
+                and _workflow_sequence(event.get("payload") or {}) == current_call_sequence
+                for event in events
+            )
+            if mode == "sync" and wait_for == "completed" and not legacy_result:
+                kind = "service_operation"
         elif isinstance(command, WaitCondition):
             has_recorded_open = any(
                 _history_event_type(event) == "ConditionWaitOpened"
@@ -6147,6 +6159,7 @@ def _replay_state(
             "ActivityScheduled": "activity", "ActivityStarted": "activity",
             "TimerScheduled": "timer", "ChildWorkflowScheduled": "child workflow",
             "ChildRunStarted": "child workflow", "ConditionWaitOpened": "condition wait",
+            "ServiceCallStarted": "service operation",
         }
         for offset, leaf in enumerate(leaves):
             sequence = boundary.sequence + offset

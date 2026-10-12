@@ -128,6 +128,13 @@ admission also needs `prepared_local_activities`, with
 `prepared_local_activity_cancellation_policies` for explicit local policies.
 Independently cancellable scopes remain disabled.
 
+For synchronous Nexus completion waits, the cooperative worker also negotiates
+`nexus_cooperative_cancellation` when Server advertises the installed
+`workflow_run` binding. Owned target cleanup keeps the caller pending until the
+Server commits delivery at the original call. Async and acceptance-only calls
+keep their admission behavior. Existing terminal results and recorded legacy
+Nexus histories retain their replay semantics.
+
 The cooperative worker supervises async and synchronous activity callbacks
 independently of application heartbeats. Existing terminal cancellation remains
 available. See the [cancellation guide](docs/cooperative-cancellation-design.md)

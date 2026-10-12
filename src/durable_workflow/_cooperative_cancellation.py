@@ -16,7 +16,10 @@ from .errors import NonDeterministicReplayError
 
 REQUEST_EVENT = "CooperativeCancellationRequested"
 DELIVERY_EVENT = "CooperativeCancellationDelivered"
-_CALL_KINDS = {"activity", "local_activity", "timer", "condition", "signal", "child", "parallel", "selection_handle"}
+_CALL_KINDS = {
+    "activity", "local_activity", "timer", "condition", "signal", "child", "parallel", "selection_handle",
+    "service_operation",
+}
 _RESOLUTION_EVENTS = {
     "ActivityCompleted",
     "ActivityFailed",
@@ -31,6 +34,9 @@ _RESOLUTION_EVENTS = {
     "ChildRunFailed",
     "ChildRunCancelled",
     "ChildRunTerminated",
+    "ServiceCallCompleted",
+    "ServiceCallFailed",
+    "ServiceCallCancelled",
 }
 
 
@@ -265,6 +271,8 @@ def read_cancellation_history(
                 "ChildRunFailed",
                 "ChildRunCancelled",
                 "ChildRunTerminated",
+                "ServiceCallFailed",
+                "ServiceCallCancelled",
             }:
                 failed.add(sequence)
     state = CancellationHistory(

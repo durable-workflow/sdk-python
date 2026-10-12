@@ -280,7 +280,20 @@ class NexusTerminalDeliveryWorkflow:
         return result.result
 
 
+@workflow.defn(name="tests.replay.nexus-cooperative-delivery")
+class NexusCooperativeDeliveryWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.call_nexus_service(
+                "greeter", "shared", "greet", ["Ada"],
+                target_namespace="shared", idempotency_key="original-call",
+            )
+        except WorkflowCancelled as error:
+            return error.request_id
+
+
 WORKFLOWS = [
+    NexusCooperativeDeliveryWorkflow,
     NexusTerminalDeliveryWorkflow,
     NexusTargetWorkflow,
     UnsupportedAsyncWorkflow,

@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from durable_workflow import serializer, workflow
-from durable_workflow.errors import NexusOperationFailed, NonDeterministicReplayError
+from durable_workflow.errors import NexusOperationFailed, NonDeterministicReplayError, WorkflowCancelled
 from durable_workflow.external_storage import LocalFilesystemExternalStorage
 from durable_workflow.workflow import (
     CompleteWorkflow,
@@ -15,6 +15,7 @@ from durable_workflow.workflow import (
     commands_to_server_commands,
     replay,
 )
+from tests.test_cooperative_cancellation import marker, request
 
 
 @workflow.defn(name="tests.nexus.durable-wait")
@@ -111,7 +112,70 @@ def test_cancellation_request_and_cold_replays_do_not_readmit_pending_call() -> 
             # replacement worker. Neither may allocate another admission.
             outcome = replay(DurableNexusCaller, history, [], workflow_id="caller", run_id="caller-run")
             assert outcome.commands == []
-            assert outcome.cancellation_delivery is None
+            if len(history) == 1:
+                assert outcome.cancellation_delivery is None
+            else:
+                assert outcome.cancellation_delivery is not None
+                assert outcome.cancellation_delivery.request_id == "original-cancellation"
+                assert outcome.cancellation_delivery.sequence == 1
+                assert outcome.cancellation_delivery.call_kind == "service_operation"
+
+
+@workflow.defn(name="tests.nexus.cooperative-cleanup")
+class CooperativeNexusCaller:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.call_nexus_service(
+                "php-service", "greeter", "greet", ["world"],
+                target_namespace="shared", idempotency_key="original-request",
+            )
+        except WorkflowCancelled as error:
+            with ctx.cancellation_shield():
+                yield ctx.start_timer(1)
+            return error.request_id
+
+
+def test_canonical_service_delivery_replays_cleanup_at_original_boundary() -> None:
+    history = [
+        _service_event("ServiceCallStarted", "started"), request(),
+        _service_event("ServiceCallCancelled", "cancelled"), marker(1, "service_operation"),
+    ]
+    for _ in range(3):
+        outcome = replay(CooperativeNexusCaller, history, [], run_id="run-1")
+        assert outcome.cancellation_delivery is None
+        commands = commands_to_server_commands(outcome.commands, "queue")
+        assert len(commands) == 1 and commands[0]["type"] == "start_timer"
+        assert commands[0]["delay_seconds"] == 1
+    history.extend([
+        {"event_type": "TimerScheduled", "payload": {"sequence": 2, "delay_seconds": 1}},
+        {"event_type": "TimerFired", "payload": {"sequence": 2}},
+    ])
+    completed = replay(CooperativeNexusCaller, history, [], run_id="run-1")
+    assert isinstance(completed.commands[0], CompleteWorkflow)
+    assert completed.commands[0].result == "request-1"
+
+
+@pytest.mark.parametrize("terminal,status", [
+    ("ServiceCallCompleted", "completed"), ("ServiceCallFailed", "failed"), ("ServiceCallCancelled", "cancelled"),
+])
+def test_service_result_committed_before_request_is_not_replaced(terminal: str, status: str) -> None:
+    history = [_service_event("ServiceCallStarted", "started"), _service_event(terminal, status, "original"), request()]
+    outcome = replay(CatchingNexusCaller, history, [], run_id="run-1")
+    assert outcome.cancellation_delivery is None
+    assert isinstance(outcome.commands[0], CompleteWorkflow)
+    with pytest.raises(NonDeterministicReplayError, match="earlier committed result"):
+        replay(CatchingNexusCaller, [*history, marker(1, "service_operation")], [], run_id="run-1")
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+def test_cancellation_preserves_original_service_target(canonical: bool) -> None:
+    started = _service_event("ServiceCallStarted", "started")
+    started["payload"]["service_call"]["target_namespace"] = "another-tenant"
+    history = [started, request()]
+    if canonical:
+        history.append(marker(1, "service_operation"))
+    with pytest.raises(NonDeterministicReplayError, match="nexus_target_namespace_changed"):
+        replay(CooperativeNexusCaller, history, [], run_id="run-1")
 
 
 @workflow.defn(name="tests.nexus.catch-failure")
@@ -150,9 +214,11 @@ class AcceptanceNexusCaller:
 def test_explicit_acceptance_resumes_without_terminal_delivery(mode: str, wait_for: str) -> None:
     started = _service_event("ServiceCallStarted", "started")
     started["payload"].update({"operation_mode": mode, "wait_for": wait_for})
-    outcome = replay(AcceptanceNexusCaller, [started], [mode, wait_for], workflow_id="caller", run_id="caller-run")
-    assert isinstance(outcome.commands[0], CompleteWorkflow)
-    assert outcome.commands[0].result == "original-service-call"
+    for history in ([started], [started, request()]):
+        outcome = replay(AcceptanceNexusCaller, history, [mode, wait_for])
+        assert outcome.cancellation_delivery is None
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == "original-service-call"
 
 
 def test_pending_call_refuses_changed_target() -> None:
