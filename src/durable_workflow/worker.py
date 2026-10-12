@@ -4244,6 +4244,7 @@ class Worker:
         """
         background_tasks: list[asyncio.Task[Any]] = []
         deadline = asyncio.get_running_loop().time() + timeout
+        startup_completed = False
 
         self._begin_run()
         try:
@@ -4252,6 +4253,7 @@ class Worker:
             finally:
                 self._registration_done.set()
 
+            startup_completed = True
             if self._stop.is_set():
                 raise asyncio.CancelledError
             background_tasks.append(asyncio.create_task(self._heartbeat_loop()))
@@ -4273,6 +4275,11 @@ class Worker:
                 run_until_loop, timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
             )
         except asyncio.TimeoutError as error:
+            if not startup_completed:
+                raise TimeoutError(
+                    f"worker {self.worker_id} startup did not finish within the "
+                    f"{timeout}s workflow wait budget for {workflow_id}"
+                ) from error
             raise TimeoutError(f"workflow {workflow_id} not terminal after {timeout}s") from error
         finally:
             primary_error = sys.exc_info()[1]
