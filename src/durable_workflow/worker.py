@@ -1064,6 +1064,7 @@ class Worker:
         if "sticky_execution" in self.capabilities and not self._sticky_cache.enabled:
             raise ValueError("sticky_execution requires a positive sticky_cache_capacity")
         self._cooperative_cancellation_supported = False
+        self._nexus_cooperative_cancellation_supported = False
         self._prepared_local_activities_supported = False
         self._prepared_local_activity_groups_supported = False
         self._allow_cancellation_scope_authoring = False
@@ -1079,6 +1080,9 @@ class Worker:
             raise ValueError("prepared local groups require prepared_local_activities capability")
         if "prepared_local_activities" in self.capabilities and "cooperative_cancellation" not in self.capabilities:
             raise ValueError("prepared local activities require cooperative_cancellation capability")
+        if ("nexus_cooperative_cancellation" in self.capabilities
+                and "cooperative_cancellation" not in self.capabilities):
+            raise ValueError("Nexus cooperative cancellation requires cooperative_cancellation capability")
         if any(not capability for capability in self.capabilities):
             raise ValueError("worker capabilities must be non-empty strings")
         self.worker_id = worker_id or f"py-worker-{uuid.uuid4().hex[:8]}"
@@ -1264,6 +1268,17 @@ class Worker:
         )
         if "cooperative_cancellation" in self.capabilities and not self._cooperative_cancellation_supported:
             raise RuntimeError("cooperative cancellation requires explicit compatible runtime and worker protocol 1.20")
+        self._nexus_cooperative_cancellation_supported = (
+            self._cooperative_cancellation_supported
+            and isinstance(server_capabilities, Mapping)
+            and server_capabilities.get("nexus_cooperative_cancellation") is True
+            and isinstance(server_capabilities.get("nexus_cooperative_cancellation_binding_kinds"), list)
+            and "workflow_run" in server_capabilities["nexus_cooperative_cancellation_binding_kinds"]
+        )
+        if "nexus_cooperative_cancellation" in self.capabilities and not self._nexus_cooperative_cancellation_supported:
+            raise RuntimeError(
+                "nexus_cooperative_cancellation_not_supported: Server must advertise its installed workflow_run bridge",
+            )
         self._prepared_local_activities_supported = (
             "prepared_local_activities" in self.capabilities and self._cooperative_cancellation_supported
             and isinstance(server_capabilities, Mapping)
@@ -1326,6 +1341,8 @@ class Worker:
             capabilities.append(WORKFLOW_UPDATES_CAPABILITY)
         capabilities.append(MESSAGE_STREAMS_CAPABILITY)
         capabilities.extend(self.capabilities)
+        if self._nexus_cooperative_cancellation_supported and "nexus_cooperative_cancellation" not in capabilities:
+            capabilities.append("nexus_cooperative_cancellation")
         if (
             self._local_activity_cancellation_policies
             and "prepared_local_activity_cancellation_policies" not in capabilities
@@ -1357,6 +1374,11 @@ class Worker:
             capabilities=capabilities,
             capability_manifest={
                 **affinity_manifest,
+                **({"nexus_cooperative_cancellation": {
+                    "supported": True, "minimum_protocol_version": "1.20",
+                    "implementation": "owned_workflow_run_canonical_delivery",
+                    "binding_kinds": ["workflow_run"],
+                }} if self._nexus_cooperative_cancellation_supported else {}),
                 **({"prepared_local_activities": {
                     "supported": True, "minimum_protocol_version": "1.20",
                     "implementation": "durable_sequential_admission",
@@ -1734,6 +1756,11 @@ class Worker:
                 # Earlier authored commands must commit on this claim first.
                 # Completion releases the claim; a successor replays their durable results.
                 return outcome, history
+            if intent.call_kind == "service_operation" and not self._nexus_cooperative_cancellation_supported:
+                raise LocalActivityExecutionAborted(
+                    "nexus_cooperative_cancellation_not_supported: "
+                    "delivery requires installed Server discovery and a cooperative protocol 1.20 worker",
+                )
             delivery_attempts += 1
             if delivery_attempts > 3:
                 raise LocalActivityExecutionAborted("cancellation replay did not converge on its canonical delivery")
@@ -1748,7 +1775,17 @@ class Worker:
                     operation_sequence_span=intent.operation_sequence_span,
                 )
                 if delivery_reply.get("delivered") is False:
-                    raise _WorkflowClaimDeferred("parent awaits canonical child cleanup on a new claim")
+                    pending_reason = {
+                        "service_operation": "cancellation_waiting_for_service_operation",
+                        "child": "cancellation_waiting_for_child",
+                        "parallel": "cancellation_waiting_for_child",
+                        "selection_handle": "cancellation_waiting_for_child",
+                    }.get(intent.call_kind)
+                    if (pending_reason is None or delivery_reply.get("reason") != pending_reason
+                            or delivery_reply.get("claim_released") is not True
+                            or delivery_reply.get("task_id") != task["task_id"]):
+                        raise LocalActivityExecutionAborted("pending cancellation lacks this claim's release receipt")
+                    raise _WorkflowClaimDeferred(f"{pending_reason}: target cleanup continues on a new claim")
             except _WorkflowClaimDeferred:
                 raise
             except Exception as error:

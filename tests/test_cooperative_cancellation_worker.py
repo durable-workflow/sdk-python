@@ -15,6 +15,7 @@ from durable_workflow.errors import ServerError, WorkflowCancelled
 from durable_workflow.worker import Worker
 from durable_workflow.workflow import LocalActivityExecutionAborted
 from tests.test_cooperative_cancellation import marker, observation, request
+from tests.test_nexus_durable_wait import CooperativeNexusCaller, _service_event
 from tests.test_worker import compatible_cluster_info
 
 
@@ -89,6 +90,7 @@ class ClaimServer:
         self.delivery_error: Exception | None = None
         self.commit_delivery = True
         self.pending_deliveries = 0
+        self.pending_reason = "cancellation_waiting_for_child"
         self.client.get_cluster_info.return_value = compatible_cluster_info(worker_protocol={
             "version": "1.20", "server_capabilities": {
                 "query_tasks": True, "long_poll_timeout": 30, "cooperative_cancellation": True,
@@ -117,7 +119,7 @@ class ClaimServer:
             self.pending_deliveries -= 1
             return {
                 "delivered": False, "task_id": self.task_id,
-                "reason": "cancellation_waiting_for_child", "claim_released": True,
+                "reason": self.pending_reason, "claim_released": True,
             }
         if self.commit_delivery:
             self.history.append(marker(
@@ -141,7 +143,7 @@ class ClaimServer:
         worker = Worker(
             self.client, task_queue="queue", worker_id=self.lease_owner,
             workflows=kwargs.pop("workflows", [CancellationWorkflow]),
-            capabilities=["cooperative_cancellation"], **kwargs,
+            capabilities=kwargs.pop("capabilities", ["cooperative_cancellation"]), **kwargs,
         )
         await worker._register()
         worker.activities.update({callback.__activity_name__: callback for callback in local_callbacks})
@@ -211,6 +213,124 @@ async def test_lost_delivery_ack_is_resolved_only_from_canonical_history(monkeyp
     assert commands is not None and commands[0]["type"] == "start_timer"
     assert server.trace == ["history", "delivery", "history", "completion"]
     assert server.client.deliver_workflow_cancellation.await_count == 1
+
+
+def advertise_nexus(server: ClaimServer) -> None:
+    capabilities = server.client.get_cluster_info.return_value["worker_protocol"]["server_capabilities"]
+    capabilities.update(
+        nexus_cooperative_cancellation=True, nexus_cooperative_cancellation_binding_kinds=["workflow_run"],
+    )
+
+
+def nexus_claim() -> dict[str, Any]:
+    task = claimed_task()
+    task.update(workflow_type="tests.nexus.cooperative-cleanup", arguments=serializer.envelope([], codec="avro"))
+    return task
+
+
+async def test_pending_nexus_releases_claim_and_cold_worker_consumes_original_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = ClaimServer(history=[_service_event("ServiceCallStarted", "started"), request()])
+    advertise_nexus(server)
+    server.pending_deliveries = 1
+    server.pending_reason = "cancellation_waiting_for_service_operation"
+    worker = await server.worker(monkeypatch, workflows=[CooperativeNexusCaller])
+    registration = server.client.register_worker.await_args.kwargs
+    assert "nexus_cooperative_cancellation" in registration["capabilities"]
+    assert registration["capability_manifest"]["nexus_cooperative_cancellation"]["binding_kinds"] == ["workflow_run"]
+    task = nexus_claim()
+    original = deepcopy(task["cancellation_request"])
+    assert await worker._run_workflow_task(task) is None
+    assert server.trace == ["history", "delivery"]
+    server.client.complete_workflow_task.assert_not_awaited()
+    server.client.fail_workflow_task.assert_not_awaited()
+
+    server.task_id = "nexus-resume-task"
+    server.workflow_task_attempt = 1
+    replacement = await server.worker(monkeypatch, workflows=[CooperativeNexusCaller])
+    resumed = nexus_claim()
+    resumed.update(task_id=server.task_id, workflow_task_attempt=1)
+    commands = await replacement._run_workflow_task(resumed)
+    assert commands is not None and len(commands) == 1 and commands[0]["type"] == "start_timer"
+    assert resumed["cancellation_request"] == original
+    assert server.client.deliver_workflow_cancellation.await_args.kwargs == {
+        "task_id": "nexus-resume-task", "lease_owner": "cooperative-worker", "workflow_task_attempt": 1,
+        "request_id": "request-1", "sequence": 1, "call_kind": "service_operation", "sequence_span": 1,
+        "operation_sequence": None, "operation_sequence_span": 1,
+    }
+    assert len([event for event in server.history if event["event_type"] == "CooperativeCancellationDelivered"]) == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("claim_released", False), ("claim_released", 1), ("task_id", "another-task"),
+    ("reason", "cancellation_waiting_for_child"),
+])
+async def test_nexus_pending_reply_requires_matching_claim_release(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: object,
+) -> None:
+    server = ClaimServer(history=[_service_event("ServiceCallStarted", "started"), request()])
+    advertise_nexus(server)
+    server.client.deliver_workflow_cancellation.side_effect = None
+    server.client.deliver_workflow_cancellation.return_value = {
+        "delivered": False, "task_id": "task-1", "claim_released": True,
+        "reason": "cancellation_waiting_for_service_operation", field: value,
+    }
+    worker = await server.worker(monkeypatch, workflows=[CooperativeNexusCaller])
+    assert await worker._run_workflow_task(nexus_claim()) is None
+    assert server.trace == ["history", "history"]
+    server.client.complete_workflow_task.assert_not_awaited()
+    server.client.fail_workflow_task.assert_not_awaited()
+
+
+async def test_ordinary_cooperation_does_not_claim_unsupported_nexus(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = ClaimServer(history=[_service_event("ServiceCallStarted", "started"), request()])
+    worker = await server.worker(monkeypatch, workflows=[CooperativeNexusCaller])
+    assert "nexus_cooperative_cancellation" not in server.client.register_worker.await_args.kwargs["capabilities"]
+    assert await worker._run_workflow_task(nexus_claim()) is None
+    server.client.deliver_workflow_cancellation.assert_not_awaited()
+    server.client.complete_workflow_task.assert_not_awaited()
+    server.client.fail_workflow_task.assert_not_awaited()
+
+
+async def test_retained_nexus_delivery_replays_without_new_discovery_or_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = ClaimServer(history=[
+        _service_event("ServiceCallStarted", "started"), request(), marker(1, "service_operation"),
+    ])
+    worker = await server.worker(monkeypatch, workflows=[CooperativeNexusCaller])
+    commands = await worker._run_workflow_task(nexus_claim())
+    assert commands is not None and len(commands) == 1 and commands[0]["type"] == "start_timer"
+    server.client.deliver_workflow_cancellation.assert_not_awaited()
+    server.client.fail_workflow_task.assert_not_awaited()
+
+
+async def test_lost_nexus_delivery_ack_requires_original_canonical_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = ClaimServer(history=[_service_event("ServiceCallStarted", "started"), request()])
+    advertise_nexus(server)
+    server.delivery_error = TimeoutError("lost after original commit")
+    worker = await server.worker(monkeypatch, workflows=[CooperativeNexusCaller])
+    commands = await worker._run_workflow_task(nexus_claim())
+    assert commands is not None and len(commands) == 1 and commands[0]["type"] == "start_timer"
+    assert server.trace == ["history", "delivery", "history", "completion"]
+    assert server.client.deliver_workflow_cancellation.await_count == 1
+    server.client.fail_workflow_task.assert_not_awaited()
+
+
+@pytest.mark.parametrize("discovery", [False, True])
+async def test_explicit_nexus_capability_requires_installed_workflow_run_bridge(
+    monkeypatch: pytest.MonkeyPatch, discovery: bool,
+) -> None:
+    server = ClaimServer()
+    if discovery:
+        advertise_nexus(server)
+        server.client.get_cluster_info.return_value["worker_protocol"]["server_capabilities"][
+            "nexus_cooperative_cancellation_binding_kinds"
+        ] = ["query"]
+    with pytest.raises(RuntimeError, match="nexus_cooperative_cancellation_not_supported"):
+        await server.worker(monkeypatch, capabilities=["cooperative_cancellation", "nexus_cooperative_cancellation"])
+    server.client.register_worker.assert_not_awaited()
 
 
 async def test_legacy_boolean_cannot_replace_canonical_cooperative_delivery(monkeypatch: pytest.MonkeyPatch) -> None:

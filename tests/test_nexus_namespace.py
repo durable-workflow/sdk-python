@@ -136,6 +136,18 @@ def test_original_target_replays_and_changed_target_is_refused(target):
     )
     assert isinstance(outcome.commands[0], CompleteWorkflow)
     assert outcome.commands[0].result == "call-1"
+    requested = {
+        "event_type": "CooperativeCancellationRequested", "recorded_at": "2026-10-12T07:00:00Z",
+        "payload": {"workflow_command_id": "original-request", "workflow_run_id": "original-run",
+                    "cleanup_deadline_at": "2026-10-12T07:00:30Z"},
+    }
+    cancelled_replay = replay(
+        NexusTargetCaller, [*history, requested], [target], workflow_id="caller", run_id="original-run",
+        payload_codec="avro",
+    )
+    assert cancelled_replay.cancellation_delivery is None
+    assert isinstance(cancelled_replay.commands[0], CompleteWorkflow)
+    assert cancelled_replay.commands[0].result == "call-1"
     changed = "other" if target else "shared"
     with pytest.raises(NonDeterministicReplayError, match="nexus_target_namespace_changed"):
         replay(NexusTargetCaller, history, [changed], workflow_id="caller", run_id="original-run", payload_codec="avro")
