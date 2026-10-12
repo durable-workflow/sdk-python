@@ -72,7 +72,8 @@ from .nexus import NexusOperationResult, nexus_request_payload
 from .retry_policy import TransportRetryPolicy
 from .worker_session import WorkerSessionOptions
 
-PROTOCOL_VERSION = "1.19"
+PROTOCOL_VERSION = "1.20"
+MINIMUM_WORKER_PROTOCOL_VERSION = "1.19"
 CONTROL_PLANE_VERSION = "2"
 PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST: dict[str, dict[str, str | bool]] = {
     "local_activities": {
