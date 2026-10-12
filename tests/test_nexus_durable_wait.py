@@ -84,8 +84,7 @@ def test_new_nexus_call_serializes_the_leased_service_operation() -> None:
 def test_started_call_stays_pending_and_cold_replay_receives_terminal_result() -> None:
     started = _service_event("ServiceCallStarted", "started")
     pending = replay(DurableNexusCaller, [started], [], workflow_id="caller", run_id="caller-run")
-    assert len(pending.commands) == 1
-    assert isinstance(pending.commands[0], NexusServiceCall)
+    assert pending.commands == []
 
     expected = {"greeting": "hello world"}
     completed = _service_event("ServiceCallCompleted", "completed", expected)
@@ -93,6 +92,26 @@ def test_started_call_stays_pending_and_cold_replay_receives_terminal_result() -
     assert len(resumed.commands) == 1
     assert isinstance(resumed.commands[0], CompleteWorkflow)
     assert resumed.commands[0].result == expected
+
+
+def test_cancellation_request_and_cold_replays_do_not_readmit_pending_call() -> None:
+    started = _service_event("ServiceCallStarted", "started")
+    requested = {
+        "event_type": "CooperativeCancellationRequested",
+        "recorded_at": "2026-10-12T07:00:00Z",
+        "payload": {
+            "workflow_command_id": "original-cancellation",
+            "workflow_run_id": "caller-run",
+            "cleanup_deadline_at": "2026-10-12T07:00:30Z",
+        },
+    }
+    for history in ([started], [started, requested]):
+        for _ in range(3):
+            # A fresh workflow instance represents both another task and a
+            # replacement worker. Neither may allocate another admission.
+            outcome = replay(DurableNexusCaller, history, [], workflow_id="caller", run_id="caller-run")
+            assert outcome.commands == []
+            assert outcome.cancellation_delivery is None
 
 
 @workflow.defn(name="tests.nexus.catch-failure")

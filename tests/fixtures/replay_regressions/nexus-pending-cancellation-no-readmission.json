@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "nexus-pending-cancellation-no-readmission",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {"type": "tests.replay.nexus-terminal-delivery", "input": [], "payload_codec": "avro"},
+  "history": [
+    {"event_type": "ServiceCallStarted", "payload": {
+      "sequence": 1, "service_call_id": "original-service-call", "endpoint_name": "greeter",
+      "service_name": "shared", "operation_name": "greet", "operation_mode": "sync", "wait_for": "completed",
+      "status": "started", "service_call": {"service_call_id": "original-service-call", "target_namespace": "shared", "status": "started"}
+    }},
+    {"event_type": "CooperativeCancellationRequested", "recorded_at": "2026-10-12T07:00:00Z", "payload": {
+      "workflow_command_id": "original-cancellation", "workflow_run_id": "caller-run",
+      "cleanup_deadline_at": "2026-10-12T07:00:30Z"
+    }}
+  ],
+  "expected": {"command_sequence": []}
+}

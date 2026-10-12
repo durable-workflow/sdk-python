@@ -6751,6 +6751,11 @@ def _replay_state(
                     continue
                 ctx.logger._set_replaying(False)
                 _assert_pending_step_matches(cmd)
+                if _next_unconsumed_recorded_step() is not None:
+                    # Admission already has its durable sequence. A later task
+                    # waits for that call's terminal history instead of starting
+                    # the same operation again at a new sequence.
+                    return _state(pending)
                 pending.append(cmd)
                 return _state(pending)
             if isinstance(cmd, RecordSideEffect):
