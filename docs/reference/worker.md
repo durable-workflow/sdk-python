@@ -42,4 +42,16 @@ The worker-plane cleanup operation is separate from
 operator management action for retiring or recovering worker records and is not
 used by normal `Worker` shutdown.
 
+`run_until(timeout=...)` includes Server discovery and registration in its
+workflow wait budget. A timeout before startup finishes identifies the worker
+and workflow in the error. A timeout after startup reports that the workflow
+has not reached a terminal state. Neither timeout cancels the durable run.
+A replacement worker can continue that same run.
+
+When `stop()` is called during startup, it waits for registration to finish
+before starting the shared drain deadline. Server can record a registration
+before its reply reaches the SDK. A worker that never receives that reply has
+not begun polling and becomes stale under the Server's heartbeat policy.
+Use the existing workflow handle and queue when bringing up a replacement.
+
 ::: durable_workflow.worker
