@@ -406,14 +406,11 @@ async def test_activity_stop_receipt_rejects_invalid_identity_before_io(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", [None, "1.19", "2.20", "invalid"])
-async def test_activity_stop_receipt_requires_explicit_worker_opt_in(
-    client: Client, monkeypatch: pytest.MonkeyPatch, version: str | None,
+@pytest.mark.parametrize("version", ["1.19", "2.20", "invalid"])
+async def test_activity_stop_receipt_requires_compatible_protocol(
+    client: Client, monkeypatch: pytest.MonkeyPatch, version: str,
 ) -> None:
-    if version is None:
-        monkeypatch.delenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", raising=False)
-    else:
-        monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", version)
+    monkeypatch.setenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", version)
     with patch.object(client._http, "request", new_callable=AsyncMock) as send, pytest.raises(ValueError):
         await client.acknowledge_activity_cancellation(
             task_id="task/1", activity_attempt_id="attempt-1", lease_owner="worker-1", request_id="original-request",
