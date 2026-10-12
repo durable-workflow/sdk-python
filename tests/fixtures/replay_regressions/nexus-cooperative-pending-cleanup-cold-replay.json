@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "nexus-cooperative-pending-cleanup-cold-replay",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {"type": "tests.replay.nexus-cooperative-delivery", "input": [1], "payload_codec": "avro"},
+  "history": [
+    {"event_type": "ServiceCallStarted", "payload": {
+      "sequence": 1, "service_call_id": "original-service-call", "endpoint_name": "greeter",
+      "service_name": "shared", "operation_name": "greet", "operation_mode": "sync", "wait_for": "completed",
+      "status": "started", "service_call": {"service_call_id": "original-service-call", "target_namespace": "shared", "status": "started"}
+    }},
+    {"event_type": "CooperativeCancellationRequested", "recorded_at": "2026-10-12T07:00:00Z", "payload": {
+      "workflow_command_id": "original-cancellation", "workflow_run_id": "caller-run",
+      "cleanup_deadline_at": "2026-10-12T07:00:30Z"
+    }},
+    {"event_type": "ServiceCallCancelled", "payload": {
+      "sequence": 1, "service_call_id": "original-service-call", "status": "cancelled"
+    }},
+    {"event_type": "CooperativeCancellationDelivered", "recorded_at": "2026-10-12T07:00:02Z", "payload": {
+      "workflow_command_id": "original-cancellation", "workflow_run_id": "caller-run",
+      "sequence": 1, "call_kind": "service_operation", "sequence_span": 1
+    }},
+    {"event_type": "TimerScheduled", "payload": {"sequence": 2, "delay_seconds": 1}}
+  ],
+  "expected": {"command_sequence": []}
+}

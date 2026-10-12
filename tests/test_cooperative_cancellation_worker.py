@@ -118,7 +118,7 @@ class ClaimServer:
         if self.pending_deliveries:
             self.pending_deliveries -= 1
             return {
-                "delivered": False, "task_id": self.task_id,
+                "delivered": False, "task_id": self.task_id, "workflow_run_id": "run-1",
                 "reason": self.pending_reason, "claim_released": True,
             }
         if self.commit_delivery:
@@ -205,6 +205,20 @@ async def test_pending_child_returns_to_other_work_and_replays_on_a_new_claim(
     server.client.fail_workflow_task.assert_not_awaited()
 
 
+@pytest.mark.parametrize("kind", ["activity", "local_activity", "parallel"])
+async def test_pending_activity_wait_releases_claim_without_extra_history_request(
+    monkeypatch: pytest.MonkeyPatch, kind: str,
+) -> None:
+    server = ClaimServer()
+    server.pending_deliveries = 1
+    server.pending_reason = "cancellation_waiting_for_activity"
+    worker = await server.worker(monkeypatch)
+    assert await worker._run_workflow_task(claimed_task(kind)) is None
+    assert server.trace == ["history", "delivery"]
+    server.client.complete_workflow_task.assert_not_awaited()
+    server.client.fail_workflow_task.assert_not_awaited()
+
+
 async def test_lost_delivery_ack_is_resolved_only_from_canonical_history(monkeypatch: pytest.MonkeyPatch) -> None:
     server = ClaimServer()
     server.delivery_error = TimeoutError("ack lost after commit")
@@ -264,7 +278,7 @@ async def test_pending_nexus_releases_claim_and_cold_worker_consumes_original_de
 
 @pytest.mark.parametrize("field,value", [
     ("claim_released", False), ("claim_released", 1), ("task_id", "another-task"),
-    ("reason", "cancellation_waiting_for_child"),
+    ("reason", "cancellation_waiting_for_child"), ("workflow_run_id", "another-run"),
 ])
 async def test_nexus_pending_reply_requires_matching_claim_release(
     monkeypatch: pytest.MonkeyPatch, field: str, value: object,
@@ -274,6 +288,7 @@ async def test_nexus_pending_reply_requires_matching_claim_release(
     server.client.deliver_workflow_cancellation.side_effect = None
     server.client.deliver_workflow_cancellation.return_value = {
         "delivered": False, "task_id": "task-1", "claim_released": True,
+        "workflow_run_id": "run-1",
         "reason": "cancellation_waiting_for_service_operation", field: value,
     }
     worker = await server.worker(monkeypatch, workflows=[CooperativeNexusCaller])
