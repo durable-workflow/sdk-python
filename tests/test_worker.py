@@ -4914,9 +4914,18 @@ class TestWorkerHeartbeats:
     async def test_heartbeat_loop_survives_transient_errors(
         self, mock_client: AsyncMock
     ) -> None:
-        mock_client.heartbeat_worker = AsyncMock(
-            side_effect=[RuntimeError("temporary"), {"acknowledged": True}]
-        )
+        recovered = asyncio.Event()
+        attempts = 0
+
+        async def heartbeat(**kwargs: object) -> dict[str, bool]:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("temporary")
+            recovered.set()
+            return {"acknowledged": True}
+
+        mock_client.heartbeat_worker = AsyncMock(side_effect=heartbeat)
         worker = Worker(
             mock_client,
             task_queue="q1",
@@ -4926,11 +4935,13 @@ class TestWorkerHeartbeats:
             heartbeat_interval=0.02,
         )
         run_task = asyncio.create_task(worker.run())
-        await asyncio.sleep(0.15)
-        await worker.stop()
-        run_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await run_task
+        try:
+            await asyncio.wait_for(recovered.wait(), timeout=2)
+        finally:
+            await worker.stop()
+            run_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
         assert mock_client.heartbeat_worker.call_count >= 2
 
     def test_process_metrics_cpu_percent_is_instantaneous_not_lifetime(
