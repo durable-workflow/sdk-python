@@ -1635,11 +1635,6 @@ class Client:
         self._workflow_payload_observers.clear()
         await self._http.aclose()
 
-    def _set_workflow_payload_observer(
-        self, worker_id: str, observer: Callable[[dict[str, Any]], Awaitable[None]],
-    ) -> None:
-        self._workflow_payload_observers[worker_id] = observer
-
     async def __aenter__(self) -> Client:
         return self
 

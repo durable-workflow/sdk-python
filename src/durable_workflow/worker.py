@@ -1110,7 +1110,9 @@ class Worker:
         self._worker_sessions: dict[str, WorkerSession] = {}
         self._stop = asyncio.Event()
         self._local_activity_shutdown = asyncio.Event()
-        self.client._set_workflow_payload_observer(self.worker_id, self._renew_workflow_payload_lease)
+        payload_observers = getattr(self.client, "_workflow_payload_observers", None)
+        if isinstance(payload_observers, dict):
+            payload_observers[self.worker_id] = self._renew_workflow_payload_lease
         self._local_activity_executor: ThreadPoolExecutor | None = None
         self._remote_activity_executor: ThreadPoolExecutor | None = None
         self._remote_activity_threads: set[Future[Any]] = set()
