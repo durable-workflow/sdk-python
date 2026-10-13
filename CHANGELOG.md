@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.13] - 2026-10-13
+
+### Fixed
+- Seed deterministic workflow-start time from recorded history when the explicit
+  payload timestamp is absent. Cold `now()` and UUIDv7 reads use persisted time;
+  missing or invalid replay time produces an explicit diagnostic.
+
 ## [2.5.12] - 2026-10-13
 
 ### Fixed
