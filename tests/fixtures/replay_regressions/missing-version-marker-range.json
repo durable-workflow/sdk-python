@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "missing-version-marker-range",
+  "protocol_version": "1.19",
+  "bindings": ["python"],
+  "workflow": {"type": "tests.patch.repeated", "input": [], "payload_codec": "avro"},
+  "history": [{"event_type": "VersionMarkerRecorded", "payload": {
+    "sequence": 1, "change_id": "same", "version": 1
+  }}],
+  "expected": {"command_sequence": []},
+  "expected_replay_error": {
+    "type": "NonDeterministicReplayError", "message_contains": "invalid supported range", "workflow_sequence": 1
+  }
+}
