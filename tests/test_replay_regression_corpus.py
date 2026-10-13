@@ -34,6 +34,7 @@ from tests.test_patch_history import (
     RepeatedPatchWorkflow,
 )
 from tests.test_pending_operation_replay import PendingOperation
+from tests.test_replay_clock import PersistedClockWorkflow
 from tests.test_update_signal_condition_replay import (
     PostConditionReceiversWorkflow,
     UpdateSignalConditionTimerWorkflow,
@@ -303,6 +304,7 @@ class NexusCooperativeDeliveryWorkflow:
 
 
 WORKFLOWS = [
+    PersistedClockWorkflow,
     NexusCooperativeDeliveryWorkflow,
     NexusTerminalDeliveryWorkflow,
     NexusTargetWorkflow,
