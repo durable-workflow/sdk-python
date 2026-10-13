@@ -5238,7 +5238,7 @@ def _replay_state(
     pending: list[Command] = []
     advanced_cmd: Any = None
     terminal_condition_reopen_cmd: WaitCondition | None = None
-    version_decisions: dict[str, tuple[int, str]] = {}
+    version_decisions: dict[str, int] = {}
 
     def _version_error(detail: str, step: _RecordedStep | None = None) -> NonDeterministicReplayError:
         return NonDeterministicReplayError(
@@ -5277,7 +5277,7 @@ def _replay_state(
             if _next_unconsumed_recorded_step() is not step:
                 return
             version = _recorded_version(step)
-            if version != version_decisions[change_id][0]:
+            if version != version_decisions[change_id]:
                 raise _version_error(f"Conflicting recorded decisions for change ID {change_id!r}.", step)
             # Earlier SDKs emitted a marker for every invocation. Consume these
             # aliases while retaining their physical positions for cancellation
@@ -5293,13 +5293,10 @@ def _replay_state(
         if (type(command.min_supported) is not int or type(command.max_supported) is not int
                 or command.min_supported > command.max_supported):
             raise _version_error(f"Invalid supported range for change ID {change_id!r}.")
-        family = "version" if command.result_kind == "version" else "patch"
         decision = version_decisions.get(change_id)
         step = _next_unconsumed_recorded_step()
         if decision is not None:
-            version, original_family = decision
-            if original_family != family:
-                raise _version_error(f"Change ID {change_id!r} cannot switch between version and patch helpers.", step)
+            version = decision
         elif step is not None and step.shape == "version marker":
             _assert_step_matches(command, step)
             version = _recorded_version(step)
@@ -5326,7 +5323,7 @@ def _replay_state(
                 f"Recorded version {version} for change ID {change_id!r} is outside "
                 f"the supported range {command.min_supported}..{command.max_supported}.", step,
             )
-        version_decisions.setdefault(change_id, (version, family))
+        version_decisions.setdefault(change_id, version)
         return _version_marker_result(command, version)
 
     def _parallel_leaf_kind(command: Any) -> str:
