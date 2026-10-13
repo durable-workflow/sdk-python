@@ -1,0 +1,48 @@
+{
+  "$schema": "https://durable-workflow.github.io/schemas/replay-regression-v1.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "installed-replay-sdk-identity-mismatch",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "sdk.replay-conformance-report",
+    "input": [{
+      "artifact_versions": {
+        "server": "2.6.1",
+        "cli": "2.2.3",
+        "workflow-php": "2.5.12",
+        "sdk-python": "2.5.9",
+        "waterline": "2.10.0"
+      },
+      "artifact_sources": {
+        "server": "published_docker_image",
+        "cli": "github_release_asset",
+        "workflow-php": "packagist_package",
+        "sdk-python": "pypi_package",
+        "waterline": "packagist_package"
+      }
+    }]
+  },
+  "command_sequence": [{
+    "type": "replay_conformance_report",
+    "outcome": "fail",
+    "sdk_identity_error": "installed_sdk_version_mismatch",
+    "declared_sdk_version": "2.5.9",
+    "published_install_tuple_proven": false
+  }],
+  "expected": {
+    "command_sequence": [{
+      "type": "replay_conformance_report",
+      "outcome": "fail",
+      "sdk_identity_error": "installed_sdk_version_mismatch",
+      "declared_sdk_version": "2.5.9",
+      "published_install_tuple_proven": false
+    }]
+  },
+  "provenance": {
+    "issue": "https://github.com/durable-workflow/sdk-python/issues/139",
+    "observed_installed_sdk": "2.5.10",
+    "observed_old_outcome": "pass",
+    "scope": "offline replay conformance report; other artifacts are declarations"
+  }
+}
