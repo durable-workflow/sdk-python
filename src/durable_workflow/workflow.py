@@ -1987,10 +1987,14 @@ class WorkflowContext:
         workflow_command_id: str | None = None,
         cancel_requested: bool = False,
         allow_cancellation_scope_authoring: bool = False,
+        _allow_wall_clock: bool = True,
     ) -> None:
         self._workflow_id = workflow_id
         self._run_id = run_id
-        self._current_time = current_time or datetime.now(timezone.utc)
+        self._current_time = current_time
+        if self._current_time is None and _allow_wall_clock:
+            self._current_time = datetime.now(timezone.utc)
+        self._replay_clock_error: str | None = None
         self._workflow_command_id = workflow_command_id or run_id or workflow_id
         self._cancel_requested = bool(cancel_requested)
         self._cancellation_request_id: str | None = None
@@ -2588,6 +2592,12 @@ class WorkflowContext:
         return ContinueAsNew(workflow_type=workflow_type, arguments=list(args), task_queue=task_queue)
 
     def now(self) -> datetime:
+        """Return the persisted workflow-start time, fixed during replay."""
+        if self._current_time is None:
+            raise NonDeterministicReplayError(
+                0, "persisted workflow-start clock", [],
+                detail=self._replay_clock_error or "Workflow replay clock unavailable: missing persisted start time",
+            )
         return self._current_time
 
     def random(self) -> random.Random:
@@ -2598,7 +2608,7 @@ class WorkflowContext:
         return uuid.UUID(bytes=rand_bytes, version=4)
 
     def uuid7(self) -> uuid.UUID:
-        timestamp_ms = int(self._current_time.timestamp() * 1000)
+        timestamp_ms = int(self.now().timestamp() * 1000)
         if timestamp_ms < 0 or timestamp_ms >= (1 << 48):
             raise ValueError("ctx.uuid7() requires ctx.now() within the UUIDv7 timestamp range")
 
@@ -4396,13 +4406,22 @@ def _replay_state(
             resolved_sequences.add(sequence)
 
     workflow_start_time: datetime | None = None
+    replay_clock_error = "Workflow replay clock unavailable: missing WorkflowStarted persisted start time"
     for ev in events:
         etype = _history_event_type(ev)
         if etype == "WorkflowStarted":
-            ts = (ev.get("payload") or {}).get("timestamp")
-            if ts:
-                with contextlib.suppress(ValueError, TypeError):
-                    workflow_start_time = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            start_payload = ev.get("payload")
+            if not isinstance(start_payload, Mapping):
+                start_payload = {}
+            explicit_time = "timestamp" in start_payload
+            ts = start_payload.get("timestamp") if explicit_time else ev.get("recorded_at")
+            clock_source = "payload.timestamp" if explicit_time else "recorded_at"
+            replay_clock_error = f"Workflow replay clock unavailable: invalid or missing WorkflowStarted.{clock_source}"
+            if isinstance(ts, str):
+                with contextlib.suppress(ValueError):
+                    parsed_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if parsed_time.tzinfo is not None and parsed_time.utcoffset() is not None:
+                        workflow_start_time = parsed_time
             break
 
     for sequence, membership in scope_history.memberships.items():
@@ -4418,7 +4437,9 @@ def _replay_state(
         workflow_command_id=workflow_command_id,
         cancel_requested=cancel_requested,
         allow_cancellation_scope_authoring=allow_cancellation_scope_authoring,
+        _allow_wall_clock=not events,
     )
+    ctx._replay_clock_error = replay_clock_error if workflow_start_time is None else None
     # Continue-as-new cursor checkpoints describe instance state that predates
     # this run. Seed them before the workflow opens its first stream wait so
     # both the durable wait key and worker acknowledgement use the global
