@@ -172,6 +172,41 @@ def test_conflicting_duplicate_marker_is_rejected(version: Any) -> None:
         replay(RepeatedPatchWorkflow, history, [])
 
 
+@pytest.mark.parametrize("sequence", [1, 2])
+@pytest.mark.parametrize("bounds", [
+    {}, {"min_supported": -1}, {"max_supported": 1},
+    {"min_supported": True, "max_supported": 1},
+    {"min_supported": -1, "max_supported": "1"},
+    {"min_supported": 2, "max_supported": 1},
+    {"min_supported": -1, "max_supported": 0},
+])
+def test_canonical_markers_require_valid_recorded_ranges(sequence: int, bounds: dict[str, Any]) -> None:
+    markers = [version_marker(1), version_marker(2)]
+    markers[sequence - 1]["payload"].pop("min_supported")
+    markers[sequence - 1]["payload"].pop("max_supported")
+    markers[sequence - 1]["payload"].update(bounds)
+    with pytest.raises(NonDeterministicReplayError, match="invalid supported range"):
+        replay(RepeatedPatchWorkflow, markers + old_activity(3), [])
+
+
+@pytest.mark.parametrize("identity", [{}, {"change_id": None}, {"change_id": ""}, {"change_id": True}])
+def test_canonical_marker_requires_a_change_id(identity: dict[str, Any]) -> None:
+    marker = version_marker(1)
+    marker["payload"].pop("change_id")
+    marker["payload"].update(identity)
+    with pytest.raises(NonDeterministicReplayError, match="non-empty change ID"):
+        replay(RepeatedPatchWorkflow, [marker] + old_activity(2), [])
+
+
+def test_duplicate_ranges_may_differ_around_the_same_version() -> None:
+    marker = version_marker(2)
+    marker["payload"].update(min_supported=0, max_supported=3)
+    commands = replay(RepeatedPatchWorkflow, [version_marker(1), marker] + old_activity(3), []).commands
+    assert len(commands) == 1
+    assert isinstance(commands[0], CompleteWorkflow)
+    assert commands[0].result == [True, True, "recorded"]
+
+
 @pytest.mark.parametrize("marker_count", [0, 1, 2])
 def test_patch_decisions_preserve_committed_cancellation_sequence(marker_count: int) -> None:
     history = [version_marker(sequence) for sequence in range(1, marker_count + 1)]

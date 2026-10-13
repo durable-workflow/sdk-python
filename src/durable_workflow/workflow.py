@@ -5256,13 +5256,12 @@ def _replay_state(
         if type(version) is not int:
             raise _version_error("Version marker must contain an integer version.", step)
         change_id = payload.get("change_id")
-        if "change_id" in payload and (not isinstance(change_id, str) or not change_id.strip()):
+        if not isinstance(change_id, str) or not change_id.strip():
             raise _version_error("Version marker must retain a non-empty change ID.", step)
-        if "min_supported" in payload or "max_supported" in payload:
-            minimum, maximum = payload.get("min_supported"), payload.get("max_supported")
-            if (type(minimum) is not int or type(maximum) is not int
-                    or not minimum <= version <= maximum):
-                raise _version_error("Recorded version marker has an invalid supported range.", step)
+        minimum, maximum = payload.get("min_supported"), payload.get("max_supported")
+        if (type(minimum) is not int or type(maximum) is not int
+                or not minimum <= version <= maximum):
+            raise _version_error("Recorded version marker has an invalid supported range.", step)
         return version
 
     def _consume_duplicate_version_markers() -> None:

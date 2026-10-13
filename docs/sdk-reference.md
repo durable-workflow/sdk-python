@@ -573,6 +573,11 @@ accepts consistent duplicates and retains their stored positions, including
 committed cancellation boundaries. Conflicting decisions remain a typed replay
 error. Existing histories are not rewritten or discarded.
 
+Recorded markers require a non-empty change ID, an integer version and both
+integer supported-range bounds containing that version. Consistent duplicates
+may carry different valid ranges; the current supported range need not match
+the recorded range when it still includes the frozen version.
+
 ## Replay captured histories
 
 Signals can update workflow state while a timer, remote activity or child is
