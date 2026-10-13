@@ -142,6 +142,14 @@ for immutable context, operation policies, shielded cleanup and recovery.
 
 ## Development
 
+The installed `durable-workflow-replay-conformance` command runs an offline
+Python replay shard. Its `sdk-python` artifact pin must match the installed
+distribution version reported by `importlib.metadata.version("durable-workflow")`.
+The report records that installed identity separately from the declared platform
+tuple and fails if metadata is missing or the SDK pin differs. Replay success
+does not prove installation or execution of the other declared artifacts; the
+aggregate runner supplies its own verified installation receipts.
+
 ```bash
 pip install -e '.[dev]'
 ruff check src/ tests/

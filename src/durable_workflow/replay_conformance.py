@@ -15,6 +15,7 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -204,6 +205,17 @@ def compose_report(
     started_at = _timestamp()
     versions = _canonical_artifact_metadata(dict(artifact_versions or {}))
     sources = _canonical_artifact_metadata(dict(artifact_sources or {}))
+    try:
+        installed_version = metadata.version("durable-workflow")
+    except metadata.PackageNotFoundError:
+        installed_version = None
+    identity = {
+        "runtime": "sdk-python",
+        "package": "durable-workflow",
+        "version": installed_version,
+        "version_source": "installed_distribution_metadata" if installed_version else "unavailable",
+        "declared_version": _artifact_metadata(versions, "sdk-python"),
+    }
     scenario_results: dict[str, dict[str, Any]] = {}
     findings: list[dict[str, Any]] = []
     finding_links: dict[str, list[dict[str, Any]]] = {}
@@ -212,7 +224,7 @@ def compose_report(
         scenario_results,
         findings,
         finding_links,
-        _published_artifact_scenario(versions, sources),
+        _published_artifact_scenario(versions, sources, installed_version),
     )
 
     for family, scenario_id in COMPLETED_SCENARIOS.items():
@@ -242,6 +254,9 @@ def compose_report(
     has_failures = any(
         scenario.get("status") != "pass" for scenario in scenario_results.values()
     )
+    for scenario in scenario_results.values():
+        scenario["implementation_identity"] = dict(identity)
+        scenario["artifact_tuple_evidence"] = "declared"
 
     return {
         "schema": RESULT_SCHEMA,
@@ -252,6 +267,8 @@ def compose_report(
         "finished_at": _timestamp(),
         "artifact_versions": versions,
         "artifact_sources": sources,
+        "artifact_tuple_evidence": "declared",
+        "implementation_identity": identity,
         "runtime_matrix": {
             "runtimes": ["sdk-python"],
         },
@@ -307,6 +324,7 @@ def _append_scenario(
 def _published_artifact_scenario(
     artifact_versions: Mapping[str, str],
     artifact_sources: Mapping[str, str],
+    installed_version: str | None,
 ) -> dict[str, Any]:
     missing_versions: list[str] = []
     missing_sources: list[str] = []
@@ -338,14 +356,14 @@ def _published_artifact_scenario(
             untrusted_sources[artifact] = source
 
     missing = sorted(set(missing_versions + missing_sources))
-    status = (
-        "pass"
-        if not missing
-        and not rejected_versions
-        and not forbidden_sources
-        and not untrusted_sources
-        else "fail"
-    )
+    declarations_valid = not missing and not rejected_versions and not forbidden_sources and not untrusted_sources
+    declared_version = _artifact_metadata(artifact_versions, "sdk-python")
+    identity_error = None
+    if not installed_version:
+        identity_error = "installed_sdk_metadata_missing"
+    elif declared_version != installed_version:
+        identity_error = "installed_sdk_version_mismatch"
+    status = "pass" if declarations_valid and identity_error is None else "fail"
 
     return _scenario(
         "published_artifact_install_only",
@@ -361,8 +379,14 @@ def _published_artifact_scenario(
             "rejected_versions": rejected_versions,
             "forbidden_sources": forbidden_sources,
             "untrusted_sources": untrusted_sources,
-            "published_artifacts_only": status == "pass",
-            "published_install_tuple_proven": status == "pass",
+            "declared_artifacts_published_only": bool(declarations_valid),
+            "declared_sdk_version": declared_version,
+            "installed_sdk_version": installed_version,
+            "sdk_identity_error": identity_error,
+            "sdk_version_matches": bool(installed_version and declared_version == installed_version),
+            "artifact_tuple_evidence": "declared",
+            "published_artifacts_only": False,
+            "published_install_tuple_proven": False,
         },
     )
 
@@ -589,11 +613,6 @@ def _scenario(
         "scenario_id": scenario_id,
         "status": status,
         "published_artifact_versions": dict(artifact_versions),
-        "implementation_identity": {
-            "runtime": "sdk-python",
-            "package": "durable-workflow",
-            "version": _artifact_metadata(artifact_versions, "sdk-python"),
-        },
         "runtime_matrix": {
             "runtimes": ["sdk-python"],
         },
