@@ -562,8 +562,9 @@ is awaited without scheduling it again.
 Each change ID has one decision per replay. Repeated `patched()` calls reuse
 that decision. `get_version()` also keeps the first selected version, even if a
 later call raises its maximum. Every call's supported range must include the
-recorded decision. Keep change IDs stable and do not switch an ID between
-`get_version()` and the patch helpers.
+recorded decision. `get_version()`, `patched()` and `deprecate_patch()` share
+the same numeric decision for a change ID. Their return values retain each
+helper's semantics: a version number, a patch boolean, or no branch decision.
 
 After retiring the legacy branch, use `yield ctx.deprecate_patch("require-review")`
 at the same code boundary. It retains the marker without returning a branch
