@@ -5238,7 +5238,7 @@ def _replay_state(
     pending: list[Command] = []
     advanced_cmd: Any = None
     terminal_condition_reopen_cmd: WaitCondition | None = None
-    version_decisions: dict[str, tuple[int, str]] = {}
+    version_decisions: dict[str, int] = {}
 
     def _version_error(detail: str, step: _RecordedStep | None = None) -> NonDeterministicReplayError:
         return NonDeterministicReplayError(
@@ -5256,13 +5256,12 @@ def _replay_state(
         if type(version) is not int:
             raise _version_error("Version marker must contain an integer version.", step)
         change_id = payload.get("change_id")
-        if "change_id" in payload and (not isinstance(change_id, str) or not change_id.strip()):
+        if not isinstance(change_id, str) or not change_id.strip():
             raise _version_error("Version marker must retain a non-empty change ID.", step)
-        if "min_supported" in payload or "max_supported" in payload:
-            minimum, maximum = payload.get("min_supported"), payload.get("max_supported")
-            if (type(minimum) is not int or type(maximum) is not int
-                    or not minimum <= version <= maximum):
-                raise _version_error("Recorded version marker has an invalid supported range.", step)
+        minimum, maximum = payload.get("min_supported"), payload.get("max_supported")
+        if (type(minimum) is not int or type(maximum) is not int
+                or not minimum <= version <= maximum):
+            raise _version_error("Recorded version marker has an invalid supported range.", step)
         return version
 
     def _consume_duplicate_version_markers() -> None:
@@ -5277,7 +5276,7 @@ def _replay_state(
             if _next_unconsumed_recorded_step() is not step:
                 return
             version = _recorded_version(step)
-            if version != version_decisions[change_id][0]:
+            if version != version_decisions[change_id]:
                 raise _version_error(f"Conflicting recorded decisions for change ID {change_id!r}.", step)
             # Earlier SDKs emitted a marker for every invocation. Consume these
             # aliases while retaining their physical positions for cancellation
@@ -5293,13 +5292,10 @@ def _replay_state(
         if (type(command.min_supported) is not int or type(command.max_supported) is not int
                 or command.min_supported > command.max_supported):
             raise _version_error(f"Invalid supported range for change ID {change_id!r}.")
-        family = "version" if command.result_kind == "version" else "patch"
         decision = version_decisions.get(change_id)
         step = _next_unconsumed_recorded_step()
         if decision is not None:
-            version, original_family = decision
-            if original_family != family:
-                raise _version_error(f"Change ID {change_id!r} cannot switch between version and patch helpers.", step)
+            version = decision
         elif step is not None and step.shape == "version marker":
             _assert_step_matches(command, step)
             version = _recorded_version(step)
@@ -5326,7 +5322,7 @@ def _replay_state(
                 f"Recorded version {version} for change ID {change_id!r} is outside "
                 f"the supported range {command.min_supported}..{command.max_supported}.", step,
             )
-        version_decisions.setdefault(change_id, (version, family))
+        version_decisions.setdefault(change_id, version)
         return _version_marker_result(command, version)
 
     def _parallel_leaf_kind(command: Any) -> str:

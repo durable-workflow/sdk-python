@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.10] - 2026-10-13
+
+### Fixed
+- Reject canonical version markers missing their change ID or supported-range
+  bounds. Consistent historical duplicate ranges may still differ when each
+  contains the frozen version.
+- Share one frozen numeric version across `get_version`, `patched` and
+  `deprecate_patch` for the same change ID, while validating each call's range
+  and preserving retained duplicate-marker sequences.
+
 ## [2.5.9] - 2026-10-12
 
 ### Fixed

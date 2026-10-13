@@ -560,8 +560,9 @@ is awaited without scheduling it again.
 Each change ID has one decision per replay. Repeated `patched()` calls reuse
 that decision. `get_version()` also keeps the first selected version, even if a
 later call raises its maximum. Every call's supported range must include the
-recorded decision. Keep change IDs stable and do not switch an ID between
-`get_version()` and the patch helpers.
+recorded decision. `get_version()`, `patched()` and `deprecate_patch()` share
+the same numeric decision for a change ID. Their return values retain each
+helper's semantics: a version number, a patch boolean, or no branch decision.
 
 After retiring the legacy branch, use `yield ctx.deprecate_patch("require-review")`
 at the same code boundary. It retains the marker without returning a branch
@@ -571,6 +572,11 @@ Earlier Python SDKs could record repeated markers for one change ID. Replay
 accepts consistent duplicates and retains their stored positions, including
 committed cancellation boundaries. Conflicting decisions remain a typed replay
 error. Existing histories are not rewritten or discarded.
+
+Recorded markers require a non-empty change ID, an integer version and both
+integer supported-range bounds containing that version. Consistent duplicates
+may carry different valid ranges; the current supported range need not match
+the recorded range when it still includes the frozen version.
 
 ## Replay captured histories
 
