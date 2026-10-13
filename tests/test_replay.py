@@ -1949,7 +1949,9 @@ class TestVersionMarker:
 
     def test_version_from_history(self) -> None:
         history = [
-            {"event_type": "VersionMarkerRecorded", "payload": {"version": 2}},
+            {"event_type": "VersionMarkerRecorded", "payload": {
+                "sequence": 1, "change_id": "change-1", "version": 2, "min_supported": 1, "max_supported": 2,
+            }},
         ]
         outcome = replay(VersionWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -1959,7 +1961,9 @@ class TestVersionMarker:
 
     def test_old_version_from_history(self) -> None:
         history = [
-            {"event_type": "VersionMarkerRecorded", "payload": {"version": 1}},
+            {"event_type": "VersionMarkerRecorded", "payload": {
+                "sequence": 1, "change_id": "change-1", "version": 1, "min_supported": 1, "max_supported": 2,
+            }},
         ]
         outcome = replay(VersionWorkflow, history, [])
         assert len(outcome.commands) == 1
@@ -1969,7 +1973,9 @@ class TestVersionMarker:
 
     def test_full_replay(self) -> None:
         history = [
-            {"event_type": "VersionMarkerRecorded", "payload": {"version": 2}},
+            {"event_type": "VersionMarkerRecorded", "payload": {
+                "sequence": 1, "change_id": "change-1", "version": 2, "min_supported": 1, "max_supported": 2,
+            }},
             {"event_type": "ActivityCompleted", "payload": {"result": _avro("done")}},
         ]
         outcome = replay(VersionWorkflow, history, [])
@@ -2006,7 +2012,9 @@ class TestVersionMarker:
 
     def test_patched_uses_recorded_marker_for_existing_patched_runs(self) -> None:
         history = [
-            {"event_type": "VersionMarkerRecorded", "payload": {"version": 1}},
+            {"event_type": "VersionMarkerRecorded", "payload": {
+                "sequence": 1, "change_id": "patch-1", "version": 1, "min_supported": -1, "max_supported": 1,
+            }},
         ]
 
         outcome = replay(PatchedWorkflow, history, [])
@@ -2017,7 +2025,9 @@ class TestVersionMarker:
 
     def test_patched_uses_legacy_default_for_existing_unpatched_runs(self) -> None:
         history = [
-            {"event_type": "VersionMarkerRecorded", "payload": {"version": -1}},
+            {"event_type": "VersionMarkerRecorded", "payload": {
+                "sequence": 1, "change_id": "patch-1", "version": -1, "min_supported": -1, "max_supported": 1,
+            }},
         ]
 
         outcome = replay(PatchedWorkflow, history, [])
@@ -2040,7 +2050,9 @@ class TestVersionMarker:
 
         replayed = replay(
             DeprecatedPatchWorkflow,
-            [{"event_type": "VersionMarkerRecorded", "payload": {"version": 1}}],
+            [{"event_type": "VersionMarkerRecorded", "payload": {
+                "sequence": 1, "change_id": "patch-1", "version": 1, "min_supported": -1, "max_supported": 1,
+            }}],
             [],
         )
         assert len(replayed.commands) == 1
