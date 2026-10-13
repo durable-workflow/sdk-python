@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.12] - 2026-10-13
+
+### Fixed
+- Surface the original canonical workflow query timeout instead of automatically
+  admitting another query through the HTTP transport retry policy.
+
 ## [2.5.11] - 2026-10-13
 
 ### Fixed
