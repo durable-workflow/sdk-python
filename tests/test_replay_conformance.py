@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from importlib import metadata
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from durable_workflow.replay_conformance import (
     COVERAGE_SCOPE,
@@ -23,6 +26,11 @@ def artifact_versions() -> dict[str, str]:
         "sdk-python": "0.4.73",
         "waterline": "2.0.0-alpha.57",
     }
+
+
+@pytest.fixture(autouse=True)
+def installed_sdk_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metadata, "version", lambda package: "0.4.73")
 
 
 def artifact_sources() -> dict[str, str]:
@@ -81,7 +89,7 @@ def test_compose_report_emits_python_replay_conformance_shard() -> None:
         assert indexed[scenario_id]["status"] == "pass"
 
 
-def test_report_proves_published_artifact_install_policy() -> None:
+def test_report_validates_declared_tuple_without_claiming_installation_proof() -> None:
     report = compose_report(
         artifact_versions=artifact_versions(),
         artifact_sources=artifact_sources(),
@@ -90,11 +98,44 @@ def test_report_proves_published_artifact_install_policy() -> None:
     observed = published["observed_outputs"]
 
     assert published["status"] == "pass"
-    assert observed["published_artifacts_only"] is True
-    assert observed["published_install_tuple_proven"] is True
+    assert observed["published_artifacts_only"] is False
+    assert observed["published_install_tuple_proven"] is False
+    assert observed["declared_artifacts_published_only"] is True
+    assert observed["artifact_tuple_evidence"] == "declared"
+    assert observed["installed_sdk_version"] == "0.4.73"
+    assert observed["sdk_version_matches"] is True
+    assert observed["sdk_identity_error"] is None
+    assert report["implementation_identity"]["version"] == "0.4.73"
     assert observed["missing_artifacts"] == []
     assert observed["artifact_sources"]["server"] == "docker_image"
     assert observed["artifact_sources"]["sdk-python"] == "pypi_package"
+
+
+def test_report_rejects_declared_sdk_version_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metadata, "version", lambda package: "2.5.10")
+    report = compose_report(artifact_versions=artifact_versions(), artifact_sources=artifact_sources())
+    install = scenarios(report)["published_artifact_install_only"]
+    assert report["outcome"] == "fail"
+    assert install["status"] == "fail"
+    assert install["observed_outputs"]["installed_sdk_version"] == "2.5.10"
+    assert install["observed_outputs"]["declared_sdk_version"] == "0.4.73"
+    assert install["observed_outputs"]["sdk_identity_error"] == "installed_sdk_version_mismatch"
+    assert install["observed_outputs"]["published_install_tuple_proven"] is False
+    assert all(scenario["implementation_identity"]["version"] == "2.5.10" for scenario in report["scenario_results"])
+    assert report["finding_links"]["published_artifact_install_only"]
+
+
+def test_report_rejects_missing_installed_sdk_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing_metadata(package: str) -> str:
+        raise metadata.PackageNotFoundError(package)
+
+    monkeypatch.setattr(metadata, "version", missing_metadata)
+    report = compose_report(artifact_versions=artifact_versions(), artifact_sources=artifact_sources())
+    install = scenarios(report)["published_artifact_install_only"]
+    assert report["outcome"] == "fail"
+    assert install["observed_outputs"]["sdk_identity_error"] == "installed_sdk_metadata_missing"
+    assert install["implementation_identity"]["version"] is None
+    assert install["observed_outputs"]["published_install_tuple_proven"] is False
 
 
 def test_report_rejects_missing_versions_and_sources() -> None:

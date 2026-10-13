@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -11,6 +12,7 @@ import pytest
 from durable_workflow import Replayer, Worker, serializer, workflow
 from durable_workflow.client import PROTOCOL_VERSION, Client, WorkflowExecution, WorkflowStreamAppendItem
 from durable_workflow.errors import NonDeterministicReplayError, WorkflowCancelled, WorkflowPayloadDecodeError
+from durable_workflow.replay_conformance import compose_report
 from durable_workflow.workflow import (
     LocalActivityExecutionAborted,
     WorkflowContext,
@@ -371,6 +373,27 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     assert isinstance(workflow, dict)
     workflow_type = workflow.get("type")
     assert isinstance(workflow_type, str) and workflow_type
+    if workflow_type == "sdk.replay-conformance-report":
+        # This public command executes the SDK's offline replay scenarios. Its
+        # regression input is artifact declarations, not an invented history.
+        assert "history" not in fixture
+        inputs = workflow.get("input")
+        assert isinstance(inputs, list) and len(inputs) == 1 and isinstance(inputs[0], dict)
+        report = compose_report(**inputs[0])
+        install = next(scenario for scenario in report["scenario_results"]
+                       if scenario["scenario_id"] == "published_artifact_install_only")
+        observed = install["observed_outputs"]
+        commands = [{
+            "type": "replay_conformance_report",
+            "outcome": report["outcome"],
+            "sdk_identity_error": observed.get("sdk_identity_error"),
+            "declared_sdk_version": observed.get("declared_sdk_version"),
+            "published_install_tuple_proven": observed["published_install_tuple_proven"],
+        }]
+        _assert_matches(fixture["command_sequence"], commands, f"{fixture['id']}.command_sequence")
+        _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
+        assert report["implementation_identity"]["version"] == metadata.version("durable-workflow")
+        return commands
     assert workflow_type in WORKFLOW_TYPES, (
         f"replay fixture workflow {workflow_type!r} has no Python implementation; "
         "register its reproducer workflow in WORKFLOWS"
@@ -462,6 +485,9 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
     assert isinstance(workflow, dict)
     expected = fixture.get("expected")
     assert isinstance(expected, dict) and expected
+    if workflow.get("type") == "sdk.replay-conformance-report":
+        _execute_fixture(fixture)
+        return
     expected_error = expected.get("error")
     expected_replay_error = fixture.get("expected_replay_error")
     if isinstance(expected_replay_error, dict):
