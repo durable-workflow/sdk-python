@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.10] - 2026-10-13
+
 ### Fixed
 - Share one frozen numeric version across `get_version`, `patched` and
   `deprecate_patch` for the same change ID, while validating each call's range
