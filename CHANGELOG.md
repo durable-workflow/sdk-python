@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.11] - 2026-10-13
+
+### Fixed
+- Verify the installed Python distribution identity in offline replay conformance
+  reports. Mismatched SDK pins or missing metadata fail explicitly; a declared
+  platform tuple no longer claims verified artifact installation.
+
 ## [2.5.10] - 2026-10-13
 
 ### Fixed
