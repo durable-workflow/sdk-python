@@ -17,6 +17,7 @@ import contextvars
 import json
 import logging
 import random
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TypeVar
@@ -32,6 +33,24 @@ log = logging.getLogger("durable_workflow.worker")
 _worker_storage_admission_stop: contextvars.ContextVar[Callable[[], bool] | None] = contextvars.ContextVar(
     "worker_storage_admission_stop", default=None,
 )
+
+
+def _query_timeout_refusal(exc: httpx.HTTPStatusError) -> bool:
+    request = exc.request
+    if (exc.response.status_code != 504 or request.method != "POST"
+            or request.headers.get("X-Durable-Workflow-Control-Plane-Version") != "2"
+            or re.search(r"/api/workflows/[^/]+/query/[^/]+$", request.url.path) is None):
+        return False
+    try:
+        body = exc.response.json()
+    except ValueError:
+        return False
+    # This response ends an admitted query. Another POST creates a new task,
+    # rather than retrying the original task or its remaining caller budget.
+    reason = body.get("reason") if isinstance(body, dict) else None
+    return isinstance(reason, str) and reason in {
+        "query_worker_timeout", "query_worker_execution_timeout", "query_task_not_claimed",
+    }
 
 
 def _storage_refusal(exc: Exception) -> tuple[ServerError, str | None] | None:
@@ -194,6 +213,8 @@ class TransportRetryPolicy:
     :class:`durable_workflow.workflow.ChildWorkflowRetryPolicy`.
 
     Uses exponential backoff with jitter to avoid thundering herd.
+    Canonical query timeouts end the original query and are surfaced without
+    another query admission; unrelated transient HTTP failures still retry.
     """
 
     max_attempts: int = 3
@@ -213,7 +234,7 @@ class TransportRetryPolicy:
 
         # Retry 5xx server errors and 429 rate limit
         if isinstance(exc, httpx.HTTPStatusError):
-            if _poll_capacity_refusal(exc):
+            if _query_timeout_refusal(exc) or _poll_capacity_refusal(exc):
                 return False
             return exc.response.status_code >= 500 or exc.response.status_code == 429
 

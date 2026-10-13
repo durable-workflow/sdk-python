@@ -4323,7 +4323,9 @@ class Client:
         Queries are synchronous and non-mutating. The server runs the named
         query handler inside the workflow process and returns the decoded
         result. Raises :class:`~durable_workflow.errors.QueryFailed` if the
-        query was rejected or the handler errored.
+        query was rejected, the handler errored, or the original query timed
+        out. A canonical query timeout is surfaced without automatically
+        admitting another query.
         """
         await self._require_query_support()
         body: dict[str, Any] = {}
