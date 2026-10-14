@@ -27,6 +27,15 @@ class DurableWorkflowError(Exception):
     """Base class for every exception raised by the SDK."""
 
 
+class QueryTaskAuthorityLost(DurableWorkflowError):
+    """A query delivery cannot safely load or invoke its handler."""
+
+    def __init__(self, query_task_id: str, reason: str) -> None:
+        super().__init__(f"query task {query_task_id!r} cannot continue: {reason}")
+        self.query_task_id = query_task_id
+        self.reason = reason
+
+
 class InvalidWorkflowDefinition(DurableWorkflowError, ValueError):
     """Workflow authoring uses an unsupported entry point or result."""
 

@@ -262,6 +262,8 @@ def test_replayer_fetches_external_local_activity_result(tmp_path: Path) -> None
 
 @pytest.mark.asyncio
 async def test_worker_query_task_replay_fetches_external_history_payload(tmp_path: Path) -> None:
+    from tests.query_task_helpers import leased_query_task
+
     storage = LocalFilesystemExternalStorage(tmp_path)
     client = _mock_worker_client(storage)
     worker = Worker(client, task_queue="q1", workflows=[ExternalStorageQueryWorkflow], activities=[])
@@ -279,7 +281,7 @@ async def test_worker_query_task_replay_fetches_external_history_payload(tmp_pat
         codec="avro",
     )
 
-    outcome = await worker._run_query_task(
+    outcome = await worker._run_query_task(leased_query_task(worker,
         {
             "query_task_id": "qt-external-history",
             "query_task_attempt": 1,
@@ -298,7 +300,7 @@ async def test_worker_query_task_replay_fetches_external_history_payload(tmp_pat
             "query_arguments": query_args,
             "payload_codec": "avro",
         }
-    )
+    ))
 
     assert outcome == "completed"
     client.complete_query_task.assert_awaited_once()
@@ -391,7 +393,9 @@ async def test_worker_query_result_uses_avro_external_storage_threshold(tmp_path
             external_storage=storage,
             external_storage_threshold_bytes=1,
         )
-        outcome = await worker._run_query_task(
+        from tests.query_task_helpers import leased_query_task
+
+        outcome = await worker._run_query_task(leased_query_task(worker,
             {
                 "query_task_id": "query-external-result",
                 "query_task_attempt": 1,
@@ -410,7 +414,7 @@ async def test_worker_query_result_uses_avro_external_storage_threshold(tmp_path
                 "query_arguments": serializer.envelope(["!"], codec="avro"),
                 "payload_codec": "avro",
             }
-        )
+        ))
     finally:
         await client.aclose()
 

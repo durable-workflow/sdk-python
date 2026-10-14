@@ -41,6 +41,7 @@ from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProc
 from ._cancellation_scope_history import CancellationScopeBudget, CancellationScopeDeliveryReceipt
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
 from ._prepared_local_activity import PreparedAttempt, PreparedCancellationObserved, PreparedLocalRunner
+from ._query_task_authority import QueryTaskAuthority, current_query_authority
 from ._sticky_workflow_cache import CacheKey, StickyWorkflowCache, complete_history
 from .activity import ActivityContext, ActivityInfo, _set_context
 from .auth_composition import (
@@ -74,6 +75,7 @@ from .errors import (
     NonDeterministicReplayError,
     NonRetryableError,
     QueryFailed,
+    QueryTaskAuthorityLost,
     ServerError,
     UpdateRejected,
     UpdateValidationFailed,
@@ -105,11 +107,11 @@ from .workflow import (
     ScheduleActivity,
     StartChildWorkflow,
     UpsertMemo,
+    _prepare_query_state,
     _validate_workflow_entrypoint,
     _workflow_handler_registries,
     apply_update,
     commands_to_server_commands,
-    query_state,
     replay,
     validate_update,
 )
@@ -1032,8 +1034,11 @@ class Worker:
         external_storage: ExternalStorageDriver | None = None,
         external_storage_threshold_bytes: int | None = None,
         external_storage_cache: ExternalPayloadCache | None = None,
+        require_query_task_authority: bool = False,
     ) -> None:
         self.client = client
+        self.require_query_task_authority = require_query_task_authority
+        self._query_authority_supported = False
         self.task_queue = task_queue
         self.workflows: dict[str, type] = {}
         for definition in workflows:
@@ -1312,6 +1317,14 @@ class Worker:
             )
         self._validate_cooperative_activity_handlers()
         self._query_tasks_supported = _server_supports_query_tasks(info)
+        self._query_authority_supported = (
+            isinstance(server_capabilities, Mapping) and server_capabilities.get("query_task_authority") is True
+            and _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+                "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION))
+        )
+        if self.require_query_task_authority and not self._query_authority_supported:
+            raise RuntimeError("query_task_authority_unavailable: require worker protocol 1.20 and "
+                               "Server query_task_authority=true before registration")
         self._workflow_memo_updates_supported = _server_supports_workflow_memo_updates(info)
         has_update_validators = any(
             contract["update_validators"] for contract in self.workflow_command_contracts.values()
@@ -3218,6 +3231,30 @@ class Worker:
 
     async def _run_query_task(self, task: dict[str, Any], *, client: Client | None = None) -> str:
         client = client or self.client
+        token = None
+        try:
+            namespace = getattr(client, "namespace", "default")
+            authority = current_query_authority.get()
+            if authority is None:
+                authority = QueryTaskAuthority.delivery(client, namespace, task, owner=self.worker_id,
+                    task_queue=self.task_queue, observed=self._query_authority_supported)
+                if authority.observed:
+                    authority.observer = lambda: client.query_task_status(query_task_id=authority.task_id,
+                        lease_owner=authority.owner, query_task_attempt=authority.attempt)
+                token = current_query_authority.set(authority)
+            if not authority.matches(client, namespace, task, self.worker_id):
+                raise QueryTaskAuthorityLost(str(task.get("query_task_id", "")), "invalid_query_claim")
+            await authority.confirm()
+            return await self._run_authorized_query_task(task, client=client)
+        except QueryTaskAuthorityLost as error:
+            log.info("query delivery suppressed: %s", error)
+            return "expired"
+        finally:
+            if token is not None:
+                current_query_authority.reset(token)
+
+    async def _run_authorized_query_task(self, task: dict[str, Any], *, client: Client) -> str:
+        client = client or self.client
         codec = task.get("payload_codec")
         try:
             _validate_payload_codec(codec)
@@ -3260,6 +3297,11 @@ class Worker:
 
     async def _run_query_task_core(self, task: dict[str, Any], *, client: Client | None = None) -> str:
         client = client or self.client
+        authority = current_query_authority.get()
+        if authority is None or not authority.matches(client, getattr(client, "namespace", "default"),
+                                                     task, self.worker_id):
+            raise QueryTaskAuthorityLost(str(task.get("query_task_id", "")), "invalid_query_claim")
+        await authority.confirm()
         query_task_id: str = task["query_task_id"]
         attempt: int = task.get("query_task_attempt", 1)
         wf_type: str = task.get("workflow_type", "")
@@ -3309,7 +3351,7 @@ class Worker:
                 codec=codec,
                 context="workflow query arguments",
             )
-            result = query_state(
+            invoke = _prepare_query_state(
                 cls,
                 history,
                 start_input,
@@ -3324,8 +3366,14 @@ class Worker:
                 prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                 local_activity_cancellation_policies=self._local_activity_cancellation_policies,
             )
-            if inspect.isawaitable(result):
-                result = await result
+            await authority.confirm()
+            async def execute() -> Any:
+                value = invoke()
+                return await value if inspect.isawaitable(value) else value
+
+            result = await authority.run(execute)
+        except QueryTaskAuthorityLost:
+            raise
         except AvroNotInstalledError as e:
             await self._fail_query_task(
                 query_task_id,
@@ -3371,7 +3419,7 @@ class Worker:
             return "failed"
 
         try:
-            await client.complete_query_task(
+            await authority.run(lambda: client.complete_query_task(
                 query_task_id=query_task_id,
                 lease_owner=self.worker_id,
                 query_task_attempt=attempt,
@@ -3381,7 +3429,9 @@ class Worker:
                 run_id=task.get("run_id"),
                 query_name=query_name,
                 **self._external_storage_completion_kwargs(),
-            )
+            ), observe=False, confirm_after=False)
+        except QueryTaskAuthorityLost:
+            raise
         except ServerError as e:
             if _is_storage_admission_error(e):
                 log.warning("query task %s acknowledgement paused: %s", query_task_id, e)
@@ -3471,6 +3521,12 @@ class Worker:
         client: Client | None = None,
     ) -> None:
         client = client or self.client
+        authority = current_query_authority.get()
+        if authority is not None:
+            if (authority.client is not client or authority.task_id != query_task_id or authority.attempt != attempt
+                    or authority.owner != self.worker_id):
+                raise QueryTaskAuthorityLost(query_task_id, "invalid_query_claim")
+            await authority.confirm()
         try:
             await client.fail_query_task(
                 query_task_id=query_task_id,
@@ -3932,7 +3988,7 @@ class Worker:
     def _clone_client_for_query_tasks(self) -> Client:
         warning_config = self._payload_size_warning_config()
 
-        return Client(
+        client = Client(
             self.client.base_url,
             token=self.client.token,
             control_token=self.client.control_token,
@@ -3954,6 +4010,8 @@ class Worker:
             external_storage_threshold_bytes=self.external_storage_threshold_bytes,
             external_storage_cache=self.external_storage_cache,
         )
+        client._cluster_info = self.client._cluster_info
+        return client
 
     def _can_clone_client_for_query_tasks(self) -> bool:
         return type(self.client) is Client

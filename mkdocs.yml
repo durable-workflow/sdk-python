@@ -77,6 +77,7 @@ nav:
   - Start here: index.md
   - SDK reference: sdk-reference.md
   - Sticky execution: guides/sticky-execution.md
+  - Query deadlines: query-task-authority.md
   - SDK guide: https://durable-workflow.com/docs/2.0/polyglot/python/
   - PyPI: https://pypi.org/project/durable-workflow/
   - API reference:
