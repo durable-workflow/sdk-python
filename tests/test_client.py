@@ -3761,16 +3761,20 @@ class TestWorkers:
 
 class TestQueryTasks:
     @pytest.mark.asyncio
-    async def test_poll_query_task_matches_polyglot_fixture(self, client: Client) -> None:
+    async def test_poll_keeps_fixture_request_but_refuses_missing_query_lease(self, client: Client) -> None:
+        from durable_workflow.errors import QueryTaskAuthorityLost
+
         fixture_path = Path(__file__).parent / "fixtures" / "control-plane" / "query-task-poll-parity.json"
         fixture = json.loads(fixture_path.read_text())
         resp = _mock_response(200, fixture["response_body"])
 
-        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
-            task = await client.poll_query_task(**fixture["sdk_python"]["kwargs"])
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock,
+            pytest.raises(QueryTaskAuthorityLost) as refusal,
+        ):
+            await client.poll_query_task(**fixture["sdk_python"]["kwargs"])
 
-        assert task == fixture["response_body"]["task"]
-        assert task["query_task_id"] == fixture["semantic_body"]["query_task_id"]
+        assert refusal.value.query_task_id == fixture["semantic_body"]["query_task_id"]
         assert mock.call_args.args[:2] == (fixture["request"]["method"], f"/api{fixture['request']['path']}")
         request_body = mock.call_args.kwargs["json"]
         assert request_body["worker_id"] == fixture["request"]["body"]["worker_id"]
@@ -3808,11 +3812,14 @@ class TestQueryTasks:
 
     @pytest.mark.asyncio
     async def test_poll_query_task_returns_task_payload(self, client: Client) -> None:
-        resp = _mock_response(200, {"task": {"query_task_id": "qt1"}})
+        from tests.query_task_helpers import query_task_delivery
+
+        response_task = query_task_delivery({"query_task_id": "qt1"}, worker_id="w1", task_queue="q1")
+        resp = _mock_response(200, {"task": response_task})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
             task = await client.poll_query_task(worker_id="w1", task_queue="q1", timeout=5.0)
 
-            assert task == {"query_task_id": "qt1"}
+            assert task == response_task
             assert mock.call_args.args[:2] == ("POST", "/api/worker/query-tasks/poll")
             body = mock.call_args.kwargs["json"]
             assert body["worker_id"] == "w1"
@@ -3826,7 +3833,9 @@ class TestQueryTasks:
     async def test_poll_query_task_retries_once_with_same_poll_request_id_after_timeout(
         self, client: Client
     ) -> None:
-        response_task = {"task": {"query_task_id": "qt1"}}
+        from tests.query_task_helpers import query_task_delivery
+
+        response_task = {"task": query_task_delivery({"query_task_id": "qt1"}, worker_id="w1", task_queue="q1")}
 
         with patch.object(
             client._http,

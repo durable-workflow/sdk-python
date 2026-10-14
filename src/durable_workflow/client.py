@@ -45,6 +45,7 @@ from ._cancellation_scope_history import (
     scope_timestamp,
 )
 from ._cooperative_cancellation import CancellationDelivery, CancellationRequest
+from ._query_task_authority import QueryTaskAuthority, current_query_authority
 from .errors import (
     ExternalPayloadIntegrityMismatch,
     ExternalPayloadOversized,
@@ -1809,6 +1810,9 @@ class Client:
         if discovery and path != "/cluster/info":
             raise ValueError("cluster discovery credentials can only authorize /cluster/info")
 
+        query_poll = worker and path == "/worker/query-tasks/poll"
+        if query_poll:
+            current_query_authority.set(None)
         request_json = json
         if (
             not discovery
@@ -1872,6 +1876,10 @@ class Client:
                 outcome = "ok"
                 return None
             result = resp.json()
+            query_authority = None
+            if query_poll and isinstance(result, dict) and isinstance(result.get("task"), dict):
+                query_authority = await self._query_delivery_authority(result["task"], request_json)
+                current_query_authority.set(query_authority)
             if not discovery and _contains_runtime_payload_envelope(result):
                 transport = await self._runtime_external_payload_transport()
                 if transport is None:
@@ -1879,14 +1887,17 @@ class Client:
                         "runtime returned an external payload reference without advertising "
                         "the authenticated namespace transport"
                     )
-                result = await self._resolve_workflow_claim_payloads(
-                    result,
-                    worker=worker,
-                    transport=transport,
-                    path=path,
-                    request_json=request_json,
-                )
+                if query_authority is not None:
+                    result = await query_authority.run(lambda: self._resolve_runtime_payloads(
+                        result, worker=worker, transport=transport, resolved={},
+                    ))
+                else:
+                    result = await self._resolve_workflow_claim_payloads(
+                        result, worker=worker, transport=transport, path=path, request_json=request_json,
+                    )
             result = self._hydrate_result_envelopes(result)
+            if query_authority is not None:
+                await query_authority.confirm()
             outcome = "ok"
             return result
         except Exception as exc:
@@ -2332,6 +2343,7 @@ class Client:
         *,
         worker: bool,
         transport: _RuntimeExternalPayloadTransport,
+        resolved: dict[tuple[str, str, int, str], str] | None = None,
     ) -> Any:
         if isinstance(value, dict):
             if "external_payload" in value:
@@ -2347,6 +2359,9 @@ class Client:
                         "runtime external payload envelope codec does not match its reference",
                         reference_id=reference.reference_id,
                     )
+                identity = (reference.reference_id, reference.codec, reference.size_bytes, reference.sha256)
+                if resolved is not None and identity in resolved:
+                    return {"codec": reference.codec, "blob": resolved[identity]}
                 data = await self._fetch_runtime_payload(
                     reference,
                     worker=worker,
@@ -2359,12 +2374,15 @@ class Client:
                         "runtime external payload bytes are not a UTF-8 payload blob",
                         reference_id=reference.reference_id,
                     ) from exc
+                if resolved is not None:
+                    resolved[identity] = blob
                 return {"codec": reference.codec, "blob": blob}
             return {
                 key: await self._resolve_runtime_payloads(
                     item,
                     worker=worker,
                     transport=transport,
+                    resolved=resolved,
                 )
                 for key, item in value.items()
             }
@@ -2374,6 +2392,7 @@ class Client:
                     item,
                     worker=worker,
                     transport=transport,
+                    resolved=resolved,
                 )
                 for item in value
             ]
@@ -5625,6 +5644,48 @@ class Client:
             "POST", f"/worker/workflow-tasks/{task_id}/history", worker=True, json=body
         )
 
+    async def _query_delivery_authority(self, task: dict[str, Any], request: Any) -> QueryTaskAuthority:
+        # Worker registration establishes discovery before it polls. Advanced
+        # callers without discovery retain only the exposed local lease checks.
+        info = self._cluster_info or {}
+        protocol = info.get("worker_protocol")
+        capabilities = protocol.get("server_capabilities") if isinstance(protocol, dict) else None
+        observed = (isinstance(capabilities, dict) and capabilities.get("query_task_authority") is True
+                    and _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+                        "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION)))
+        request = request if isinstance(request, dict) else {}
+        authority = QueryTaskAuthority.delivery(self, self.namespace, task, owner=request.get("worker_id", ""),
+                                               task_queue=request.get("task_queue", ""), observed=observed)
+        if observed:
+            authority.observer = lambda: self.query_task_status(query_task_id=authority.task_id,
+                lease_owner=authority.owner, query_task_attempt=authority.attempt)
+        await authority.confirm()
+        return authority
+
+    async def query_task_status(self, *, query_task_id: str, lease_owner: str,
+                                query_task_attempt: int) -> Any:
+        """Observe a protocol 1.20 query claim without renewing it.
+
+        Requires ``query_task_authority=true`` discovery. A positive observation
+        does not reserve authority for later execution or completion.
+        """
+        if not _supports_cooperative_cancellation_protocol(_protocol_version_from_env(
+            "DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", PROTOCOL_VERSION,
+        )):
+            raise ValueError("query task observation requires worker protocol 1.20")
+        capability_path = "worker_protocol.server_capabilities.query_task_authority"
+        info = await self._runtime_discovery(operation="Client.query_task_status", required_path=capability_path)
+        protocol = info.get("worker_protocol")
+        capabilities = protocol.get("server_capabilities") if isinstance(protocol, dict) else None
+        supported = capabilities.get("query_task_authority") if isinstance(capabilities, dict) else None
+        if supported is not True:
+            error_type = RuntimeCapabilityUnsupported if supported is False else RuntimeDiscoveryUnavailable
+            raise error_type("Client.query_task_status", capability_path,
+                             "Query task observation requires Server query_task_authority=true discovery.")
+        query = urlencode({"lease_owner": lease_owner, "query_task_attempt": query_task_attempt})
+        return await self._request("GET", f"/worker/query-tasks/{quote(query_task_id, safe='')}/status?{query}",
+                                   worker=True, timeout=5.0)
+
     async def poll_query_task(
         self,
         *,
@@ -5640,6 +5701,10 @@ class Client:
         must route a control-plane query to a non-PHP workflow runtime.
         ``timeout`` controls the server long-poll window; the HTTP request
         uses a small grace margin.
+
+        Worker registration establishes capability discovery. Custom workers
+        should call ``get_cluster_info()`` first to enable advertised query
+        status checks; without discovery only supplied local lease bounds apply.
         """
         body: dict[str, Any] = {
             "worker_id": worker_id,
