@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.14] - 2026-10-14
+
+### Fixed
+- Document schedule backfill as a start-inclusive, end-exclusive window.
+  An occurrence at the end belongs to the next adjacent window.
+
 ## [2.5.13] - 2026-10-13
 
 ### Fixed
