@@ -4825,8 +4825,10 @@ class Client:
         end_time: str,
         overlap_policy: str | None = None,
     ) -> ScheduleBackfillResult:
-        """Fire a schedule for every would-have-been moment in ``[start_time, end_time]``.
+        """Fire a schedule for every would-have-been moment in ``[start_time, end_time)``.
 
+        The start is inclusive and the end is exclusive. An occurrence equal
+        to ``end_time`` is excluded and belongs to the next adjacent window.
         Times are ISO-8601 strings. Useful to replay a period the schedule
         was paused or to seed historical runs. The returned
         :class:`ScheduleBackfillResult` reports how many fires were attempted
