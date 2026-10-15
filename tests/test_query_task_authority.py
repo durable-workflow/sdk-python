@@ -159,6 +159,54 @@ async def test_dispatch_context_keeps_its_own_original_budget() -> None:
         current_query_authority.reset(token)
 
 
+async def test_boolean_attempt_mutation_cannot_invoke_query_handler() -> None:
+    client = AsyncMock(spec=Client)
+    client.namespace = "billing"
+    task = delivery()
+    budget = authority(task, client=client, observed=False)
+    worker = Worker(client, worker_id="w1", task_queue="q1", workflows=[QueryWorkflow])
+    task["query_task_attempt"] = True
+    QueryWorkflow.calls = 0
+    token = current_query_authority.set(budget)
+    try:
+        assert await worker._run_query_task(task) == "expired"
+    finally:
+        current_query_authority.reset(token)
+    assert QueryWorkflow.calls == 0
+    client.complete_query_task.assert_not_called()
+    client.fail_query_task.assert_not_called()
+
+
+async def test_query_transport_discovery_uses_original_loading_budget() -> None:
+    from tests.test_runtime_external_payload_transport import FakeRuntimePayloadServer, runtime_client, runtime_envelope
+
+    server = FakeRuntimePayloadServer()
+    task = delivery(workflow_arguments=runtime_envelope(server, ["large"]))
+    task["lease_expires_at"] = timestamp(datetime.now(timezone.utc) + timedelta(seconds=0.1))
+    server.responses[("POST", "/api/worker/query-tasks/poll")] = {"task": task}
+    cancelled = asyncio.Event()
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/cluster/info"):
+            try:
+                await asyncio.sleep(60)
+            finally:
+                cancelled.set()
+        return server.handler(request)
+
+    async with runtime_client(server) as client:
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(handle))
+        token = current_query_authority.set(None)
+        try:
+            with pytest.raises(QueryTaskAuthorityLost, match="budget_expired"):
+                await asyncio.wait_for(client.poll_query_task(worker_id="w1", task_queue="q1"), timeout=1)
+        finally:
+            current_query_authority.reset(token)
+    assert cancelled.is_set()
+    assert server.fetch_count == 0
+
+
 async def test_query_loading_reuses_references_without_enlarging_persistent_cache() -> None:
     from durable_workflow.external_storage import ExternalPayloadCache
     from tests.test_runtime_external_payload_transport import FakeRuntimePayloadServer, runtime_client, runtime_envelope

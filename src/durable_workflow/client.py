@@ -1881,7 +1881,8 @@ class Client:
                 query_authority = await self._query_delivery_authority(result["task"], request_json)
                 current_query_authority.set(query_authority)
             if not discovery and _contains_runtime_payload_envelope(result):
-                transport = await self._runtime_external_payload_transport()
+                transport = (await query_authority.run(self._runtime_external_payload_transport)
+                             if query_authority is not None else await self._runtime_external_payload_transport())
                 if transport is None:
                     raise ExternalPayloadUnsupported(
                         "runtime returned an external payload reference without advertising "
