@@ -75,7 +75,8 @@ class QueryTaskAuthority:
 
     def matches(self, client: object, namespace: str, task: Mapping[str, Any], owner: str) -> bool:
         return (self.client is client and self.namespace == namespace and self.owner == owner
-                and task.get("query_task_id") == self.task_id and task.get("query_task_attempt") == self.attempt
+                and task.get("query_task_id") == self.task_id
+                and type(task.get("query_task_attempt")) is int and task.get("query_task_attempt") == self.attempt
                 and task.get("lease_owner") == owner
                 and all(task.get(key) == value for key, value in self.identity.items())
                 and all(task.get(key) == value for key, value in self.timing.items()))
