@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.15] - 2026-10-15
+
+### Fixed
+- Bound query payload loading, replay and async handler execution to the
+  original query deadline and lease. Use non-renewing authority observations
+  when Server 2.8.0 advertises them, with explicit older-Server/1.19 limits.
+- Reuse identical external references within one query response and retain
+  the original typed caller timeout. Add optional pre-registration enforcement
+  with `require_query_task_authority=True`.
+
+## [2.5.14] - 2026-10-14
+
+### Fixed
+- Document schedule backfill as a start-inclusive, end-exclusive window.
+  An occurrence at the end belongs to the next adjacent window.
+
 ## [2.5.13] - 2026-10-13
 
 ### Fixed
