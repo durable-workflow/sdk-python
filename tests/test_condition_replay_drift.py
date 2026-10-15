@@ -107,9 +107,11 @@ def test_application_predicate_failure_remains_terminal() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["condition_key", "condition_definition_fingerprint"])
 async def test_query_worker_reports_unavailable_state_without_changing_the_run(field: str) -> None:
+    from tests.query_task_helpers import leased_query_task
+
     client = AsyncMock(spec=Client)
     worker = Worker(client, task_queue="condition-drift", workflows=[ConditionIdentityWorkflow])
-    outcome = await worker._run_query_task({
+    outcome = await worker._run_query_task(leased_query_task(worker, {
         "query_task_id": "query-original",
         "query_task_attempt": 2,
         "workflow_id": "workflow-original",
@@ -120,7 +122,7 @@ async def test_query_worker_reports_unavailable_state_without_changing_the_run(f
         "workflow_arguments": serializer.envelope([], codec="avro"),
         "query_arguments": serializer.envelope([], codec="avro"),
         "payload_codec": "avro",
-    })
+    }))
 
     assert outcome == "failed"
     client.complete_query_task.assert_not_awaited()

@@ -2991,7 +2991,7 @@ def replay(
     ).outcome
 
 
-def query_state(
+def _prepare_query_state(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
     start_input: list[Any],
@@ -3006,17 +3006,8 @@ def query_state(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
-) -> Any:
-    """Replay a workflow to current state and invoke a registered query.
-
-    This is the replay and invocation core used by the current server-routed
-    worker query path after it fetches durable history. That path is negotiated
-    through ``worker_protocol.server_capabilities.query_tasks``: workers
-    advertise ``query_tasks`` only after discovery reports it as available,
-    and clients fail with typed capability or discovery errors when it is not.
-    Unknown query names and handler exceptions are normalized to
-    :class:`~durable_workflow.errors.QueryFailed`.
-    """
+) -> Callable[[], Any]:
+    """Prepare the query so a worker can recheck authority after replay."""
     try:
         state = _replay_state(
             workflow_cls,
@@ -3047,12 +3038,46 @@ def query_state(
     if handler is None:
         raise QueryFailed(f"query handler {query_name!r} is not available")
 
-    try:
-        return handler(*(list(args) if args is not None else []))
-    except QueryFailed:
-        raise
-    except Exception as exc:
-        raise QueryFailed(str(exc) or f"query {query_name!r} failed") from exc
+    def invoke() -> Any:
+        try:
+            return handler(*(list(args) if args is not None else []))
+        except QueryFailed:
+            raise
+        except Exception as exc:
+            raise QueryFailed(str(exc) or f"query {query_name!r} failed") from exc
+
+    return invoke
+
+
+def query_state(
+    workflow_cls: type,
+    history_events: Iterable[dict[str, Any]],
+    start_input: list[Any],
+    query_name: str,
+    args: list[Any] | None = None,
+    *,
+    workflow_id: str | None = None,
+    run_id: str = "",
+    payload_codec: str | None = None,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
+    prepare_local_activities: bool = False,
+    prepare_local_activity_groups: bool = False,
+    local_activity_cancellation_policies: tuple[str, ...] = (),
+) -> Any:
+    """Replay workflow state and invoke a query, normalizing handler failures.
+
+    Server-routed Worker execution separately checks its original query claim
+    between replay and handler invocation. Direct local use has no Server lease.
+    """
+    return _prepare_query_state(
+        workflow_cls, history_events, start_input, query_name, args,
+        workflow_id=workflow_id, run_id=run_id, payload_codec=payload_codec,
+        external_storage=external_storage, external_storage_cache=external_storage_cache,
+        prepare_local_activities=prepare_local_activities,
+        prepare_local_activity_groups=prepare_local_activity_groups,
+        local_activity_cancellation_policies=local_activity_cancellation_policies,
+    )()
 
 
 def apply_update(

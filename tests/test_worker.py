@@ -46,6 +46,7 @@ from durable_workflow.worker import (
     _query_history_with_export_signal_arguments,
     _should_fail_workflow_task_after_completion_error,
 )
+from tests.query_task_helpers import leased_query_task
 
 
 class TypedCancelFlightError(Exception):
@@ -2235,7 +2236,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "completed"
         mock_client.complete_query_task.assert_awaited_once_with(
@@ -2291,7 +2292,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "completed"
         mock_client.complete_query_task.assert_awaited_once_with(
@@ -2339,7 +2340,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "completed"
         mock_client.complete_query_task.assert_awaited_once_with(
@@ -2426,7 +2427,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "completed"
         mock_client.complete_query_task.assert_awaited_once_with(
@@ -2538,7 +2539,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "completed"
         mock_client.complete_query_task.assert_awaited_once_with(
@@ -2611,7 +2612,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "completed"
         mock_client.complete_query_task.assert_awaited_once_with(
@@ -2711,7 +2712,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "completed"
         mock_client.complete_query_task.assert_awaited_once_with(
@@ -2767,7 +2768,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "completed"
         mock_client.complete_query_task.assert_awaited_once_with(
@@ -2800,7 +2801,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "completed"
         mock_client.complete_query_task.assert_awaited_once_with(
@@ -2829,7 +2830,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "failed"
         mock_client.fail_query_task.assert_awaited_once()
@@ -2852,7 +2853,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "failed"
         mock_client.fail_query_task.assert_awaited_once()
@@ -2881,7 +2882,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "expired"
         mock_client.complete_query_task.assert_awaited_once()
@@ -2904,7 +2905,7 @@ class TestWorkflowTaskExecution:
             "payload_codec": "avro",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "failed"
         mock_client.fail_query_task.assert_awaited_once()
@@ -3585,7 +3586,7 @@ class TestWorkerInterceptors:
             interceptors=[Recorder()],
         )
 
-        await worker._run_query_task(
+        await worker._run_query_task(leased_query_task(worker,
             {
                 "query_task_id": "qt-intercept",
                 "query_task_attempt": 1,
@@ -3596,7 +3597,7 @@ class TestWorkerInterceptors:
                 "query_arguments": serializer.envelope([], codec="avro"),
                 "payload_codec": "avro",
             }
-        )
+        ))
 
         assert events == ["before:qt-intercept", "after:completed"]
 
@@ -3689,7 +3690,7 @@ class TestWorkerInterceptors:
             task["payload_codec"] = payload_codec
 
         if task_kind == "query":
-            assert await worker._run_query_task(task) == "failed"
+            assert await worker._run_query_task(leased_query_task(worker, task)) == "failed"
             failure = mock_client.fail_query_task
         else:
             assert await worker._run_workflow_task(task) is None
@@ -3839,7 +3840,7 @@ class TestCodecDecodeFailures:
         activity_spy = AsyncMock(side_effect=AssertionError("activity handler must not run"))
         monkeypatch.setattr(serializer, "decode_envelope", decode_spy)
         monkeypatch.setattr(worker_module, "replay", replay_spy)
-        monkeypatch.setattr(worker_module, "query_state", query_spy)
+        monkeypatch.setattr(worker_module, "_prepare_query_state", query_spy)
         monkeypatch.setattr(worker_module, "apply_update", update_spy)
         monkeypatch.setattr(worker_module, "validate_update", validator_spy)
         monkeypatch.setattr(worker, "_execute_activity_callable", activity_spy)
@@ -3849,7 +3850,7 @@ class TestCodecDecodeFailures:
             failure = mock_client.fail_activity_task
             assert outcome == "decode_error"
         elif task_kind == "query":
-            outcome = await worker._run_query_task(task)
+            outcome = await worker._run_query_task(leased_query_task(worker, task))
             failure = mock_client.fail_query_task
             assert outcome == "failed"
         elif task_kind == "update_validation":
@@ -3968,13 +3969,13 @@ class TestCodecDecodeFailures:
 
         decode_spy = Mock(wraps=serializer.decode_envelope)
         replay_spy = Mock(wraps=worker_module.replay)
-        query_spy = Mock(wraps=worker_module.query_state)
+        query_spy = Mock(wraps=worker_module._prepare_query_state)
         update_spy = Mock(wraps=worker_module.apply_update)
         validator_spy = Mock(wraps=worker_module.validate_update)
         activity_spy = AsyncMock(wraps=worker._execute_activity_callable)
         monkeypatch.setattr(serializer, "decode_envelope", decode_spy)
         monkeypatch.setattr(worker_module, "replay", replay_spy)
-        monkeypatch.setattr(worker_module, "query_state", query_spy)
+        monkeypatch.setattr(worker_module, "_prepare_query_state", query_spy)
         monkeypatch.setattr(worker_module, "apply_update", update_spy)
         monkeypatch.setattr(worker_module, "validate_update", validator_spy)
         monkeypatch.setattr(worker, "_execute_activity_callable", activity_spy)
@@ -3985,7 +3986,7 @@ class TestCodecDecodeFailures:
             mock_client.fail_activity_task.assert_not_awaited()
             activity_spy.assert_awaited_once()
         elif task_kind == "query":
-            assert await worker._run_query_task(task) == "completed"
+            assert await worker._run_query_task(leased_query_task(worker, task)) == "completed"
             mock_client.complete_query_task.assert_awaited_once()
             mock_client.fail_query_task.assert_not_awaited()
             query_spy.assert_called_once()
@@ -4156,7 +4157,7 @@ class TestCodecDecodeFailures:
             "payload_codec": "zstd",
         }
 
-        outcome = await worker._run_query_task(task)
+        outcome = await worker._run_query_task(leased_query_task(worker, task))
 
         assert outcome == "failed"
         mock_client.fail_query_task.assert_called_once()
@@ -4677,7 +4678,7 @@ class TestWorkerShutdown:
                     await asyncio.Event().wait()
                 except asyncio.CancelledError:
                     events.append("query_returned_during_shutdown")
-                    return query_task
+                    return leased_query_task(worker, query_task)
 
             async def complete_query_task(self, **_: object) -> dict[str, str]:
                 events.append("query_dispatched")
@@ -4864,7 +4865,7 @@ class TestPollLoops:
             async def poll_query_task(self, **_: object) -> dict[str, object] | None:
                 if not self.polled:
                     self.polled = True
-                    return query_task
+                    return leased_query_task(worker, query_task)
                 await asyncio.sleep(0.01)
                 return None
 
@@ -5344,7 +5345,7 @@ class TestRunUntil:
             nonlocal poll_count
             poll_count += 1
             if poll_count == 1:
-                return query_task
+                return leased_query_task(worker, query_task)
             await asyncio.sleep(0)
             return None
 

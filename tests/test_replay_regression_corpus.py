@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from importlib import metadata
@@ -43,6 +44,19 @@ from tests.test_worker import compatible_cluster_info
 
 FIXTURE_SCHEMA = "durable-workflow.replay-regression/v1"
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "replay_regressions"
+
+
+@workflow.defn(name="sdk.query-task-dispatch")
+class QueryAuthorityWorkflow:
+    calls = 0
+
+    def run(self, ctx: WorkflowContext) -> int:
+        return 7
+
+    @workflow.query("current")
+    def current(self) -> int:
+        type(self).calls += 1
+        return 7
 
 
 @workflow.defn(name="tests.replay.parallel-metadata-producer")
@@ -375,6 +389,27 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     assert isinstance(workflow, dict)
     workflow_type = workflow.get("type")
     assert isinstance(workflow_type, str) and workflow_type
+    if workflow_type == "sdk.query-task-dispatch":
+        # The regression is a worker delivery, not an invented durable history.
+        assert "history" not in fixture
+        inputs = workflow.get("input")
+        assert isinstance(inputs, list) and len(inputs) == 1 and isinstance(inputs[0], dict)
+        client = AsyncMock(spec=Client)
+        client.namespace = "regression-corpus"
+        worker = Worker(client, task_queue="query-authority", worker_id="query-worker",
+                        workflows=[QueryAuthorityWorkflow])
+        task = {**inputs[0], "workflow_type": workflow_type, "payload_codec": "avro",
+                "workflow_arguments": serializer.envelope([], codec="avro"),
+                "query_arguments": serializer.envelope([], codec="avro"), "history_events": []}
+        QueryAuthorityWorkflow.calls = 0
+        outcome = asyncio.run(worker._run_query_task(task))
+        commands = [{"type": "query_task_dispatch", "outcome": outcome,
+                     "handler_calls": QueryAuthorityWorkflow.calls,
+                     "completion_calls": client.complete_query_task.await_count,
+                     "failure_calls": client.fail_query_task.await_count}]
+        _assert_matches(fixture["command_sequence"], commands, f"{fixture['id']}.command_sequence")
+        _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
+        return commands
     if workflow_type == "sdk.replay-conformance-report":
         # This public command executes the SDK's offline replay scenarios. Its
         # regression input is artifact declarations, not an invented history.
@@ -487,7 +522,7 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
     assert isinstance(workflow, dict)
     expected = fixture.get("expected")
     assert isinstance(expected, dict) and expected
-    if workflow.get("type") == "sdk.replay-conformance-report":
+    if workflow.get("type") in {"sdk.replay-conformance-report", "sdk.query-task-dispatch"}:
         _execute_fixture(fixture)
         return
     expected_error = expected.get("error")
