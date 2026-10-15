@@ -33,5 +33,8 @@ Keep query handlers short and free of side effects. Expiry can cancel async
 execution and payload I/O, but an observation never reserves future commit
 authority. A result refused by Server does not restart the query or its budget.
 
-This change is undergoing source and published-runtime qualification under
-[#143](https://github.com/durable-workflow/sdk-python/issues/143).
+The non-renewing authority path is qualified against Server 2.8.0, including
+expiry during external payload loading and async handler execution. Earlier
+Server 2.6.3 remains compatible in default 1.20 and explicit 1.19 mode, with the
+legacy limits described above. Qualification and release follow-through are
+recorded in [#143](https://github.com/durable-workflow/sdk-python/issues/143).
