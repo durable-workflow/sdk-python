@@ -1,0 +1,32 @@
+{
+  "$schema": "https://durable-workflow.github.io/schemas/replay-regression-v1.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "expired-query-handler-suppressed",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "sdk.query-task-dispatch",
+    "input": [{
+      "query_task_id": "expired-query-original",
+      "query_task_attempt": 1,
+      "lease_owner": "query-worker",
+      "task_queue": "query-authority",
+      "lease_expires_at": "2000-01-01T00:00:00.000000Z",
+      "query_name": "current"
+    }]
+  },
+  "command_sequence": [{
+    "type": "query_task_dispatch", "outcome": "expired",
+    "handler_calls": 0, "completion_calls": 0, "failure_calls": 0
+  }],
+  "expected": {
+    "command_sequence": [{
+      "type": "query_task_dispatch", "outcome": "expired",
+      "handler_calls": 0, "completion_calls": 0, "failure_calls": 0
+    }]
+  },
+  "provenance": {
+    "issue": "https://github.com/durable-workflow/sdk-python/issues/143",
+    "scope": "minimal original lease-expiry worker-dispatch control, without durable-history qualification"
+  }
+}

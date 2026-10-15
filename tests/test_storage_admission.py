@@ -109,7 +109,11 @@ def client_for(handler: Callable[..., Any], base_url: str = "https://runtime.exa
 async def test_poll_keeps_identity_after_ambiguous_response_and_pressure(
     kind: str, reason: str, entry: bool, retry_sleeps: list[float],
 ) -> None:
+    from tests.query_task_helpers import query_task_delivery
+
     requests: list[bytes] = []
+    response_task = (query_task_delivery({"query_task_id": "same-claim"}, worker_id="storage-worker",
+                                        task_queue="orders") if kind == "query" else {"task_id": "same-claim"})
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request.content)
@@ -118,7 +122,7 @@ async def test_poll_keeps_identity_after_ambiguous_response_and_pressure(
             raise httpx.ReadTimeout("Response lost after a possible claim.", request=request)
         if len(requests) < 7:
             return httpx.Response(503, json=pressure(body["poll_request_id"], reason=reason, entry=entry))
-        return httpx.Response(200, json={"task": {"task_id": "same-claim"}})
+        return httpx.Response(200, json={"task": response_task})
 
     async with client_for(handler) as client:
         with worker_scope():
@@ -130,7 +134,7 @@ async def test_poll_keeps_identity_after_ambiguous_response_and_pressure(
             else:
                 poll = getattr(client, f"poll_{kind}_task")
                 result = await poll(worker_id="storage-worker", task_queue="orders")
-    assert result == {"task_id": "same-claim"}
+    assert result == response_task
     assert len(requests) == 7
     assert len(set(requests)) == 1
     assert sum(retry_sleeps) == pytest.approx(5)
@@ -140,7 +144,11 @@ async def test_poll_keeps_identity_after_ambiguous_response_and_pressure(
 async def test_backend_outage_preserves_logical_poll_after_transport_budget(
     kind: str, retry_sleeps: list[float],
 ) -> None:
+    from tests.query_task_helpers import query_task_delivery
+
     requests: list[bytes] = []
+    response_task = (query_task_delivery({"query_task_id": "reconciled-claim"}, worker_id="backend-worker",
+                                        task_queue="orders") if kind == "query" else {"task_id": "reconciled-claim"})
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request.content)
@@ -148,7 +156,7 @@ async def test_backend_outage_preserves_logical_poll_after_transport_budget(
             raise httpx.ReadTimeout("Response lost after a possible claim.", request=request)
         if len(requests) <= 5:
             return httpx.Response(503, json=backend_unavailable(request))
-        return httpx.Response(200, json={"task": {"task_id": "reconciled-claim"}})
+        return httpx.Response(200, json={"task": response_task})
 
     async with client_for(handler) as client:
         with worker_scope():
@@ -161,7 +169,7 @@ async def test_backend_outage_preserves_logical_poll_after_transport_budget(
                 task = await getattr(client, f"poll_{kind}_task")(
                     worker_id="backend-worker", task_queue="orders",
                 )
-    assert task == {"task_id": "reconciled-claim"}
+    assert task == response_task
     assert len(requests) == 6
     assert len(set(requests)) == 1
     assert sum(retry_sleeps) == pytest.approx(4)
@@ -576,6 +584,8 @@ async def test_running_worker_preserves_activity_outcome_without_reexecution(
 
 
 async def test_query_thread_uses_pressure_retries(retry_sleeps: list[float]) -> None:
+    from tests.query_task_helpers import leased_query_task
+
     completed = threading.Event()
     calls = 0
     claims = 0
@@ -598,12 +608,12 @@ async def test_query_thread_uses_pressure_retries(retry_sleeps: list[float]) -> 
         if path.endswith("/query-tasks/poll"):
             claims += 1
             if claims == 1:
-                return httpx.Response(200, json={"task": {
+                return httpx.Response(200, json={"task": leased_query_task(worker, {
                     "query_task_id": "query-task", "query_task_attempt": 7,
                     "workflow_type": "storage.query", "workflow_id": "workflow", "run_id": "run",
                     "query_name": "status", "payload_codec": "avro", "history_events": [],
                     "arguments": serializer.envelope([]),
-                }})
+                })})
             return httpx.Response(200, json={"task": None})
         if path.endswith("/query-task/complete"):
             acks.append(request.content)
