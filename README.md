@@ -1,7 +1,6 @@
 # Durable Workflow Python SDK
 
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=durable-workflow_sdk-python&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=durable-workflow_sdk-python)
-
 [![CI](https://github.com/durable-workflow/sdk-python/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/durable-workflow/sdk-python/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/durable-workflow.svg)](https://pypi.org/project/durable-workflow/)
 [![Python](https://img.shields.io/pypi/pyversions/durable-workflow.svg)](https://pypi.org/project/durable-workflow/)
