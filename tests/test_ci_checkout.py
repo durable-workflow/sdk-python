@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +61,7 @@ def test_public_checkout_uses_github_authority_on_every_runner(
         "clone",
         "--depth=1",
         "--no-tags",
+        "--",
         public_url,
         str(destination),
     ]
@@ -73,6 +75,43 @@ def test_ci_workflow_uses_portable_public_checkouts() -> None:
         line.strip() for line in workflow.splitlines() if line.strip().startswith("repository: durable-workflow/")
     ]
     assert public_repository_inputs == ["repository: durable-workflow/.github"]
+
+
+@pytest.mark.parametrize("destination_name", ["--bare", "--mirror"])
+@pytest.mark.parametrize("pin_commit", [False, True], ids=["default-branch", "exact-commit"])
+def test_public_checkout_keeps_option_like_destinations_literal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    destination_name: str,
+    pin_commit: bool,
+) -> None:
+    source = tmp_path / "source"
+    subprocess.run(["git", "init", "--quiet", "--initial-branch=main", str(source)], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(source),
+            "-c", "user.name=Checkout test", "-c", "user.email=checkout@example.invalid",
+            "commit", "--quiet", "--allow-empty", "-m", "Synthetic checkout fixture",
+        ],
+        check=True,
+    )
+    expected_commit = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+    checkout_script = runpy.run_path(str(CHECKOUT_SCRIPT))
+    monkeypatch.setitem(checkout_script["PUBLIC_REPOSITORIES"], "workflow", source.as_uri())
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    monkeypatch.chdir(tmp_path)
+    checkout_script["checkout"]("workflow", Path(destination_name), expected_commit if pin_commit else "")
+
+    destination = tmp_path / destination_name
+    assert (destination / ".git").is_dir()
+    actual = subprocess.run(
+        ["git", "-C", str(destination), "rev-parse", "HEAD", "--is-bare-repository"],
+        check=True, capture_output=True, text=True,
+    ).stdout.splitlines()
+    assert actual == [expected_commit, "false"]
 
 
 @pytest.mark.parametrize("commit", ["main", "short", "A" * 40, "--upload-pack=command", "0" * 40 + ";command"])

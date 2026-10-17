@@ -32,6 +32,7 @@ def checkout(repository: str, destination: Path, commit: str = "") -> None:
             "clone",
             "--depth=1",
             "--no-tags",
+            "--",
             PUBLIC_REPOSITORIES[repository],
             str(destination),
         ],
