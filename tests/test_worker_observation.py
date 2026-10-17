@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 import pytest
 
+from durable_workflow import Client
 from durable_workflow.interceptors import ActivityInterceptorContext, WorkflowTaskInterceptorContext
 from tests.worker_observation import (
     ObservationInterceptor,
@@ -52,6 +53,21 @@ async def test_http_observation_covers_additional_clients_without_exposing_paylo
 
 
 @pytest.mark.asyncio
+async def test_observer_follows_the_actual_client_registration_route(monkeypatch: Any) -> None:
+    observation = WorkerObservation()
+    observation.install_http(monkeypatch)
+    async with Client("https://example.test", token="SECRET", namespace="default") as client:
+        original = client._http
+        client._http = httpx.AsyncClient(
+            base_url=original.base_url, headers=original.headers,
+            transport=httpx.MockTransport(lambda request: httpx.Response(201, json={"worker_id": "worker"})),
+        )
+        await original.aclose()
+        await client.register_worker(worker_id="worker", task_queue="queue", capability_manifest={})
+    assert observation.report()["counts"].get("POST registration") == 1
+
+
+@pytest.mark.asyncio
 async def test_snapshot_keeps_inflight_registration_before_cancellation(monkeypatch: Any) -> None:
     observation = WorkerObservation()
     observation.install_http(monkeypatch)
@@ -63,7 +79,7 @@ async def test_snapshot_keeps_inflight_registration_before_cancellation(monkeypa
         raise AssertionError("unreachable")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(held)) as client:
-        pending = asyncio.create_task(client.post("https://example.test/api/worker/registrations"))
+        pending = asyncio.create_task(client.post("https://example.test/api/worker/register"))
         await asyncio.wait_for(started.wait(), 5)
         before = observation.report()
         pending.cancel()
@@ -88,7 +104,7 @@ async def test_registration_timing_survives_recent_record_eviction(monkeypatch: 
         return httpx.Response(200, json={"status": "completed", "outcome": "completed"})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
-        await client.post("https://example.test/api/worker/registrations")
+        await client.post("https://example.test/api/worker/register")
         await client.get("https://example.test/result")
     report = observation.report(include_recent=False)
     assert report["recent"] == []

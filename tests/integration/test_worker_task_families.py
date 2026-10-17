@@ -140,12 +140,15 @@ async def test_workers_execute_without_polling_empty_task_families(
             finally:
                 current_observation.reset(context_token)
 
-        assert workflow_polls["workflow"] > 0
-        assert (workflow_polls["activity"] > 0) is (mode == "mixed")
+        assert workflow_polls["workflow"] > 0, observation.report()
+        assert (workflow_polls["activity"] > 0) is (mode == "mixed"), observation.report()
+        assert observation.successful["POST registration"] >= len(workers), observation.report()
+        assert observation.successful["DELETE registration"] >= len(workers), observation.report()
+        assert observation.active_count == 0, observation.report()
         if mode == "split":
-            assert activity_polls["activity"] > 0
-            assert activity_polls["workflow"] == 0
-            assert activity_polls["query"] == 0
+            assert activity_polls["activity"] > 0, observation.report()
+            assert activity_polls["workflow"] == 0, observation.report()
+            assert activity_polls["query"] == 0, observation.report()
         print(json.dumps({
             **identity,
             "workflow_worker_polls": dict(workflow_polls),

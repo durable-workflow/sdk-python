@@ -27,7 +27,7 @@ def route_name(request: httpx.Request) -> str:
             return f"{family}_poll"
         if f"/worker/{family}-tasks/" in path:
             return f"{family}_submission"
-    if "/worker/registrations" in path:
+    if path.endswith("/worker/register") or "/worker/registrations" in path:
         return "registration"
     if path.endswith("/cluster/info"):
         return "discovery"
@@ -62,6 +62,7 @@ class WorkerObservation:
         self.active_count = 0
         self.total = 0
         self.counts: Counter[str] = Counter()
+        self.successful: Counter[str] = Counter()
         self.max_elapsed: dict[str, float] = {}
         self.milestones: dict[str, dict[str, Any]] = {}
         self.clients: dict[int, str] = {}
@@ -97,6 +98,8 @@ class WorkerObservation:
             try:
                 response = await original_send(client, request, *args, **kwargs)
                 entry["status"] = response.status_code
+                if 200 <= response.status_code < 300:
+                    self.successful[f"{method} {route}"] += 1
                 if response.is_stream_consumed:
                     self._response_metadata(entry, response)
                 return response
@@ -146,6 +149,7 @@ class WorkerObservation:
         return deepcopy({
             "elapsed": self.clock() - self.started, "requests": self.total,
             "counts": dict(self.counts), "milestones": self.milestones,
+            "successful": dict(self.successful),
             "max_elapsed": self.max_elapsed,
             "active_count": self.active_count, "active": list(self.active.values()),
             "omitted_active": self.active_count - len(self.active),
