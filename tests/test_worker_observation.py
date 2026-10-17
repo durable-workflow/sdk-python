@@ -196,8 +196,9 @@ async def test_fatal_worker_is_reported_before_result_wait_and_cancels_wait() ->
         raise failure
 
     runner = asyncio.create_task(worker())
+    pending_result = asyncio.wait_for(result_or_worker_error(result(), [runner]), 5)
     with pytest.raises(RuntimeError) as raised:
-        await asyncio.wait_for(result_or_worker_error(result(), [runner]), 5)
+        await pending_result
     assert raised.value is failure
     assert cancelled.is_set()
 
@@ -233,8 +234,10 @@ async def test_stop_failure_still_drains_original_runner() -> None:
         await stopped.wait()
         drained.append(True)
 
+    workers = [Worker()]
+    runners = [asyncio.create_task(run())]
     with pytest.raises(RuntimeError) as raised:
-        await stop_and_drain([Worker()], [asyncio.create_task(run())])
+        await stop_and_drain(workers, runners)
     assert raised.value is failure
     assert drained == [True]
 
