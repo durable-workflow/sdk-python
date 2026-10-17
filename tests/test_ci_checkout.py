@@ -78,10 +78,12 @@ def test_ci_workflow_uses_portable_public_checkouts() -> None:
 
 
 @pytest.mark.parametrize("destination_name", ["--bare", "--mirror"])
+@pytest.mark.parametrize("pin_commit", [False, True], ids=["default-branch", "exact-commit"])
 def test_public_checkout_keeps_option_like_destinations_literal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     destination_name: str,
+    pin_commit: bool,
 ) -> None:
     source = tmp_path / "source"
     subprocess.run(["git", "init", "--quiet", "--initial-branch=main", str(source)], check=True)
@@ -101,7 +103,7 @@ def test_public_checkout_keeps_option_like_destinations_literal(
     monkeypatch.setitem(checkout_script["PUBLIC_REPOSITORIES"], "workflow", source.as_uri())
     monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
     monkeypatch.chdir(tmp_path)
-    checkout_script["checkout"]("workflow", Path(destination_name))
+    checkout_script["checkout"]("workflow", Path(destination_name), expected_commit if pin_commit else "")
 
     destination = tmp_path / destination_name
     assert (destination / ".git").is_dir()
