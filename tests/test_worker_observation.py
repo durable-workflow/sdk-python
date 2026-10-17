@@ -78,6 +78,25 @@ async def test_snapshot_keeps_inflight_registration_before_cancellation(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_registration_timing_survives_recent_record_eviction(monkeypatch: Any) -> None:
+    now = [0.0]
+    observation = WorkerObservation(clock=lambda: now[0], limit=1)
+    observation.install_http(monkeypatch)
+
+    async def reply(request: httpx.Request) -> httpx.Response:
+        now[0] += 3.5 if request.method == "POST" else 0.25
+        return httpx.Response(200, json={"status": "completed", "outcome": "completed"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+        await client.post("https://example.test/api/worker/registrations")
+        await client.get("https://example.test/result")
+    report = observation.report(include_recent=False)
+    assert report["recent"] == []
+    assert report["max_elapsed"]["POST registration"] == 3.5
+    assert report["max_elapsed"]["GET control"] == 0.25
+
+
+@pytest.mark.asyncio
 async def test_streamed_response_is_not_consumed_by_observer(monkeypatch: Any) -> None:
     observation = WorkerObservation()
     observation.install_http(monkeypatch)
@@ -202,6 +221,34 @@ async def test_stop_failure_still_drains_original_runner() -> None:
         await stop_and_drain([Worker()], [asyncio.create_task(run())])
     assert raised.value is failure
     assert drained == [True]
+
+
+@pytest.mark.asyncio
+async def test_failed_runner_does_not_skip_drain_of_its_peer() -> None:
+    release = asyncio.Event()
+    drained = []
+    failure = RuntimeError("worker startup failed")
+
+    async def failed():
+        raise failure
+
+    async def peer():
+        await release.wait()
+        drained.append(True)
+
+    runners = [asyncio.create_task(failed()), asyncio.create_task(peer())]
+    cleanup = asyncio.create_task(stop_and_drain([], runners))
+    try:
+        for _ in range(10):
+            await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(RuntimeError) as raised:
+            await cleanup
+        assert raised.value is failure
+        assert drained == [True]
+    finally:
+        release.set()
+        await asyncio.gather(*runners, cleanup, return_exceptions=True)
 
 
 @pytest.mark.asyncio

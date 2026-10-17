@@ -62,6 +62,7 @@ class WorkerObservation:
         self.active_count = 0
         self.total = 0
         self.counts: Counter[str] = Counter()
+        self.max_elapsed: dict[str, float] = {}
         self.milestones: dict[str, dict[str, Any]] = {}
         self.clients: dict[int, str] = {}
 
@@ -104,6 +105,8 @@ class WorkerObservation:
                 raise
             finally:
                 entry["elapsed"] = self.clock() - started
+                key = f"{method} {route}"
+                self.max_elapsed[key] = max(self.max_elapsed.get(key, 0), entry["elapsed"])
                 self.active_count -= 1
                 self.active.pop(request_id, None)
                 self.recent.append(entry)
@@ -134,14 +137,16 @@ class WorkerObservation:
             code = error.get("code")
             if isinstance(code, str) and len(code) <= 80 and code.replace("_", "").isalnum():
                 entry["error_code"] = code
-        reason = body.get("reason")
-        if isinstance(reason, str) and len(reason) <= 80 and reason.replace("_", "").isalnum():
-            entry["reason"] = reason
+        for field in ("reason", "status", "poll_status", "outcome"):
+            value = body.get(field)
+            if isinstance(value, str) and len(value) <= 80 and value.replace("_", "").isalnum():
+                entry[field] = value
 
     def report(self, *, include_recent: bool = True) -> dict[str, Any]:
         return deepcopy({
             "elapsed": self.clock() - self.started, "requests": self.total,
             "counts": dict(self.counts), "milestones": self.milestones,
+            "max_elapsed": self.max_elapsed,
             "active_count": self.active_count, "active": list(self.active.values()),
             "omitted_active": self.active_count - len(self.active),
             "recent": list(self.recent) if include_recent else [],
@@ -170,10 +175,14 @@ async def result_or_worker_error(result: Coroutine[Any, Any, Any], runners: list
 
 
 async def stop_and_drain(workers: list[Any], runners: list[asyncio.Task[Any]]) -> None:
+    outcomes = await asyncio.gather(*(worker.stop() for worker in workers), return_exceptions=True)
     try:
-        await asyncio.gather(*(worker.stop() for worker in workers))
-    finally:
-        await asyncio.wait_for(asyncio.gather(*runners), timeout=10)
+        outcomes += await asyncio.wait_for(asyncio.gather(*runners, return_exceptions=True), timeout=10)
+    except Exception as error:
+        outcomes.append(error)
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            raise outcome
 
 
 class ObservationInterceptor(PassthroughWorkerInterceptor):
