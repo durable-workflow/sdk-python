@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deprecate_patch` for the same change ID, while validating each call's range
   and preserving retained duplicate-marker sequences.
 
-## [2.6.0-rc.3] - 2026-10-18
+## [2.6.0] - 2026-10-18
 
 ### Added
 
