@@ -14,6 +14,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deprecate_patch` for the same change ID, while validating each call's range
   and preserving retained duplicate-marker sequences.
 
+## [2.6.0] - 2026-10-18
+
+### Added
+
+- Cooperatively cancel a completion-waiting Nexus service call at its original
+  durable boundary when the runtime advertises the owned `workflow_run` binding.
+  Preserve the original request, claim-release receipt and cleanup deadline.
+
+### Fixed
+- Commit workflow-authored Nexus admission with the original leased workflow
+  task. Pending calls wait for durable service history, and cold replay retains
+  the original call instead of invoking the operation from the Worker.
+- Preserve typed terminal results, failures, external arguments and recorded
+  legacy side-effect outcomes across Nexus replay.
+
 ## [2.5.1] - 2026-10-10
 
 ### Fixed
