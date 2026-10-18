@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Reject canonical version markers missing their change ID or supported-range
+  bounds. Consistent historical duplicate ranges may still differ when each
+  contains the frozen version.
+- Share one frozen numeric version across `get_version`, `patched` and
+  `deprecate_patch` for the same change ID, while validating each call's range
+  and preserving retained duplicate-marker sequences.
+
+## [2.6.0-rc.3] - 2026-10-18
+
 ### Added
 
 - Cooperatively cancel a completion-waiting Nexus service call at its original
@@ -18,12 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the original call instead of invoking the operation from the Worker.
 - Preserve typed terminal results, failures, external arguments and recorded
   legacy side-effect outcomes across Nexus replay.
-- Reject canonical version markers missing their change ID or supported-range
-  bounds. Consistent historical duplicate ranges may still differ when each
-  contains the frozen version.
-- Share one frozen numeric version across `get_version`, `patched` and
-  `deprecate_patch` for the same change ID, while validating each call's range
-  and preserving retained duplicate-marker sequences.
 
 ## [2.5.1] - 2026-10-10
 
