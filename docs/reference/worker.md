@@ -1,5 +1,9 @@
 # Worker
 
+See [Separate workflow and activity processes](../guides/separate-workers.md)
+for a runnable deployment example with distinct registrations, independent
+slots, remote activity retries and signal-driven shutdown.
+
 ## Lifecycle and shutdown
 
 `Worker.run()` and `Worker.run_until()` register through the worker protocol
