@@ -64,7 +64,8 @@ async def test_duplicate_policies_preserve_active_and_completed_original(
             before = await handle.describe_run()
             assert (before.status.lower() == "completed") is completed
             assert before.input is not None
-            assert before.execution_deadline_at and before.run_deadline_at
+            assert before.execution_deadline_at
+            assert before.run_deadline_at
             history = (await handle.get_history())["events"]
 
             for policy in (None, "fail", "use-existing"):
