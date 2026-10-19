@@ -57,9 +57,11 @@ class TestRaiseForStatus:
         with pytest.raises(ServerError):
             _raise_for_status(404, {"reason": "other"})
 
-    def test_409_duplicate(self) -> None:
-        with pytest.raises(WorkflowAlreadyStarted):
-            _raise_for_status(409, {"reason": "duplicate_not_allowed"}, context="wf-1")
+    @pytest.mark.parametrize("reason", ["duplicate_not_allowed", "instance_already_started"])
+    def test_409_duplicate(self, reason: str) -> None:
+        with pytest.raises(WorkflowAlreadyStarted) as duplicate:
+            _raise_for_status(409, {"reason": reason}, context="resource-017")
+        assert duplicate.value.workflow_id == "resource-017"
 
     def test_409_query_rejected(self) -> None:
         with pytest.raises(QueryFailed):

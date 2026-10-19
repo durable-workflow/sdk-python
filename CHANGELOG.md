@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deprecate_patch` for the same change ID, while validating each call's range
   and preserving retained duplicate-marker sequences.
 
+## [2.6.1] - 2026-10-19
+
+### Fixed
+
+- Raise `WorkflowAlreadyStarted` for the current Server's
+  `instance_already_started` duplicate-start reason, retaining support for the
+  historical `duplicate_not_allowed` reason.
+- Correct start-policy documentation to `fail` and `use-existing`, including
+  active versus closed instances and preservation of original input/deadlines.
+  Start admission and workflow lifecycle behavior are unchanged.
+
 ## [2.6.0] - 2026-10-18
 
 ### Added

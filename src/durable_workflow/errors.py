@@ -312,8 +312,10 @@ class WorkflowNotFound(DurableWorkflowError):
 class WorkflowAlreadyStarted(DurableWorkflowError):
     """A start request collided with an existing instance id.
 
-    Raised when duplicate-start policy is ``reject`` (the default) and the
-    caller-supplied ``workflow_id`` is already in use.
+    The PHP Server raises this for an existing ``workflow_id`` when the
+    duplicate policy is ``fail`` (the default), or when ``use-existing``
+    addresses a closed instance. ``use-existing`` returns a handle only
+    while the original run is pending, running or waiting.
     """
 
     def __init__(self, workflow_id: str) -> None:
@@ -874,7 +876,7 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
     if status == 409:
         if reason == "schedule_already_exists":
             raise ScheduleAlreadyExists(context)
-        if reason == "duplicate_not_allowed":
+        if reason in ("duplicate_not_allowed", "instance_already_started"):
             raise WorkflowAlreadyStarted(context)
         if reason == "run_not_active":
             if operation == "signal":

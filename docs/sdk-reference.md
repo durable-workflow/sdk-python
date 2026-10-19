@@ -84,14 +84,42 @@ own `/api` routes. For example, use `http://server:8080`, not
 `http://server:8080/api`. Managed-runtime paths such as
 `https://cloud.example/api/runtime/v1/namespaces/acme` are valid as written.
 
-A workflow ID is the durable identity of an instance, not a per-attempt request
-ID. Starting the same ID again with the default `reject` duplicate policy raises
-the typed `WorkflowAlreadyStarted` exception. Generate a unique ID for each new
-instance, as the quickstart does. For an intentionally idempotent start, catch
-`WorkflowAlreadyStarted` and reconnect with
-`client.get_workflow_handle(workflow_id)`; choose `allow` or
-`terminate_existing` only when creating another run or replacing the current
-instance is the intended behavior.
+### Duplicate workflow IDs
+
+A workflow ID is the durable identity of an instance. The PHP Server start
+contract accepts these policies:
+
+| `duplicate_policy` | ID not yet used | Existing pending, running or waiting run | Closed instance |
+| --- | --- | --- | --- |
+| Omitted, `None`, or `"fail"` | Start a new instance | Raise `WorkflowAlreadyStarted` | Raise `WorkflowAlreadyStarted` |
+| `"use-existing"` | Start a new instance | Return a handle to the original run | Raise `WorkflowAlreadyStarted` |
+
+An active duplicate keeps its original input, run and deadlines. It does not
+apply the new request's arguments. Duplicate requests can append start-accepted
+or start-rejected audit events without creating another business execution.
+
+```python
+handle = await client.start_workflow(
+    workflow_type="greeter",
+    workflow_id="greet-customer-42",
+    task_queue="python-workers",
+    input=["world"],
+    duplicate_policy="use-existing",
+)
+```
+
+Use a unique workflow ID for each independent execution, as the quickstart does.
+To inspect an existing instance, including a closed one, use
+`client.get_workflow_handle(workflow_id)` and its describe/result methods instead
+of starting it again. `"use-existing"` does not restart or replace a closed run.
+The SDK forwards the policy unchanged. `"reject"`, `"allow"` and
+`"terminate_existing"` are invalid values and the PHP Server rejects them with
+HTTP 422 (`InvalidArgument`).
+
+A resource-keyed ID can coordinate admission to one durable instance. It is not
+a physical global mutex: cancellation or termination cannot revoke a request
+already sent to an external system. Protect those effects with downstream
+idempotency and, where required, resource-enforced fencing.
 
 For a fuller deployable example, see
 [`examples/order_processing`](https://github.com/durable-workflow/sdk-python/tree/main/examples/order_processing), which runs a
