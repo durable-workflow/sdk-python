@@ -3527,9 +3527,18 @@ class Client:
         ``workflow_type`` is the language-neutral type key registered via
         :func:`durable_workflow.workflow.defn`. ``task_queue`` selects which
         worker pool picks up the workflow. ``workflow_id`` is the
-        caller-supplied instance id — if it collides with an existing
-        workflow, behavior depends on ``duplicate_policy``
-        (``reject`` | ``allow`` | ``terminate_existing``).
+        caller-supplied instance ID. The PHP Server start contract accepts
+        ``duplicate_policy="fail"`` (also the default when omitted) or
+        ``"use-existing"``. ``fail`` raises :class:`WorkflowAlreadyStarted`
+        if the ID already exists. ``use-existing`` returns the original run
+        only while it is pending, running or waiting. Both policies reject
+        a closed instance. Neither replaces a run or changes its input or
+        deadlines. Use a new workflow ID for a new independent execution.
+
+        The SDK forwards the policy unchanged. ``reject``, ``allow`` and
+        ``terminate_existing`` are not supported wire values. A resource-keyed
+        workflow ID coordinates start admission; it does not revoke work
+        already running in an external system.
 
         ``input`` is a list of positional arguments passed to the workflow's
         ``run`` method; the SDK encodes the list with the default payload
