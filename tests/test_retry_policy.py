@@ -28,6 +28,18 @@ class TestRetryPolicy:
         exc = httpx.NetworkError("network error")
         assert policy.should_retry(exc, attempt=0) is True
 
+    def test_should_retry_remote_disconnect_before_response(self) -> None:
+        policy = RetryPolicy(max_attempts=3)
+        exc = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        assert policy.should_retry(exc, attempt=0) is True
+        assert policy.should_retry(exc, attempt=2) is True
+        assert policy.should_retry(exc, attempt=3) is False  # max_attempts reached
+
+    def test_should_not_retry_local_protocol_error(self) -> None:
+        policy = RetryPolicy(max_attempts=3)
+        exc = httpx.LocalProtocolError("malformed request")
+        assert policy.should_retry(exc, attempt=0) is False
+
     def test_should_retry_5xx_server_error(self) -> None:
         policy = RetryPolicy(max_attempts=3)
         response = httpx.Response(status_code=500, request=httpx.Request("GET", "http://test"))

@@ -80,6 +80,79 @@ class TestRaiseForStatus:
         assert exc_info.value.reason == "run_not_active"
         assert exc_info.value.status == 409
 
+    def test_409_request_id_conflict_maps_to_signal_failed(self) -> None:
+        body = {
+            "reason": "request_id_conflict",
+            "message": "request id order-42 is retained for a different intent",
+            "request_id": "order-42",
+            "retained_command_id": "cmd-7",
+            "retained_command_type": "signal",
+            "retained_outcome": "received",
+            "conflict": ["name", "arguments"],
+        }
+        with pytest.raises(SignalFailed) as exc_info:
+            _raise_for_status(409, body)
+        error = exc_info.value
+        assert error.reason == "request_id_conflict"
+        assert error.status == 409
+        assert error.request_id == "order-42"
+        assert error.body == body
+        assert error.details == {
+            "request_id": "order-42",
+            "retained_command_id": "cmd-7",
+            "retained_command_type": "signal",
+            "retained_outcome": "received",
+            "conflict": ["name", "arguments"],
+        }
+
+    def test_409_request_id_conflict_maps_to_update_failed(self) -> None:
+        body = {
+            "reason": "request_id_conflict",
+            "message": "request id order-42 is retained for a different intent",
+            "request_id": "order-42",
+            "retained_command_id": "cmd-7",
+            "retained_command_type": "update",
+            "retained_outcome": "accepted",
+            "conflict": ["arguments"],
+        }
+        with pytest.raises(UpdateFailed) as exc_info:
+            _raise_for_status(409, body)
+        error = exc_info.value
+        assert error.reason == "request_id_conflict"
+        assert error.status == 409
+        assert error.request_id == "order-42"
+        assert error.body == body
+        assert error.details["retained_command_id"] == "cmd-7"
+        assert error.details["conflict"] == ["arguments"]
+        assert error.update_id is None
+
+    def test_409_request_id_conflict_falls_back_to_control_plane_operation(self) -> None:
+        body = {"reason": "request_id_conflict", "message": "retained", "control_plane": {"operation": "update"}}
+        with pytest.raises(UpdateFailed) as exc_info:
+            _raise_for_status(409, body)
+        assert exc_info.value.reason == "request_id_conflict"
+        assert exc_info.value.request_id is None
+        assert exc_info.value.details == {}
+
+    def test_409_request_id_conflict_without_command_type_stays_server_error(self) -> None:
+        with pytest.raises(ServerError) as exc_info:
+            _raise_for_status(409, {"reason": "request_id_conflict", "message": "retained"})
+        assert exc_info.value.reason() == "request_id_conflict"
+
+    def test_signal_and_update_failed_constructors_stay_compatible(self) -> None:
+        signal = SignalFailed("signal rejected")
+        assert (signal.reason, signal.status, signal.body) == (None, None, None)
+        assert (signal.request_id, signal.details) == (None, {})
+
+        update = UpdateFailed("handler failed", status=422, body={"update_status": "failed", "update_id": "upd-1"})
+        assert (update.reason, update.request_id, update.details, update.update_id) == (None, None, {}, "upd-1")
+
+        keyed = UpdateFailed("handler failed", status=422, body={"reason": "update_failed", "request_id": "key-1"})
+        assert (keyed.reason, keyed.request_id, keyed.details) == ("update_failed", "key-1", {})
+
+        explicit = SignalFailed("conflict", reason="request_id_conflict", request_id="key-2", details={"conflict": []})
+        assert (explicit.request_id, explicit.details) == ("key-2", {"conflict": []})
+
     def test_409_terminal_query_rejected(self) -> None:
         with pytest.raises(QueryFailed) as exc_info:
             _raise_for_status(

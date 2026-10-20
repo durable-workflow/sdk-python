@@ -19,6 +19,7 @@ methods without repeating the id on every call.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import hashlib
 import json as json_module
@@ -47,6 +48,7 @@ from ._cancellation_scope_history import (
 from ._cooperative_cancellation import CancellationDelivery, CancellationRequest
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
 from .errors import (
+    REQUEST_ID_CONFLICT,
     ExternalPayloadIntegrityMismatch,
     ExternalPayloadOversized,
     ExternalPayloadUnavailable,
@@ -55,6 +57,8 @@ from .errors import (
     RuntimeCapabilityUnsupported,
     RuntimeDiscoveryUnavailable,
     ServerError,
+    SignalFailed,
+    UpdateFailed,
     WorkflowCancelled,
     WorkflowFailed,
     WorkflowTerminated,
@@ -237,6 +241,49 @@ def _normalize_base_url(base_url: str) -> str:
         )
 
     return base_url.rstrip("/")
+
+
+def _command_request_id(request_id: str | None, command: str) -> str:
+    """Return the caller command key for one logical signal or update call.
+
+    The key is the body field ``request_id`` (1-255 opaque, case-sensitive
+    bytes). A caller-supplied key is sent verbatim; otherwise one
+    ``sdk-python-<command>-<uuid4 hex>`` key is generated per logical call so
+    the transport retry policy resends the identical key.
+    """
+    return request_id or f"sdk-python-{command}-{uuid.uuid4().hex}"
+
+
+def _attach_request_id(exc: BaseException, request_id: str) -> None:
+    """Record the sent command key on an exception as ``exc.request_id``.
+
+    Typed SDK failures declare the attribute; transport errors raised by
+    ``httpx`` receive it dynamically so a manual retry can reuse the key.
+    """
+    with contextlib.suppress(AttributeError, TypeError):
+        exc.request_id = request_id  # type: ignore[attr-defined]
+
+
+def _command_request_failure(exc: Exception, *, command: str, request_id: str) -> Exception:
+    """Return the exception a failed signal or update call should raise.
+
+    A ``request_id_conflict`` refusal that reached the caller as a generic
+    :class:`ServerError` becomes the command's typed failure. Every other
+    exception is returned unchanged, annotated with the key that was sent.
+    """
+    if isinstance(exc, ServerError) and exc.reason() == REQUEST_ID_CONFLICT:
+        message = exc.body.get("message") if isinstance(exc.body, dict) else None
+        if not isinstance(message, str) or not message:
+            message = f"{command} request id already retained with a different intent"
+        if command == "update" and isinstance(exc.body, dict):
+            return UpdateFailed(
+                message, status=exc.status, body=exc.body, reason=REQUEST_ID_CONFLICT, request_id=request_id,
+            )
+        return SignalFailed(
+            message, reason=REQUEST_ID_CONFLICT, status=exc.status, body=exc.body, request_id=request_id,
+        )
+    _attach_request_id(exc, request_id)
+    return exc
 
 
 def _route_for_metrics(path: str) -> str:
@@ -1346,9 +1393,17 @@ class WorkflowHandle:
             raise ValueError("run_id is required to describe a workflow run from a handle")
         return await self._client.describe_workflow_run(self.workflow_id, selected_run_id)
 
-    async def signal(self, signal_name: str, args: list[Any] | None = None) -> None:
+    async def signal(
+        self,
+        signal_name: str,
+        args: list[Any] | None = None,
+        *,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
         """Deliver an external signal to this workflow. See :meth:`Client.signal_workflow`."""
-        await self._client.signal_workflow(self.workflow_id, signal_name, args=args)
+        return await self._client.signal_workflow(
+            self.workflow_id, signal_name, args=args, request_id=request_id,
+        )
 
     async def append_message(
         self,
@@ -4303,15 +4358,38 @@ class Client:
         return BridgeAdapterOutcome.from_dict(data)
 
     async def signal_workflow(
-        self, workflow_id: str, signal_name: str, *, args: list[Any] | None = None
-    ) -> None:
+        self,
+        workflow_id: str,
+        signal_name: str,
+        *,
+        args: list[Any] | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
         """Deliver an external signal to a running workflow.
 
         Signals are fire-and-forget: the server records the signal in durable
         history and returns immediately. They do not wait for the workflow to
         observe the signal. See the main docs for how to declare the allowed
         signal names on a workflow type.
+
+        ``request_id`` is the caller command key (1-255 opaque, case-sensitive
+        bytes) that makes a retry of this signal safe. When omitted the client
+        generates ``sdk-python-signal-<uuid>`` once per call, so the transport
+        retry policy resends the same key. Resending the same key with the same
+        signal name, arguments and run target returns the original receipt
+        instead of recording a second signal.
+
+        Returns the Server's admission receipt. ``request_id`` is always
+        present (the key that was sent); a Server that retains command keys
+        also reports ``retained`` (``True`` when an earlier admission was
+        returned) and ``intent_verified``. Raises
+        :class:`~durable_workflow.errors.SignalFailed` with
+        ``reason == "request_id_conflict"`` when the key was already retained
+        for a signal with a different intent; the retained command is described
+        in its ``details``. Every exception raised after the key was chosen,
+        including transport errors, carries it as ``request_id``.
         """
+        key = _command_request_id(request_id, "signal")
         body: dict[str, Any] = {}
         if args:
             body["input"] = self._payload_envelope(
@@ -4320,7 +4398,19 @@ class Client:
                 workflow_id=workflow_id,
                 signal_name=signal_name,
             )
-        await self._request("POST", f"/workflows/{workflow_id}/signal/{signal_name}", json=body, context=workflow_id)
+        body["request_id"] = key
+        try:
+            data = await self._request(
+                "POST", f"/workflows/{workflow_id}/signal/{signal_name}", json=body, context=workflow_id,
+            )
+        except Exception as exc:
+            failure = _command_request_failure(exc, command="signal", request_id=key)
+            if failure is exc:
+                raise
+            raise failure from exc
+        receipt: dict[str, Any] = data if isinstance(data, dict) else {}
+        receipt.setdefault("request_id", key)
+        return receipt
 
     async def append_message_stream(
         self,
@@ -4496,15 +4586,28 @@ class Client:
         Validator rejection and validation-routing failures remain typed and
         do not silently fall back to post-accept handler failure.
 
-        ``request_id`` lets the caller deduplicate retries. Raises
-        :class:`~durable_workflow.errors.UpdateRejected` when the workflow's
-        validator rejects the update, or
+        ``request_id`` is the caller command key (1-255 opaque, case-sensitive
+        bytes) that makes a retry of this update safe. When omitted the client
+        generates ``sdk-python-update-<uuid>`` once per call, so the transport
+        retry policy resends the same key. Resending the same key with the same
+        update name, arguments and run target returns the original receipt
+        (``retained`` is ``True`` on a Server that reports it) instead of
+        admitting a second update. The returned response always carries the
+        ``request_id`` that was sent.
+
+        Raises :class:`~durable_workflow.errors.UpdateRejected` when the
+        workflow's validator rejects the update, or
         :class:`~durable_workflow.errors.UpdateValidationFailed` when the
         declared validation boundary cannot be enforced. An accepted update
         whose handler fails raises :class:`~durable_workflow.errors.UpdateFailed`
-        with the failure message, Server response and durable identities.
+        with the failure message, Server response and durable identities; the
+        same type with ``reason == "request_id_conflict"`` reports a key that
+        was already retained for an update with a different intent, described
+        in its ``details``. Every exception raised after the key was chosen,
+        including transport errors, carries it as ``request_id``.
         """
         await self._require_update_wait_stage(wait_for or "accepted")
+        key = _command_request_id(request_id, "update")
         body: dict[str, Any] = {}
         if args:
             body["input"] = self._payload_envelope(
@@ -4517,10 +4620,19 @@ class Client:
             body["wait_for"] = wait_for
         if wait_timeout_seconds is not None:
             body["wait_timeout_seconds"] = wait_timeout_seconds
-        body["request_id"] = request_id or f"sdk-python-update-{uuid.uuid4().hex}"
-        return await self._request(
-            "POST", f"/workflows/{workflow_id}/update/{update_name}", json=body, context=workflow_id
-        )
+        body["request_id"] = key
+        try:
+            data = await self._request(
+                "POST", f"/workflows/{workflow_id}/update/{update_name}", json=body, context=workflow_id
+            )
+        except Exception as exc:
+            failure = _command_request_failure(exc, command="update", request_id=key)
+            if failure is exc:
+                raise
+            raise failure from exc
+        if isinstance(data, dict):
+            data.setdefault("request_id", key)
+        return data
 
     async def get_result(
         self,

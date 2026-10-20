@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -35,6 +37,7 @@ from durable_workflow.errors import (
     WorkflowAlreadyStarted,
     WorkflowNotFound,
 )
+from durable_workflow.retry_policy import TransportRetryPolicy
 
 SYNTHETIC_EXTERNAL_CAPABILITY_MANIFEST = {
     "local_activities": {
@@ -870,12 +873,13 @@ class TestSignalWorkflow:
     async def test_signal(self, client: Client) -> None:
         resp = _mock_response(200, {"ok": True})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
-            await client.signal_workflow("wf-1", "my-signal", args=["data"])
+            receipt = await client.signal_workflow("wf-1", "my-signal", args=["data"])
             call_args = mock.call_args
             assert "/signal/my-signal" in call_args[0][1]
             body = call_args.kwargs.get("json") or call_args[1].get("json")
             assert body["input"]["codec"] == "avro"
             assert serializer.decode(body["input"]["blob"], codec="avro") == ["data"]
+            assert receipt == {"ok": True, "request_id": body["request_id"]}
 
     @pytest.mark.asyncio
     async def test_signal_request_matches_polyglot_fixture(self, client: Client) -> None:
@@ -3096,6 +3100,243 @@ class TestHeartbeatActivityTask:
             assert result["cancel_requested"] is False
 
 
+class TestCommandRequestIds:
+    """Caller command keys on signal and update calls (shared issue #216)."""
+
+    _CONFLICT_FIELDS = ("request_id", "retained_command_id", "retained_command_type", "retained_outcome", "conflict")
+
+    @staticmethod
+    async def _transport_client(
+        handler: Callable[[httpx.Request], httpx.Response], *, max_attempts: int = 3,
+    ) -> Client:
+        client = Client(
+            "http://localhost:8080",
+            token="test-token",
+            namespace="ns1",
+            retry_policy=TransportRetryPolicy(max_attempts=max_attempts, initial_backoff_seconds=0, jitter=False),
+        )
+        client._cluster_info = _supported_runtime_info()
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(handler))
+        return client
+
+    @staticmethod
+    async def _send(client: Client, command: str, **kwargs: Any) -> dict[str, Any]:
+        if command == "signal":
+            return await client.signal_workflow("wf-1", "approve", args=["x"], **kwargs)
+        result: dict[str, Any] = await client.update_workflow(
+            "wf-1", "adjust", args=["x"], wait_for="accepted", **kwargs,
+        )
+        return result
+
+    @pytest.mark.asyncio
+    async def test_signal_generates_request_id_once_per_call_and_returns_it(self, client: Client) -> None:
+        resp = _mock_response(202, {"outcome": "received", "command_id": "cmd-1"})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            first = await client.signal_workflow("wf-1", "approve")
+            second = await client.signal_workflow("wf-1", "approve")
+
+        keys = [call.kwargs["json"]["request_id"] for call in mock.await_args_list]
+        for key in keys:
+            assert key.startswith("sdk-python-signal-")
+            assert len(key) == len("sdk-python-signal-") + 32
+        assert keys[0] != keys[1]
+        assert first == {"outcome": "received", "command_id": "cmd-1", "request_id": keys[0]}
+        assert second["request_id"] == keys[1]
+
+    @pytest.mark.asyncio
+    async def test_explicit_request_id_is_sent_verbatim(self, client: Client) -> None:
+        key = "Order-42:Approve"
+        resp = _mock_response(202, {"outcome": "received"})
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
+            signal = await client.signal_workflow("wf-1", "approve", args=["x"], request_id=key)
+            update = await client.update_workflow("wf-1", "adjust", args=["x"], request_id=key)
+
+        assert [call.kwargs["json"]["request_id"] for call in mock.await_args_list] == [key, key]
+        assert signal["request_id"] == key
+        assert update["request_id"] == key
+
+    @pytest.mark.parametrize("command", ["signal", "update"])
+    @pytest.mark.asyncio
+    async def test_transport_retry_resends_identical_body_and_request_id(self, command: str) -> None:
+        attempts: list[bytes] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts.append(request.content)
+            if len(attempts) == 1:
+                raise httpx.ConnectError("connection reset", request=request)
+            sent = json.loads(request.content)
+            return httpx.Response(202, json={"outcome": "received", "request_id": sent["request_id"]})
+
+        client = await self._transport_client(handler)
+        try:
+            receipt = await self._send(client, command)
+        finally:
+            await client.aclose()
+
+        assert len(attempts) == 2
+        assert attempts[0] == attempts[1]
+        key = json.loads(attempts[0])["request_id"]
+        assert key.startswith(f"sdk-python-{command}-")
+        assert receipt["request_id"] == key
+
+    @pytest.mark.asyncio
+    async def test_signal_retries_after_remote_disconnect_with_same_request_id(self) -> None:
+        # A proxy that closes the socket after the Server already admitted the
+        # signal surfaces as RemoteProtocolError; the retry carries the same key
+        # and the Server answers it from the retained receipt.
+        attempts: list[bytes] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts.append(request.content)
+            if len(attempts) == 1:
+                raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request)
+            sent = json.loads(request.content)
+            return httpx.Response(202, json={
+                "outcome": "received", "command_id": "cmd-1", "request_id": sent["request_id"],
+                "retained": True, "intent_verified": True,
+            })
+
+        client = await self._transport_client(handler)
+        try:
+            receipt = await client.signal_workflow("wf-1", "approve", args=["x"])
+        finally:
+            await client.aclose()
+
+        assert len(attempts) == 2
+        assert attempts[0] == attempts[1]
+        key = json.loads(attempts[0])["request_id"]
+        assert key.startswith("sdk-python-signal-")
+        assert receipt == {
+            "outcome": "received", "command_id": "cmd-1", "request_id": key,
+            "retained": True, "intent_verified": True,
+        }
+
+    @pytest.mark.parametrize("command", ["signal", "update"])
+    @pytest.mark.asyncio
+    async def test_request_id_conflict_raises_typed_failure(self, client: Client, command: str) -> None:
+        conflict = {
+            "reason": "request_id_conflict",
+            "message": "request id order-42 is retained for a different intent",
+            "request_id": "order-42",
+            "retained_command_id": "cmd-7",
+            "retained_command_type": command,
+            "retained_outcome": "received" if command == "signal" else "accepted",
+            "conflict": ["arguments"],
+        }
+        expected = SignalFailed if command == "signal" else UpdateFailed
+        with (
+            patch.object(
+                client._http, "request", new_callable=AsyncMock, return_value=_mock_response(409, conflict),
+            ) as mock,
+            pytest.raises(expected) as excinfo,
+        ):
+            await self._send(client, command, request_id="order-42")
+
+        error = excinfo.value
+        assert mock.await_count == 1
+        assert error.reason == "request_id_conflict"
+        assert error.request_id == "order-42"
+        assert error.status == 409
+        assert error.body == conflict
+        assert error.details == {name: conflict[name] for name in self._CONFLICT_FIELDS}
+
+    @pytest.mark.parametrize("command", ["signal", "update"])
+    @pytest.mark.asyncio
+    async def test_request_id_conflict_without_command_type_is_mapped_by_the_call_site(
+        self, client: Client, command: str,
+    ) -> None:
+        conflict = {
+            "reason": "request_id_conflict",
+            "message": "retained",
+            "request_id": "order-42",
+            "retained_command_id": "cmd-7",
+        }
+        expected = SignalFailed if command == "signal" else UpdateFailed
+        with (
+            patch.object(
+                client._http, "request", new_callable=AsyncMock, return_value=_mock_response(409, conflict),
+            ),
+            pytest.raises(expected) as excinfo,
+        ):
+            await self._send(client, command, request_id="order-42")
+
+        error = excinfo.value
+        assert error.reason == "request_id_conflict"
+        assert error.request_id == "order-42"
+        assert error.status == 409
+        assert error.details == {"request_id": "order-42", "retained_command_id": "cmd-7"}
+        assert isinstance(error.__cause__, ServerError)
+
+    @pytest.mark.parametrize("command", ["signal", "update"])
+    @pytest.mark.asyncio
+    async def test_transport_failure_carries_request_id(self, command: str) -> None:
+        attempts: list[bytes] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts.append(request.content)
+            raise httpx.ConnectError("connection refused", request=request)
+
+        client = await self._transport_client(handler, max_attempts=2)
+        try:
+            with pytest.raises(httpx.ConnectError) as excinfo:
+                await self._send(client, command)
+        finally:
+            await client.aclose()
+
+        assert len(attempts) == 2
+        key = json.loads(attempts[0])["request_id"]
+        assert key.startswith(f"sdk-python-{command}-")
+        assert json.loads(attempts[1])["request_id"] == key
+        assert excinfo.value.request_id == key
+
+    @pytest.mark.parametrize("command", ["signal", "update"])
+    @pytest.mark.asyncio
+    async def test_retained_receipt_is_returned_unchanged(self, client: Client, command: str) -> None:
+        retained = {
+            "outcome": "received" if command == "signal" else "accepted",
+            "command_id": "cmd-7",
+            "request_id": "order-42",
+            "retained": True,
+            "intent_verified": True,
+        }
+        if command == "update":
+            retained.update({"update_status": "accepted", "update_id": "upd-7"})
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=_mock_response(202, retained),
+        ):
+            receipt = await self._send(client, command, request_id="order-42")
+
+        assert receipt == retained
+
+    @pytest.mark.asyncio
+    async def test_signal_and_update_do_not_send_x_request_id_header(self) -> None:
+        seen: list[httpx.Headers] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers)
+            return httpx.Response(202, json={"outcome": "received"})
+
+        client = await self._transport_client(handler)
+        try:
+            await self._send(client, "signal", request_id="order-42")
+            await self._send(client, "update", request_id="order-42")
+        finally:
+            await client.aclose()
+
+        assert len(seen) == 2
+        assert all("x-request-id" not in headers for headers in seen)
+
+    @pytest.mark.asyncio
+    async def test_handle_signal_forwards_request_id_and_returns_receipt(self, client: Client) -> None:
+        receipt = {"outcome": "received", "request_id": "order-42"}
+        client.signal_workflow = AsyncMock(return_value=receipt)
+        handle = WorkflowHandle(client, workflow_id="wf-1")
+
+        assert await handle.signal("approve", ["x"], request_id="order-42") == receipt
+        client.signal_workflow.assert_awaited_once_with("wf-1", "approve", args=["x"], request_id="order-42")
+
+
 class TestUpdateWorkflow:
     @pytest.mark.asyncio
     async def test_failed_update_retries_preserve_failure_identity(self, client: Client) -> None:
@@ -3199,18 +3440,20 @@ class TestUpdateWorkflow:
     async def test_update_no_args(self, client: Client) -> None:
         resp = _mock_response(200, {"outcome": "accepted"})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
-            await client.update_workflow("wf-1", "my-update")
+            result = await client.update_workflow("wf-1", "my-update")
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert "input" not in body
             assert body["request_id"].startswith("sdk-python-update-")
+            assert result == {"outcome": "accepted", "request_id": body["request_id"]}
 
     @pytest.mark.asyncio
     async def test_update_with_request_id(self, client: Client) -> None:
         resp = _mock_response(200, {"outcome": "accepted"})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:
-            await client.update_workflow("wf-1", "my-update", request_id="req-123")
+            result = await client.update_workflow("wf-1", "my-update", request_id="req-123")
             body = mock.call_args.kwargs.get("json") or mock.call_args[1].get("json")
             assert body["request_id"] == "req-123"
+            assert result["request_id"] == "req-123"
 
     @pytest.mark.asyncio
     async def test_update_request_matches_polyglot_fixture(self, client: Client) -> None:
