@@ -38,6 +38,15 @@ def test_workflow_updates_surface_probe_records_required_python_cells() -> None:
     assert outputs["python_worker_update_handler"]["observations"]["failed"]["command_type"] == "fail_update"
     assert "info" in outputs["python_client_update_request"]["requests"]
     assert "accepted-key" in outputs["python_client_update_request"]["requests"]
-    assert "duplicate-key" in outputs["python_client_update_request"]["requests"]
+    requests = outputs["python_client_update_request"]["requests"]
+    assert requests["duplicate-key"]["response"]["retained"] is False
+    assert requests["duplicate-key:retained"]["response"]["retained"] is True
+    first_receipt = requests["duplicate-key"]["response"]
+    assert requests["duplicate-key:retained"]["response"]["update_id"] == first_receipt["update_id"]
+    assert requests["duplicate-key:conflict"]["response"]["reason"] == "request_id_conflict"
+    assert any(
+        error["cell"] == "duplicate_request_idempotency" and error["refusal_reason"] == "request_id_conflict"
+        for error in outputs["typed_errors"]
+    )
     assert any(error["cell"] == "unknown_update_refusal" for error in outputs["typed_errors"])
     assert any(error["cell"] == "terminal_workflow_update_behavior" for error in outputs["typed_errors"])

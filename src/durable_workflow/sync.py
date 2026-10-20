@@ -118,8 +118,17 @@ class SyncWorkflowHandle:
         result: WorkflowRun = self._runner.run(self._handle.describe_run(run_id))
         return result
 
-    def signal(self, signal_name: str, args: list[Any] | None = None) -> None:
-        self._runner.run(self._handle.signal(signal_name, args=args))
+    def signal(
+        self,
+        signal_name: str,
+        args: list[Any] | None = None,
+        *,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = self._runner.run(
+            self._handle.signal(signal_name, args=args, request_id=request_id)
+        )
+        return result
 
     def query(self, query_name: str, args: list[Any] | None = None) -> Any:
         return self._runner.run(self._handle.query(query_name, args=args))
@@ -513,8 +522,18 @@ class Client:
         result: WorkflowRun = self._runner.run(self._async.describe_workflow_run(workflow_id, run_id))
         return result
 
-    def signal_workflow(self, workflow_id: str, signal_name: str, *, args: list[Any] | None = None) -> None:
-        self._runner.run(self._async.signal_workflow(workflow_id, signal_name, args=args))
+    def signal_workflow(
+        self,
+        workflow_id: str,
+        signal_name: str,
+        *,
+        args: list[Any] | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = self._runner.run(
+            self._async.signal_workflow(workflow_id, signal_name, args=args, request_id=request_id)
+        )
+        return result
 
     def query_workflow(self, workflow_id: str, query_name: str, *, args: list[Any] | None = None) -> Any:
         return self._runner.run(self._async.query_workflow(workflow_id, query_name, args=args))
