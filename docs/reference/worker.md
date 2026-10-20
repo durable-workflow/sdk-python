@@ -4,6 +4,31 @@ See [Separate workflow and activity processes](../guides/separate-workers.md)
 for a runnable deployment example with distinct registrations, independent
 slots, remote activity retries and signal-driven shutdown.
 
+## Activity execution
+
+By default, ordinary synchronous `def` remote activities run in a dedicated
+thread pool bounded by `max_concurrent_activity_tasks`. Each thread receives
+its own `activity.context()`. A blocked synchronous call does not occupy the
+worker event loop, so other activity slots, workflow tasks and worker
+heartbeats can progress. Async `async def` activities run on that event loop
+and must use nonblocking I/O. Blocking work inside an async function still
+stalls the loop.
+
+From a synchronous activity, call
+`activity.context().heartbeat_sync(details)` to report progress with the
+original task, attempt and worker identity. It waits for the owner's event
+loop to send the request using the normal client transport timeouts and
+raises `ActivityCancelled` when cancellation is reported. Async activities use
+`await activity.context().heartbeat(details)`. Calling the synchronous method
+on the owner event loop raises an error instead of deadlocking it.
+
+Threads suit blocking I/O; they do not provide hard isolation or parallel
+Python CPU execution. Use bounded downstream timeouts and cooperative
+heartbeat checks. For CPU-heavy or untrusted callbacks, use separately
+isolated worker processes and their resource limits. The separately
+negotiated cooperative-cancellation capability retains its supervised process
+execution; selecting a default thread does not enable that protocol.
+
 ## Lifecycle and shutdown
 
 `Worker.run()` and `Worker.run_until()` register through the worker protocol
@@ -12,6 +37,15 @@ waits for accepted work within the shared `shutdown_timeout` deadline before
 removing that worker-plane registration. Work still running at the deadline is
 cancelled. Calling `stop()` more than once is safe and sends at most one
 deregistration request. No deregistration is sent if registration failed.
+
+Cancelling an await cannot stop a running synchronous activity thread. Its
+physical slot remains occupied until the callback returns, and a late return
+does not submit a result after its await was cancelled. If the callback has
+not stopped by the shared shutdown deadline, shutdown raises `RuntimeError`
+and retains the registration. Python can keep the process alive while that
+thread remains running. Configure callback I/O timeouts and a supervisor
+termination policy; a timeout is not proof that an external side effect was
+cancelled or that the worker stopped gracefully.
 
 An external `stop()` also interrupts `run_until()`; the pending `run_until()`
 call ends with `asyncio.CancelledError` after its accepted workflow or activity
