@@ -79,6 +79,7 @@ from .errors import (
     ServerError,
     UpdateRejected,
     UpdateValidationFailed,
+    WorkflowEntryArgumentsMismatchError,
 )
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver, store_external_payload
 from .interceptors import (
@@ -2619,6 +2620,9 @@ class Worker:
             return None
         except Exception as e:
             log.exception("replay failed")
+            failure_details = (
+                {"failure_reason": e.reason} if isinstance(e, WorkflowEntryArgumentsMismatchError) else {}
+            )
             try:
                 await self.client.fail_workflow_task(
                     task_id=task_id,
@@ -2627,6 +2631,7 @@ class Worker:
                     message=f"replay failed: {e}",
                     failure_type=type(e).__name__,
                     stack_trace=traceback.format_exc(),
+                    **failure_details,
                 )
             except Exception as fe:
                 log.warning("failed to report replay failure: %s", fe)

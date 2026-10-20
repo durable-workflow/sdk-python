@@ -66,6 +66,7 @@ from .errors import (
     QueryFailed,
     SagaCompensationFailed,
     WorkflowCancelled,
+    WorkflowEntryArgumentsMismatchError,
     WorkflowPayloadDecodeError,
 )
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
@@ -5386,8 +5387,21 @@ def _replay_state(
     result_cursor = 0
     pending_step_cursor = 0
     wait_yield_count = 0
+    entry = instance.run
+    workflow_type = str(getattr(workflow_cls, "__workflow_name__", workflow_cls.__name__))
     try:
-        gen = instance.run(ctx, *start_input)
+        entry_signature = inspect.signature(entry)
+    except (TypeError, ValueError):
+        raise WorkflowEntryArgumentsMismatchError(workflow_type, "signature_unavailable") from None
+    try:
+        entry_signature.bind(ctx, *start_input)
+    except TypeError:
+        raise WorkflowEntryArgumentsMismatchError(workflow_type, "argument_binding_failed") from None
+
+    # Binding happens outside the application-error path. A TypeError raised
+    # by a successfully bound body is still an actual workflow failure.
+    try:
+        gen = entry(ctx, *start_input)
     except NonDeterministicReplayError:
         raise
     except LocalActivityExecutionAborted:

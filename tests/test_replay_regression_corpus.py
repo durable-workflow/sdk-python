@@ -12,7 +12,12 @@ import pytest
 
 from durable_workflow import Replayer, Worker, serializer, workflow
 from durable_workflow.client import PROTOCOL_VERSION, Client, WorkflowExecution, WorkflowStreamAppendItem
-from durable_workflow.errors import NonDeterministicReplayError, WorkflowCancelled, WorkflowPayloadDecodeError
+from durable_workflow.errors import (
+    DurableWorkflowError,
+    NonDeterministicReplayError,
+    WorkflowCancelled,
+    WorkflowPayloadDecodeError,
+)
 from durable_workflow.replay_conformance import compose_report
 from durable_workflow.workflow import (
     LocalActivityExecutionAborted,
@@ -282,6 +287,12 @@ class UnsupportedAsyncWorkflow:
         return "body was never executed"
 
 
+@workflow.defn(name="tests.replay.entry-arguments-required")
+class RequiredEntryArgumentWorkflow:
+    def run(self, ctx: WorkflowContext, amount: int, required: int) -> int:
+        raise AssertionError("incompatible entry body must never run")
+
+
 @workflow.defn(name="tests.replay.nexus-target")
 class NexusTargetWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -356,6 +367,7 @@ WORKFLOWS = [
 ]
 WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__)): workflow for workflow in WORKFLOWS}
 WORKFLOW_TYPES["tests.replay.condition-identity"] = ConditionIdentityWorkflow
+WORKFLOW_TYPES["tests.replay.entry-arguments-required"] = RequiredEntryArgumentWorkflow
 
 
 def _fixture_paths() -> list[Path]:
@@ -558,6 +570,11 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
         message = expected_replay_error.get("message_contains")
         assert isinstance(message, str) and message
         assert expected.get("command_sequence") == []
+        if expected_replay_error.get("type") == "WorkflowEntryArgumentsMismatchError":
+            with pytest.raises(DurableWorkflowError, match=message) as binding_error:
+                _execute_fixture(fixture)
+            assert type(binding_error.value).__name__ == "WorkflowEntryArgumentsMismatchError"
+            return
         if expected_replay_error.get("type") == "LocalActivityExecutionAborted":
             with pytest.raises(LocalActivityExecutionAborted, match=message):
                 _execute_fixture(fixture)

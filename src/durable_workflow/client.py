@@ -5312,15 +5312,20 @@ class Client:
         message: str,
         failure_type: str | None = None,
         stack_trace: str | None = None,
+        failure_reason: str | None = None,
     ) -> Any:
-        """Report a workflow task failure so the server can schedule a retry.
+        """Report a workflow task failure without closing the run.
 
         Worker-plane endpoint. Task failures (e.g. non-determinism) are
         distinct from workflow failures (``FailWorkflow`` commands).
+        The runtime may block incompatible replay until compatible code and
+        a supported repair are available instead of automatically retrying it.
         """
         failure: dict[str, Any] = {"message": message}
         if failure_type is not None:
             failure["type"] = failure_type
+        if failure_reason is not None:
+            failure["reason"] = failure_reason
         if stack_trace is not None:
             failure["stack_trace"] = stack_trace
         body: dict[str, Any] = {

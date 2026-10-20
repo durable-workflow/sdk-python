@@ -441,6 +441,22 @@ entry points are rejected with `InvalidWorkflowDefinition` during definition or
 worker registration. Async activity handlers remain supported. Direct replay
 also rejects async entry points and awaitable results.
 
+Recorded start input must bind to the deployed `run` signature before any
+workflow body or version branch executes. Missing required arguments,
+unexpected positional arguments and required keyword-only parameters raise
+`WorkflowEntryArgumentsMismatchError`. The Worker reports the existing task
+failure boundary with reason `workflow_entry_arguments_mismatch`; it does not
+submit a terminal workflow-failure command. Direct replay raises the same
+typed error without rewriting input or history. Diagnostics contain the
+workflow type and binding reason, not the recorded argument values.
+
+Restore a compatible worker, then use the Server's repair action for the
+original run. Repair does not extend its original deadlines. An added optional
+parameter or a compatible variadic signature remains supported. Python type
+annotations are not enforced as runtime input validation. A `TypeError`, or
+even a binding-error exception, raised inside a successfully bound body remains
+an application workflow failure.
+
 Workers reject duplicate workflow or activity wire names with
 `DuplicateRegistrationError` before contacting Server or polling work. Each
 Worker and offline Replayer has its own registration scope. Distinct names
