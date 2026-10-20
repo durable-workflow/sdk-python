@@ -137,6 +137,7 @@ _WORKFLOW_COMMAND_CAPABILITIES = (
     TYPED_SEARCH_ATTRIBUTES_CAPABILITY,
     DURABLE_SELECTION_CAPABILITY,
     LOCAL_ACTIVITIES_CAPABILITY,
+    "workflow_entry_arguments_validation",
 )
 
 _WORKFLOW_WORK_TASK_KINDS = ("workflow", "update_validation")
