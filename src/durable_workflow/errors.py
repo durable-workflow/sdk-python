@@ -465,6 +465,21 @@ class WorkflowPayloadDecodeError(DurableWorkflowError):
         self.exception_type = exception_type
 
 
+class WorkflowEntryArgumentsMismatchError(DurableWorkflowError):
+    """Recorded input cannot bind to the deployed entry method before it runs."""
+
+    reason = "workflow_entry_arguments_mismatch"
+
+    def __init__(self, workflow_type: str, binding_reason: str) -> None:
+        self.workflow_type = workflow_type
+        self.entry_method = "run"
+        self.binding_reason = binding_reason
+        super().__init__(
+            f"{self.reason}: {workflow_type}.run cannot bind the recorded arguments "
+            f"({binding_reason}). Restore compatible code and repair the workflow task."
+        )
+
+
 class NonDeterministicReplayError(DurableWorkflowError):
     """Current workflow code yielded a command shape that does not match history."""
 

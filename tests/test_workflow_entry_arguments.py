@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from typing import Any
 
+import httpx
 import pytest
 
-from durable_workflow import workflow
-from durable_workflow.errors import DurableWorkflowError
+from durable_workflow import Client, workflow
+from durable_workflow.errors import DurableWorkflowError, WorkflowEntryArgumentsMismatchError
 from durable_workflow.workflow import CompleteWorkflow, FailWorkflow, WorkflowContext, replay
 
 
@@ -57,6 +59,12 @@ class GeneratorBodyTypeErrorWorkflow:
         raise TypeError("generator application body failed")
 
 
+@workflow.defn(name="entry.body-mismatch-error")
+class BodyMismatchErrorWorkflow:
+    def run(self, ctx: WorkflowContext, amount: int) -> int:
+        raise WorkflowEntryArgumentsMismatchError("application-workflow", "application-control")
+
+
 @pytest.mark.parametrize("definition", [RequiredArgumentWorkflow, KeywordOnlyWorkflow, ExcessArgumentWorkflow])
 @pytest.mark.parametrize("committed_wait", [False, True])
 def test_entry_binding_refuses_without_running_body_or_rewriting_input(
@@ -73,7 +81,8 @@ def test_entry_binding_refuses_without_running_body_or_rewriting_input(
     with pytest.raises(DurableWorkflowError, match="workflow_entry_arguments_mismatch") as captured:
         replay(definition, history, arguments)
     assert type(captured.value).__name__ == "WorkflowEntryArgumentsMismatchError"
-    assert getattr(captured.value, "reason") == "workflow_entry_arguments_mismatch"
+    assert isinstance(captured.value, WorkflowEntryArgumentsMismatchError)
+    assert captured.value.reason == "workflow_entry_arguments_mismatch"
     assert "input-must-not-appear-in-diagnostics" not in str(captured.value)
     assert RequiredArgumentWorkflow.calls == 0
     assert arguments == [{"private": "input-must-not-appear-in-diagnostics"}]
@@ -104,3 +113,29 @@ def test_python_annotations_do_not_become_runtime_argument_checks() -> None:
     command = replay(OptionalArgumentWorkflow, [], ["not-an-int", "-suffix"]).commands[0]
     assert isinstance(command, CompleteWorkflow)
     assert command.result == "not-an-int-suffix"
+
+
+def test_binding_exception_thrown_by_a_valid_body_remains_an_application_failure() -> None:
+    command = replay(BodyMismatchErrorWorkflow, [], [7]).commands[0]
+    assert isinstance(command, FailWorkflow)
+    assert command.exception_type == "WorkflowEntryArgumentsMismatchError"
+
+
+async def test_binding_refusal_sends_existing_structured_failure_reason() -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"recorded": True})
+
+    async with Client("http://runtime.invalid", token="fixture-token") as client:
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(respond))
+        await client.fail_workflow_task(
+            task_id="original-task", lease_owner="original-worker", workflow_task_attempt=1,
+            message="replay failed: entry binding", failure_type="WorkflowEntryArgumentsMismatchError",
+            failure_reason="workflow_entry_arguments_mismatch",
+        )
+    failure = json.loads(requests[0].content)["failure"]
+    assert failure["reason"] == "workflow_entry_arguments_mismatch"
+    assert failure["type"] == "WorkflowEntryArgumentsMismatchError"
