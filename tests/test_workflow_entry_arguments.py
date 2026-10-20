@@ -68,7 +68,7 @@ class BodyMismatchErrorWorkflow:
 @pytest.mark.parametrize("definition", [RequiredArgumentWorkflow, KeywordOnlyWorkflow, ExcessArgumentWorkflow])
 @pytest.mark.parametrize("committed_wait", [False, True])
 def test_entry_binding_refuses_without_running_body_or_rewriting_input(
-    definition: type, committed_wait: bool,
+    definition: type, committed_wait: bool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     history = [
         {"event_type": "ConditionWaitOpened", "payload": {
@@ -77,7 +77,7 @@ def test_entry_binding_refuses_without_running_body_or_rewriting_input(
     ] if committed_wait else []
     original = deepcopy(history)
     arguments: list[Any] = [{"private": "input-must-not-appear-in-diagnostics"}]
-    RequiredArgumentWorkflow.calls = 0
+    monkeypatch.setattr(RequiredArgumentWorkflow, "calls", 0)
     with pytest.raises(DurableWorkflowError, match="workflow_entry_arguments_mismatch") as captured:
         replay(definition, history, arguments)
     assert type(captured.value).__name__ == "WorkflowEntryArgumentsMismatchError"
