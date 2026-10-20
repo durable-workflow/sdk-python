@@ -3805,7 +3805,7 @@ class TestCodecDecodeFailures:
         monkeypatch.setattr(worker_module, "replay", replay_spy)
         monkeypatch.setattr(worker_module, "_prepare_query_state", query_spy)
         monkeypatch.setattr(worker_module, "apply_update", update_spy)
-        monkeypatch.setattr(worker_module, "validate_update", validator_spy)
+        monkeypatch.setattr(worker_module, "_prepare_update_validation", validator_spy)
         monkeypatch.setattr(worker, "_execute_activity_callable", activity_spy)
 
         if task_kind == "activity":
@@ -3934,13 +3934,13 @@ class TestCodecDecodeFailures:
         replay_spy = Mock(wraps=worker_module.replay)
         query_spy = Mock(wraps=worker_module._prepare_query_state)
         update_spy = Mock(wraps=worker_module.apply_update)
-        validator_spy = Mock(wraps=worker_module.validate_update)
+        validator_spy = Mock(wraps=worker_module._prepare_update_validation)
         activity_spy = AsyncMock(wraps=worker._execute_activity_callable)
         monkeypatch.setattr(serializer, "decode_envelope", decode_spy)
         monkeypatch.setattr(worker_module, "replay", replay_spy)
         monkeypatch.setattr(worker_module, "_prepare_query_state", query_spy)
         monkeypatch.setattr(worker_module, "apply_update", update_spy)
-        monkeypatch.setattr(worker_module, "validate_update", validator_spy)
+        monkeypatch.setattr(worker_module, "_prepare_update_validation", validator_spy)
         monkeypatch.setattr(worker, "_execute_activity_callable", activity_spy)
 
         if task_kind == "activity":

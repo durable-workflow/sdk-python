@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Generator
-from functools import wraps
+from functools import partial, wraps
 from typing import Any
 
 import pytest
@@ -50,17 +50,19 @@ def test_unsupported_handlers_are_rejected_before_execution(
     kind: str, shape: str, inherited: bool, entry: str,
 ) -> None:
     definition = _definition(kind, _handler(shape), inherited)
+    if entry == "definition":
+        invoke = partial(workflow.defn(name="handler-validation"), definition)
+    elif entry == "worker":
+        client = Client("http://127.0.0.1:1")
+        invoke = partial(Worker, client, task_queue="unused", workflows=[definition])
+    elif entry == "environment":
+        invoke = partial(WorkflowEnvironment().register_workflow, definition)
+    elif entry == "replayer":
+        invoke = partial(workflow.Replayer, workflows=[definition])
+    else:
+        invoke = partial(workflow.replay, definition, [], [])
     with pytest.raises(InvalidWorkflowDefinition, match="handler-validation.*receive.*synchronous"):
-        if entry == "definition":
-            workflow.defn(name="handler-validation")(definition)
-        elif entry == "worker":
-            Worker(Client("http://127.0.0.1:1"), task_queue="unused", workflows=[definition])
-        elif entry == "environment":
-            WorkflowEnvironment().register_workflow(definition)
-        elif entry == "replayer":
-            workflow.Replayer(workflows=[definition])
-        else:
-            workflow.replay(definition, [], [])
+        invoke()
 
 
 @pytest.mark.parametrize("shape", ["coroutine", "async_generator", "generator"])
@@ -71,8 +73,10 @@ def test_wrapped_handlers_are_validated(shape: str) -> None:
     def receive(self: Any) -> Any:
         return original(self)
 
+    definition = _definition("signal", receive, False)
+    decorate = workflow.defn(name="handler-validation")
     with pytest.raises(InvalidWorkflowDefinition, match="handler-validation.*receive"):
-        workflow.defn(name="handler-validation")(_definition("signal", receive, False))
+        decorate(definition)
 
 
 @pytest.mark.parametrize("kind", ["signal", "query", "update", "update_validator"])

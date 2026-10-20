@@ -167,7 +167,10 @@ def _workflow_handler_registries(
 def _invoke_workflow_handler(
     handler: Callable[..., Any], args: list[Any], cls: type, method: str, *, allow_async: bool = False,
 ) -> Any:
-    result = handler(*args)
+    return _validate_workflow_handler_result(handler(*args), cls, method, allow_async=allow_async)
+
+
+def _validate_workflow_handler_result(result: Any, cls: type, method: str, *, allow_async: bool = False) -> Any:
     if (
         (inspect.isawaitable(result) and not allow_async)
         or inspect.isasyncgen(result)
@@ -3133,7 +3136,6 @@ def _prepare_query_state(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
-    allow_async: bool = False,
 ) -> Callable[[], Any]:
     """Prepare the query so a worker can recheck authority after replay."""
     try:
@@ -3169,7 +3171,7 @@ def _prepare_query_state(
     def invoke() -> Any:
         try:
             return _invoke_workflow_handler(
-                handler, list(args) if args is not None else [], workflow_cls, method_name, allow_async=allow_async,
+                handler, list(args) if args is not None else [], workflow_cls, method_name, allow_async=True,
             )
         except QueryFailed:
             raise
@@ -3200,7 +3202,7 @@ def query_state(
     Server-routed Worker execution separately checks its original query claim
     between replay and handler invocation. Direct local use has no Server lease.
     """
-    return _prepare_query_state(
+    result = _prepare_query_state(
         workflow_cls, history_events, start_input, query_name, args,
         workflow_id=workflow_id, run_id=run_id, payload_codec=payload_codec,
         external_storage=external_storage, external_storage_cache=external_storage_cache,
@@ -3208,6 +3210,11 @@ def query_state(
         prepare_local_activity_groups=prepare_local_activity_groups,
         local_activity_cancellation_policies=local_activity_cancellation_policies,
     )()
+    try:
+        registry: dict[str, str] = getattr(workflow_cls, "__workflow_queries__", {}) or {}
+        return _validate_workflow_handler_result(result, workflow_cls, registry.get(query_name, query_name))
+    except InvalidWorkflowDefinition as exc:
+        raise QueryFailed(str(exc)) from exc
 
 
 def apply_update(
@@ -3334,8 +3341,41 @@ def validate_update(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
-    allow_async: bool = False,
 ) -> Any:
+    """Replay and invoke a validator synchronously, refusing asynchronous results."""
+    from .errors import UpdateRejected
+
+    result = _prepare_update_validation(
+        workflow_cls, history_events, start_input, update_name, args,
+        workflow_id=workflow_id, run_id=run_id, payload_codec=payload_codec,
+        external_storage=external_storage, external_storage_cache=external_storage_cache,
+        prepare_local_activities=prepare_local_activities,
+        prepare_local_activity_groups=prepare_local_activity_groups,
+        local_activity_cancellation_policies=local_activity_cancellation_policies,
+    )()
+    try:
+        registry: dict[str, str] = getattr(workflow_cls, "__workflow_update_validators__", {}) or {}
+        return _validate_workflow_handler_result(result, workflow_cls, registry.get(update_name, update_name))
+    except InvalidWorkflowDefinition as exc:
+        raise UpdateRejected(str(exc), exception_type=type(exc).__name__) from exc
+
+
+def _prepare_update_validation(
+    workflow_cls: type,
+    history_events: Iterable[dict[str, Any]],
+    start_input: list[Any],
+    update_name: str,
+    args: list[Any],
+    *,
+    workflow_id: str | None = None,
+    run_id: str = "",
+    payload_codec: str | None = None,
+    external_storage: ExternalStorageDriver | None = None,
+    external_storage_cache: ExternalPayloadCache | None = None,
+    prepare_local_activities: bool = False,
+    prepare_local_activity_groups: bool = False,
+    local_activity_cancellation_policies: tuple[str, ...] = (),
+) -> Callable[[], Any]:
     """Replay state and invoke only the declared pre-accept update validator.
 
     The replayed instance is discarded after validation. This helper does not
@@ -3388,20 +3428,23 @@ def validate_update(
     if validator is None:
         raise UpdateValidationFailed(f"update validator {update_name!r} is not available")
 
-    try:
-        result = _invoke_workflow_handler(validator, list(args), workflow_cls, validator_name, allow_async=allow_async)
-        if result is False:
-            raise ValueError(f"update validator {update_name!r} returned false")
-        return result
-    except UpdateRejected:
-        raise
-    except Exception as exc:
-        errors = exc.errors if isinstance(exc, InvalidArgument) else None
-        raise UpdateRejected(
-            str(exc) or f"update validator {update_name!r} rejected the request",
-            exception_type=type(exc).__name__,
-            validation_errors=errors,
-        ) from exc
+    def invoke() -> Any:
+        try:
+            result = _invoke_workflow_handler(validator, list(args), workflow_cls, validator_name, allow_async=True)
+            if result is False:
+                raise ValueError(f"update validator {update_name!r} returned false")
+            return result
+        except UpdateRejected:
+            raise
+        except Exception as exc:
+            errors = exc.errors if isinstance(exc, InvalidArgument) else None
+            raise UpdateRejected(
+                str(exc) or f"update validator {update_name!r} rejected the request",
+                exception_type=type(exc).__name__,
+                validation_errors=errors,
+            ) from exc
+
+    return invoke
 
 
 def _accepted_update_payload(
