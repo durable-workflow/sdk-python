@@ -3326,6 +3326,18 @@ def apply_update(
         return _fail_update_from_exception(update_id, "update handler failed", exc)
 
 
+@dataclass(frozen=True)
+class _UpdateValidationReplayOptions:
+    workflow_id: str | None = None
+    run_id: str = ""
+    payload_codec: str | None = None
+    external_storage: ExternalStorageDriver | None = None
+    external_storage_cache: ExternalPayloadCache | None = None
+    prepare_local_activities: bool = False
+    prepare_local_activity_groups: bool = False
+    local_activity_cancellation_policies: tuple[str, ...] = ()
+
+
 def validate_update(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
@@ -3347,11 +3359,13 @@ def validate_update(
 
     result = _prepare_update_validation(
         workflow_cls, history_events, start_input, update_name, args,
-        workflow_id=workflow_id, run_id=run_id, payload_codec=payload_codec,
-        external_storage=external_storage, external_storage_cache=external_storage_cache,
-        prepare_local_activities=prepare_local_activities,
-        prepare_local_activity_groups=prepare_local_activity_groups,
-        local_activity_cancellation_policies=local_activity_cancellation_policies,
+        replay_options=_UpdateValidationReplayOptions(
+            workflow_id=workflow_id, run_id=run_id, payload_codec=payload_codec,
+            external_storage=external_storage, external_storage_cache=external_storage_cache,
+            prepare_local_activities=prepare_local_activities,
+            prepare_local_activity_groups=prepare_local_activity_groups,
+            local_activity_cancellation_policies=local_activity_cancellation_policies,
+        ),
     )()
     try:
         registry: dict[str, str] = getattr(workflow_cls, "__workflow_update_validators__", {}) or {}
@@ -3367,14 +3381,7 @@ def _prepare_update_validation(
     update_name: str,
     args: list[Any],
     *,
-    workflow_id: str | None = None,
-    run_id: str = "",
-    payload_codec: str | None = None,
-    external_storage: ExternalStorageDriver | None = None,
-    external_storage_cache: ExternalPayloadCache | None = None,
-    prepare_local_activities: bool = False,
-    prepare_local_activity_groups: bool = False,
-    local_activity_cancellation_policies: tuple[str, ...] = (),
+    replay_options: _UpdateValidationReplayOptions,
 ) -> Callable[[], Any]:
     """Replay state and invoke only the declared pre-accept update validator.
 
@@ -3382,7 +3389,7 @@ def _prepare_update_validation(
     run the update handler and does not emit workflow commands, so the server
     remains the sole authority that can cross the accepted-state boundary.
     """
-    from .errors import InvalidArgument, UpdateRejected, UpdateValidationFailed
+    from .errors import UpdateValidationFailed
 
     events = list(history_events)
     try:
@@ -3390,14 +3397,14 @@ def _prepare_update_validation(
             workflow_cls,
             events,
             start_input,
-            workflow_id=workflow_id,
-            run_id=run_id,
-            payload_codec=payload_codec,
-            external_storage=external_storage,
-            external_storage_cache=external_storage_cache,
-            prepare_local_activities=prepare_local_activities,
-            prepare_local_activity_groups=prepare_local_activity_groups,
-            local_activity_cancellation_policies=local_activity_cancellation_policies,
+            workflow_id=replay_options.workflow_id,
+            run_id=replay_options.run_id,
+            payload_codec=replay_options.payload_codec,
+            external_storage=replay_options.external_storage,
+            external_storage_cache=replay_options.external_storage_cache,
+            prepare_local_activities=replay_options.prepare_local_activities,
+            prepare_local_activity_groups=replay_options.prepare_local_activity_groups,
+            local_activity_cancellation_policies=replay_options.local_activity_cancellation_policies,
         )
     except Exception as exc:
         raise UpdateValidationFailed(
@@ -3428,23 +3435,32 @@ def _prepare_update_validation(
     if validator is None:
         raise UpdateValidationFailed(f"update validator {update_name!r} is not available")
 
-    def invoke() -> Any:
-        try:
-            result = _invoke_workflow_handler(validator, list(args), workflow_cls, validator_name, allow_async=True)
-            if result is False:
-                raise ValueError(f"update validator {update_name!r} returned false")
-            return result
-        except UpdateRejected:
-            raise
-        except Exception as exc:
-            errors = exc.errors if isinstance(exc, InvalidArgument) else None
-            raise UpdateRejected(
-                str(exc) or f"update validator {update_name!r} rejected the request",
-                exception_type=type(exc).__name__,
-                validation_errors=errors,
-            ) from exc
+    return lambda: _invoke_update_validator(validator, args, workflow_cls, validator_name, update_name)
 
-    return invoke
+
+def _invoke_update_validator(
+    validator: Callable[..., Any],
+    args: list[Any],
+    workflow_cls: type,
+    validator_name: str,
+    update_name: str,
+) -> Any:
+    from .errors import InvalidArgument, UpdateRejected
+
+    try:
+        result = _invoke_workflow_handler(validator, list(args), workflow_cls, validator_name, allow_async=True)
+        if result is False:
+            raise ValueError(f"update validator {update_name!r} returned false")
+        return result
+    except UpdateRejected:
+        raise
+    except Exception as exc:
+        errors = exc.errors if isinstance(exc, InvalidArgument) else None
+        raise UpdateRejected(
+            str(exc) or f"update validator {update_name!r} rejected the request",
+            exception_type=type(exc).__name__,
+            validation_errors=errors,
+        ) from exc
 
 
 def _accepted_update_payload(
