@@ -122,7 +122,8 @@ async def test_actual_workflow_replay_emits_no_completed_activity_attempt() -> N
             "workflow_type": "telemetry.workflow", "workflow_task_attempt": 1,
             "payload_codec": "avro", "arguments": serializer.encode([], codec="avro"), "history_events": []}
     commands = await worker._run_workflow_task(work)
-    assert commands is not None and commands[0]["type"] == "schedule_activity"
+    assert commands is not None
+    assert commands[0]["type"] == "schedule_activity"
     work["history_events"] = [{"event_type": "ActivityCompleted", "payload": {
         "sequence": 1, "activity_type": "shipping", "payload_codec": "avro",
         "result": serializer.envelope("shipped", codec="avro"),
@@ -142,10 +143,9 @@ async def test_failure_cancellation_and_caller_context_are_preserved_without_exc
     caller = provider.get_tracer("application").start_span("caller")
     token = context.attach(trace.set_span_in_context(caller))
     try:
+        invocation = ActivityInterceptorContext("worker", "queue", task(), "shipping", ())
         with pytest.raises(RuntimeError) as caught:
-            await telemetry.execute_activity(
-                ActivityInterceptorContext("worker", "queue", task(), "shipping", ()), failing,
-            )
+            await telemetry.execute_activity(invocation, failing)
         assert caught.value is failure
         assert trace.get_current_span() is caller
         started = asyncio.Event()
@@ -223,7 +223,8 @@ async def test_real_supervised_child_constructs_fresh_provider_and_exports_befor
     finally:
         await callback.close()
     spans = [json.loads(line) for line in destination.read_text().splitlines()]
-    assert len(spans) == 1 and spans[0]["pid"] != os.getpid()
+    assert len(spans) == 1
+    assert spans[0]["pid"] != os.getpid()
     assert spans[0]["attributes"]["activity_attempt_id"] == "attempt-child"
 
 
@@ -274,11 +275,11 @@ async def test_forked_host_drops_inherited_context_and_provider_without_factory(
         child = os.fork()
         if child == 0:
             try:
-                assert current_log_context() == {}
+                if current_log_context() != {}:
+                    os._exit(1)
                 tracer = telemetry._get_tracer()
                 span = tracer.start_span("child", context=context.Context())
-                assert not span.get_span_context().is_valid
-                os._exit(0)
+                os._exit(1 if span.get_span_context().is_valid else 0)
             except BaseException:
                 os._exit(1)
         _, status = await asyncio.to_thread(os.waitpid, child, 0)

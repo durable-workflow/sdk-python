@@ -29,6 +29,7 @@ _execution_pid: ContextVar[int | None] = ContextVar("durable_execution_pid", def
 _active_telemetry: ContextVar[ExecutionTelemetry | None] = ContextVar("durable_execution_telemetry", default=None)
 _C = TypeVar("_C")
 _T = TypeVar("_T")
+_TRACE_MODULE = "opentelemetry.trace"
 
 
 def current_execution_telemetry() -> ExecutionTelemetry | None:
@@ -43,7 +44,7 @@ def current_log_context() -> dict[str, str | int]:
         return {}
     result = dict(fields)
     try:
-        trace = importlib.import_module("opentelemetry.trace")
+        trace = importlib.import_module(_TRACE_MODULE)
         identity = trace.get_current_span().get_span_context()
         if identity.is_valid:
             result["trace_id"] = format(identity.trace_id, "032x")
@@ -126,7 +127,7 @@ class ExecutionTelemetry:
                 # A forked host may retain global exporter sockets. Only an
                 # explicit factory may create providers for that child.
                 try:
-                    trace = importlib.import_module("opentelemetry.trace")
+                    trace = importlib.import_module(_TRACE_MODULE)
                     self._tracer = trace.NoOpTracerProvider().get_tracer("durable-workflow/sdk-python")
                 except Exception:
                     self._tracer = None
@@ -135,7 +136,7 @@ class ExecutionTelemetry:
             return self._tracer
         self._resolved = True
         try:
-            trace = importlib.import_module("opentelemetry.trace")
+            trace = importlib.import_module(_TRACE_MODULE)
             provider = self._provider
             if provider is None and self.provider_factory is not None:
                 module, name = self.provider_factory.split(":", 1)
@@ -184,9 +185,12 @@ class ExecutionTelemetry:
             "workflow_task_attempt", task.get("query_task_attempt"),
         )
         if type(attempt) is int and 0 < attempt <= 2**63 - 1:
-            key = "activity_attempt_number" if activity else (
-                "workflow_task_attempt" if "workflow_task_attempt" in task else "query_task_attempt"
-            )
+            if activity:
+                key = "activity_attempt_number"
+            elif "workflow_task_attempt" in task:
+                key = "workflow_task_attempt"
+            else:
+                key = "query_task_attempt"
             fields[key] = attempt
         return fields
 
@@ -203,7 +207,7 @@ class ExecutionTelemetry:
         otel_context: Any = None
         otel_token: Any = None
         try:
-            trace = importlib.import_module("opentelemetry.trace")
+            trace = importlib.import_module(_TRACE_MODULE)
             otel_context = importlib.import_module("opentelemetry.context")
             parent = otel_context.get_current() if nested and parent_fields is not None else otel_context.Context()
             span_links: list[Any] = []
@@ -229,7 +233,7 @@ class ExecutionTelemetry:
         except BaseException:
             if span is not None:
                 try:
-                    trace = importlib.import_module("opentelemetry.trace")
+                    trace = importlib.import_module(_TRACE_MODULE)
                     span.set_attribute("error.type", "durable.execution.failed")
                     span.set_status(trace.Status(trace.StatusCode.ERROR, "durable execution failed"))
                 except Exception:
