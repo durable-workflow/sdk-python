@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from durable_workflow import activity, serializer
+from durable_workflow import activity, serializer, workflow
 from durable_workflow.client import Client
 from durable_workflow.worker import Worker
 
@@ -42,8 +42,13 @@ async def test_default_sync_handlers_run_concurrently_without_stalling_heartbeat
         assert release.wait(1), "event loop did not release the activity"
         return activity.context().info.task_id
 
+    @workflow.defn(name="sync-side-workflow")
+    class SideWorkflow:
+        def run(self, ctx: Any) -> str:
+            return "workflow-progress"
+
     client = AsyncMock(spec=Client)
-    worker = Worker(client, task_queue="sync-queue", activities=[blocking],
+    worker = Worker(client, task_queue="sync-queue", workflows=[SideWorkflow], activities=[blocking],
                     max_concurrent_activity_tasks=2, heartbeat_interval=0.01)
     heartbeat = asyncio.create_task(worker._heartbeat_loop())
     tasks = [asyncio.create_task(worker._run_activity_task(activity_task(n))) for n in (1, 2)]
@@ -54,6 +59,14 @@ async def test_default_sync_handlers_run_concurrently_without_stalling_heartbeat
         assert not any(task.done() for task in tasks)
         assert client.heartbeat_worker.await_count >= 1
         assert worker._current_task_slots()["activity_available"] == 0
+        commands = await worker._run_workflow_task({
+            "task_id": "side-workflow-task", "workflow_type": "sync-side-workflow",
+            "workflow_task_attempt": 1, "history_events": [],
+            "arguments": serializer.encode([], codec="avro"), "payload_codec": "avro",
+        })
+        assert commands is not None and commands[0]["type"] == "complete_workflow"
+        client.complete_workflow_task.assert_awaited_once()
+        assert not any(task.done() for task in tasks)
     finally:
         release.set()
         worker._stop.set()

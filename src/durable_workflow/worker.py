@@ -3070,7 +3070,9 @@ class Worker:
             if self._cooperative_cancellation_supported:
                 result = await self._execute_cooperative_remote_callable(task, fn, tuple(args), act_ctx.info)
             else:
-                result = await self._execute_activity_callable(task, activity_type, tuple(args), fn)
+                result = await self._execute_activity_callable(
+                    task, activity_type, tuple(args), fn, run_sync_in_thread=True, remote=True,
+                )
         except _RemoteActivityExecutionAborted as error:
             log.warning("remote activity %s claim abandoned: %s", task_id, error)
             return "claim_aborted"
@@ -4374,7 +4376,8 @@ class Worker:
                 await asyncio.sleep(poll_interval)
                 continue
             self._validate_cooperative_activity_handlers()
-            if len(self._remote_activity_processes) >= self.max_concurrent_activity_tasks:
+            if (len(self._remote_activity_threads) + len(self._remote_activity_processes)
+                    >= self.max_concurrent_activity_tasks):
                 next_task_kind = "workflow"
                 await asyncio.sleep(poll_interval)
                 continue
@@ -4510,6 +4513,17 @@ class Worker:
                     "the worker registration remains active"
                 )
             await asyncio.gather(*in_flight, return_exceptions=True)
+
+        # Cancelling the asyncio await cannot stop a running Python thread.
+        # Keep registration and capacity until the actual callback has returned.
+        while any(not future.done() for future in self._remote_activity_threads):
+            remaining = self._remaining_shutdown_time(deadline)
+            if remaining <= 0:
+                raise RuntimeError(
+                    "worker shutdown has unconfirmed activity thread stop(s); "
+                    "the worker registration remains active"
+                )
+            await asyncio.sleep(min(0.01, remaining))
 
         if self._local_activity_executor is not None:
             self._local_activity_executor.shutdown(wait=False, cancel_futures=True)

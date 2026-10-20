@@ -1,6 +1,7 @@
 """Activity decorator, registry, and execution context."""
 from __future__ import annotations
 
+import asyncio
 import contextvars
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -44,6 +45,10 @@ class ActivityContext:
         self._client = client
         self._heartbeat_callback = heartbeat_callback
         self._cancel_requested = False
+        try:
+            self._event_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            self._event_loop = None
 
     @property
     def info(self) -> ActivityInfo:
@@ -54,6 +59,29 @@ class ActivityContext:
     def is_cancelled(self) -> bool:
         """``True`` once the server has signalled that the owning workflow cancelled this activity."""
         return self._cancel_requested
+
+    def heartbeat_sync(self, details: dict[str, Any] | None = None) -> None:
+        """Heartbeat from a synchronous activity thread and observe cancellation.
+
+        The request runs on the worker's event loop using the original attempt
+        and client. Async handlers must use ``await heartbeat()`` instead.
+        """
+        loop = self._event_loop
+        if loop is None or not loop.is_running():
+            raise RuntimeError("heartbeat_sync requires a running worker event loop")
+        try:
+            caller_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            caller_loop = None
+        if caller_loop is loop:
+            raise RuntimeError("use await activity.context().heartbeat() on the worker event loop")
+        heartbeat = self.heartbeat(details)
+        try:
+            pending = asyncio.run_coroutine_threadsafe(heartbeat, loop)
+        except RuntimeError:
+            heartbeat.close()
+            raise
+        pending.result()
 
     async def heartbeat(self, details: dict[str, Any] | None = None) -> None:
         """Report liveness to the server and check for a cancellation request.
