@@ -76,6 +76,7 @@ markdown_extensions:
 nav:
   - Start here: index.md
   - SDK reference: sdk-reference.md
+  - Execution telemetry: telemetry.md
   - Sticky execution: guides/sticky-execution.md
   - Separate worker processes: guides/separate-workers.md
   - Query deadlines: query-task-authority.md
