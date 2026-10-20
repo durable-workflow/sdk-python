@@ -757,9 +757,64 @@ libraries.
 - **External payload references**: automatic runtime-mediated upload/fetch with opaque references, typed failures, integrity verification, and a bounded cache; direct provider drivers remain explicit self-hosted integrations
 - **Payload-size warnings**: Structured warnings before oversized workflow, activity, schedule, signal, update, query, or search-attribute payloads reach the server
 - **Workflow definition guard**: Worker registration refuses same-id hot reloads when a workflow class definition changed
-- **Deterministic workflow helpers**: `ctx.now()`, `ctx.random()`, `ctx.uuid4()`, and `ctx.uuid7()` replay from workflow state
+- **Deterministic workflow helpers**: `ctx.now()` returns the persisted run-start time; `ctx.random()`, `ctx.uuid4()`, and `ctx.uuid7()` replay from workflow state
 - **Worker interceptors**: Typed hooks around workflow tasks, activity calls, and query tasks for tracing, logging, and custom metrics
 - **Metrics hooks**: Pluggable counters and histograms, with an optional Prometheus adapter
+
+## Workflow time and durable waits
+
+`ctx.now()` returns the run's persisted start time and stays fixed for that
+entire run, including after activities, timers, signals, or other durable
+steps. Cold replays of the same history return the same value. A
+continue-as-new successor uses its own run-start anchor, not its predecessor's.
+
+The replay clock uses `WorkflowStarted.payload.timestamp` when present,
+otherwise `WorkflowStarted.recorded_at`. Missing or invalid persisted time
+raises an explicit clock error when a clock-dependent helper is used; worker
+replay does not replace it with current wall time. This is the settled
+[SDK #146](https://github.com/durable-workflow/sdk-python/issues/146) contract.
+
+Wait for durable completion rather than a changing `ctx.now()`:
+
+```python
+from durable_workflow import workflow
+
+
+@workflow.defn(name="wait_without_clock_loop")
+class WaitWithoutClockLoop:
+    def run(self, ctx):
+        started_at = ctx.now()
+        yield ctx.start_timer(30)
+        return {
+            "run_started_at": started_at.isoformat(),
+            "after_wait": ctx.now().isoformat(),
+        }
+```
+
+The timer resumes the workflow, but both returned timestamps remain equal.
+Do not use `while ctx.now() < deadline` to wait for time to pass. Use
+`ctx.start_timer(seconds)` or `ctx.sleep(seconds)` for a relative delay, or
+`ctx.select()` to race work against a durable timer. Configure
+`execution_timeout_seconds` and `run_timeout_seconds` on
+`client.start_workflow(...)` for Server-enforced workflow deadlines. HTTP and
+`get_result()` wait timeouts only bound the local request. Pass any application
+deadline explicitly through continue-as-new without replacing the original
+Server execution deadline.
+
+Measure elapsed time with a monotonic clock inside one activity invocation,
+then return the duration as its recorded result. Check an external UTC deadline
+inside an activity against the authoritative external clock and return its
+decision. Never compare UTC and monotonic values or subtract monotonic readings
+from different processes or hosts. Subtracting Python `ctx.now()` values does
+not measure elapsed time.
+
+For event ordering, use Workflow Stream offsets, the relevant message/outbox
+sequence, or a deterministic workflow-local counter paired with `run_id`.
+Carry application sequence state explicitly through continue-as-new when
+needed. Identical timestamps do not order events across independent streams or
+runs. The [cross-SDK clock comparison](https://durable-workflow.com/docs/2.0/polyglot/python/#clock-differences-across-sdks)
+distinguishes Python's fixed anchor, embedded PHP's advancing event clock, and
+the separate PHP and Rust service-mode APIs.
 
 ## Payload-size warnings
 
