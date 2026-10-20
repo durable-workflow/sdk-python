@@ -4376,8 +4376,7 @@ class Worker:
                 await asyncio.sleep(poll_interval)
                 continue
             self._validate_cooperative_activity_handlers()
-            if (len(self._remote_activity_threads) + len(self._remote_activity_processes)
-                    >= self.max_concurrent_activity_tasks):
+            if len(self._remote_activity_processes) >= self.max_concurrent_activity_tasks:
                 next_task_kind = "workflow"
                 await asyncio.sleep(poll_interval)
                 continue
