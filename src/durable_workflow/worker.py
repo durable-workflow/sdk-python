@@ -109,12 +109,13 @@ from .workflow import (
     StartChildWorkflow,
     UpsertMemo,
     _prepare_query_state,
+    _prepare_update_validation,
+    _UpdateValidationReplayOptions,
     _validate_workflow_entrypoint,
     _workflow_handler_registries,
     apply_update,
     commands_to_server_commands,
     replay,
-    validate_update,
 )
 
 log = logging.getLogger("durable_workflow.worker")
@@ -3867,21 +3868,24 @@ class Worker:
                 codec=codec,
                 context="workflow update validation arguments",
             )
-            result = validate_update(
+            invoke = _prepare_update_validation(
                 workflow_cls,
                 history,
                 start_input,
                 update_name,
                 update_args,
-                workflow_id=task.get("workflow_id"),
-                run_id=task.get("run_id", ""),
-                payload_codec=codec,
-                external_storage=self.external_storage,
-                external_storage_cache=self.external_storage_cache,
-                prepare_local_activities=self._prepared_local_activities_supported,
-                prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
-                local_activity_cancellation_policies=self._local_activity_cancellation_policies,
+                replay_options=_UpdateValidationReplayOptions(
+                    workflow_id=task.get("workflow_id"),
+                    run_id=task.get("run_id", ""),
+                    payload_codec=codec,
+                    external_storage=self.external_storage,
+                    external_storage_cache=self.external_storage_cache,
+                    prepare_local_activities=self._prepared_local_activities_supported,
+                    prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
+                    local_activity_cancellation_policies=self._local_activity_cancellation_policies,
+                ),
             )
+            result = invoke()
             if inspect.isawaitable(result):
                 result = await result
             if result is False:

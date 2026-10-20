@@ -1,5 +1,32 @@
 # Workflow
 
+## Signal, update and query handlers
+
+Handlers decorated with `@workflow.signal` or `@workflow.update` must be
+synchronous functions. Coroutine
+(`async def`), async-generator and generator handlers are rejected with
+`InvalidWorkflowDefinition` when the workflow is defined, registered or replayed,
+including inherited handlers. Returning an asynchronous or generator value from
+a synchronous wrapper is also refused.
+
+Queries and update validators may be synchronous or `async def`. The Worker
+awaits their results; queries retain their original deadline and cancellation
+authority. The local synchronous `query_state()` and `validate_update()` helpers
+refuse asynchronous results with `QueryFailed` and `UpdateRejected` respectively
+and close returned coroutines. Generator and async-generator query or validator
+handlers are rejected at definition or registration.
+
+Each replay constructs the workflow instance before executing `run()`. Signals
+already present at workflow start are applied after `run()` reaches its first
+yield, so constructor and pre-yield initialization happen before those handlers.
+Signal and update handlers mutate that replayed state; queries inspect it and
+update validators check a request before acceptance. Put durable activities,
+timers and child workflow commands in `run()`, not in a handler.
+
+An exception from a signal handler while replaying fails the workflow run.
+Update-handler exceptions fail the update, validator exceptions reject it,
+and query-handler exceptions fail the query. They do not silently succeed.
+
 Workflow retry and timeout settings are durable command budgets. Use
 `ActivityRetryPolicy` on `ctx.schedule_activity(...)` for activity attempts and
 `ChildWorkflowRetryPolicy` on `ctx.start_child_workflow(...)` for child workflow
