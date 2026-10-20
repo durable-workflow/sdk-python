@@ -64,7 +64,8 @@ async def test_default_sync_handlers_run_concurrently_without_stalling_heartbeat
             "workflow_task_attempt": 1, "history_events": [],
             "arguments": serializer.encode([], codec="avro"), "payload_codec": "avro",
         })
-        assert commands is not None and commands[0]["type"] == "complete_workflow"
+        assert commands is not None
+        assert commands[0]["type"] == "complete_workflow"
         client.complete_workflow_task.assert_awaited_once()
         assert not any(task.done() for task in tasks)
     finally:
@@ -113,9 +114,10 @@ async def test_async_activity_remains_on_loop_and_sync_heartbeat_cannot_deadlock
     @activity.defn(name="sync-probe")
     async def nonblocking() -> str:
         assert threading.current_thread() is owner
+        ctx = activity.context()
         with pytest.raises(RuntimeError, match="await.*heartbeat"):
-            activity.context().heartbeat_sync()
-        await activity.context().heartbeat({"async": True})
+            ctx.heartbeat_sync()
+        await ctx.heartbeat({"async": True})
         return "async-result"
 
     client = AsyncMock(spec=Client)
