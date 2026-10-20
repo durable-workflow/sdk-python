@@ -287,6 +287,17 @@ class UnsupportedAsyncWorkflow:
         return "body was never executed"
 
 
+class UnsupportedAsyncSignalWorkflow:
+    __workflow_name__ = "tests.replay.unsupported-async-signal"
+
+    @workflow.signal("change")
+    async def receive(self) -> None:
+        raise AssertionError("unsupported signal body must never run")
+
+    def run(self, ctx: WorkflowContext) -> str:
+        return "done"
+
+
 @workflow.defn(name="tests.replay.entry-arguments-required")
 class RequiredEntryArgumentWorkflow:
     def run(self, ctx: WorkflowContext, amount: int, required: int) -> int:
@@ -334,6 +345,7 @@ WORKFLOWS = [
     NexusTerminalDeliveryWorkflow,
     NexusTargetWorkflow,
     UnsupportedAsyncWorkflow,
+    UnsupportedAsyncSignalWorkflow,
     ChildPolicyAuthorWorkflow,
     ColdReplacementSatisfiedConditionWorkflow,
     CooperativeReopenedConditionCleanupWorkflow,

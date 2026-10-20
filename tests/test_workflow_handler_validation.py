@@ -38,8 +38,12 @@ def _definition(kind: str, handler: Any, inherited: bool) -> type:
     return definition
 
 
-@pytest.mark.parametrize("kind", ["signal", "query", "update", "update_validator"])
-@pytest.mark.parametrize("shape", ["coroutine", "async_generator", "generator"])
+@pytest.mark.parametrize("kind,shape", [
+    (kind, shape)
+    for kind in ("signal", "query", "update", "update_validator")
+    for shape in ("coroutine", "async_generator", "generator")
+    if shape != "coroutine" or kind not in {"query", "update_validator"}
+])
 @pytest.mark.parametrize("inherited", [False, True])
 @pytest.mark.parametrize("entry", ["definition", "worker", "environment", "replayer", "replay"])
 def test_unsupported_handlers_are_rejected_before_execution(

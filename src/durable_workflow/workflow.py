@@ -138,6 +138,21 @@ def _workflow_handler_registries(
             wire_name = getattr(member, f"__{kind}_name__", None)
             if not isinstance(wire_name, str) or not wire_name:
                 continue
+            if not callable(member):
+                raise InvalidWorkflowDefinition(f"workflow {cls.__qualname__}.{attr} handler must be callable")
+            target = inspect.unwrap(member)
+            if not inspect.isroutine(target) and callable(target):
+                target = inspect.unwrap(target.__call__)
+            if (
+                (inspect.iscoroutinefunction(target) and kind not in {"query", "update_validator"})
+                or inspect.isasyncgenfunction(target)
+                or inspect.isgeneratorfunction(target)
+            ):
+                name = getattr(cls, "__workflow_name__", cls.__name__)
+                raise InvalidWorkflowDefinition(
+                    f"unsupported_workflow_handler: workflow {name!r} ({cls.__qualname__}.{attr}) "
+                    f"{kind} handler {wire_name!r} must be synchronous; yield durable commands from run()."
+                )
             if kind == "signal" and wire_name == MESSAGE_STREAM_SIGNAL:
                 raise ValueError(f"signal name {wire_name!r} is reserved by the workflow runtime")
             if wire_name in registry:
@@ -147,6 +162,25 @@ def _workflow_handler_registries(
                 )
             registry[wire_name] = attr
     return handlers["signal"], handlers["query"], handlers["update"], handlers["update_validator"]
+
+
+def _invoke_workflow_handler(
+    handler: Callable[..., Any], args: list[Any], cls: type, method: str, *, allow_async: bool = False,
+) -> Any:
+    result = handler(*args)
+    if (
+        (inspect.isawaitable(result) and not allow_async)
+        or inspect.isasyncgen(result)
+        or inspect.isgenerator(result)
+    ):
+        if inspect.iscoroutine(result) or inspect.isgenerator(result):
+            result.close()
+        name = getattr(cls, "__workflow_name__", cls.__name__)
+        raise InvalidWorkflowDefinition(
+            f"unsupported_workflow_handler_result: workflow {name!r} ({cls.__qualname__}.{method}) "
+            "returned an async or generator value; handlers must return synchronous values."
+        )
+    return result
 
 
 def defn(*, name: str) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
@@ -3099,6 +3133,7 @@ def _prepare_query_state(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
+    allow_async: bool = False,
 ) -> Callable[[], Any]:
     """Prepare the query so a worker can recheck authority after replay."""
     try:
@@ -3133,7 +3168,9 @@ def _prepare_query_state(
 
     def invoke() -> Any:
         try:
-            return handler(*(list(args) if args is not None else []))
+            return _invoke_workflow_handler(
+                handler, list(args) if args is not None else [], workflow_cls, method_name, allow_async=allow_async,
+            )
         except QueryFailed:
             raise
         except Exception as exc:
@@ -3276,7 +3313,8 @@ def apply_update(
         )
 
     try:
-        return CompleteUpdate(update_id=update_id, result=handler(*args))
+        result = _invoke_workflow_handler(handler, args, workflow_cls, method_name)
+        return CompleteUpdate(update_id=update_id, result=result)
     except Exception as exc:
         return _fail_update_from_exception(update_id, "update handler failed", exc)
 
@@ -3296,6 +3334,7 @@ def validate_update(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
+    allow_async: bool = False,
 ) -> Any:
     """Replay state and invoke only the declared pre-accept update validator.
 
@@ -3350,7 +3389,7 @@ def validate_update(
         raise UpdateValidationFailed(f"update validator {update_name!r} is not available")
 
     try:
-        result = validator(*list(args))
+        result = _invoke_workflow_handler(validator, list(args), workflow_cls, validator_name, allow_async=allow_async)
         if result is False:
             raise ValueError(f"update validator {update_name!r} returned false")
         return result
@@ -4240,6 +4279,7 @@ def _replay_state(
     allow_cancellation_scope_delivery: bool = False,
 ) -> _ReplayState:
     _validate_workflow_entrypoint(workflow_cls)
+    _workflow_handler_registries(workflow_cls)
     if allow_cancellation_scope_delivery and not allow_cancellation_scope_authoring:
         raise LocalActivityExecutionAborted("scope delivery requires canonical scope authoring")
     if prepare_local_activity_groups and not prepare_local_activities:
@@ -5285,7 +5325,7 @@ def _replay_state(
                 return
             raise TypeError(f"update handler {receiver.name!r} is not available")
         ctx.logger._set_replaying(True)
-        handler(*receiver.args)
+        _invoke_workflow_handler(handler, receiver.args, workflow_cls, method_name)
 
     def _receiver_due(receiver: _PendingReceiver, *, before_consuming_result: bool) -> bool:
         if receiver.after_cancellation_delivery and not cancellation_consumed:

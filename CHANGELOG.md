@@ -14,6 +14,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deprecate_patch` for the same change ID, while validating each call's range
   and preserving retained duplicate-marker sequences.
 
+## [2.6.2] - 2026-10-20
+
+### Fixed
+
+- Preserve workflow entry argument-binding refusals before application code
+  runs, with truthful Worker capability discovery for compatible deployment
+  routing. Workflow body exceptions remain ordinary workflow failures.
+- Run synchronous remote activities outside the asyncio event loop so other
+  workflow tasks, polls and heartbeats can progress.
+- Reject unsupported coroutine signal/update handlers and generator handlers
+  before registration or replay, including inherited and wrapped handlers.
+  Guard returned values without removing the Worker's existing asynchronous
+  query and update-validator support. Local synchronous query/validation helpers
+  refuse and close returned coroutines.
+
 ## [2.6.1] - 2026-10-19
 
 ### Fixed

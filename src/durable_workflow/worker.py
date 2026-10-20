@@ -3373,6 +3373,7 @@ class Worker:
                 prepare_local_activities=self._prepared_local_activities_supported,
                 prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                 local_activity_cancellation_policies=self._local_activity_cancellation_policies,
+                allow_async=True,
             )
             await authority.confirm()
             async def execute() -> Any:
@@ -3881,6 +3882,7 @@ class Worker:
                 prepare_local_activities=self._prepared_local_activities_supported,
                 prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                 local_activity_cancellation_policies=self._local_activity_cancellation_policies,
+                allow_async=True,
             )
             if inspect.isawaitable(result):
                 result = await result
