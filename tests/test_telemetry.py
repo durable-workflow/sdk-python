@@ -224,7 +224,7 @@ async def test_real_supervised_child_constructs_fresh_provider_and_exports_befor
         await callback.close()
     spans = [json.loads(line) for line in destination.read_text().splitlines()]
     assert len(spans) == 1 and spans[0]["pid"] != os.getpid()
-    assert spans[0]["attributes"]["durable.activity_attempt_id"] == "attempt-child"
+    assert spans[0]["attributes"]["activity_attempt_id"] == "attempt-child"
 
 
 def test_fresh_process_without_optional_api_keeps_business_result() -> None:

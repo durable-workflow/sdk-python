@@ -26,10 +26,28 @@ application child span's trace/span IDs. Application request IDs and messages
 are preserved. Arguments, results, headers, exception text and baggage are not
 recorded by this integration. These identifiers are not metric labels.
 
-Each task currently starts a fresh trace. Server durable admission, queue and
-cross-task carriers are not adopted by this component. Retries have separate
-attempt spans, and replay does not emit new attempt spans for recorded activity
-results. Full service-mode propagation remains tracked in Workflow #773.
+Servers without the exact optional observability capability use independent
+task traces. When available, a valid run origin becomes the task parent, while
+task-bound dispatch and committed outcome contexts become links. Workers read
+them after the actual poll identity and existing history/authority fences.
+Insufficient claim identity omits propagation without changing business gates.
+Retries have separate attempt spans, and replay emits no new attempt spans for
+recorded activity results. Current published Server support remains unavailable;
+combined end-to-end qualification is tracked in Workflow #773.
+
+For admission or commands outside worker execution, pass `telemetry=telemetry`
+to `Client` and use its existing `await client.get_cluster_info()` discovery
+during setup. Worker commands use the active interceptor. Only actual discovery
+of the exact supported `worker_protocol.server_capabilities.observability_context`
+object enables propagation. Unknown or malformed discovery disables it. No extra
+business request, mandatory protocol floor or version-string inference is added.
+Caller capture occurs before HTTP instrumentation starts; application arguments
+and request keys retain their existing meaning.
+
+Official W3C propagators validate headers. Baggage defaults empty; opt in with
+`baggage_allowlist=("tenant",)`. Secondary links never carry baggage. Context and
+link envelopes are limited to 4096 bytes, with at most 32 links. Invalid metadata
+is ignored, with only fixed `discarded` or `filtered` span diagnostics.
 
 Async tasks and worker-managed callback threads retain isolated execution
 contexts; completion, cancellation and failures restore the previous context.

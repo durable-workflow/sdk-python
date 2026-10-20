@@ -40,6 +40,10 @@ class CallbackInvocation:
     info: ActivityInfo
     task: dict[str, Any]
     interceptors: tuple[WorkerInterceptor, ...] = ()
+    namespace: str | None = None
+    observability_supported: bool = False
+    remote: bool = False
+    execution_context: dict[str, Any] | None = None
 
     def serialize(self) -> bytes:
         try:
@@ -100,6 +104,8 @@ def _callback(directory: str, channel: socket.socket) -> None:
         context = ActivityInterceptorContext(
             worker_id=invocation.info.worker_id, task_queue=invocation.info.task_queue,
             task=invocation.task, activity_type=invocation.info.activity_type, args=invocation.args,
+            namespace=invocation.namespace, observability_supported=invocation.observability_supported,
+            remote=invocation.remote, execution_context=invocation.execution_context,
         )
 
         async def call(ctx: ActivityInterceptorContext) -> Any:

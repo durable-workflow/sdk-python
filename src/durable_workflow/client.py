@@ -75,6 +75,8 @@ from .external_storage import (
 from .metrics import CLIENT_REQUEST_DURATION_SECONDS, CLIENT_REQUESTS, NOOP_METRICS, MetricsRecorder
 from .nexus import NexusOperationResult, nexus_request_payload
 from .retry_policy import TransportRetryPolicy
+from .telemetry import ExecutionTelemetry, current_execution_telemetry
+from .telemetry_carrier import supported as observability_supported
 from .worker_session import WorkerSessionOptions
 
 PROTOCOL_VERSION = "1.20"
@@ -1647,12 +1649,15 @@ class Client:
         external_storage: ExternalStorageDriver | None = None,
         external_storage_threshold_bytes: int | None = None,
         external_storage_cache: ExternalPayloadCache | None = None,
+        telemetry: ExecutionTelemetry | None = None,
     ) -> None:
         self.base_url = _normalize_base_url(base_url)
         self.token = token
         self.control_token = control_token
         self.worker_token = worker_token
         self.namespace = namespace
+        self.telemetry = telemetry
+        self._observability_capability = False
         self.timeout = timeout
         self.retry_policy = retry_policy or TransportRetryPolicy()
         self.metrics = metrics or NOOP_METRICS
@@ -2658,6 +2663,7 @@ class Client:
         credential. Other client methods continue to require the credential
         for their own protocol plane.
         """
+        self._observability_capability = False
         result = await self._request("GET", "/cluster/info", discovery=True, context="get_cluster_info")
         if not isinstance(result, dict):
             raise ServerError(
@@ -2665,7 +2671,15 @@ class Client:
                 {"reason": "invalid_cluster_info", "message": f"expected JSON object, got {type(result).__name__}"},
             )
         self._cluster_info = result
+        self._observability_capability = observability_supported(result)
         return result
+
+    def _with_observability_context(self, body: dict[str, Any]) -> dict[str, Any]:
+        telemetry = self.telemetry or current_execution_telemetry()
+        if telemetry is None or not self._observability_capability:
+            return body
+        carrier = telemetry.capture()
+        return body if carrier is None else {**body, "observability_context": carrier}
 
     async def _runtime_discovery(
         self,
@@ -2838,6 +2852,7 @@ class Client:
         # provider credentials. The worker keeps using the original client.
         scoped.worker_token = None
         scoped._cluster_info = None
+        scoped._observability_capability = False
         scoped._cluster_info_lock = asyncio.Lock()
         scoped._runtime_external_payload_transport_cache = None
         scoped._runtime_external_payload_transport_resolved = False
@@ -3654,7 +3669,9 @@ class Client:
             body["build_id"] = build_id
         if compatibility is not None:
             body["compatibility"] = compatibility
-        data = await self._request("POST", "/workflows", json=body, context=workflow_id)
+        data = await self._request(
+            "POST", "/workflows", json=self._with_observability_context(body), context=workflow_id,
+        )
         return WorkflowHandle(
             self,
             workflow_id=data["workflow_id"],
@@ -4401,7 +4418,8 @@ class Client:
         body["request_id"] = key
         try:
             data = await self._request(
-                "POST", f"/workflows/{workflow_id}/signal/{signal_name}", json=body, context=workflow_id,
+                "POST", f"/workflows/{workflow_id}/signal/{signal_name}",
+                json=self._with_observability_context(body), context=workflow_id,
             )
         except Exception as exc:
             failure = _command_request_failure(exc, command="signal", request_id=key)
@@ -4520,7 +4538,10 @@ class Client:
         body: dict[str, Any] = {}
         if reason is not None:
             body["reason"] = reason
-        await self._request("POST", f"/workflows/{workflow_id}/cancel", json=body, context=workflow_id)
+        await self._request(
+            "POST", f"/workflows/{workflow_id}/cancel",
+            json=self._with_observability_context(body), context=workflow_id,
+        )
 
     async def terminate_workflow(self, workflow_id: str, *, reason: str | None = None) -> None:
         """Close the current run as terminated immediately.
@@ -4623,7 +4644,8 @@ class Client:
         body["request_id"] = key
         try:
             data = await self._request(
-                "POST", f"/workflows/{workflow_id}/update/{update_name}", json=body, context=workflow_id
+                "POST", f"/workflows/{workflow_id}/update/{update_name}",
+                json=self._with_observability_context(body), context=workflow_id,
             )
         except Exception as exc:
             failure = _command_request_failure(exc, command="update", request_id=key)
@@ -5403,7 +5425,11 @@ class Client:
         body: dict[str, Any] = {
             "lease_owner": lease_owner,
             "workflow_task_attempt": workflow_task_attempt,
-            "commands": commands,
+            "commands": [
+                self._with_observability_context(command)
+                if command.get("type") in {"start_child_workflow", "continue_as_new"} else command
+                for command in commands
+            ] if self._observability_capability else commands,
         }
         if message_stream_cursors:
             body["message_stream_cursors"] = message_stream_cursors
