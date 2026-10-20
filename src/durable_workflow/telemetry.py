@@ -25,6 +25,7 @@ from .interceptors import (
 )
 
 _fields: ContextVar[dict[str, str | int] | None] = ContextVar("durable_execution_fields", default=None)
+_execution_pid: ContextVar[int | None] = ContextVar("durable_execution_pid", default=None)
 _C = TypeVar("_C")
 _T = TypeVar("_T")
 
@@ -32,7 +33,7 @@ _T = TypeVar("_T")
 def current_log_context() -> dict[str, str | int]:
     """Return bounded durable IDs and the actual current application span IDs."""
     fields = _fields.get()
-    if fields is None:
+    if fields is None or _execution_pid.get() != os.getpid():
         return {}
     result = dict(fields)
     try:
@@ -173,7 +174,7 @@ class ExecutionTelemetry:
         self, name: str, fields: dict[str, str | int], context: _C,
         next: Callable[[_C], Awaitable[_T]], *, nested: bool = False,
     ) -> _T:
-        parent_fields = _fields.get()
+        parent_fields = _fields.get() if _execution_pid.get() == os.getpid() else None
         tracer = self._get_tracer()
         span: Any = None
         otel_context: Any = None
@@ -191,6 +192,7 @@ class ExecutionTelemetry:
         except Exception:
             pass
         token = _fields.set(fields)
+        pid_token = _execution_pid.set(os.getpid())
         try:
             return await next(context)
         except BaseException:
@@ -204,6 +206,7 @@ class ExecutionTelemetry:
             raise
         finally:
             _fields.reset(token)
+            _execution_pid.reset(pid_token)
             if otel_token is not None:
                 with suppress(Exception):
                     otel_context.detach(otel_token)

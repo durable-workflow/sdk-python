@@ -263,3 +263,30 @@ async def test_bad_provider_and_exporter_do_not_change_original_result() -> None
         ActivityInterceptorContext("w", "q", {"task_id": "task\ninvalid"}, "shipping", ()), callback,
     ) is original
     assert current_log_context() == {}
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
+async def test_forked_host_drops_inherited_context_and_provider_without_factory() -> None:
+    telemetry, _, exporter = instrumentation()
+
+    async def callback(_: ActivityInterceptorContext) -> int:
+        assert current_log_context()["activity_attempt_id"] == "attempt-1"
+        child = os.fork()
+        if child == 0:
+            try:
+                assert current_log_context() == {}
+                tracer = telemetry._get_tracer()
+                span = tracer.start_span("child", context=context.Context())
+                assert not span.get_span_context().is_valid
+                os._exit(0)
+            except BaseException:
+                os._exit(1)
+        _, status = await asyncio.to_thread(os.waitpid, child, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert current_log_context()["activity_attempt_id"] == "attempt-1"
+        return 42
+
+    assert await telemetry.execute_activity(
+        ActivityInterceptorContext("worker", "queue", task(), "shipping", ()), callback,
+    ) == 42
+    assert len(exporter.get_finished_spans()) == 1
