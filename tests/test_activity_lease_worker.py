@@ -5,11 +5,33 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
 from durable_workflow import Client, Worker, activity, serializer
+from durable_workflow._activity_lease import current_activity_authority
+
+
+@pytest.mark.parametrize("capability", [True, False, None, "true"])
+async def test_worker_uses_client_discovery_for_original_authority(capability: Any) -> None:
+    client = Client("http://runtime.invalid")
+    client._cluster_info = {"worker_protocol": {"server_capabilities": {"activity_lease_renewal": capability}}}
+    worker = Worker(client, task_queue="queue-1", worker_id="worker-1")
+    worker._run_activity_task_body = AsyncMock(return_value="completed")
+    context = current_activity_authority.set(None)
+    try:
+        outcome = await worker._run_activity_task({"task_id": "original-task"})
+        if capability is True:
+            assert outcome == "claim_aborted"
+            worker._run_activity_task_body.assert_not_awaited()
+        else:
+            assert outcome == "completed"
+            worker._run_activity_task_body.assert_awaited_once()
+    finally:
+        current_activity_authority.reset(context)
+        await client.aclose()
 
 
 def timestamp(value: datetime) -> str:
