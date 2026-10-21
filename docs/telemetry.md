@@ -32,8 +32,8 @@ task-bound dispatch and committed outcome contexts become links. Workers read
 them after the actual poll identity and existing history/authority fences.
 Insufficient claim identity omits propagation without changing business gates.
 Retries have separate attempt spans, and replay emits no new attempt spans for
-recorded activity results. Current published Server support remains unavailable;
-combined end-to-end qualification is tracked in Workflow #773.
+recorded activity results. Use the configured Server/SDK tuple qualified in
+[Workflow #773](https://github.com/durable-workflow/workflow/issues/773).
 
 For admission or commands outside worker execution, pass `telemetry=telemetry`
 to `Client` and use its existing `await client.get_cluster_info()` discovery
