@@ -130,7 +130,6 @@ async def execute(server: LeaseServer, handler: Any) -> str:
         client._http = httpx.AsyncClient(base_url="http://lease.invalid", transport=httpx.MockTransport(server.respond))
         client._cluster_info = {"worker_protocol": {"server_capabilities": {"activity_lease_renewal": True}}}
         worker = Worker(client, worker_id="worker-1", task_queue="queue-1", workflows=[], activities=[handler])
-        worker._activity_lease_renewal_supported = True
         task = await client.poll_activity_task(worker_id="worker-1", task_queue="queue-1")
         return await worker._run_activity_task(task)
 
@@ -205,7 +204,6 @@ async def test_cancelled_thread_keeps_its_real_slot_until_the_callback_exits() -
         client._cluster_info = {"worker_protocol": {"server_capabilities": {"activity_lease_renewal": True}}}
         worker = Worker(client, worker_id="worker-1", task_queue="queue-1", workflows=[], activities=[handler],
                         max_concurrent_activity_tasks=1)
-        worker._activity_lease_renewal_supported = True
         try:
             task = await client.poll_activity_task(worker_id="worker-1", task_queue="queue-1")
             assert await worker._run_activity_task(task) == "claim_aborted"

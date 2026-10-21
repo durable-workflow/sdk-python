@@ -26,6 +26,14 @@ def _timestamp(value: Any) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def activity_lease_renewal_supported(client: Any) -> bool:
+    """Use the same cached discovery that validates actual renewal requests."""
+    info = getattr(client, "_cluster_info", None)
+    protocol = info.get("worker_protocol") if isinstance(info, Mapping) else None
+    capabilities = protocol.get("server_capabilities") if isinstance(protocol, Mapping) else None
+    return isinstance(capabilities, Mapping) and capabilities.get("activity_lease_renewal") is True
+
+
 @dataclass
 class ActivityLeaseAuthority:
     client: Any

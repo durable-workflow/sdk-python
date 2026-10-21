@@ -37,7 +37,7 @@ from types import FunctionType
 from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from . import serializer
-from ._activity_lease import current_activity_authority
+from ._activity_lease import activity_lease_renewal_supported, current_activity_authority
 from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProcessLost, SupervisedCallback
 from ._cancellation_scope_history import CancellationScopeBudget, CancellationScopeDeliveryReceipt
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
@@ -1076,7 +1076,6 @@ class Worker:
         if "sticky_execution" in self.capabilities and not self._sticky_cache.enabled:
             raise ValueError("sticky_execution requires a positive sticky_cache_capacity")
         self._cooperative_cancellation_supported = False
-        self._activity_lease_renewal_supported = False
         self._nexus_cooperative_cancellation_supported = False
         self._prepared_local_activities_supported = False
         self._prepared_local_activity_groups_supported = False
@@ -1262,9 +1261,6 @@ class Worker:
         _validate_server_compatibility(info)
         protocol = info.get("worker_protocol")
         server_capabilities = protocol.get("server_capabilities") if isinstance(protocol, Mapping) else None
-        self._activity_lease_renewal_supported = (
-            isinstance(server_capabilities, Mapping) and server_capabilities.get("activity_lease_renewal") is True
-        )
         sticky_support = (
             server_capabilities.get("sticky_execution") if isinstance(server_capabilities, Mapping) else None
         )
@@ -3060,7 +3056,7 @@ class Worker:
 
     async def _run_activity_task(self, task: dict[str, Any]) -> str:
         authority = current_activity_authority.get()
-        if authority is None and not self._activity_lease_renewal_supported:
+        if authority is None and not activity_lease_renewal_supported(self.client):
             return await self._run_activity_task_body(task)
         if authority is None or not authority.matches(
             self.client, self.client.namespace, task, self.worker_id, self.task_queue,
