@@ -38,6 +38,7 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 import httpx
 
 from . import serializer
+from ._activity_lease import ActivityLeaseAuthority, current_activity_authority
 from ._cancellation_scope import CancellationScopeOpenReceipt, scope_identity
 from ._cancellation_scope_history import (
     CancellationScopeBudget,
@@ -1811,8 +1812,14 @@ class Client:
             raise ValueError("cluster discovery credentials can only authorize /cluster/info")
 
         query_poll = worker and path == "/worker/query-tasks/poll"
+        activity_poll = worker and path == "/worker/activity-tasks/poll"
         if query_poll:
             current_query_authority.set(None)
+        if activity_poll:
+            current_activity_authority.set(None)
+        activity_authority = current_activity_authority.get()
+        if worker and activity_authority is not None and activity_authority.governs(self, self.namespace, path):
+            activity_authority.remaining()
         request_json = json
         if (
             not discovery
@@ -1844,14 +1851,20 @@ class Client:
         plane = "worker" if worker or discovery_uses_worker_token else "control"
         status_code = "none"
         outcome = "pending"
+        request_started = time.monotonic()
 
         async def _do_request() -> httpx.Response:
+            nonlocal request_started
+            request_started = time.monotonic()
+            request_timeout = self.timeout if timeout is None else timeout
+            if worker and activity_authority is not None and activity_authority.governs(self, self.namespace, path):
+                request_timeout = min(request_timeout, activity_authority.remaining())
             resp = await self._http.request(
                 method,
                 f"/api{path}",
                 headers=self._discovery_headers() if discovery else self._headers(worker=worker),
                 json=request_json,
-                timeout=self.timeout if timeout is None else timeout,
+                timeout=request_timeout,
             )
             # Raise HTTPStatusError for 4xx/5xx so retry policy can catch it
             resp.raise_for_status()
@@ -1876,11 +1889,24 @@ class Client:
                 outcome = "ok"
                 return None
             result = resp.json()
+            if activity_poll and isinstance(result, dict) and isinstance(result.get("task"), dict):
+                capabilities = result.get("server_capabilities")
+                if isinstance(capabilities, dict) and capabilities.get("activity_lease_renewal") is True:
+                    activity_authority = ActivityLeaseAuthority.delivery(
+                        self, self.namespace, result["task"], owner=request_json["worker_id"],
+                        task_queue=request_json["task_queue"], server_time=result.get("server_time"),
+                        request_started=request_started,
+                    )
+                    current_activity_authority.set(activity_authority)
             query_authority = None
             if query_poll and isinstance(result, dict) and isinstance(result.get("task"), dict):
                 query_authority = await self._query_delivery_authority(result["task"], request_json)
                 current_query_authority.set(query_authority)
-            if not discovery and _contains_runtime_payload_envelope(result):
+            if activity_authority is not None and activity_poll and _contains_runtime_payload_envelope(result):
+                result = await activity_authority.run(
+                    lambda: self._resolve_activity_claim_payloads(result, worker=worker),
+                )
+            elif not discovery and _contains_runtime_payload_envelope(result):
                 transport = (await query_authority.run(self._runtime_external_payload_transport)
                              if query_authority is not None else await self._runtime_external_payload_transport())
                 if transport is None:
@@ -1897,6 +1923,8 @@ class Client:
                         result, worker=worker, transport=transport, path=path, request_json=request_json,
                     )
             result = self._hydrate_result_envelopes(result)
+            if activity_poll and activity_authority is not None:
+                activity_authority.remaining()
             if query_authority is not None:
                 await query_authority.confirm()
             outcome = "ok"
@@ -1915,6 +1943,12 @@ class Client:
             }
             self.metrics.increment(CLIENT_REQUESTS, tags=tags)
             self.metrics.record(CLIENT_REQUEST_DURATION_SECONDS, time.perf_counter() - start, tags=tags)
+
+    async def _resolve_activity_claim_payloads(self, value: Any, *, worker: bool) -> Any:
+        transport = await self._runtime_external_payload_transport()
+        if transport is None:
+            raise ExternalPayloadUnsupported("activity payload reference has no authenticated runtime transport")
+        return await self._resolve_runtime_payloads(value, worker=worker, transport=transport, resolved={})
 
     async def _runtime_external_payload_transport(
         self,

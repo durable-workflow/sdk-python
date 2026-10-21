@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -33,6 +34,7 @@ class LeaseServer:
         self.deny = False
         self.delay_poll = 0.0
         self.delay_renewal = 0.0
+        self.fail_completion = False
 
     async def respond(self, request: httpx.Request) -> httpx.Response:
         self.paths.append(request.url.path)
@@ -57,6 +59,8 @@ class LeaseServer:
                 "reason": "lease_expired" if self.deny else None,
             })
         if request.url.path.endswith("/complete"):
+            if self.fail_completion:
+                return httpx.Response(503, json={"reason": "temporary_failure"})
             return httpx.Response(200, json={"outcome": "completed", "recorded": True})
         if request.url.path.endswith("/fail"):
             return httpx.Response(200, json={"outcome": "failed", "recorded": True})
@@ -96,19 +100,70 @@ async def test_lost_claim_cannot_publish_a_late_result_or_failure(loss: str) -> 
     server = LeaseServer(deadline=0.13 if loss == "business-deadline" else None)
     server.deny = loss == "denied"
     server.delay_renewal = 0.3 if loss == "slow-renewal" else 0.0
+    called = False
+    cancelled = False
 
     @activity.defn(name="maintained")
     async def handler() -> str:
+        nonlocal called, cancelled
+        called = True
         try:
             await asyncio.sleep(0.45)
         except asyncio.CancelledError:
             # A callback can swallow cancellation. Publication still needs its
             # original live authority, independently of callback cooperation.
+            cancelled = True
             await asyncio.sleep(0.02)
         return "late result"
 
     assert await execute(server, handler) == "claim_aborted"
+    assert called is True and cancelled is True
     assert server.publications() == []
+
+
+async def test_original_deadline_fences_transport_retries_during_terminal_publication() -> None:
+    server = LeaseServer(lease=1, deadline=0.12)
+    server.fail_completion = True
+
+    @activity.defn(name="maintained")
+    async def handler() -> str:
+        return "ready before the deadline"
+
+    assert await execute(server, handler) == "claim_aborted"
+    assert len(server.publications()) == 1
+
+
+async def test_cancelled_thread_keeps_its_real_slot_until_the_callback_exits() -> None:
+    server = LeaseServer()
+    server.deny = True
+    started, release = threading.Event(), threading.Event()
+
+    @activity.defn(name="maintained")
+    def handler() -> str:
+        started.set()
+        release.wait(timeout=2)
+        return "late thread result"
+
+    async with Client("http://lease.invalid", namespace="17", worker_token="synthetic-worker-token") as client:
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(base_url="http://lease.invalid", transport=httpx.MockTransport(server.respond))
+        client._cluster_info = {"worker_protocol": {"server_capabilities": {"activity_lease_renewal": True}}}
+        worker = Worker(client, worker_id="worker-1", task_queue="queue-1", workflows=[], activities=[handler],
+                        max_concurrent_activity_tasks=1)
+        worker._activity_lease_renewal_supported = True
+        try:
+            task = await client.poll_activity_task(worker_id="worker-1", task_queue="queue-1")
+            assert await worker._run_activity_task(task) == "claim_aborted"
+            assert started.is_set()
+            assert len(worker._remote_activity_threads) == 1
+            assert worker._remote_activity_thread_slots.locked()
+            assert server.publications() == []
+        finally:
+            release.set()
+            if worker._remote_activity_executor is not None:
+                worker._remote_activity_executor.shutdown(wait=True)
+        await asyncio.sleep(0)
+        assert worker._remote_activity_threads == set()
 
 
 async def test_poll_round_trip_consumes_the_original_delivery_budget() -> None:
