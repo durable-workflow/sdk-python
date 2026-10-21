@@ -440,6 +440,8 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     assert isinstance(workflow, dict)
     workflow_type = workflow.get("type")
     assert isinstance(workflow_type, str) and workflow_type
+    if workflow_type == "sdk.observed-worker-replay":
+        return _execute_observed_worker_replay(fixture)
     if workflow_type == "sdk.query-task-dispatch":
         # The regression is a worker delivery, not an invented durable history.
         assert "history" not in fixture
@@ -558,6 +560,60 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     return commands
 
 
+def _execute_observed_worker_replay(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from durable_workflow.telemetry import ExecutionTelemetry, current_log_context
+    from tests.test_telemetry import TracedWorkflow
+
+    inputs = fixture["workflow"]["input"]
+    assert isinstance(inputs, list) and len(inputs) == 1 and isinstance(inputs[0], dict)
+    delivery = inputs[0]
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    async def replay() -> list[dict[str, Any]]:
+        decisions: list[str] = []
+        result: Any = None
+        for attempt, history in enumerate([[], delivery["history_events"]], start=1):
+            client = AsyncMock(spec=Client)
+            client.namespace = "regression-corpus"
+            client._observability_capability = True
+            # A fresh worker recovers only the next delivery and durable history.
+            worker = Worker(client, task_queue="shipping", worker_id="corpus-worker",
+                            workflows=[TracedWorkflow], interceptors=[ExecutionTelemetry(tracer_provider=provider)])
+            task = {"task_id": f"workflow-task-{attempt}", "workflow_id": "workflow", "run_id": "run",
+                    "workflow_type": "telemetry.workflow", "workflow_task_attempt": attempt,
+                    "lease_owner": "corpus-worker", "task_queue": "shipping", "payload_codec": "avro",
+                    "arguments": serializer.envelope([], codec="avro"), "history_events": history,
+                    "observability_context": delivery["observability_context"]}
+            commands = await worker._run_workflow_task(task)
+            assert commands is not None and len(commands) == 1
+            decisions.append(commands[0]["type"])
+            if commands[0]["type"] == "complete_workflow":
+                result = serializer.decode_envelope(commands[0]["result"])
+            assert current_log_context() == {}
+        spans = exporter.get_finished_spans()
+        traceparent = delivery["observability_context"]["carrier"]["traceparent"]
+        return [{"type": "observed_cold_replay", "decisions": decisions, "result": result,
+                 "span_names": [span.name for span in spans],
+                 "recovered_parent": len(spans) == 2 and all(
+                     span.context.trace_id == int(traceparent[3:35], 16)
+                     and span.parent is not None and span.parent.span_id == int(traceparent[36:52], 16)
+                     for span in spans), "scope_restored": current_log_context() == {}}]
+
+    try:
+        commands = asyncio.run(replay())
+        _assert_matches(fixture["command_sequence"], commands, f"{fixture['id']}.command_sequence")
+        _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
+        return commands
+    finally:
+        provider.shutdown()
+
+
 @pytest.mark.parametrize(
     "path",
     _fixture_paths(),
@@ -573,7 +629,9 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
     assert isinstance(workflow, dict)
     expected = fixture.get("expected")
     assert isinstance(expected, dict) and expected
-    if workflow.get("type") in {"sdk.replay-conformance-report", "sdk.query-task-dispatch"}:
+    if workflow.get("type") in {
+        "sdk.replay-conformance-report", "sdk.query-task-dispatch", "sdk.observed-worker-replay",
+    }:
         _execute_fixture(fixture)
         return
     expected_error = expected.get("error")

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "observed-cold-worker-replay",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "sdk.observed-worker-replay",
+    "payload_codec": "avro",
+    "input": [{
+      "observability_context": {
+        "schema": "durable-workflow.trace-context",
+        "version": 1,
+        "carrier": {"traceparent": "00-12345678901234567890123456789012-1234567890123456-01"}
+      },
+      "history_events": [{
+        "event_type": "ActivityCompleted",
+        "payload": {
+          "sequence": 1,
+          "activity_type": "shipping",
+          "payload_codec": "avro",
+          "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoOc2hpcHBlZA=="}
+        }
+      }]
+    }]
+  },
+  "command_sequence": [{
+    "type": "observed_cold_replay",
+    "decisions": ["schedule_activity", "complete_workflow"],
+    "result": "shipped",
+    "span_names": ["durable.workflow.task", "durable.workflow.task"],
+    "recovered_parent": true,
+    "scope_restored": true
+  }],
+  "expected": {"command_sequence": [{
+    "type": "observed_cold_replay",
+    "decisions": ["schedule_activity", "complete_workflow"],
+    "result": "shipped",
+    "span_names": ["durable.workflow.task", "durable.workflow.task"],
+    "recovered_parent": true,
+    "scope_restored": true
+  }]}
+}
