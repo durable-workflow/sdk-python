@@ -66,8 +66,8 @@ services:
     entrypoint: [sh, -ec]
     command:
       - |
-        python -m venv /opt/venv
-        /opt/venv/bin/pip install --index-url https://pypi.org/simple --no-cache-dir --quiet -r /phase/requirements.txt
+        python -m venv --without-pip /opt/venv
+        python -m pip --python /opt/venv/bin/python install --index-url https://pypi.org/simple --no-cache-dir --quiet -r /phase/requirements.txt
         /opt/venv/bin/python /phase/setup.py
         exec sleep infinity
     tmpfs:
