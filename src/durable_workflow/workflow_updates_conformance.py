@@ -24,7 +24,7 @@ import httpx
 
 from . import serializer, workflow
 from .client import Client
-from .errors import InvalidArgument, UpdateRejected
+from .errors import InvalidArgument, UpdateFailed, UpdateRejected
 from .workflow import CompleteUpdate, FailUpdate, WorkflowContext, apply_update, validate_update
 
 SCHEMA = "durable-workflow.v2.workflow-updates.python-sdk-sidecar"
@@ -392,12 +392,20 @@ async def run_surface_probe() -> ProbeRecorder:
 
     _run_worker_surface(recorder)
 
-    duplicate_response = {
+    duplicate_receipt = {
         "outcome": "accepted",
         "update_status": "accepted",
         "update_id": "upd-duplicate",
         "request_id": "duplicate-key",
+        "intent_verified": True,
     }
+    # Intent admitted under "duplicate-key": the same key with the same decoded
+    # arguments returns this receipt as retained; a different intent is refused.
+    retained_duplicate_intent: list[Any] = []
+
+    def _decoded_input(body: Mapping[str, Any]) -> Any:
+        input_payload = body.get("input")
+        return serializer.decode_envelope(dict(input_payload)) if isinstance(input_payload, Mapping) else []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = _request_body(request)
@@ -426,7 +434,26 @@ async def run_surface_probe() -> ProbeRecorder:
 
         if request.method == "POST" and path == f"/api/workflows/{WORKFLOW_ID}/update/accept":
             if body.get("request_id") == "duplicate-key":
-                return _response(request, 200, duplicate_response)
+                intent = _decoded_input(body)
+                if not retained_duplicate_intent:
+                    retained_duplicate_intent.append(intent)
+                    return _response(request, 202, {**duplicate_receipt, "retained": False})
+                if retained_duplicate_intent[0] == intent:
+                    return _response(request, 202, {**duplicate_receipt, "retained": True})
+                return _response(
+                    request,
+                    409,
+                    {
+                        "reason": "request_id_conflict",
+                        "message": "request id duplicate-key is retained for a different update intent",
+                        "request_id": "duplicate-key",
+                        "retained_command_id": "cmd-duplicate",
+                        "retained_command_type": "update",
+                        "retained_outcome": "accepted",
+                        "conflict": ["arguments"],
+                        "control_plane": {"operation": "update"},
+                    },
+                )
             if body.get("request_id") == "terminal-key":
                 return _response(
                     request,
@@ -567,21 +594,48 @@ async def run_surface_probe() -> ProbeRecorder:
         duplicate_first = await client.update_workflow(
             WORKFLOW_ID,
             "accept",
-            args=[True, "duplicate-first"],
+            args=[True, "duplicate"],
             wait_for="accepted",
             request_id="duplicate-key",
         )
-        duplicate_second = await client.update_workflow(
+        duplicate_retry = await client.update_workflow(
             WORKFLOW_ID,
             "accept",
-            args=[True, "duplicate-second"],
+            args=[True, "duplicate"],
             wait_for="accepted",
             request_id="duplicate-key",
         )
         recorder.check(
-            duplicate_first.get("update_id") == duplicate_second.get("update_id") == "upd-duplicate",
-            "duplicate request id must produce a stable duplicate update id in the client surface",
+            duplicate_first.get("update_id") == duplicate_retry.get("update_id") == "upd-duplicate",
+            "same request id with the same intent must return the original update id in the client surface",
         )
+        recorder.check(
+            duplicate_first.get("retained") is False and duplicate_retry.get("retained") is True,
+            "a keyed retry must return the original receipt with retained true when the field is present",
+        )
+        recorder.check(
+            duplicate_first.get("request_id") == duplicate_retry.get("request_id") == "duplicate-key",
+            "update receipts must carry the request id that was sent",
+        )
+        try:
+            await client.update_workflow(
+                WORKFLOW_ID,
+                "accept",
+                args=[True, "duplicate-different-intent"],
+                wait_for="accepted",
+                request_id="duplicate-key",
+            )
+            recorder.check(False, "same request id with a different intent must raise a request_id_conflict refusal")
+        except UpdateFailed as exc:
+            recorder.check(
+                exc.reason == "request_id_conflict"
+                and exc.request_id == "duplicate-key"
+                and exc.details.get("retained_command_id") == "cmd-duplicate"
+                and exc.details.get("retained_command_type") == "update"
+                and exc.details.get("conflict") == ["arguments"],
+                "request id conflict must expose the reason, the sent key and the retained command",
+            )
+            recorder.typed_error("duplicate_request_idempotency", exc.__class__.__name__, exc.reason or str(exc))
         recorder.mark("duplicate_request_idempotency")
 
         try:
@@ -638,6 +692,10 @@ async def run_surface_probe() -> ProbeRecorder:
                 request_id = _request_body(request_obj).get("request_id")
                 if isinstance(request_id, str) and request_id:
                     key = request_id
+                    if response_payload.get("retained") is True:
+                        key = f"{request_id}:retained"
+                    elif response_payload.get("reason") == "request_id_conflict":
+                        key = f"{request_id}:conflict"
                 recorder.client_requests[key] = _summarize_request(request_obj, response_payload)
     finally:
         await client.aclose()

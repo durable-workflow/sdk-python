@@ -3,7 +3,8 @@
 .. warning::
 
    :class:`TransportRetryPolicy` covers **only client-side HTTP retries** for
-   transient transport errors (connection failures, timeouts, 5xx responses,
+   transient transport errors (connection failures, timeouts, a server or
+   proxy that disconnects before sending a response, 5xx responses,
    429 rate-limiting). It is **not** the activity retry policy. Activity-level
    retry and timeout configuration lives on
    :class:`durable_workflow.workflow.ActivityRetryPolicy` and is passed to
@@ -201,9 +202,16 @@ class TransportRetryPolicy:
     """
     Retry policy for transient HTTP transport errors.
 
-    Retries requests that fail with transient errors (connection errors,
-    timeouts, 5xx server errors, 429 rate limit). Does not retry client
-    errors (4xx except 429).
+    Retries requests that fail with transient errors: ``httpx.NetworkError``
+    (including ``ConnectError``), ``httpx.TimeoutException``,
+    ``httpx.RemoteProtocolError`` (the server or a proxy closed the connection
+    before sending a response), 5xx server errors and 429 rate limit. Does not
+    retry client errors (4xx except 429) or ``httpx.LocalProtocolError``.
+
+    A retried request is resent byte-identical. Signals and updates carry a
+    durable ``request_id`` per logical call, so a retry after a lost response
+    is answered from the retained receipt instead of admitting a second
+    command.
 
     This policy runs inside :class:`~durable_workflow.Client` around HTTP
     requests. It does not retry workflow runs, workflow tasks, activity
@@ -228,8 +236,12 @@ class TransportRetryPolicy:
         if attempt >= self.max_attempts:
             return False
 
-        # Retry connection errors and timeouts
-        if isinstance(exc, httpx.ConnectError | httpx.TimeoutException | httpx.NetworkError):
+        # Retry connection errors, timeouts and a peer that disconnected before
+        # answering (a lost response is recovered through the request's identity).
+        if isinstance(
+            exc,
+            httpx.ConnectError | httpx.TimeoutException | httpx.NetworkError | httpx.RemoteProtocolError,
+        ):
             return True
 
         # Retry 5xx server errors and 429 rate limit

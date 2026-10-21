@@ -223,9 +223,31 @@ class TestSyncClientDescribe:
 class TestSyncClientSignal:
     def test_signal(self) -> None:
         client = Client("http://localhost:8080")
-        resp = _mock_response(200, {"ok": True})
-        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp):
-            client.signal_workflow("wf-1", "my-signal", args=["data"])
+        resp = _mock_response(202, {"outcome": "received"})
+        with patch.object(client._async._http, "request", new_callable=AsyncMock, return_value=resp) as request:
+            receipt = client.signal_workflow("wf-1", "my-signal", args=["data"])
+        key = request.call_args.kwargs["json"]["request_id"]
+        assert key.startswith("sdk-python-signal-")
+        assert receipt == {"outcome": "received", "request_id": key}
+
+    def test_signal_passes_request_id_through(self) -> None:
+        client = Client("http://localhost:8080")
+        retained = {"outcome": "received", "request_id": "sync-key", "retained": True}
+        with patch.object(
+            client._async._http, "request", new_callable=AsyncMock, return_value=_mock_response(202, retained),
+        ) as request:
+            receipt = client.signal_workflow("wf-1", "my-signal", request_id="sync-key")
+        assert request.call_args.kwargs["json"]["request_id"] == "sync-key"
+        assert receipt == retained
+
+    def test_handle_signal_passes_request_id_through(self) -> None:
+        async_handle = WorkflowHandle(AsyncMock(), workflow_id="wf-1", run_id="r1", workflow_type="greeter")
+        receipt = {"outcome": "received", "request_id": "sync-key"}
+        async_handle.signal = AsyncMock(return_value=receipt)  # type: ignore[method-assign]
+        with Client("http://localhost:8080") as client:
+            handle = SyncWorkflowHandle(async_handle, client._runner)
+            assert handle.signal("approve", ["x"], request_id="sync-key") == receipt
+            async_handle.signal.assert_awaited_once_with("approve", args=["x"], request_id="sync-key")
 
 
 class TestSyncClientCancel:
