@@ -6022,6 +6022,48 @@ class Client:
             "POST", f"/worker/activity-tasks/{task_id}/fail", worker=True, json=body
         )
 
+    async def renew_activity_task_lease(
+        self,
+        *,
+        task_id: str,
+        activity_attempt_id: str,
+        lease_owner: str,
+        timeout: float = 5.0,
+    ) -> Any:
+        """Renew one live activity claim without recording application progress.
+
+        Requires affirmative ``activity_lease_renewal`` discovery. The caller
+        must validate the returned original identity and grant before using it.
+        This neither revives an expired claim nor extends business timeouts.
+        Discovery, retries and transport share the supplied bounded window.
+        """
+        for field, value in (
+            ("task_id", task_id), ("activity_attempt_id", activity_attempt_id), ("lease_owner", lease_owner),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field} must be a non-empty string")
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 5:
+            raise ValueError("activity lease renewal timeout must be greater than zero and at most five seconds")
+
+        async def renew() -> Any:
+            operation = "Client.renew_activity_task_lease"
+            path = "worker_protocol.server_capabilities.activity_lease_renewal"
+            info = await self._runtime_discovery(operation=operation, required_path=path)
+            protocol = info.get("worker_protocol")
+            capabilities = protocol.get("server_capabilities") if isinstance(protocol, dict) else None
+            supported = capabilities.get("activity_lease_renewal") if isinstance(capabilities, dict) else None
+            if supported is False:
+                raise RuntimeCapabilityUnsupported(operation, path, f"This runtime does not support {path}.")
+            if supported is not True:
+                raise RuntimeDiscoveryUnavailable(operation, path, f"Runtime discovery must advertise {path}=true.")
+
+            return await self._request(
+                "POST", f"/worker/activity-tasks/{quote(task_id, safe='')}/renew-lease", worker=True,
+                json={"activity_attempt_id": activity_attempt_id, "lease_owner": lease_owner}, timeout=timeout,
+            )
+
+        return await asyncio.wait_for(renew(), timeout=timeout)
+
     async def activity_task_status(
         self,
         *,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from durable_workflow.client import Client
@@ -35,6 +36,27 @@ async def test_renewal_uses_worker_credentials_and_exact_original_identity() -> 
 
 
 @pytest.mark.asyncio
+async def test_real_client_transport_preserves_worker_plane_and_namespace() -> None:
+    client = renewal_client()
+    client._http.request = AsyncMock(return_value=httpx.Response(
+        200, json={"lease_renewed": True, "heartbeat_recorded": False},
+        request=httpx.Request("POST", "http://unused.invalid/api/worker/activity-tasks/task/renew-lease"),
+    ))
+    try:
+        reply = await client.renew_activity_task_lease(
+            task_id="task", activity_attempt_id="attempt", lease_owner="worker",
+        )
+        assert reply == {"lease_renewed": True, "heartbeat_recorded": False}
+        sent = client._http.request.await_args
+        assert sent.args == ("POST", "/api/worker/activity-tasks/task/renew-lease")
+        assert sent.kwargs["headers"]["Authorization"] == "Bearer worker-secret"
+        assert sent.kwargs["headers"]["X-Namespace"] == "17"
+        assert sent.kwargs["json"] == {"activity_attempt_id": "attempt", "lease_owner": "worker"}
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("supported", [False, None, "true", 1])
 async def test_renewal_requires_affirmative_capability_before_a_worker_request(supported: object) -> None:
     client = renewal_client(supported)
@@ -59,6 +81,21 @@ async def test_empty_claim_identity_is_refused_before_discovery(field: str) -> N
     try:
         with pytest.raises(ValueError, match=field):
             await client.renew_activity_task_lease(**identity)
+        client._runtime_discovery.assert_not_awaited()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout", [0, -1, 6, True, float("inf"), float("nan")])
+async def test_invalid_window_cannot_disable_or_expand_the_bound(timeout: float) -> None:
+    client = renewal_client()
+    client._runtime_discovery = AsyncMock()
+    try:
+        with pytest.raises(ValueError, match="timeout"):
+            await client.renew_activity_task_lease(
+                task_id="task", activity_attempt_id="attempt", lease_owner="worker", timeout=timeout,
+            )
         client._runtime_discovery.assert_not_awaited()
     finally:
         await client.aclose()
