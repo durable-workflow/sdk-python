@@ -36,6 +36,15 @@ class QueryTaskAuthorityLost(DurableWorkflowError):
         self.reason = reason
 
 
+class ActivityLeaseAuthorityLost(DurableWorkflowError):
+    """An activity delivery lost its original live execution authority."""
+
+    def __init__(self, task_id: str, reason: str) -> None:
+        super().__init__(f"activity task {task_id!r} cannot continue: {reason}")
+        self.task_id = task_id
+        self.reason = reason
+
+
 class InvalidWorkflowDefinition(DurableWorkflowError, ValueError):
     """Workflow authoring uses an unsupported entry point or result."""
 
