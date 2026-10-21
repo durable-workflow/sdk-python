@@ -3142,15 +3142,7 @@ class Worker:
             )
             return "failed_non_retryable"
         except Exception as e:
-            if _is_storage_admission_error(e):
-                raise
-            log.exception("activity failed")
-            await self._report_activity_task_failure(
-                task_id, attempt_id, "activity failure", message=str(e), failure_type=type(e).__name__,
-                failure_class=_exception_class_name(e), failure_code=_exception_code(e),
-                stack_trace=traceback.format_exc(),
-            )
-            return "failed"
+            return await self._handle_activity_exception(task_id, attempt_id, e)
         finally:
             _set_context(None)
 
@@ -3169,6 +3161,17 @@ class Worker:
             log.warning("failed to complete activity task %s: %s", task_id, e)
             return "complete_error"
         return "completed"
+
+    async def _handle_activity_exception(self, task_id: str, attempt_id: str, error: Exception) -> str:
+        if _is_storage_admission_error(error):
+            raise error
+        log.error("activity failed", exc_info=(type(error), error, error.__traceback__))
+        await self._report_activity_task_failure(
+            task_id, attempt_id, "activity failure", message=str(error), failure_type=type(error).__name__,
+            failure_class=_exception_class_name(error), failure_code=_exception_code(error),
+            stack_trace="".join(traceback.format_exception(type(error), error, error.__traceback__)),
+        )
+        return "failed"
 
     async def _decode_activity_arguments(self, task: dict[str, Any]) -> tuple[str, list[Any]] | None:
         task_id: str = task["task_id"]

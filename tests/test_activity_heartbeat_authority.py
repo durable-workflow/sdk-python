@@ -36,11 +36,10 @@ async def test_heartbeat_refusal_carries_original_reason(reason: str, synchronou
         attempt_number=1, task_queue="original-queue", worker_id="original-worker",
     ), client=refusing_client(reason))
 
+    invocation = (asyncio.to_thread(ctx.heartbeat_sync, {"progress": 1}) if synchronous
+                  else ctx.heartbeat({"progress": 1}))
     with pytest.raises(ActivityLeaseAuthorityLost) as refusal:
-        if synchronous:
-            await asyncio.to_thread(ctx.heartbeat_sync, {"progress": 1})
-        else:
-            await ctx.heartbeat({"progress": 1})
+        await invocation
 
     assert refusal.value.task_id == "original-task"
     assert refusal.value.reason == reason
