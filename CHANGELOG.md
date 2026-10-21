@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+
+- Stop default async and synchronous activities when a heartbeat explicitly
+  refuses continued execution. Preserve the Server reason separately from
+  cancellation and fence completion/failure even when user code catches the
+  refusal. The worker frees its slot after the callback exits.
+
 - Reject canonical version markers missing their change ID or supported-range
   bounds. Consistent historical duplicate ranges may still differ when each
   contains the frozen version.

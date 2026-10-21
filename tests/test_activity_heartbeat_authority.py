@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from durable_workflow import activity, serializer
+from durable_workflow._activity_lease import ActivityLeaseAuthority, current_activity_authority
 from durable_workflow.activity import ActivityContext, ActivityInfo
 from durable_workflow.client import Client
-from durable_workflow.errors import ActivityLeaseAuthorityLost
+from durable_workflow.errors import ActivityLeaseAuthorityLost, NonRetryableError
 from durable_workflow.worker import Worker
 
 REASONS = ("activity_deadline_elapsed", "attempt_closed", "run_closed")
@@ -78,15 +83,65 @@ async def test_default_worker_does_not_publish_after_heartbeat_refusal(
 
 
 @pytest.mark.asyncio
-async def test_swallowed_heartbeat_refusal_still_fences_worker_publication() -> None:
+@pytest.mark.parametrize("same_original", (True, False))
+async def test_refusal_fences_only_the_matching_original_client_authority(same_original: bool) -> None:
+    paths: list[str] = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        assert request.url.path.endswith("/heartbeat")
+        return httpx.Response(200, json={
+            "heartbeat_recorded": False, "can_continue": False,
+            "cancel_requested": False, "reason": "attempt_closed",
+        })
+
+    async with Client("http://heartbeat.invalid", worker_token="synthetic-worker-token") as client:
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(base_url="http://heartbeat.invalid", transport=httpx.MockTransport(respond))
+        reference = datetime.now(timezone.utc)
+        def timestamp(value: datetime) -> str:
+            return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+        authority = ActivityLeaseAuthority.delivery(client, client.namespace, {
+            "task_id": "original-task" if same_original else "different-task",
+            "workflow_id": "workflow-1", "run_id": "run-1", "activity_execution_id": "execution-1",
+            "activity_attempt_id": "original-attempt", "lease_owner": "original-worker",
+            "task_queue": "original-queue", "attempt_number": 1,
+            "lease_expires_at": timestamp(reference + timedelta(seconds=30)), "deadlines": {},
+        }, owner="original-worker", task_queue="original-queue", server_time=timestamp(reference),
+            request_started=time.monotonic())
+        token = current_activity_authority.set(authority)
+        try:
+            ctx = ActivityContext(info=ActivityInfo(
+                task_id="original-task", activity_type="heartbeat-refusal", activity_attempt_id="original-attempt",
+                attempt_number=1, task_queue="original-queue", worker_id="original-worker",
+            ), client=client)
+            with pytest.raises(ActivityLeaseAuthorityLost, match="attempt_closed"):
+                await ctx.heartbeat()
+            if same_original:
+                with pytest.raises(ActivityLeaseAuthorityLost, match="attempt_closed"):
+                    await client.complete_activity_task(
+                        task_id="original-task", activity_attempt_id="original-attempt",
+                        lease_owner="original-worker", result="late result",
+                    )
+                assert paths == ["/api/worker/activity-tasks/original-task/heartbeat"]
+            else:
+                assert authority.remaining() > 0
+        finally:
+            current_activity_authority.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_error", (None, ValueError, NonRetryableError))
+async def test_swallowed_heartbeat_refusal_still_fences_worker_publication(late_error: type[Exception] | None) -> None:
     client = refusing_client("attempt_closed")
 
     @activity.defn(name="heartbeat-refusal-caught")
     async def handler() -> str:
-        try:
+        with suppress(Exception):
             await activity.context().heartbeat()
-        except Exception:
-            pass
+        if late_error is not None:
+            raise late_error("application error after closed attempt")
         return "late result"
 
     worker = Worker(client, task_queue="original-queue", workflows=[], activities=[handler])

@@ -3100,7 +3100,15 @@ class Worker:
         )
         _set_context(act_ctx)
         try:
-            result = await self._invoke_remote_activity(task, activity_type, fn, args, act_ctx.info)
+            try:
+                result = await self._invoke_remote_activity(task, activity_type, fn, args, act_ctx.info)
+            finally:
+                # A caught heartbeat refusal cannot restore outcome authority,
+                # including when user code subsequently raises another error.
+                act_ctx._raise_if_cannot_continue()
+        except ActivityLeaseAuthorityLost as error:
+            log.warning("activity %s cannot continue after heartbeat: %s", task_id, error.reason)
+            return "claim_aborted"
         except _RemoteActivityExecutionAborted as error:
             log.warning("remote activity %s claim abandoned: %s", task_id, error)
             return "claim_aborted"
