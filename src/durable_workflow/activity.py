@@ -7,7 +7,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .errors import ActivityCancelled
+from ._activity_lease import current_activity_authority
+from .errors import ActivityCancelled, ActivityLeaseAuthorityLost
 
 if TYPE_CHECKING:
     from .client import Client
@@ -45,6 +46,7 @@ class ActivityContext:
         self._client = client
         self._heartbeat_callback = heartbeat_callback
         self._cancel_requested = False
+        self._cannot_continue_reason: str | None = None
         try:
             self._event_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
         except RuntimeError:
@@ -61,7 +63,7 @@ class ActivityContext:
         return self._cancel_requested
 
     def heartbeat_sync(self, details: dict[str, Any] | None = None) -> None:
-        """Heartbeat from a synchronous activity thread and observe cancellation.
+        """Heartbeat from a synchronous activity thread and check attempt authority.
 
         The request runs on the worker's event loop using the original attempt
         and client. Async handlers must use ``await heartbeat()`` instead.
@@ -84,7 +86,7 @@ class ActivityContext:
         pending.result()
 
     async def heartbeat(self, details: dict[str, Any] | None = None) -> None:
-        """Report liveness to the server and check for a cancellation request.
+        """Report progress and check cancellation and continued attempt authority.
 
         Long-running activities should call ``heartbeat()`` periodically so the
         server can distinguish a slow-but-alive attempt from a dead worker.
@@ -94,7 +96,12 @@ class ActivityContext:
         Raises :class:`~durable_workflow.errors.ActivityCancelled` when the
         owning workflow has requested cancellation, so the activity can exit
         cleanly at its next natural break point.
+
+        Raises :class:`~durable_workflow.errors.ActivityLeaseAuthorityLost`
+        with the original Server reason when the attempt cannot continue,
+        including an elapsed deadline, closed attempt or closed run.
         """
+        self._raise_if_cannot_continue()
         if self._heartbeat_callback is not None:
             try:
                 await self._heartbeat_callback(details)
@@ -111,6 +118,21 @@ class ActivityContext:
         if isinstance(resp, dict) and resp.get("cancel_requested"):
             self._cancel_requested = True
             raise ActivityCancelled()
+        if isinstance(resp, dict) and resp.get("can_continue") is False:
+            reason = resp.get("reason")
+            self._cannot_continue_reason = reason if isinstance(reason, str) and reason else "activity_cannot_continue"
+            self._raise_if_cannot_continue()
+
+    def _raise_if_cannot_continue(self) -> None:
+        if self._cannot_continue_reason is not None:
+            authority = current_activity_authority.get()
+            if (authority is not None and authority.client is self._client
+                    and authority.task_id == self._info.task_id
+                    and authority.identity["activity_attempt_id"] == self._info.activity_attempt_id
+                    and authority.identity["attempt_number"] == self._info.attempt_number
+                    and authority.identity["lease_owner"] == self._info.worker_id):
+                authority.lost_reason = authority.lost_reason or self._cannot_continue_reason
+            raise ActivityLeaseAuthorityLost(self._info.task_id, self._cannot_continue_reason)
 
 
 def context() -> ActivityContext:

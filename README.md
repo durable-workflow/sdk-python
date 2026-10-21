@@ -142,6 +142,17 @@ independently of application heartbeats. Existing terminal cancellation remains
 available. See the [cancellation guide](docs/cooperative-cancellation-design.md)
 for immutable context, operation policies, shielded cleanup and recovery.
 
+Both `await activity.context().heartbeat()` and synchronous
+`activity.context().heartbeat_sync()` stop at an explicit Server refusal.
+They raise `ActivityLeaseAuthorityLost` with its original `.reason` for an
+elapsed deadline, closed attempt or closed run. Cancellation continues to raise
+`ActivityCancelled`. The worker submits no result or failure for an attempt
+whose heartbeat refused continuation, even if application code catches that
+exception. A heartbeat check acts only when called. Code that never heartbeats
+can continue until it returns, subject to independent lease/cancellation
+supervision; a running native thread cannot be forcibly stopped or its effects
+undone by the SDK.
+
 ## Development
 
 The installed `durable-workflow-replay-conformance` command runs an offline
