@@ -135,7 +135,27 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e '.[dev]'
-      - run: pytest tests/ -m "not integration" -q
+      - name: Run unit tests with stalled-thread diagnostics
+        id: unit_tests
+        shell: bash
+        run: |
+          set -o pipefail
+          # Leave room within the 15-minute job for bounded failure diagnostics.
+          timeout --signal=INT --kill-after=10s 13m \
+            pytest tests/ -m "not integration" -vv \
+            -o faulthandler_timeout=120 --durations=20 \
+            2>&1 | tee "$RUNNER_TEMP/sdk-unit-tests.log"
+      - name: Attach bounded failure diagnostics to the check
+        if: ${{ always() && steps.unit_tests.outcome == 'failure' }}
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_TEMP/sdk-unit-tests.log" ]]; then
+            phase_unit_tail="$(tail -c 12000 "$RUNNER_TEMP/sdk-unit-tests.log")"
+            phase_unit_tail="${phase_unit_tail//'%'/'%25'}"
+            phase_unit_tail="${phase_unit_tail//$'\r'/'%0D'}"
+            phase_unit_tail="${phase_unit_tail//$'\n'/'%0A'}"
+            printf '::error title=Unit-test failure diagnostics::%s\n' "$phase_unit_tail"
+          fi
 
   package:
     runs-on: ubuntu-latest
