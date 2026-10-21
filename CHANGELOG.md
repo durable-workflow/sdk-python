@@ -6,8 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-10-21
+
+### Added
+
+- Capability-gated activity runtime lease renewal, including automatic Worker
+  maintenance during loading, callbacks and publication. Preserve the original
+  task, attempt, owner and business deadlines without recording application
+  progress or adding a protocol floor. Older runtimes retain their behavior.
+- A bounded `Client.renew_activity_task_lease` method using the connected
+  runtime's affirmative discovery and the Client's actual transport credentials.
+
 ### Fixed
 
+- Stop settled activity maintenance independently of cancellation, including
+  callbacks that catch cancellation. Late outcomes remain fenced, and a running
+  synchronous callback keeps its executor slot until it physically exits.
 - Stop default async and synchronous activities when a heartbeat explicitly
   refuses continued execution. Preserve the Server reason separately from
   cancellation and fence completion/failure even when user code catches the
