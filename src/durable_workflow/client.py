@@ -1949,13 +1949,17 @@ class Client:
                 outcome = "ok"
                 return None
             result = resp.json()
+            if (worker and activity_authority is not None
+                    and activity_authority.governs(self, self.namespace, path)
+                    and path.endswith("/heartbeat") and isinstance(result, dict)
+                    and result.get("heartbeat_recorded") is True):
+                activity_authority.acknowledge_progress(result, request_started)
             if activity_poll and isinstance(result, dict) and isinstance(result.get("task"), dict):
                 capabilities = result.get("server_capabilities")
                 if isinstance(capabilities, dict) and capabilities.get("activity_lease_renewal") is True:
-                    activity_authority = ActivityLeaseAuthority.delivery(
+                    activity_authority = await ActivityLeaseAuthority.confirm_delivery(
                         self, self.namespace, result["task"], owner=request_json["worker_id"],
                         task_queue=request_json["task_queue"], server_time=result.get("server_time"),
-                        request_started=request_started,
                     )
                     current_activity_authority.set(activity_authority)
             query_authority = None

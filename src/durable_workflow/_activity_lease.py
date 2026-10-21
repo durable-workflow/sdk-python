@@ -45,6 +45,37 @@ class ActivityLeaseAuthority:
     lost_reason: str | None = field(default=None, init=False)
 
     @classmethod
+    async def confirm_delivery(cls, client: Any, namespace: str, task: Mapping[str, Any], *, owner: str,
+                               task_queue: str, server_time: Any) -> ActivityLeaseAuthority:
+        # A long poll may wait before a task or its lease exists. Establish the
+        # first execution budget with a separate, original-claim confirmation;
+        # its entire round trip is charged and it cannot revive an expired lease.
+        provisional = cls.delivery(client, namespace, task, owner=owner, task_queue=task_queue,
+                                   server_time=server_time, request_started=time.monotonic())
+        started = time.monotonic()
+        try:
+            reply = await client.renew_activity_task_lease(
+                task_id=provisional.task_id, activity_attempt_id=provisional.identity["activity_attempt_id"],
+                lease_owner=owner, timeout=min(5.0, provisional.remaining()),
+            )
+            provisional.acknowledge(reply, started)
+        except ActivityLeaseAuthorityLost:
+            raise
+        except Exception as error:
+            reason = error.reason() if isinstance(error, ServerError) else None
+            raise ActivityLeaseAuthorityLost(
+                provisional.task_id, reason or "activity_initial_lease_unavailable",
+            ) from error
+        observed = dict(task)
+        observed["lease_expires_at"] = reply["lease_expires_at"]
+        if provisional.heartbeat_deadline is not None:
+            observed["deadlines"] = {**dict(task.get("deadlines", {})),
+                                     "heartbeat": provisional.heartbeat_deadline.isoformat(
+                                         timespec="microseconds").replace("+00:00", "Z")}
+        return cls.delivery(client, namespace, observed, owner=owner, task_queue=task_queue,
+                            server_time=reply["server_time"], request_started=started)
+
+    @classmethod
     def delivery(cls, client: Any, namespace: str, task: Mapping[str, Any], *, owner: str,
                  task_queue: str, server_time: Any, request_started: float) -> ActivityLeaseAuthority:
         task_id = str(task.get("task_id") or "")
@@ -73,6 +104,8 @@ class ActivityLeaseAuthority:
             if heartbeat is not None and (type(interval) is not int or interval <= 0):
                 raise ValueError("missing recorded activity heartbeat interval")
             interval = interval if type(interval) is int and interval > 0 else None
+            if heartbeat is not None and interval is not None and heartbeat - reference > timedelta(seconds=interval):
+                raise ValueError("activity heartbeat deadline predates its claimed progress")
             result = cls(
                 client, namespace,
                 {"workflow_task_id": task["task_id"], "workflow_instance_id": task["workflow_id"],
@@ -105,7 +138,49 @@ class ActivityLeaseAuthority:
         prefixes = (f"/worker/activity-tasks/{self.task_id}/",
                     f"/worker/activity-tasks/{quote(self.task_id, safe='')}/")
         return (self.client is client and self.namespace == namespace
-                and (path.startswith(prefixes) or path == "/external-payloads/v1"))
+                and (any(path == prefix + action for prefix in prefixes
+                         for action in ("complete", "fail", "heartbeat", "renew-lease"))
+                     or path == "/external-payloads/v1"))
+
+    def acknowledge_progress(self, reply: Any, request_started: float) -> None:
+        """Use an actual application heartbeat, never a runtime liveness ping.
+
+        The existing heartbeat contract records last_heartbeat_at at the write
+        and resets its original recorded timeout interval from that instant.
+        Charging the whole request duration consumes storage/network latency.
+        """
+        self.remaining()
+        received = time.monotonic()
+        try:
+            expected = {"task_id": self.task_id, "activity_attempt_id": self.identity["activity_attempt_id"],
+                        "lease_owner": self.identity["lease_owner"]}
+            if (not isinstance(reply, Mapping) or reply.get("heartbeat_recorded") is not True
+                    or reply.get("can_continue") is not True or reply.get("cancel_requested") is not False
+                    or reply.get("reason") is not None
+                    or any(reply.get(key) != value for key, value in expected.items())
+                    or not self.captured_at <= request_started <= received):
+                raise ValueError("heartbeat did not confirm the original activity")
+            progress = _timestamp(reply.get("last_heartbeat_at"))
+            expiry = _timestamp(reply.get("lease_expires_at"))
+            duration = (expiry - progress).total_seconds()
+            if not 0 < duration <= 86400:
+                raise ValueError("invalid heartbeat lease grant")
+            if self.heartbeat_time is not None and progress <= self.heartbeat_time:
+                return
+            if request_started + duration <= received:
+                raise ValueError("heartbeat lease grant was consumed in transport")
+            if self.heartbeat_timeout is not None:
+                until = request_started + self.heartbeat_timeout
+                if until <= received:
+                    raise ValueError("heartbeat progress window was consumed in transport")
+                self.heartbeat_until = max(self.heartbeat_until or until, until)
+                self.heartbeat_deadline = progress + timedelta(seconds=self.heartbeat_timeout)
+            self.heartbeat_time = progress
+            self.lease_until = max(self.lease_until, request_started + duration)
+            self.lease_expiry = max(self.lease_expiry, expiry)
+        except (TypeError, ValueError, OverflowError) as error:
+            self.lost_reason = "invalid_activity_heartbeat"
+            raise ActivityLeaseAuthorityLost(self.task_id, self.lost_reason) from error
 
     def remaining(self) -> float:
         if self.lost_reason is not None:
@@ -132,9 +207,14 @@ class ActivityLeaseAuthority:
             server = _timestamp(reply.get("server_time"))
             expiry = _timestamp(reply.get("lease_expires_at"))
             duration = (expiry - server).total_seconds()
-            if (not 0 < duration <= 86400 or expiry < self.lease_expiry or server < self.server_time
-                    or request_started + duration <= received):
+            if not 0 < duration <= 86400 or request_started + duration <= received:
                 raise ValueError("renewal did not prove a live grant")
+            if (self.heartbeat_time is not None and server < self.heartbeat_time and expiry <= self.lease_expiry):
+                # An independently acknowledged application heartbeat can
+                # overtake an in-flight renewal. Its older reply grants nothing.
+                return
+            if expiry < self.lease_expiry or server < self.server_time:
+                raise ValueError("renewal predates the confirmed grant")
             confirmation = (server, expiry, request_started)
             if self.last_renewal is not None and server <= self.last_renewal[0]:
                 if confirmation == self.last_renewal:

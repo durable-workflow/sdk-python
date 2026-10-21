@@ -131,6 +131,29 @@ def test_runtime_renewal_cannot_fabricate_application_progress(
     assert authority.heartbeat_until == 102
 
 
+def test_real_heartbeat_receipt_moves_only_its_recorded_interval_and_not_the_business_bound(clock: list[float]) -> None:
+    authority = delivery(task(deadlines={"heartbeat": timestamp(2), "run": timestamp(4)},
+                              retry_policy={"heartbeat_timeout": 2}))
+    clock[0] = 100.9
+    authority.acknowledge_progress(reply(heartbeat_recorded=True, last_heartbeat_at=timestamp(0.8),
+                                          lease_expires_at=timestamp(5.8)), 100.8)
+    assert authority.heartbeat_until == pytest.approx(102.8)
+    assert authority.business_until == 104
+    assert authority.lease_until == pytest.approx(105.8)
+    clock[0] = 101
+    authority.acknowledge(reply(server_time=timestamp(0.7), lease_expires_at=timestamp(5.7)), 100.7)
+    assert authority.heartbeat_until == pytest.approx(102.8)
+    assert authority.lease_until == pytest.approx(105.8)
+
+
+def test_lost_execution_authority_does_not_block_readonly_status_or_callback_stop_receipts(clock: list[float]) -> None:
+    authority = delivery()
+    for action in ("complete", "fail", "heartbeat", "renew-lease"):
+        assert authority.governs(authority.client, "17", f"/worker/activity-tasks/task-1/{action}")
+    for action in ("status", "cancellation/acknowledge"):
+        assert not authority.governs(authority.client, "17", f"/worker/activity-tasks/task-1/{action}")
+
+
 async def test_temporary_renewal_failure_grants_nothing_but_does_not_revoke_a_live_original() -> None:
     import time
 

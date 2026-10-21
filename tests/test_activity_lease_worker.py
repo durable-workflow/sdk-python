@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -19,6 +20,7 @@ class LeaseServer:
     def __init__(self, *, lease: float = 0.18, deadline: float | None = None) -> None:
         self.lease = lease
         self.started = datetime.now(timezone.utc)
+        self.monotonic_started = time.monotonic()
         self.task = {
             "task_id": "task/17", "activity_attempt_id": "attempt-017", "attempt_number": 1,
             "activity_execution_id": "execution-1", "workflow_id": "workflow-1", "run_id": "run-1",
@@ -33,35 +35,65 @@ class LeaseServer:
         self.renewals = 0
         self.deny = False
         self.delay_poll = 0.0
+        self.delay_before_claim = 0.0
         self.delay_renewal = 0.0
         self.fail_completion = False
+        self.publication_times: list[float] = []
 
     async def respond(self, request: httpx.Request) -> httpx.Response:
         self.paths.append(request.url.path)
         if request.url.path.endswith("/poll"):
+            if self.delay_before_claim:
+                await asyncio.sleep(self.delay_before_claim)
+            claimed_at = datetime.now(timezone.utc)
+            # Start-to-close and heartbeat begin when this synthetic server
+            # claims the attempt, after client bootstrap and any empty wait.
+            offset = claimed_at - self.started
+            for key in ("start_to_close", "heartbeat"):
+                if key in self.task["deadlines"]:
+                    deadline = datetime.fromisoformat(self.task["deadlines"][key].replace("Z", "+00:00"))
+                    self.task["deadlines"][key] = timestamp(deadline + offset)
+            self.started = claimed_at
+            self.monotonic_started = time.monotonic()
+            self.task["lease_expires_at"] = timestamp(claimed_at + timedelta(seconds=self.lease))
+            response_clock = datetime.now(timezone.utc)
             await asyncio.sleep(self.delay_poll)
             return httpx.Response(200, json={
-                "task": self.task, "server_time": timestamp(self.started),
+                "task": self.task, "server_time": timestamp(response_clock),
                 "server_capabilities": {"activity_lease_renewal": True},
             })
         if request.url.path.endswith("/renew-lease"):
             self.renewals += 1
-            await asyncio.sleep(self.delay_renewal)
+            await asyncio.sleep(self.delay_renewal if self.renewals > 1 else 0)
             now = datetime.now(timezone.utc)
-            return httpx.Response(409 if self.deny else 200, json={
+            denied = (self.deny and self.renewals > 1
+                      or now >= datetime.fromisoformat(self.task["lease_expires_at"].replace("Z", "+00:00")))
+            if not denied:
+                self.task["lease_expires_at"] = timestamp(now + timedelta(seconds=self.lease))
+            return httpx.Response(409 if denied else 200, json={
                 "task_id": self.task["task_id"], "workflow_task_id": self.task["task_id"],
                 "workflow_instance_id": self.task["workflow_id"], "workflow_run_id": self.task["run_id"],
                 "activity_execution_id": self.task["activity_execution_id"],
                 "activity_attempt_id": self.task["activity_attempt_id"], "attempt_number": 1,
-                "lease_owner": self.task["lease_owner"], "lease_renewed": not self.deny,
-                "can_continue": not self.deny, "cancel_requested": False, "heartbeat_recorded": False,
-                "server_time": timestamp(now), "lease_expires_at": timestamp(now + timedelta(seconds=self.lease)),
-                "reason": "lease_expired" if self.deny else None,
+                "lease_owner": self.task["lease_owner"], "lease_renewed": not denied,
+                "can_continue": not denied, "cancel_requested": False, "heartbeat_recorded": False,
+                "server_time": timestamp(now), "lease_expires_at": self.task["lease_expires_at"],
+                "reason": "lease_expired" if denied else None,
             })
         if request.url.path.endswith("/complete"):
+            self.publication_times.append(time.monotonic() - self.monotonic_started)
             if self.fail_completion:
                 return httpx.Response(503, json={"reason": "temporary_failure"})
             return httpx.Response(200, json={"outcome": "completed", "recorded": True})
+        if request.url.path.endswith("/heartbeat"):
+            now = datetime.now(timezone.utc)
+            return httpx.Response(200, json={
+                "task_id": self.task["task_id"], "activity_attempt_id": self.task["activity_attempt_id"],
+                "lease_owner": self.task["lease_owner"], "heartbeat_recorded": True,
+                "can_continue": True, "cancel_requested": False, "reason": None,
+                "last_heartbeat_at": timestamp(now),
+                "lease_expires_at": timestamp(now + timedelta(seconds=self.lease)),
+            })
         if request.url.path.endswith("/fail"):
             return httpx.Response(200, json={"outcome": "failed", "recorded": True})
         raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
@@ -130,7 +162,8 @@ async def test_original_deadline_fences_transport_retries_during_terminal_public
         return "ready before the deadline"
 
     assert await execute(server, handler) == "claim_aborted"
-    assert len(server.publications()) == 1
+    assert server.publications()
+    assert all(elapsed < 0.12 for elapsed in server.publication_times)
 
 
 async def test_cancelled_thread_keeps_its_real_slot_until_the_callback_exits() -> None:
@@ -166,6 +199,23 @@ async def test_cancelled_thread_keeps_its_real_slot_until_the_callback_exits() -
         assert worker._remote_activity_threads == set()
 
 
+async def test_actual_application_heartbeat_acknowledges_recorded_progress_before_original_expiry() -> None:
+    server = LeaseServer(lease=3)
+    server.task["retry_policy"] = {"heartbeat_timeout": 1}
+    server.task["deadlines"] = {"heartbeat": timestamp(server.started + timedelta(seconds=0.15))}
+
+    @activity.defn(name="maintained")
+    async def handler() -> str:
+        await asyncio.sleep(0.04)
+        await activity.context().heartbeat({"step": 1})
+        await asyncio.sleep(0.28)
+        return "progress acknowledged"
+
+    assert await execute(server, handler) == "completed"
+    assert len(server.publications()) == 1
+    assert len([path for path in server.paths if path.endswith("/heartbeat")]) == 1
+
+
 async def test_poll_round_trip_consumes_the_original_delivery_budget() -> None:
     server = LeaseServer(lease=0.06)
     server.delay_poll = 0.1
@@ -181,3 +231,15 @@ async def test_poll_round_trip_consumes_the_original_delivery_budget() -> None:
         await execute(server, handler)
     assert called is False
     assert server.publications() == []
+
+
+async def test_waiting_for_a_new_task_does_not_consume_its_not_yet_created_lease() -> None:
+    server = LeaseServer()
+    server.delay_before_claim = 0.25
+
+    @activity.defn(name="maintained")
+    async def handler() -> str:
+        return "newly claimed after long poll"
+
+    assert await execute(server, handler) == "completed"
+    assert len(server.publications()) == 1
