@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from durable_workflow import Client, Worker, activity, serializer
-from durable_workflow._activity_lease import current_activity_authority
+from durable_workflow._activity_lease import ActivityLeaseAuthority, current_activity_authority
 
 
 @pytest.mark.parametrize("capability", [True, False, None, "true"])
@@ -146,6 +146,63 @@ async def test_healthy_callback_runs_beyond_original_lease_without_application_h
     assert server.renewals >= 2
     assert len(server.publications()) == 1
     assert not any(path.endswith("/heartbeat") for path in server.paths)
+
+
+async def test_settled_callback_stops_maintenance_when_inflight_renewal_swallows_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = LeaseServer(lease=1)
+    authority = ActivityLeaseAuthority.delivery(object(), "17", server.task, owner="worker-1",
+        task_queue="queue-1", server_time=timestamp(server.started), request_started=server.monotonic_started)
+    renewal_started = asyncio.Event()
+    calls = 0
+    swallowed = False
+
+    async def renewal(_self: ActivityLeaseAuthority) -> bool:
+        nonlocal calls, swallowed
+        calls += 1
+        renewal_started.set()
+        try:
+            await asyncio.get_running_loop().create_future()
+        except asyncio.CancelledError:
+            if not swallowed:
+                # Model an I/O wrapper completing concurrently with cancel().
+                swallowed = True
+                return True
+            raise
+        raise AssertionError("The controlled renewal should remain pending until cancellation")
+
+    async def operation() -> str:
+        await renewal_started.wait()
+        return "completed once"
+
+    monkeypatch.setattr(ActivityLeaseAuthority, "renew", renewal)
+    running = asyncio.create_task(authority.run(operation))
+    try:
+        done, _ = await asyncio.wait({running}, timeout=0.8)
+        assert running in done, "Settled callbacks must not await an indefinitely renewing helper"
+        assert await running == "completed once"
+        assert swallowed is True
+        assert calls == 1, "A settled operation must not start a subsequent renewal"
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+
+
+async def test_loading_supervision_can_settle_before_the_same_claim_runs_its_callback() -> None:
+    server = LeaseServer(lease=1)
+    authority = ActivityLeaseAuthority.delivery(object(), "17", server.task, owner="worker-1",
+        task_queue="queue-1", server_time=timestamp(server.started), request_started=server.monotonic_started)
+
+    async def loading() -> str:
+        await asyncio.sleep(0)
+        return "loaded"
+
+    assert await authority.run(loading) == "loaded"
+    original_deadline = authority.lease_until
+    assert await authority.run(loading) == "loaded"
+    assert authority.lease_until == original_deadline
+    assert authority.remaining() > 0
 
 
 @pytest.mark.parametrize("loss", ["denied", "slow-renewal", "business-deadline"])
