@@ -57,8 +57,9 @@ def reply(**changes: Any) -> dict[str, Any]:
     ("deadlines", {"heartbeat": timestamp(3)}),
 ])
 def test_invalid_original_delivery_never_authorizes_execution(clock: list[float], field: str, value: Any) -> None:
+    original = task(**{field: value})
     with pytest.raises(ActivityLeaseAuthorityLost):
-        delivery(task(**{field: value}))
+        delivery(original)
 
 
 @pytest.mark.parametrize(("field", "value"), [
@@ -76,8 +77,9 @@ def test_wrong_or_unbounded_renewal_cannot_extend_the_grant(
     authority = delivery()
     original = authority.lease_until
     clock[0] = 101.1
+    renewal = reply(**{field: value})
     with pytest.raises(ActivityLeaseAuthorityLost):
-        authority.acknowledge(reply(**{field: value}), 101)
+        authority.acknowledge(renewal, 101)
     assert authority.lease_until == original
 
 
@@ -94,8 +96,9 @@ def test_confirmed_renewal_preserves_every_original_business_deadline(clock: lis
 def test_acknowledgement_arriving_after_expiry_cannot_revive_the_claim(clock: list[float]) -> None:
     authority = delivery(task(deadlines={}))
     clock[0] = 105.1
+    renewal = reply(server_time=timestamp(4), lease_expires_at=timestamp(20))
     with pytest.raises(ActivityLeaseAuthorityLost, match="budget_expired"):
-        authority.acknowledge(reply(server_time=timestamp(4), lease_expires_at=timestamp(20)), 104)
+        authority.acknowledge(renewal, 104)
     assert authority.lease_until == 105
 
 
@@ -106,8 +109,9 @@ def test_replaying_a_successful_reply_at_a_later_request_cannot_reset_latency(cl
     authority.acknowledge(reply(), 101)
     assert authority.lease_until == 111
     clock[0] = 101.2
+    replayed = reply()
     with pytest.raises(ActivityLeaseAuthorityLost, match="invalid_activity_renewal"):
-        authority.acknowledge(reply(), 101.15)
+        authority.acknowledge(replayed, 101.15)
     assert authority.lease_until == 111
 
 

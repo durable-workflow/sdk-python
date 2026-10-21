@@ -3075,71 +3075,16 @@ class Worker:
         attempt_id: str = task.get("activity_attempt_id") or task.get("attempt_id", "")
         activity_type: str = task.get("activity_type", "")
         attempt_number: int = task.get("attempt_number", 1)
-        raw_args = task.get("arguments")
-        inbound_codec = task.get("payload_codec")
-        try:
-            inbound_codec = _validate_payload_codec(inbound_codec)
-            args = serializer.decode_envelope(
-                raw_args,
-                codec=inbound_codec,
-                external_storage=self.external_storage,
-                external_storage_cache=self.external_storage_cache,
-            ) or []
-        except AvroNotInstalledError as e:
-            log.exception("activity %s arguments Avro decode failed (avro dependency unavailable)", task_id)
-            try:
-                await self.client.fail_activity_task(
-                    task_id=task_id,
-                    activity_attempt_id=attempt_id,
-                    lease_owner=self.worker_id,
-                    message=(
-                        f"cannot decode activity arguments with codec 'avro': {e}. "
-                        f"Reinstall durable-workflow with its runtime dependencies."
-                    ),
-                    failure_type=type(e).__name__,
-                    failure_class=_exception_class_name(e),
-                    failure_code=_exception_code(e),
-                    stack_trace=traceback.format_exc(),
-                    non_retryable=True,
-                )
-            except Exception as fe:
-                log.warning("failed to report Avro-missing activity decode failure: %s", fe)
+        decoded = await self._decode_activity_arguments(task)
+        if decoded is None:
             return "decode_error"
-        except (ValueError, TypeError) as e:
-            log.exception("activity %s arguments decode failed (codec=%r)", task_id, inbound_codec)
-            try:
-                await self.client.fail_activity_task(
-                    task_id=task_id,
-                    activity_attempt_id=attempt_id,
-                    lease_owner=self.worker_id,
-                    message=(
-                        f"cannot decode activity arguments with codec {inbound_codec!r}: {e}. "
-                        f"Verify the argument bytes match the declared codec and writer schema."
-                    ),
-                    failure_type=type(e).__name__,
-                    failure_class=_exception_class_name(e),
-                    failure_code=_exception_code(e),
-                    stack_trace=traceback.format_exc(),
-                    non_retryable=True,
-                )
-            except Exception as fe:
-                log.warning("failed to report activity decode failure: %s", fe)
-            return "decode_error"
-        if not isinstance(args, list):
-            args = [args]
-        result_codec = inbound_codec
+        result_codec, args = decoded
 
         fn = self.activities.get(activity_type)
         if fn is None:
-            try:
-                await self.client.fail_activity_task(
-                    task_id=task_id,
-                    activity_attempt_id=attempt_id,
-                    lease_owner=self.worker_id,
-                    message=f"no activity registered for {activity_type!r}",
-                )
-            except Exception as e:
-                log.warning("failed to report unknown activity type: %s", e)
+            await self._report_activity_task_failure(
+                task_id, attempt_id, "unknown activity type", message=f"no activity registered for {activity_type!r}",
+            )
             return "no_handler"
 
         act_ctx = ActivityContext(
@@ -3155,12 +3100,7 @@ class Worker:
         )
         _set_context(act_ctx)
         try:
-            if self._cooperative_cancellation_supported:
-                result = await self._execute_cooperative_remote_callable(task, fn, tuple(args), act_ctx.info)
-            else:
-                result = await self._execute_activity_callable(
-                    task, activity_type, tuple(args), fn, run_sync_in_thread=True, remote=True,
-                )
+            result = await self._invoke_remote_activity(task, activity_type, fn, args, act_ctx.info)
         except _RemoteActivityExecutionAborted as error:
             log.warning("remote activity %s claim abandoned: %s", task_id, error)
             return "claim_aborted"
@@ -3169,67 +3109,39 @@ class Worker:
             return "claim_aborted"
         except _RemoteActivityApplicationFailure as error:
             failure = error.failure
-            try:
-                await self.client.fail_activity_task(
-                    task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id,
-                    message="activity cancelled" if failure.cancelled else failure.message,
-                    failure_type=failure.failure_type, failure_class=failure.failure_class,
-                    failure_code=failure.failure_code, stack_trace=failure.stack_trace,
-                    non_retryable=failure.non_retryable or failure.cancelled,
-                )
-            except Exception as report_error:
-                log.warning("failed to report remote activity failure: %s", report_error)
-            return ("cancelled" if failure.cancelled else
-                    "failed_non_retryable" if failure.non_retryable else "failed")
+            await self._report_activity_task_failure(
+                task_id, attempt_id, "remote activity failure",
+                message="activity cancelled" if failure.cancelled else failure.message,
+                failure_type=failure.failure_type, failure_class=failure.failure_class,
+                failure_code=failure.failure_code, stack_trace=failure.stack_trace,
+                non_retryable=failure.non_retryable or failure.cancelled,
+            )
+            return self._remote_activity_failure_status(failure)
         except ActivityCancelled:
             log.info("activity %s cancelled via heartbeat", task_id)
-            try:
-                await self.client.fail_activity_task(
-                    task_id=task_id,
-                    activity_attempt_id=attempt_id,
-                    lease_owner=self.worker_id,
-                    message="activity cancelled",
-                    failure_type="ActivityCancelled",
-                    failure_class=_exception_class_name(ActivityCancelled),
-                    non_retryable=True,
-                )
-            except Exception as fe:
-                log.warning("failed to report activity cancellation: %s", fe)
+            await self._report_activity_task_failure(
+                task_id, attempt_id, "activity cancellation", message="activity cancelled",
+                failure_type="ActivityCancelled", failure_class=_exception_class_name(ActivityCancelled),
+                non_retryable=True,
+            )
             return "cancelled"
         except NonRetryableError as e:
             log.exception("activity failed (non-retryable)")
-            try:
-                await self.client.fail_activity_task(
-                    task_id=task_id,
-                    activity_attempt_id=attempt_id,
-                    lease_owner=self.worker_id,
-                    message=str(e),
-                    failure_type=type(e).__name__,
-                    failure_class=_exception_class_name(e),
-                    failure_code=_exception_code(e),
-                    stack_trace=traceback.format_exc(),
-                    non_retryable=True,
-                )
-            except Exception as fe:
-                log.warning("failed to report activity failure: %s", fe)
+            await self._report_activity_task_failure(
+                task_id, attempt_id, "activity failure", message=str(e), failure_type=type(e).__name__,
+                failure_class=_exception_class_name(e), failure_code=_exception_code(e),
+                stack_trace=traceback.format_exc(), non_retryable=True,
+            )
             return "failed_non_retryable"
         except Exception as e:
             if _is_storage_admission_error(e):
                 raise
             log.exception("activity failed")
-            try:
-                await self.client.fail_activity_task(
-                    task_id=task_id,
-                    activity_attempt_id=attempt_id,
-                    lease_owner=self.worker_id,
-                    message=str(e),
-                    failure_type=type(e).__name__,
-                    failure_class=_exception_class_name(e),
-                    failure_code=_exception_code(e),
-                    stack_trace=traceback.format_exc(),
-                )
-            except Exception as fe:
-                log.warning("failed to report activity failure: %s", fe)
+            await self._report_activity_task_failure(
+                task_id, attempt_id, "activity failure", message=str(e), failure_type=type(e).__name__,
+                failure_class=_exception_class_name(e), failure_code=_exception_code(e),
+                stack_trace=traceback.format_exc(),
+            )
             return "failed"
         finally:
             _set_context(None)
@@ -3249,6 +3161,63 @@ class Worker:
             log.warning("failed to complete activity task %s: %s", task_id, e)
             return "complete_error"
         return "completed"
+
+    async def _decode_activity_arguments(self, task: dict[str, Any]) -> tuple[str, list[Any]] | None:
+        task_id: str = task["task_id"]
+        attempt_id: str = task.get("activity_attempt_id") or task.get("attempt_id", "")
+        codec = task.get("payload_codec")
+        try:
+            codec = _validate_payload_codec(codec)
+            args = serializer.decode_envelope(
+                task.get("arguments"), codec=codec, external_storage=self.external_storage,
+                external_storage_cache=self.external_storage_cache,
+            ) or []
+        except AvroNotInstalledError as error:
+            log.exception("activity %s arguments Avro decode failed (avro dependency unavailable)", task_id)
+            await self._report_activity_task_failure(
+                task_id, attempt_id, "Avro-missing activity decode failure",
+                message=(f"cannot decode activity arguments with codec 'avro': {error}. "
+                         "Reinstall durable-workflow with its runtime dependencies."),
+                failure_type=type(error).__name__, failure_class=_exception_class_name(error),
+                failure_code=_exception_code(error), stack_trace=traceback.format_exc(), non_retryable=True,
+            )
+            return None
+        except (ValueError, TypeError) as error:
+            log.exception("activity %s arguments decode failed (codec=%r)", task_id, codec)
+            await self._report_activity_task_failure(
+                task_id, attempt_id, "activity decode failure",
+                message=(f"cannot decode activity arguments with codec {codec!r}: {error}. "
+                         "Verify the argument bytes match the declared codec and writer schema."),
+                failure_type=type(error).__name__, failure_class=_exception_class_name(error),
+                failure_code=_exception_code(error), stack_trace=traceback.format_exc(), non_retryable=True,
+            )
+            return None
+        return codec, args if isinstance(args, list) else [args]
+
+    async def _report_activity_task_failure(self, task_id: str, attempt_id: str,
+                                            context: str, **failure: Any) -> None:
+        try:
+            await self.client.fail_activity_task(
+                task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id, **failure,
+            )
+        except Exception as error:
+            log.warning("failed to report %s: %s", context, error)
+
+    async def _invoke_remote_activity(self, task: dict[str, Any], activity_type: str,
+                                      fn: Callable[..., Any], args: list[Any], info: ActivityInfo) -> Any:
+        if self._cooperative_cancellation_supported:
+            return await self._execute_cooperative_remote_callable(task, fn, tuple(args), info)
+        return await self._execute_activity_callable(
+            task, activity_type, tuple(args), fn, run_sync_in_thread=True, remote=True,
+        )
+
+    @staticmethod
+    def _remote_activity_failure_status(failure: CallbackFailure) -> str:
+        if failure.cancelled:
+            return "cancelled"
+        if failure.non_retryable:
+            return "failed_non_retryable"
+        return "failed"
 
     async def _execute_activity_callable(
         self,

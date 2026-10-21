@@ -119,10 +119,11 @@ async def test_discovery_and_transport_share_one_bounded_request_window(phase: s
     else:
         client._request = AsyncMock(side_effect=held)
     try:
+        renewal = client.renew_activity_task_lease(
+            task_id="task", activity_attempt_id="attempt", lease_owner="worker", timeout=0.02,
+        )
         with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(client.renew_activity_task_lease(
-                task_id="task", activity_attempt_id="attempt", lease_owner="worker", timeout=0.02,
-            ), timeout=0.5)
+            await asyncio.wait_for(renewal, timeout=0.5)
         assert cancelled.is_set()
         if phase == "discovery":
             client._request.assert_not_awaited()

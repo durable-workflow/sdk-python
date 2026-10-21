@@ -34,6 +34,19 @@ def activity_lease_renewal_supported(client: Any) -> bool:
     return isinstance(capabilities, Mapping) and capabilities.get("activity_lease_renewal") is True
 
 
+def _heartbeat_terms(task: Mapping[str, Any], deadlines: Mapping[str, Any],
+                     reference: datetime) -> tuple[datetime | None, int | None]:
+    heartbeat = _timestamp(deadlines["heartbeat"]) if deadlines.get("heartbeat") is not None else None
+    policy = task.get("retry_policy")
+    interval = policy.get("heartbeat_timeout") if isinstance(policy, Mapping) else None
+    if heartbeat is not None and (type(interval) is not int or interval <= 0):
+        raise ValueError("missing recorded activity heartbeat interval")
+    interval = interval if type(interval) is int and interval > 0 else None
+    if heartbeat is not None and interval is not None and heartbeat - reference > timedelta(seconds=interval):
+        raise ValueError("activity heartbeat deadline predates its claimed progress")
+    return heartbeat, interval
+
+
 @dataclass
 class ActivityLeaseAuthority:
     client: Any
@@ -106,14 +119,7 @@ class ActivityLeaseAuthority:
             bounds = [_timestamp(deadlines[key]) for key in ("start_to_close", "schedule_to_close", "run", "execution")
                       if deadlines.get(key) is not None]
             business = request_started + (min(bounds) - reference).total_seconds() if bounds else None
-            heartbeat = _timestamp(deadlines["heartbeat"]) if deadlines.get("heartbeat") is not None else None
-            policy = task.get("retry_policy")
-            interval = policy.get("heartbeat_timeout") if isinstance(policy, Mapping) else None
-            if heartbeat is not None and (type(interval) is not int or interval <= 0):
-                raise ValueError("missing recorded activity heartbeat interval")
-            interval = interval if type(interval) is int and interval > 0 else None
-            if heartbeat is not None and interval is not None and heartbeat - reference > timedelta(seconds=interval):
-                raise ValueError("activity heartbeat deadline predates its claimed progress")
+            heartbeat, interval = _heartbeat_terms(task, deadlines, reference)
             result = cls(
                 client, namespace,
                 {"workflow_task_id": task["task_id"], "workflow_instance_id": task["workflow_id"],
@@ -272,20 +278,19 @@ class ActivityLeaseAuthority:
             self.lost_reason = "activity_renewal_unavailable"
             raise ActivityLeaseAuthorityLost(self.task_id, self.lost_reason) from error
 
+    async def _maintain(self) -> None:
+        confirmed = True
+        while True:
+            delay = min(30.0 if confirmed else 1.0, max(0.0, self.lease_until - time.monotonic()) / 3)
+            if self.heartbeat_timeout is not None:
+                delay = min(delay, self.heartbeat_timeout / 3)
+            await asyncio.sleep(min(delay, self.remaining()))
+            confirmed = await self.renew()
+
     async def run(self, operation: Callable[[], Awaitable[_T]]) -> _T:
         self.remaining()
         execution = asyncio.ensure_future(operation())
-
-        async def maintain() -> None:
-            confirmed = True
-            while True:
-                delay = min(30.0 if confirmed else 1.0, max(0.0, self.lease_until - time.monotonic()) / 3)
-                if self.heartbeat_timeout is not None:
-                    delay = min(delay, self.heartbeat_timeout / 3)
-                await asyncio.sleep(min(delay, self.remaining()))
-                confirmed = await self.renew()
-
-        maintenance = asyncio.create_task(maintain())
+        maintenance = asyncio.create_task(self._maintain())
         try:
             while True:
                 done, _ = await asyncio.wait({execution, maintenance}, timeout=self.remaining(),

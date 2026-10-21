@@ -170,7 +170,8 @@ async def test_lost_claim_cannot_publish_a_late_result_or_failure(loss: str) -> 
         return "late result"
 
     assert await execute(server, handler) == "claim_aborted"
-    assert called is True and cancelled is True
+    assert called is True
+    assert cancelled is True
     assert server.publications() == []
 
 
