@@ -231,13 +231,7 @@ class ExecutionTelemetry:
         try:
             return await next(context)
         except BaseException:
-            if span is not None:
-                try:
-                    trace = importlib.import_module(_TRACE_MODULE)
-                    span.set_attribute("error.type", "durable.execution.failed")
-                    span.set_status(trace.Status(trace.StatusCode.ERROR, "durable execution failed"))
-                except Exception:
-                    pass
+            self._mark_failed(span)
             raise
         finally:
             _fields.reset(token)
@@ -249,6 +243,17 @@ class ExecutionTelemetry:
             if span is not None:
                 with suppress(Exception):
                     span.end()
+
+    @staticmethod
+    def _mark_failed(span: Any) -> None:
+        if span is None:
+            return
+        try:
+            trace = importlib.import_module(_TRACE_MODULE)
+            span.set_attribute("error.type", "durable.execution.failed")
+            span.set_status(trace.Status(trace.StatusCode.ERROR, "durable execution failed"))
+        except Exception:
+            pass
 
     def _wire_context(
         self, task: dict[str, Any], namespace: str, trace: Any, context: Any,

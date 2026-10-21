@@ -2468,21 +2468,24 @@ class Worker:
             return False
         if "build_id" in task and task["build_id"] != self.build_id:
             return False
+        return self._observability_registered(task, kind) and self._observability_deadline(task)
+
+    def _observability_registered(self, task: dict[str, Any], kind: str) -> bool:
         if kind == "activity":
-            if (not isinstance(task.get("activity_type"), str) or task["activity_type"] not in self.activities
-                    or not observability_identity(task.get("activity_attempt_id") or task.get("attempt_id"))):
-                return False
-        elif not isinstance(task.get("workflow_type"), str) or task["workflow_type"] not in self.workflows:
-            return False
+            return (isinstance(task.get("activity_type"), str) and task["activity_type"] in self.activities
+                    and observability_identity(task.get("activity_attempt_id") or task.get("attempt_id")))
+        return isinstance(task.get("workflow_type"), str) and task["workflow_type"] in self.workflows
+
+    @staticmethod
+    def _observability_deadline(task: dict[str, Any]) -> bool:
         # Preserve any original delivery deadline. Telemetry never renews it.
-        if "lease_expires_at" in task:
-            try:
-                deadline = datetime.fromisoformat(task["lease_expires_at"].replace("Z", "+00:00"))
-                if deadline.tzinfo is None or deadline <= datetime.now(timezone.utc):
-                    return False
-            except (AttributeError, TypeError, ValueError):
-                return False
-        return True
+        if "lease_expires_at" not in task:
+            return True
+        try:
+            deadline = datetime.fromisoformat(task["lease_expires_at"].replace("Z", "+00:00"))
+            return deadline.tzinfo is not None and deadline > datetime.now(timezone.utc)
+        except (AttributeError, TypeError, ValueError):
+            return False
 
     async def _run_workflow_task_core(self, task: dict[str, Any]) -> list[dict[str, Any]] | None:
         history = await self._load_workflow_claim_history(task)

@@ -62,9 +62,11 @@ def test_baggage_is_empty_by_default_allowlisted_bounded_and_nonmutating() -> No
     value = envelope(baggage="tenant=public,credential=private")
     original = copy.deepcopy(value)
     normalized, diagnostic = normalize(value)
-    assert diagnostic == "filtered" and normalized == envelope()
+    assert diagnostic == 'filtered'
+    assert normalized == envelope()
     normalized, diagnostic = normalize(value, ["tenant"])
-    assert diagnostic == "filtered" and normalized == envelope(baggage="tenant=public")
+    assert diagnostic == 'filtered'
+    assert normalized == envelope(baggage='tenant=public')
     assert value == original
     for key, size in (("traceparent", 257), ("tracestate", 513), ("baggage", 2049)):
         oversized = envelope()
@@ -80,7 +82,8 @@ def test_baggage_is_empty_by_default_allowlisted_bounded_and_nonmutating() -> No
 def test_raw_propagator_warnings_are_private_only_during_normalization(caplog: Any) -> None:
     value = envelope(tracestate="private-token", baggage="private-customer-data")
     normalized, diagnostic = normalize(value, ["tenant"])
-    assert normalized == envelope() and diagnostic == "filtered"
+    assert normalized == envelope()
+    assert diagnostic == 'filtered'
     assert "private" not in caplog.text
     logging.getLogger("opentelemetry.trace.span").warning("outside validation")
     assert "outside validation" in caplog.text
@@ -96,7 +99,8 @@ def test_dispatch_requires_exact_task_and_never_imports_baggage() -> None:
     assert dispatch(value, "task") == (None, "discarded")
     for invalid in ("", "x" * 513, "task\n", "task\u0085", "\ud800"):
         assert not identity(invalid)
-    assert identity("t" * 512) and identity("任务")
+    assert identity('t' * 512)
+    assert identity('任务')
 
 
 def test_capture_reads_actual_caller_before_transport_and_preserves_sampling() -> None:
@@ -107,7 +111,8 @@ def test_capture_reads_actual_caller_before_transport_and_preserves_sampling() -
     try:
         captured, diagnostic = capture()
         assert diagnostic is None
-        assert captured is not None and captured["carrier"]["traceparent"] == PARENT[:-2] + "00"
+        assert captured is not None
+        assert captured['carrier']['traceparent'] == PARENT[:-2] + '00'
         assert "baggage" not in captured["carrier"]
         assert trace.get_current_span().get_span_context().trace_id == int(PARENT[3:35], 16)
     finally:

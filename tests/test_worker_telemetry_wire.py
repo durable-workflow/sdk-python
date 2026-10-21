@@ -94,17 +94,21 @@ async def test_actual_polled_workflow_recovers_parent_links_and_allowlisted_bagg
     try:
         task = await client.poll_workflow_task(worker_id="worker", task_queue="orders", timeout=0)
         commands = await worker._run_workflow_task(task)
-        assert commands is not None and commands[0]["type"] == "complete_workflow"
+        assert commands is not None
+        assert commands[0]['type'] == 'complete_workflow'
         body = json.loads(requests[-1].content)
         assert serializer.decode_envelope(body["commands"][0]["result"]) == "original-result"
         span, = exporter.get_finished_spans()
-        assert span.context.trace_id == int(ORIGIN[3:35], 16) and span.parent.span_id == int(ORIGIN[36:52], 16)
+        assert span.context.trace_id == int(ORIGIN[3:35], 16)
+        assert span.parent.span_id == int(ORIGIN[36:52], 16)
         assert len(span.links) == 3
         assert all(link.context.trace_id == int(DISPATCH[3:35], 16) for link in span.links)
-        assert observed[0][0]["namespace"] == "tenant" and observed[0][1] == {"tenant": "public"}
+        assert observed[0][0]['namespace'] == 'tenant'
+        assert observed[0][1] == {'tenant': 'public'}
         assert observed[0][2] == {"observability_context": {"business": "preserved"}}
         assert len(requests) == 3  # existing discovery, original poll, original completion
-        assert "private" not in caplog.text and "traceparent" not in caplog.text
+        assert 'private' not in caplog.text
+        assert 'traceparent' not in caplog.text
         assert current_log_context() == {}
     finally:
         await client.aclose()
@@ -125,7 +129,9 @@ async def test_refused_history_never_extracts_observation_or_invokes_workflow() 
         with pytest.raises(ServerError) as failure:
             await worker._run_workflow_task(work)
         assert failure.value.reason() == "original_claim_refused"
-        assert not observed and not exporter.get_finished_spans() and current_log_context() == {}
+        assert not observed
+        assert not exporter.get_finished_spans()
+        assert current_log_context() == {}
     finally:
         await client.aclose()
 
@@ -150,7 +156,8 @@ async def test_remote_activity_uses_real_attempt_and_task_parent_without_extra_a
         assert spans["durable.activity.attempt"].parent.span_id == spans["durable.activity.task"].context.span_id
         assert len(spans["durable.activity.task"].links) == 3
         assert observed[0][0]["activity_attempt_id"] == "attempt"
-        assert observed[0][0]["activity_attempt_number"] == 3 and not observed[0][1]
+        assert observed[0][0]['activity_attempt_number'] == 3
+        assert not observed[0][1]
         assert len(requests) == 3
         assert serializer.decode_envelope(json.loads(requests[-1].content)["result"]) == "original-activity-result"
         assert current_log_context() == {}
@@ -179,16 +186,20 @@ async def test_insufficient_claim_omits_telemetry_and_malformed_carriers_preserv
     try:
         work = await client.poll_workflow_task(worker_id="worker", task_queue="orders", timeout=0)
         commands = await worker._run_workflow_task(work)
-        assert commands is not None and commands[0]["type"] == "complete_workflow" and len(observed) == 1
+        assert commands is not None
+        assert commands[0]['type'] == 'complete_workflow'
+        assert len(observed) == 1
         if malformed:
             span, = exporter.get_finished_spans()
-            assert span.parent is None and not span.links
+            assert span.parent is None
+            assert not span.links
             assert span.attributes["durable.observability_context"] == "discarded"
             assert span.attributes["durable.dispatch_context"] == "discarded"
             assert span.attributes["durable.observability_links"] == "discarded"
             assert "private-header" not in repr(span.attributes)
         else:
-            assert not exporter.get_finished_spans() and observed[0][0] == {}
+            assert not exporter.get_finished_spans()
+            assert observed[0][0] == {}
         assert current_log_context() == {}
     finally:
         await client.aclose()

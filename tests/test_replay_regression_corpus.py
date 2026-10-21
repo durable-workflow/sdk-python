@@ -569,7 +569,9 @@ def _execute_observed_worker_replay(fixture: dict[str, Any]) -> list[dict[str, A
     from tests.test_telemetry import TracedWorkflow
 
     inputs = fixture["workflow"]["input"]
-    assert isinstance(inputs, list) and len(inputs) == 1 and isinstance(inputs[0], dict)
+    assert isinstance(inputs, list)
+    assert len(inputs) == 1
+    assert isinstance(inputs[0], dict)
     delivery = inputs[0]
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
@@ -591,7 +593,8 @@ def _execute_observed_worker_replay(fixture: dict[str, Any]) -> list[dict[str, A
                     "arguments": serializer.envelope([], codec="avro"), "history_events": history,
                     "observability_context": delivery["observability_context"]}
             commands = await worker._run_workflow_task(task)
-            assert commands is not None and len(commands) == 1
+            assert commands is not None
+            assert len(commands) == 1
             decisions.append(commands[0]["type"])
             if commands[0]["type"] == "complete_workflow":
                 result = serializer.decode_envelope(commands[0]["result"])

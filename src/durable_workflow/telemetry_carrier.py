@@ -185,29 +185,35 @@ def links(
         return [], diagnostic
 
 
+def _link_shape(kind: Any) -> tuple[set[str], set[str]] | None:
+    if kind == "command":
+        return {"command_id"}, set()
+    if kind == "task_outcome":
+        return {"task_id", "event_id", "sequence", "event_type"}, {
+            "activity_execution_id", "activity_attempt_id", "timer_id",
+        }
+    if kind == "child_outcome":
+        return {"workflow_link_id", "child_run_id", "event_id", "sequence", "event_type"}, {"child_task_id"}
+    return None
+
+
+def _link_identity(key: str, value: Any) -> bool:
+    if key == "sequence":
+        return type(value) is int and 0 < value <= 2**63 - 1
+    return (key == "child_task_id" and value is None) or identity(value)
+
+
 def _link_entry(value: Any) -> tuple[dict[str, Any], str | None] | None:
     if not isinstance(value, dict) or len(value) > 10:
         return None
-    kind = value.get("kind")
-    if kind == "command":
-        required, optional = {"command_id"}, set()
-    elif kind == "task_outcome":
-        required = {"task_id", "event_id", "sequence", "event_type"}
-        optional = {"activity_execution_id", "activity_attempt_id", "timer_id"}
-    elif kind == "child_outcome":
-        required = {"workflow_link_id", "child_run_id", "event_id", "sequence", "event_type"}
-        optional = {"child_task_id"}
-    else:
+    shape = _link_shape(value.get("kind"))
+    if shape is None:
         return None
-    if not required <= value.keys() or not value.keys() <= required | optional | {"kind", "context"}:
+    required, optional = shape
+    if required - value.keys() or value.keys() - (required | optional | {"kind", "context"}):
         return None
     for key in required | (optional & value.keys()):
-        if key == "sequence":
-            if type(value[key]) is not int or not 0 < value[key] <= 2**63 - 1:
-                return None
-        elif key == "child_task_id" and value[key] is None:
-            continue
-        elif not identity(value[key]):
+        if not _link_identity(key, value[key]):
             return None
     context = value.get("context")
     headers = context.get("carrier") if isinstance(context, dict) else None

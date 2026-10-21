@@ -49,7 +49,8 @@ async def test_real_client_discovery_captures_before_http_preserving_commands_an
             input = [{"observability_context": {"business": "preserved"}}]
             await client.start_workflow(workflow_type="orders", workflow_id="order", task_queue="orders", input=input)
             initial = [request for request in requests if request.method == "POST"]
-            assert len(initial) == 1 and "observability_context" not in json.loads(initial[0].content)
+            assert len(initial) == 1
+            assert 'observability_context' not in json.loads(initial[0].content)
             requests.clear()
             await client.get_cluster_info()
             await client.start_workflow(workflow_type="orders", workflow_id="order", task_queue="orders", input=input)
@@ -63,7 +64,8 @@ async def test_real_client_discovery_captures_before_http_preserving_commands_an
                 assert carrier["traceparent"][36:52] == format(caller.get_span_context().span_id, "016x")
                 assert "baggage" not in carrier
             assert serializer.decode_envelope(bodies[0]["input"], codec="avro") == input
-            assert bodies[1]["request_id"] == "signal-original" and bodies[2]["request_id"] == "update-original"
+            assert bodies[1]['request_id'] == 'signal-original'
+            assert bodies[2]['request_id'] == 'update-original'
             commands = [{"type": "start_child_workflow", "workflow_type": "child", "input": serializer.envelope(input)},
                         {"type": "continue_as_new", "input": serializer.envelope([])}]
             original = copy.deepcopy(commands)
