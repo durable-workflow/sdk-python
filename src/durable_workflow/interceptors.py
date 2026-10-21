@@ -14,6 +14,9 @@ class WorkflowTaskInterceptorContext:
     worker_id: str
     task_queue: str
     task: dict[str, Any]
+    namespace: str | None = None
+    observability_supported: bool = False
+    defer_observability: bool = False
 
 
 @dataclass(frozen=True)
@@ -25,6 +28,10 @@ class ActivityInterceptorContext:
     task: dict[str, Any]
     activity_type: str
     args: tuple[Any, ...]
+    namespace: str | None = None
+    observability_supported: bool = False
+    remote: bool = False
+    execution_context: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +41,8 @@ class QueryTaskInterceptorContext:
     worker_id: str
     task_queue: str
     task: dict[str, Any]
+    namespace: str | None = None
+    observability_supported: bool = False
 
 
 WorkflowTaskHandler = Callable[[WorkflowTaskInterceptorContext], Awaitable[list[dict[str, Any]] | None]]

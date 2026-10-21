@@ -97,6 +97,8 @@ from .metrics import (
     MetricsRecorder,
 )
 from .retry_policy import _worker_storage_admission_stop
+from .telemetry import ExecutionTelemetry, current_execution_telemetry
+from .telemetry_carrier import identity as observability_identity
 from .worker_session import WorkerSession, WorkerSessionOptions
 from .workflow import (
     Command,
@@ -1450,6 +1452,8 @@ class Worker:
             worker_id=self.worker_id,
             task_queue=self.task_queue,
             task=task,
+            namespace=getattr(self.client, "namespace", None),
+            defer_observability=getattr(self.client, "_observability_capability", False) is True,
         )
 
         async def call_core(ctx: WorkflowTaskInterceptorContext) -> list[dict[str, Any]] | None:
@@ -2004,11 +2008,14 @@ class Worker:
             task["_prepared_cancellation_context"] = dict(value)
 
         runner = PreparedLocalRunner(self.client, attempt, shutdown=self._local_activity_shutdown, observe=observe)
+        telemetry = current_execution_telemetry()
         invocation = CallbackInvocation(
             handler, tuple(call.command.arguments), ActivityInfo(
                 task_id, call.command.activity_type, attempt.attempt_id, attempt.attempt_number,
                 self.task_queue, self.worker_id,
             ), {**task, "activity_attempt_id": attempt.attempt_id}, self.interceptors,
+            namespace=getattr(self.client, "namespace", None),
+            execution_context=telemetry.capture() if telemetry is not None else None,
         )
         return runner, invocation
 
@@ -2445,14 +2452,73 @@ class Worker:
 
         raise AssertionError("local activity retry loop has no terminal outcome")
 
-    async def _run_workflow_task_core(self, task: dict[str, Any]) -> list[dict[str, Any]] | None:
-        import json as _json
+    def _observability_claim(self, task: dict[str, Any], kind: str, *, client: Client | None = None) -> bool:
+        client = client or self.client
+        if getattr(client, "_observability_capability", False) is not True:
+            return False
+        task_id = task.get("query_task_id") if kind == "query" else task.get("task_id")
+        epoch = task.get({"workflow": "workflow_task_attempt", "activity": "attempt_number",
+                          "query": "query_task_attempt"}[kind])
+        if (not all(observability_identity(value) for value in (
+                task_id, task.get("workflow_id"), task.get("run_id"), getattr(client, "namespace", None)))
+                or task.get("lease_owner") != self.worker_id
+                or type(epoch) is not int or not 0 < epoch <= 2**63 - 1):
+            return False
+        if "task_queue" in task and task["task_queue"] != self.task_queue:
+            return False
+        if "build_id" in task and task["build_id"] != self.build_id:
+            return False
+        return self._observability_registered(task, kind) and self._observability_deadline(task)
 
-        log.debug("workflow task payload: %s", _json.dumps(task, default=str)[:2000])
+    def _observability_registered(self, task: dict[str, Any], kind: str) -> bool:
+        if kind == "activity":
+            return (isinstance(task.get("activity_type"), str) and task["activity_type"] in self.activities
+                    and observability_identity(task.get("activity_attempt_id") or task.get("attempt_id")))
+        return isinstance(task.get("workflow_type"), str) and task["workflow_type"] in self.workflows
+
+    @staticmethod
+    def _observability_deadline(task: dict[str, Any]) -> bool:
+        # Preserve any original delivery deadline. Telemetry never renews it.
+        if "lease_expires_at" not in task:
+            return True
+        try:
+            deadline = datetime.fromisoformat(task["lease_expires_at"].replace("Z", "+00:00"))
+            return deadline.tzinfo is not None and deadline > datetime.now(timezone.utc)
+        except (AttributeError, TypeError, ValueError):
+            return False
+
+    async def _run_workflow_task_core(self, task: dict[str, Any]) -> list[dict[str, Any]] | None:
+        history = await self._load_workflow_claim_history(task)
+
+        async def loaded(ctx: WorkflowTaskInterceptorContext) -> list[dict[str, Any]] | None:
+            return await self._run_workflow_task_with_history(ctx.task, history)
+
+        if not self._observability_claim(task, "workflow"):
+            return await self._run_workflow_task_with_history(task, history)
+        context = WorkflowTaskInterceptorContext(self.worker_id, self.task_queue, task,
+                                                  namespace=self.client.namespace, observability_supported=True)
+        handler = loaded
+        for interceptor in reversed(self.interceptors):
+            if isinstance(interceptor, ExecutionTelemetry):
+                next_handler = handler
+
+                async def instrumented(
+                    ctx: WorkflowTaskInterceptorContext, *, telemetry: ExecutionTelemetry = interceptor,
+                    next: Callable[
+                        [WorkflowTaskInterceptorContext], Awaitable[list[dict[str, Any]] | None],
+                    ] = next_handler,
+                ) -> list[dict[str, Any]] | None:
+                    return await telemetry.execute_workflow_task(ctx, next)
+
+                handler = instrumented
+        return await handler(context)
+
+    async def _run_workflow_task_with_history(
+        self, task: dict[str, Any], history: list[dict[str, Any]],
+    ) -> list[dict[str, Any]] | None:
         task_id: str = task["task_id"]
         attempt: int = task.get("workflow_task_attempt", 1)
         wf_type: str = task.get("workflow_type", "")
-        history = await self._load_workflow_claim_history(task)
 
         start_input: list[Any] = []
         codec = task.get("payload_codec")
@@ -2939,7 +3005,10 @@ class Worker:
                 await self._assert_remote_activity_claim(task)
 
         await self._assert_remote_activity_claim(task)
-        callback = SupervisedCallback(CallbackInvocation(handler, args, info, task, self.interceptors))
+        callback = SupervisedCallback(CallbackInvocation(
+            handler, args, info, task, self.interceptors, namespace=getattr(self.client, "namespace", None),
+            observability_supported=self._observability_claim(task, "activity"), remote=True,
+        ))
         self._remote_activity_processes.add(callback)
         invocation: asyncio.Task[Any] | None = None
         abandoned = False
@@ -3178,6 +3247,9 @@ class Worker:
             task=task,
             activity_type=activity_type,
             args=args,
+            namespace=getattr(self.client, "namespace", None),
+            observability_supported=remote and self._observability_claim(task, "activity"),
+            remote=remote,
         )
 
         async def call_activity(ctx: ActivityInterceptorContext) -> Any:
@@ -3283,6 +3355,8 @@ class Worker:
             worker_id=self.worker_id,
             task_queue=self.task_queue,
             task=task,
+            namespace=getattr(client, "namespace", None),
+            observability_supported=self._observability_claim(task, "query", client=client),
         )
 
         async def call_core(ctx: QueryTaskInterceptorContext) -> str:
@@ -4021,8 +4095,10 @@ class Worker:
             external_storage=self.external_storage,
             external_storage_threshold_bytes=self.external_storage_threshold_bytes,
             external_storage_cache=self.external_storage_cache,
+            telemetry=self.client.telemetry,
         )
         client._cluster_info = self.client._cluster_info
+        client._observability_capability = self.client._observability_capability
         return client
 
     def _can_clone_client_for_query_tasks(self) -> bool:

@@ -14,6 +14,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deprecate_patch` for the same change ID, while validating each call's range
   and preserving retained duplicate-marker sequences.
 
+## [2.7.0] - 2026-10-21
+
+### Added
+
+- Optional execution telemetry and standard logging correlation for workflow,
+  query and activity scopes. The telemetry extra installs only the API;
+  applications own providers, exporters, sampling and shutdown.
+- Bounded W3C propagation gated by the Server's actual observability capability.
+  Recover run parents and validated dispatch/command/outcome links only after
+  original poll identities and existing authority fences. Baggage defaults
+  empty and is never carried on links.
+- Isolated async/thread contexts and fresh provider factories for supervised
+  callbacks. Cold replay recovers the run parent without re-emitting completed
+  activity attempts. Application request IDs and business values are preserved.
+
 ## [2.6.2] - 2026-10-20
 
 ### Fixed

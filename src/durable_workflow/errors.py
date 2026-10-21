@@ -412,8 +412,45 @@ class QueryFailed(DurableWorkflowError):
         return None
 
 
+REQUEST_ID_CONFLICT = "request_id_conflict"
+"""Reason reported when a command key is reused with a different intent."""
+
+_REQUEST_ID_CONFLICT_FIELDS = (
+    "request_id",
+    "retained_command_id",
+    "retained_command_type",
+    "retained_outcome",
+    "conflict",
+)
+
+
+def _body_string(body: object, name: str) -> str | None:
+    if isinstance(body, dict):
+        value = body.get(name)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _request_id_conflict_details(body: object) -> dict[str, Any]:
+    """Return the retained-command fields of a ``request_id_conflict`` response body."""
+    if not isinstance(body, dict) or body.get("reason") != REQUEST_ID_CONFLICT:
+        return {}
+    return {name: body[name] for name in _REQUEST_ID_CONFLICT_FIELDS if name in body}
+
+
 class SignalFailed(DurableWorkflowError):
-    """A workflow signal was rejected before it could be delivered."""
+    """A workflow signal was rejected before it could be delivered.
+
+    :attr:`request_id` is the caller command key the client sent with the
+    signal (caller-supplied or SDK-generated), so the application can retry
+    the same logical signal with the same key. :attr:`reason` is the Server's
+    machine-readable refusal reason; ``request_id_conflict`` means the key was
+    already retained for a signal with a different intent, and
+    :attr:`details` then carries ``retained_command_id``,
+    ``retained_command_type``, ``retained_outcome`` and the mismatched
+    ``conflict`` parts.
+    """
 
     def __init__(
         self,
@@ -422,11 +459,15 @@ class SignalFailed(DurableWorkflowError):
         reason: str | None = None,
         status: int | None = None,
         body: object | None = None,
+        request_id: str | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.reason = reason
         self.status = status
         self.body = body
+        self.request_id = request_id if request_id is not None else _body_string(body, "request_id")
+        self.details: dict[str, Any] = dict(details) if details is not None else _request_id_conflict_details(body)
 
     @property
     def validation_errors(self) -> dict[str, Any] | None:
@@ -508,17 +549,37 @@ class NonDeterministicReplayError(DurableWorkflowError):
 
 
 class UpdateFailed(InvalidArgument):
-    """An accepted workflow update failed during handler execution.
+    """An accepted workflow update failed, or its command key was refused.
 
     ``body`` preserves the Server response, including its durable failure
     identity. This inherits from :class:`InvalidArgument` to preserve catches
     written for earlier SDK versions that mapped all HTTP 422 responses there.
+
+    :attr:`request_id` is the caller command key the client sent with the
+    update (caller-supplied or SDK-generated). :attr:`reason` is the Server's
+    machine-readable reason when it returned one; ``request_id_conflict``
+    means the key was already retained for an update with a different intent,
+    and :attr:`details` then carries ``retained_command_id``,
+    ``retained_command_type``, ``retained_outcome`` and the mismatched
+    ``conflict`` parts.
     """
 
-    def __init__(self, message: str, *, status: int, body: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int,
+        body: dict[str, Any],
+        reason: str | None = None,
+        request_id: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
         self.body = body
+        self.reason = reason if reason is not None else self._identity(body, "reason")
+        self.request_id = request_id if request_id is not None else self._identity(body, "request_id")
+        self.details: dict[str, Any] = dict(details) if details is not None else _request_id_conflict_details(body)
         self.workflow_id = self._identity(body, "workflow_id")
         self.run_id = self._identity(body, "run_id")
         self.update_id = self._identity(body, "update_id")
@@ -909,6 +970,18 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
             raise UpdateRejected(message or "update rejected", body=body)
         if reason in update_validation_failure_reasons:
             raise update_validation_failed("update validation failed")
+        if reason == REQUEST_ID_CONFLICT:
+            # The retained command type names the key scope; the Server also
+            # labels the control-plane operation. Either selects the typed failure.
+            command_type = _body_string(body, "retained_command_type") or operation
+            if command_type == "signal":
+                raise signal_failed("signal request id already retained with a different intent")
+            if command_type == "update" and isinstance(body, dict):
+                raise UpdateFailed(
+                    message or "update request id already retained with a different intent",
+                    status=status,
+                    body=body,
+                )
         raise ServerError(status, body)
 
     if status == 504:
