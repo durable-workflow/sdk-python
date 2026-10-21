@@ -278,19 +278,22 @@ class ActivityLeaseAuthority:
             self.lost_reason = "activity_renewal_unavailable"
             raise ActivityLeaseAuthorityLost(self.task_id, self.lost_reason) from error
 
-    async def _maintain(self) -> None:
+    async def _maintain(self, stopped: asyncio.Event) -> None:
         confirmed = True
-        while True:
+        while not stopped.is_set():
             delay = min(30.0 if confirmed else 1.0, max(0.0, self.lease_until - time.monotonic()) / 3)
             if self.heartbeat_timeout is not None:
                 delay = min(delay, self.heartbeat_timeout / 3)
             await asyncio.sleep(min(delay, self.remaining()))
+            if stopped.is_set():
+                return
             confirmed = await self.renew()
 
     async def run(self, operation: Callable[[], Awaitable[_T]]) -> _T:
         self.remaining()
+        stopped = asyncio.Event()
         execution = asyncio.ensure_future(operation())
-        maintenance = asyncio.create_task(self._maintain())
+        maintenance = asyncio.create_task(self._maintain(stopped))
         try:
             while True:
                 done, _ = await asyncio.wait({execution, maintenance}, timeout=self.remaining(),
@@ -306,6 +309,9 @@ class ActivityLeaseAuthority:
             self.lost_reason = self.lost_reason or "activity_execution_abandoned"
             raise
         finally:
+            # An I/O wrapper may complete concurrently with cancel() and consume
+            # that cancellation. The settled scope must still stop renewing.
+            stopped.set()
             # A Python thread may continue after cancellation. Its existing
             # executor keeps the physical slot until it actually exits, while
             # this context independently fences every late HTTP publication.
