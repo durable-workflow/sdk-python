@@ -17,7 +17,8 @@ SPEC = importlib.util.spec_from_file_location(
     "threaded_heartbeats_example",
     Path(__file__).resolve().parents[1] / "examples" / "threaded_heartbeats.py",
 )
-assert SPEC is not None and SPEC.loader is not None
+assert SPEC is not None
+assert SPEC.loader is not None
 EXAMPLE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(EXAMPLE)
 
