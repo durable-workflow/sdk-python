@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-10-22
+
+### Added
+
+- Read-only `WorkflowContext.workflow_id` and `run_id` properties expose the
+  original task-bound identity during workflow execution and cold replay.
+  Continue-as-new successors keep the workflow ID and receive their own run ID.
+  IDs in business arguments remain separate, including numeric strings.
+
 ## [2.8.0] - 2026-10-21
 
 ### Added
