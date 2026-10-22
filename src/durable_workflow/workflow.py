@@ -2056,6 +2056,16 @@ class WorkflowContext:
         self._workflow_stream_command_counter = 0
         self.logger = _ReplayLogger(_REPLAY_LOGGER)
 
+    @property
+    def workflow_id(self) -> str:
+        """Original workflow identity, retained across continue-as-new runs."""
+        return self._workflow_id
+
+    @property
+    def run_id(self) -> str:
+        """Current run identity, stable on replay and new after continue-as-new."""
+        return self._run_id
+
     def cancellation_scope(
         self, body: Callable[[], Any], *, shield_parent: bool = False,
     ) -> Generator[Any, Any, Any]:

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "workflow-identity-continue-successor",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "identity-continue-as-new",
+    "workflow_id": "chain",
+    "run_id": "run-two",
+    "input": [false, "chain", "run-one"],
+    "payload_codec": "avro"
+  },
+  "command_sequence": [
+    {
+      "type": "complete_workflow",
+      "result": {
+        "current": ["chain", "run-two"],
+        "prior": ["chain", "run-one"]
+      }
+    }
+  ],
+  "expected": {
+    "type": "complete_workflow",
+    "result": {
+      "current": ["chain", "run-two"],
+      "prior": ["chain", "run-one"]
+    }
+  }
+}
