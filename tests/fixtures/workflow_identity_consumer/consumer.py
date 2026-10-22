@@ -156,7 +156,9 @@ async def main():
                 handle = client.get_workflow_handle(record['workflow_id'], run_id=record['run_id'])
                 assert await handle.result(timeout=5) == record['result']
                 assert (await handle.get_history())['events'] == record['history']
-                assert (await client.get_history(record['workflow_id'], record['original_run_id']))['events'] == record['original_history']
+                assert (await client.get_history(
+                    record['workflow_id'], record['original_run_id']
+                ))['events'] == record['original_history']
     else:
         raise ValueError('Choose execute or cold.')
     assert verify_install() == installation
