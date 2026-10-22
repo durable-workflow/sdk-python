@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "workflow-identity-cold-replay",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "identity-across-replay",
+    "workflow_id": "017",
+    "run_id": "original-run",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwTGAQ=="}
+      }
+    }
+  ],
+  "expected": {
+    "type": "complete_workflow",
+    "result": {
+      "before": ["017", "original-run"],
+      "after": ["017", "original-run"],
+      "value": 99
+    }
+  }
+}

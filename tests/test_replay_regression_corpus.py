@@ -46,6 +46,7 @@ from tests.test_update_signal_condition_replay import (
     UpdateSignalConditionTimerWorkflow,
 )
 from tests.test_worker import compatible_cluster_info
+from tests.test_workflow_identity import IdentityAcrossReplay, IdentityContinueAsNew
 
 FIXTURE_SCHEMA = "durable-workflow.replay-regression/v1"
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "replay_regressions"
@@ -340,6 +341,8 @@ class NexusCooperativeDeliveryWorkflow:
 
 
 WORKFLOWS = [
+    IdentityAcrossReplay,
+    IdentityContinueAsNew,
     PersistedClockWorkflow,
     NexusCooperativeDeliveryWorkflow,
     NexusTerminalDeliveryWorkflow,
@@ -514,6 +517,8 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
             history,
             start_input,
             workflow_type=workflow_type,
+            workflow_id=workflow.get("workflow_id"),
+            run_id=workflow.get("run_id", ""),
             payload_codec=("json" if payload_codec is None else payload_codec),
         )
         commands = _command_documents(outcome.commands)
