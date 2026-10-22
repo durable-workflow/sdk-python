@@ -9,7 +9,9 @@ from zipfile import ZipFile
 dist = importlib.metadata.distribution('durable-workflow')
 assert dist.version == '2.8.0'
 wheel = Path('/phase/sdk.whl')
-assert hashlib.sha256(wheel.read_bytes()).hexdigest() == '908267666c35890fce13ab9c8e62a5c93abac78bdffbb0e56423eb3b3e57a77b'
+assert hashlib.sha256(wheel.read_bytes()).hexdigest() == (
+    '908267666c35890fce13ab9c8e62a5c93abac78bdffbb0e56423eb3b3e57a77b'
+)
 archive = ZipFile(wheel)
 checked = 0
 for entry in dist.files or []:
@@ -35,4 +37,7 @@ for wait in ('', constants['WAIT']):
     definition = constants['BASE'].format(body=constants['BODY_MARKER'] + wait + constants['RETURN'])
     compile(definition, '<actual-generated-workflow>', 'exec')
 archive.close()
-print(json.dumps({'installed_version': dist.version, 'production_record_and_wheel_hashes_checked': checked, 'source_override': False, 'generated_workflows_compile': True}))
+print(json.dumps({
+    'installed_version': dist.version, 'production_record_and_wheel_hashes_checked': checked,
+    'source_override': False, 'generated_workflows_compile': True,
+}))

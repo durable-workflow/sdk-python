@@ -5,8 +5,9 @@ import signal
 import time
 from pathlib import Path
 
-from durable_workflow import Client, Worker
 from definition import WaitingWorkflow
+
+from durable_workflow import Client, Worker
 
 TRACE = Path(os.environ['TRACE'])
 STOP = asyncio.Event()

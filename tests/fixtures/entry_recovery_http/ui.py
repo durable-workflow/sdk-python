@@ -18,7 +18,9 @@ async def repair_in_waterline(workflow_id, run_id, case, directory):
             page = await browser.new_page(viewport=viewport)
             page.set_default_timeout(5000)
             await page.add_init_script(f"localStorage.setItem('waterline-theme', '{theme}')")
-            await page.goto(f'{root}/flows/instances/{workflow_id}/runs/{run_id}', wait_until='domcontentloaded', timeout=8000)
+            await page.goto(
+                f'{root}/flows/instances/{workflow_id}/runs/{run_id}', wait_until='domcontentloaded', timeout=8000,
+            )
             await page.get_by_role('button', name='Inspect full details', exact=True).click()
             reason = page.get_by_text('workflow_entry_arguments_mismatch', exact=False).first
             await reason.wait_for(state='visible')

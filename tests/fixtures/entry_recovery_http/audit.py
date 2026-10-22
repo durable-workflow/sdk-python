@@ -22,7 +22,8 @@ for evidence_path in sorted((root / 'consumer').glob('*/evidence.json')):
     run_id = evidence['after']['run_id']
     run = dict(db.execute('SELECT * FROM workflow_runs WHERE id=?', (run_id,)).fetchone())
     tasks = [dict(row) for row in db.execute(
-        'SELECT id,status,attempt_count,repair_count FROM workflow_tasks WHERE workflow_run_id=? ORDER BY id', (run_id,),
+        'SELECT id,status,attempt_count,repair_count FROM workflow_tasks WHERE workflow_run_id=? ORDER BY id',
+        (run_id,),
     )]
     history = [dict(row) for row in db.execute(
         'SELECT sequence,event_type FROM workflow_history_events WHERE workflow_run_id=? ORDER BY sequence', (run_id,),

@@ -9,8 +9,9 @@ import time
 from pathlib import Path
 
 import httpx
-from durable_workflow import Client
 from ui import repair_in_waterline
+
+from durable_workflow import Client
 
 ROOT = Path('/phase/consumer')
 BASE = '''import os
@@ -96,7 +97,10 @@ async def main():
     headers = {'Authorization': 'Bearer general221-fixture', 'X-Namespace': 'default',
                'X-Durable-Workflow-Control-Plane-Version': '2'}
     try:
-        async with httpx.AsyncClient(base_url='http://api:8080', headers=headers, timeout=5) as http, Client('http://api:8080', token='general221-fixture') as client:
+        async with (
+            httpx.AsyncClient(base_url='http://api:8080', headers=headers, timeout=5) as http,
+            Client('http://api:8080', token='general221-fixture') as client,
+        ):
             async def get(path):
                 response = await http.get(path)
                 response.raise_for_status()
@@ -122,7 +126,9 @@ async def main():
 
             async def terminal_or_refused():
                 state = await get(route)
-                return state if state['status'] in ('completed', 'failed') or any(row['kind'] == 'failed_task' for row in records(new_trace)) else None
+                return state if state['status'] in ('completed', 'failed') or any(
+                    row['kind'] == 'failed_task' for row in records(new_trace)
+                ) else None
 
             after = await until(terminal_or_refused, 'terminal or refused observation')
             await stop(new)
@@ -142,7 +148,9 @@ async def main():
                 assert not (directory / 'new.entered').exists(), 'incompatible entry executed application code'
                 assert 'workflow_entry_arguments_mismatch' in failed[0]['request']['message']
                 assert not any(row['kind'] == 'completed_task' for row in records(new_trace))
-                assert not any(row['event_type'] in ('WorkflowFailed', 'WorkflowCompleted') for row in history['events'])
+                assert not any(
+                    row['event_type'] in ('WorkflowFailed', 'WorkflowCompleted') for row in history['events']
+                )
                 debug = await get(route + '/runs/' + handle.run_id + '/debug')
                 assert 'WorkflowEntryArgumentsMismatchError' in json.dumps(debug), debug
                 assert '"replay_blocked": true' in json.dumps(debug), debug
