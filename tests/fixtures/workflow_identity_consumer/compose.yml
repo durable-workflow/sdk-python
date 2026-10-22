@@ -1,0 +1,68 @@
+services:
+  bootstrap:
+    image: ${IDENTITY_SERVER_IMAGE:?Set the immutable published image}
+    user: "1000:1000"
+    cpus: 1
+    mem_limit: 512m
+    memswap_limit: 512m
+    command: [server-bootstrap]
+    environment: &server_environment
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /data/database.sqlite
+      DB_SQLITE_JOURNAL_MODE: DELETE
+      CACHE_STORE: file
+      QUEUE_CONNECTION: database
+      DW_MODE: service
+      DW_POLLING_CACHE_PATH: /data/poll-cache
+      DW_AUTH_DRIVER: token
+      DW_AUTH_TOKEN: identity-client
+      DW_ADMIN_TOKEN: identity-admin
+      DW_WORKER_TOKEN: identity-worker
+      DW_BOOTSTRAP_RETRIES: 1
+    volumes: &server_volumes
+      - ${IDENTITY_PHASE_ROOT:?Set the disposable phase directory}/data:/data
+
+  api:
+    image: ${IDENTITY_SERVER_IMAGE:?}
+    user: "1000:1000"
+    cpus: 1
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment: *server_environment
+    volumes: *server_volumes
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+  client:
+    image: ${IDENTITY_CLIENT_IMAGE:?Set the existing pinned Python image}
+    user: "1000:1000"
+    init: true
+    cpus: 1
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment:
+      HOME: /tmp
+      SERVER_URL: http://api:8080
+      IDENTITY_COHORT: ${IDENTITY_COHORT:?Set a new cohort}
+      IDENTITY_SDK_VERSION: ${IDENTITY_SDK_VERSION:?Set the published version}
+    entrypoint: [sh, -ec]
+    command:
+      - |
+        python -m venv /opt/venv
+        /opt/venv/bin/pip install --index-url https://pypi.org/simple --no-cache-dir --quiet durable-workflow=="$$IDENTITY_SDK_VERSION"
+        exec sleep infinity
+    tmpfs:
+      - /opt/venv:rw,exec,uid=1000,gid=1000,size=268435456
+    healthcheck:
+      test: [CMD, /opt/venv/bin/python, -c, "import durable_workflow"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - ${IDENTITY_PHASE_ROOT:?}/state:/state
+      - ${IDENTITY_EXPECTED_SOURCE:?Set the exact tagged package source}:/expected-source:ro
+      - ./consumer.py:/fixture/consumer.py:ro
+    depends_on:
+      api:
+        condition: service_healthy
