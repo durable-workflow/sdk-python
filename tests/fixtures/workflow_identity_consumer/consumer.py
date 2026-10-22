@@ -151,12 +151,12 @@ async def main():
     elif stage == 'cold':
         originals = json.loads(path.read_text())
         assert len(originals) == 8
-        for original in originals:
-            async with Client(URL, token='identity-client', namespace=original['namespace']) as client:
-                handle = client.get_workflow_handle(original['workflow_id'], run_id=original['run_id'])
-                assert await handle.result(timeout=5) == original['result']
-                assert (await handle.get_history())['events'] == original['history']
-                assert (await client.get_history(original['workflow_id'], original['original_run_id']))['events'] == original['original_history']
+        for record in originals:
+            async with Client(URL, token='identity-client', namespace=record['namespace']) as client:
+                handle = client.get_workflow_handle(record['workflow_id'], run_id=record['run_id'])
+                assert await handle.result(timeout=5) == record['result']
+                assert (await handle.get_history())['events'] == record['history']
+                assert (await client.get_history(record['workflow_id'], record['original_run_id']))['events'] == record['original_history']
     else:
         raise ValueError('Choose execute or cold.')
     assert verify_install() == installation
