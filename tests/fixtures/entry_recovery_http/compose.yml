@@ -1,0 +1,92 @@
+services:
+  bootstrap:
+    image: ${ENTRY_SERVER_IMAGE:?Set the immutable published Server image}
+    user: "1000:1000"
+    cpus: 1
+    mem_limit: 512m
+    memswap_limit: 512m
+    command: [server-bootstrap]
+    environment: &server_environment
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /data/database.sqlite
+      DB_SQLITE_JOURNAL_MODE: DELETE
+      CACHE_STORE: file
+      QUEUE_CONNECTION: database
+      DW_POLLING_CACHE_PATH: /data/poll-cache
+      DW_AUTH_DRIVER: token
+      DW_AUTH_TOKEN: general221-fixture
+      DW_ADMIN_TOKEN: general221-fixture
+      DW_WORKER_TOKEN: general221-worker
+    volumes:
+      - ${ENTRY_PHASE_ROOT:?Set a disposable phase directory}/data:/data
+
+  api:
+    image: ${ENTRY_SERVER_IMAGE:?}
+    user: "1000:1000"
+    cpus: 1
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment: *server_environment
+    volumes:
+      - ${ENTRY_PHASE_ROOT:?}/data:/data
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+  viewer:
+    image: ${ENTRY_WATERLINE_IMAGE:?Set the immutable published Waterline image}
+    cpus: 0.5
+    mem_limit: 256m
+    memswap_limit: 256m
+    init: true
+    environment:
+      WATERLINE_SERVER_ENDPOINT: http://api:8080
+      WATERLINE_SERVER_TOKEN: general221-fixture
+      WATERLINE_NAMESPACE: default
+      WATERLINE_ACCESS_MODE: operator
+      WATERLINE_ALLOW_UNAUTHENTICATED: "true"
+    volumes:
+      - viewer-data:/data
+    depends_on:
+      api:
+        condition: service_healthy
+
+  client:
+    image: ${ENTRY_BROWSER_IMAGE:?Set the pinned Python Playwright image}
+    user: "1000:1000"
+    init: true
+    cpus: 2
+    mem_limit: 2g
+    memswap_limit: 2g
+    shm_size: 256m
+    environment:
+      HOME: /tmp
+      EXPECTED_BINDING_REFUSAL: "1"
+      WATERLINE_URL: http://viewer:8080/waterline
+    entrypoint: [sh, -ec]
+    command:
+      - |
+        python -m venv --without-pip /opt/venv
+        python -m pip --python /opt/venv/bin/python install --index-url https://pypi.org/simple --no-cache-dir --quiet -r /phase/requirements.txt
+        /opt/venv/bin/python /phase/setup.py
+        exec sleep infinity
+    tmpfs:
+      - /opt/venv:rw,exec,uid=1000,gid=1000,size=536870912
+    volumes:
+      - ${ENTRY_PHASE_ROOT:?}:/phase
+      - ./requirements.txt:/phase/requirements.txt:ro
+      - ./setup.py:/phase/setup.py:ro
+      - ./consumer.py:/phase/consumer.py:ro
+      - ./worker.py:/phase/worker.py:ro
+      - ./ui.py:/phase/ui.py:ro
+      - ./cold.py:/phase/cold.py:ro
+      - ./audit.py:/phase/audit.py:ro
+      - ./verify_install.py:/phase/verify_install.py:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      viewer:
+        condition: service_healthy
+
+volumes:
+  viewer-data:
