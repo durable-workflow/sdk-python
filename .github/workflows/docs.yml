@@ -68,6 +68,8 @@ jobs:
             echo stable=false >> "$GITHUB_OUTPUT"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Bootstrap patched pip trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
       - name: Install package and documentation dependencies
         run: pip install -e '.[docs]'
       - name: Install Chromium
