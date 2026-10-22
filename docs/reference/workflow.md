@@ -1,5 +1,18 @@
 # Workflow
 
+## Workflow and run identity
+
+Workflow code reads its task-bound identity through the read-only
+`ctx.workflow_id` and `ctx.run_id` properties. The values remain the same when
+that run suspends and replays. After continue-as-new, the successor retains the
+workflow ID and receives a new run ID; passing an older ID as workflow input
+does not change the context identity.
+
+Use these values to correlate an activity or log entry with its workflow and
+run. To inspect status from outside workflow code, use
+[`Client.describe_workflow()`](client.md) or a workflow query instead of an
+activity that repeatedly polls its own run.
+
 ## Signal, update and query handlers
 
 Handlers decorated with `@workflow.signal` or `@workflow.update` must be
