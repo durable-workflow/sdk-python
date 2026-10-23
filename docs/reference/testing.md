@@ -1,5 +1,91 @@
 # Testing
 
+## Test failures, retries and compensation
+
+This behavior is available in unreleased SDK source and awaits package
+publication. Published Python SDK 2.9.0 still lets activity mock exceptions
+escape and does not provide callable child mocks or these retry observations.
+
+Synchronous mock exceptions become terminal history events. The production
+replayer then raises `ActivityFailed` or `ChildWorkflowFailed` at the authored
+yield, so the workflow's handlers and compensation code run normally:
+
+```python
+from durable_workflow import workflow
+from durable_workflow.errors import ActivityFailed
+from durable_workflow.testing import WorkflowEnvironment
+from durable_workflow.workflow import ActivityRetryPolicy
+
+
+@workflow.defn(name="checkout-test")
+class Checkout:
+    def run(self, ctx):
+        yield ctx.schedule_activity("reserve", [])
+        try:
+            return (yield ctx.schedule_activity(
+                "charge", [], retry_policy=ActivityRetryPolicy(max_attempts=3)
+            ))
+        except ActivityFailed as error:
+            yield ctx.schedule_activity("release", [])
+            return {"compensated": True, "failure_type": error.exception_type}
+
+
+def decline():
+    raise ValueError("payment unavailable")
+
+
+env = WorkflowEnvironment()
+env.register_activity_result("reserve", None)
+env.register_activity("charge", decline)
+env.register_activity_result("release", None)
+assert env.execute_workflow(Checkout) == {
+    "compensated": True, "failure_type": "ValueError"
+}
+assert env.mock_calls[1].attempt_count == 3
+assert env.mock_calls[1].status == "failed"
+```
+
+Each logical call invokes its mock once per attempt. Later workflow replays
+reuse its final history event and do not invoke the old mock again. The last
+attempt's error reaches the workflow when its retry budget is exhausted.
+No configured policy means one attempt, matching the external-worker default.
+Explicit `ActivityRetryPolicy`, `ChildWorkflowRetryPolicy` and mapping policies
+use their positive integer `max_attempts`. Non-retryable type lists match
+either a short error name or its qualified Python class name.
+
+An activity mock raising `NonRetryableError` stops immediately with
+`ActivityFailed.non_retryable=True`. Its reported type is the outer
+`NonRetryableError`; a supplied cause does not replace that type. Child
+exceptions follow the existing workflow failure mapper. `ChildWorkflowFailed`
+exposes the child class/message; the published child-history contract does not
+carry an activity-style `non_retryable` field. Use the child retry policy's
+type exclusions to stop retries for a named child error.
+
+Register a child callable with
+`env.register_child_workflow("credit-check", check_credit)`. It receives the
+child arguments as positional arguments and can return a value or raise an
+ordinary exception. `register_child_workflow_result()` still registers a
+canned success. A later child result or callable registration replaces the
+previous one. Missing mocks remain actionable `KeyError` fixture errors.
+
+`env.mock_calls` contains `MockCallRecord` objects in logical execution order,
+with `kind`, `name`, `run_number`, `attempt_count`, `status` and the last
+observed `failure`. These observations span a continue-as-new chain and reset
+on the next `execute_workflow()` call. They are test records, separate from
+durable history. A later successful attempt keeps the last observed failure
+available while setting the call's status to `completed`.
+
+`WorkflowEnvironment(mock_attempt_limit=100)` caps each logical call at 100
+actual attempts by default. If more retries remain, the harness raises
+`RuntimeError` with the last callback error as its cause and records
+`attempt_limit_exceeded`. It does not deliver a fabricated exhausted failure
+to the workflow. Raise the cap deliberately for a larger bounded test.
+
+Retry backoff does not sleep or advance a virtual clock. Mocks must be
+synchronous callables. They do not test durable queue scheduling, actual
+retry delays, timeout/lease enforcement, worker processes, cancellation or
+backend recovery; qualify those behaviors with a real Server and workers.
+
 ## Mock a Nexus service operation
 
 This API is available in unreleased SDK source. Published packages gain these

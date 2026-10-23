@@ -32,9 +32,10 @@ exception.
 
 from __future__ import annotations
 
+import inspect
 import json
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -42,11 +43,13 @@ from . import serializer
 from .errors import (
     DuplicateRegistrationError,
     NexusOperationFailed,
+    NonRetryableError,
     WorkflowCancelled,
     WorkflowFailed,
     WorkflowTerminated,
 )
 from .workflow import (
+    ActivityRetryPolicy,
     CompleteWorkflow,
     ContinueAsNew,
     FailWorkflow,
@@ -58,11 +61,29 @@ from .workflow import (
     StartChildWorkflow,
     StartTimer,
     UpsertSearchAttributes,
+    _fail_workflow_from_exception,
     _validate_workflow_entrypoint,
     _workflow_handler_registries,
     registry,
     replay,
 )
+
+
+@dataclass
+class MockCallRecord:
+    """One logical activity/child mock call in the latest execution chain.
+
+    ``attempt_count`` includes each actual callback invocation. ``failure``
+    retains the last observed failure even if a later attempt succeeds.
+    These are harness observations, not durable runtime history events.
+    """
+
+    kind: str
+    name: str
+    run_number: int
+    attempt_count: int = 0
+    status: str = "running"
+    failure: dict[str, Any] | None = None
 
 
 @dataclass
@@ -94,6 +115,9 @@ class WorkflowEnvironment:
         first run counts as link 1; a workflow that continues five
         times runs six links. Exceeding the limit raises
         :exc:`RuntimeError`.
+    :param mock_attempt_limit: positive per-call cap on activity and child
+        mock attempts. A larger scheduled budget fails loudly at this cap;
+        it is not reported to workflow code as exhausted durable retries.
     """
 
     def __init__(
@@ -101,16 +125,22 @@ class WorkflowEnvironment:
         *,
         iteration_limit: int = 1000,
         continue_as_new_limit: int = 50,
+        mock_attempt_limit: int = 100,
     ) -> None:
+        if type(mock_attempt_limit) is not int or mock_attempt_limit < 1:
+            raise ValueError("mock_attempt_limit must be a positive integer")
         self._activity_results: dict[str, Any] = {}
         self._activity_fns: dict[str, Callable[..., Any]] = {}
         self._child_workflow_results: dict[str, Any] = {}
+        self._child_workflow_fns: dict[str, Callable[..., Any]] = {}
         self._nexus_results: dict[tuple[str, str, str], Any] = {}
         self._nexus_fns: dict[tuple[str, str, str], Callable[..., Any]] = {}
         self._pending_signals: list[tuple[str, list[Any]]] = []
         self._queued_signals_by_run: dict[int, list[tuple[str, list[Any]]]] = {}
         self._iteration_limit = iteration_limit
         self._continue_as_new_limit = continue_as_new_limit
+        self._mock_attempt_limit = mock_attempt_limit
+        self._mock_calls: list[MockCallRecord] = []
         self._registered_workflows: dict[str, type] = {}
         self._runs: list[WorkflowRunRecord] = []
 
@@ -129,6 +159,16 @@ class WorkflowEnvironment:
     def register_child_workflow_result(self, workflow_type: str, result: Any) -> None:
         """Canned response for child workflow completions."""
         self._child_workflow_results[workflow_type] = result
+        self._child_workflow_fns.pop(workflow_type, None)
+
+    def register_child_workflow(self, workflow_type: str, fn: Callable[..., Any]) -> None:
+        """Synchronous child-body mock, called once per scheduled attempt.
+
+        Exceptions become ``ChildWorkflowFailed`` through production replay.
+        A later child result/callable registration replaces the previous mock.
+        """
+        self._child_workflow_fns[workflow_type] = fn
+        self._child_workflow_results.pop(workflow_type, None)
 
     def register_nexus_operation_result(
         self, endpoint_name: str, service_name: str, operation_name: str, result: Any,
@@ -221,6 +261,15 @@ class WorkflowEnvironment:
         """Number of runs in the most recent ``execute_workflow`` chain."""
         return len(self._runs)
 
+    @property
+    def mock_calls(self) -> list[MockCallRecord]:
+        """Logical mock calls, with actual attempt counts, in execution order.
+
+        Reset by ``execute_workflow``. The returned list spans all runs in a
+        continue-as-new chain; ``run_number`` identifies the owning run.
+        """
+        return list(self._mock_calls)
+
     def execute_workflow(
         self,
         workflow_cls: type,
@@ -242,6 +291,7 @@ class WorkflowEnvironment:
         terminal result of the final run.
         """
         self._runs = []
+        self._mock_calls = []
         self.register_workflow(workflow_cls)
         current_cls = workflow_cls
         current_args: list[Any] = list(args)
@@ -382,35 +432,134 @@ class WorkflowEnvironment:
 
     def _resolve_activity(self, cmd: ScheduleActivity) -> dict[str, Any]:
         if cmd.activity_type in self._activity_fns:
-            result = self._activity_fns[cmd.activity_type](*cmd.arguments)
+            fn = self._activity_fns[cmd.activity_type]
         elif cmd.activity_type in self._activity_results:
-            result = self._activity_results[cmd.activity_type]
+            fn = _canned_mock(self._activity_results[cmd.activity_type])
         else:
             raise KeyError(
                 f"no mock registered for activity {cmd.activity_type!r}; "
                 "call env.register_activity_result() or env.register_activity()."
             )
-        return {
-            "event_type": "ActivityCompleted",
-            "payload": {
-                "result": serializer.envelope(result),
-                "payload_codec": serializer.AVRO_CODEC,
-            },
-        }
+        result, failure = self._run_mock("activity", cmd.activity_type, fn, cmd.arguments, cmd.retry_policy)
+        return _mock_terminal_event("activity", cmd.activity_type, result, failure)
 
     def _resolve_child_workflow(self, cmd: StartChildWorkflow) -> dict[str, Any]:
-        if cmd.workflow_type not in self._child_workflow_results:
+        if cmd.workflow_type in self._child_workflow_fns:
+            fn = self._child_workflow_fns[cmd.workflow_type]
+        elif cmd.workflow_type in self._child_workflow_results:
+            fn = _canned_mock(self._child_workflow_results[cmd.workflow_type])
+        else:
             raise KeyError(
                 f"no mock registered for child workflow {cmd.workflow_type!r}; "
-                "call env.register_child_workflow_result()."
+                "call env.register_child_workflow_result() or env.register_child_workflow()."
             )
+        result, failure = self._run_mock("child_workflow", cmd.workflow_type, fn, cmd.arguments, cmd.retry_policy)
+        return _mock_terminal_event("child_workflow", cmd.workflow_type, result, failure)
+
+    def _run_mock(
+        self, kind: str, name: str, fn: Callable[..., Any], arguments: list[Any],
+        retry_policy: ActivityRetryPolicy | Mapping[str, Any] | None,
+    ) -> tuple[Any, dict[str, Any] | None]:
+        max_attempts, excluded_types = _mock_retry_policy(retry_policy)
+        record = MockCallRecord(kind=kind, name=name, run_number=self.run_count)
+        self._mock_calls.append(record)
+        last_error: Exception | None = None
+        for attempt in range(1, min(max_attempts, self._mock_attempt_limit) + 1):
+            record.attempt_count = attempt
+            try:
+                result, error = _invoke_mock(fn, arguments)
+            except BaseException:
+                record.status = "interrupted"
+                raise
+            if error is None:
+                record.status = "completed"
+                return result, None
+            failure = _mock_failure(kind, error)
+            record.failure = failure
+            if _mock_retry_stopped(failure, excluded_types, attempt, max_attempts):
+                record.status = "failed"
+                return None, failure
+            last_error = error
+        record.status = "attempt_limit_exceeded"
+        raise RuntimeError(
+            f"{kind} {name!r} reached mock attempt limit {self._mock_attempt_limit} "
+            f"before its scheduled {max_attempts}-attempt retry budget was exhausted"
+        ) from last_error
+
+
+def _canned_mock(result: Any) -> Callable[..., Any]:
+    return lambda *args: result
+
+
+def _invoke_mock(fn: Callable[..., Any], arguments: list[Any]) -> tuple[Any, Exception | None]:
+    try:
+        result = fn(*arguments)
+    except Exception as error:
+        return None, error
+    if inspect.isawaitable(result):
+        if inspect.iscoroutine(result):
+            result.close()
+        raise TypeError("WorkflowEnvironment requires synchronous activity and child mock callables")
+    return result, None
+
+
+def _mock_retry_policy(policy: ActivityRetryPolicy | Mapping[str, Any] | None) -> tuple[int, set[str]]:
+    if policy is None:
+        return 1, set()
+    if isinstance(policy, ActivityRetryPolicy):
+        max_attempts = policy.max_attempts
+        # Validate without materializing backoff for an arbitrarily large
+        # declared budget. Mock retries never wait on these clock intervals.
+        normalized = replace(policy, max_attempts=1).to_dict()
+    elif isinstance(policy, Mapping):
+        max_attempts = policy.get("max_attempts", 1)
+        normalized = dict(policy)
+    else:
+        raise TypeError("mock retry_policy must be a retry policy object or mapping")
+    if type(max_attempts) is not int or max_attempts < 1:
+        raise ValueError("mock retry_policy max_attempts must be a positive integer")
+    error_types = normalized.get("non_retryable_error_types", [])
+    if not isinstance(error_types, list | tuple):
+        raise TypeError("mock retry_policy non_retryable_error_types must be a list")
+    return max_attempts, {value.strip() for value in error_types if isinstance(value, str) and value.strip()}
+
+
+def _mock_failure(kind: str, error: Exception) -> dict[str, Any]:
+    if kind == "child_workflow":
+        command = _fail_workflow_from_exception(error)
         return {
-            "event_type": "ChildRunCompleted",
-            "payload": {
-                "result": serializer.envelope(self._child_workflow_results[cmd.workflow_type]),
-                "payload_codec": serializer.AVRO_CODEC,
-            },
+            "message": command.message, "exception_type": command.exception_type,
+            "exception_class": command.exception_class, "exception": command.exception,
+            "non_retryable": command.non_retryable,
         }
+    return {
+        "message": str(error), "exception_type": type(error).__name__,
+        "exception_class": f"{type(error).__module__}.{type(error).__qualname__}",
+        "non_retryable": isinstance(error, NonRetryableError),
+    }
+
+
+def _mock_retry_stopped(failure: dict[str, Any], excluded: set[str], attempt: int, maximum: int) -> bool:
+    return (failure["non_retryable"] is True or attempt >= maximum
+            or failure["exception_type"] in excluded or failure["exception_class"] in excluded)
+
+
+def _mock_terminal_event(
+    kind: str, name: str, result: Any, failure: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if failure is None:
+        return {
+            "event_type": "ActivityCompleted" if kind == "activity" else "ChildRunCompleted",
+            "payload": {"result": serializer.envelope(result), "payload_codec": serializer.AVRO_CODEC},
+        }
+    payload = {key: failure[key] for key in ("message", "exception_type", "exception_class")}
+    if failure.get("exception") is not None:
+        payload["exception"] = failure["exception"]
+    if kind == "activity":
+        payload.update({"activity_type": name, "non_retryable": failure["non_retryable"]})
+    else:
+        payload["child_workflow_type"] = name
+    return {"event_type": "ActivityFailed" if kind == "activity" else "ChildRunFailed", "payload": payload}
 
 
 def _terminal_outcome(cmd: CompleteWorkflow | FailWorkflow | ContinueAsNew) -> tuple[Any, ContinueAsNew | None]:
@@ -558,6 +707,7 @@ def replay_history_file(
 __all__ = [
     "WorkflowEnvironment",
     "WorkflowRunRecord",
+    "MockCallRecord",
     "replay_history",
     "replay_history_file",
 ]

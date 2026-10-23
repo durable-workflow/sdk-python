@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Activity and child mock failures in `WorkflowEnvironment` now reach authored
+  workflow handlers through replay. Explicit retry budgets invoke each attempt
+  without sleeping; per-call counts and a configurable cap keep tests bounded.
+- Synchronous callable child workflow mocks alongside canned child results.
 - Nexus operation mocks in `WorkflowEnvironment`, keyed by endpoint, service
   and operation. Register canned responses or synchronous callables; workflow
   code receives completion, acceptance or `NexusOperationFailed` through replay.

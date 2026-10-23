@@ -101,6 +101,8 @@ def test_exhausted_policy_delivers_the_last_failure(kind: str) -> None:
     assert env.mock_calls[0].attempt_count == 3
     expected_event = "ActivityFailed" if kind == "activity" else "ChildRunFailed"
     assert [event["event_type"] for event in env.runs[0].history] == [expected_event]
+    if kind == "child_workflow":
+        assert "non_retryable" not in env.runs[0].history[0]["payload"]
 
 
 @pytest.mark.parametrize("kind", ["activity", "child_workflow"])
@@ -140,8 +142,11 @@ def test_child_marker_uses_workflow_failure_mapping_not_activity_retry_semantics
 
 @pytest.mark.parametrize("kind", ["activity", "child_workflow"])
 def test_attempt_cap_does_not_misreport_policy_exhaustion(kind: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    expand = ActivityRetryPolicy._backoff_seconds
+
     def no_expansion(_self: ActivityRetryPolicy) -> list[int]:
-        raise AssertionError("A huge retry budget must not expand its backoff list")
+        assert _self.max_attempts <= 3, "A huge retry budget must not expand its backoff list"
+        return expand(_self)
 
     monkeypatch.setattr(ActivityRetryPolicy, "_backoff_seconds", no_expansion)
     env = WorkflowEnvironment(mock_attempt_limit=3)
@@ -253,3 +258,45 @@ def test_call_records_reset_between_executions() -> None:
     assert env.execute_workflow(FailureBoundary, "activity", None) == "done"
     assert len(env.mock_calls) == 1
     assert env.mock_calls[0].run_number == 1
+
+
+def test_later_child_registration_replaces_result_or_callable() -> None:
+    env = WorkflowEnvironment()
+    env.register_child_workflow("operation", _failure)
+    env.register_child_workflow_result("operation", "canned")
+    assert env.execute_workflow(FailureBoundary, "child_workflow", None) == "canned"
+    env.register_child_workflow("operation", lambda value: "callable: " + value)
+    assert env.execute_workflow(FailureBoundary, "child_workflow", None) == "callable: input"
+
+
+@pytest.mark.parametrize("maximum", [True, 0, -1, 1.5, "3", None])
+def test_invalid_retry_budget_refuses_before_invoking_the_mock(maximum: Any) -> None:
+    calls: list[str] = []
+    env = WorkflowEnvironment()
+    env.register_activity("operation", lambda value: calls.append(value))
+    with pytest.raises(ValueError, match="max_attempts"):
+        env.execute_workflow(FailureBoundary, "activity", {"max_attempts": maximum})
+    assert calls == []
+
+
+def test_attempt_cap_and_records_are_per_call_across_continue_as_new() -> None:
+    @workflow.defn(name="testing.retry-continued-runs")
+    class Continued:
+        def run(self, ctx: WorkflowContext, count: int):  # type: ignore[no-untyped-def]
+            yield ctx.schedule_activity("step", [count], retry_policy={"max_attempts": 2})
+            if count:
+                return ctx.continue_as_new(count - 1)
+            return "done"
+
+    attempts: dict[int, int] = {}
+
+    def once_per_run(count: int) -> None:
+        attempts[count] = attempts.get(count, 0) + 1
+        if attempts[count] == 1:
+            raise ValueError("first attempt")
+
+    env = WorkflowEnvironment(mock_attempt_limit=2)
+    env.register_activity("step", once_per_run)
+    assert env.execute_workflow(Continued, 1) == "done"
+    assert [(call.run_number, call.attempt_count) for call in env.mock_calls] == [(1, 2), (2, 2)]
+    assert attempts == {1: 2, 0: 2}
