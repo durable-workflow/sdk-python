@@ -6,13 +6,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Name exception classes and static routes in poll warnings, including
-  message-less transport failures, while preserving credential-safe summaries.
-  Record local request cancellation as `CancelledError` instead of `pending`,
-  including cancellation during transport retry backoff.
-
 ## [2.10.0] - Unreleased
 
 ### Added
@@ -29,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Applications can add a private CA while retaining certifi's public roots.
 
 ### Fixed
+
+- Name exception classes and static routes in poll warnings, including
+  message-less transport failures, while preserving credential-safe summaries.
+  Record local request cancellation as `CancelledError` instead of `pending`,
+  including cancellation during transport retry backoff.
 
 - Verify schema-2 history exports, including the lossless Avro memo authority
   and its JSON projection. Retain schema-1 support, reject malformed or unknown
