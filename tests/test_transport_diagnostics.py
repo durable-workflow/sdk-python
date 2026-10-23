@@ -81,8 +81,11 @@ async def test_local_request_cancellation_emits_terminal_class_and_propagates(
         pending = asyncio.create_task(request)
         await asyncio.wait_for(entered.wait(), timeout=2)
         pending.cancel("synthetic-private-cancellation")
-        with pytest.raises(asyncio.CancelledError, match="synthetic-private-cancellation"):
+        # Python 3.11 added propagation of Task.cancel(msg) to the awaiter.
+        # Across supported versions, preserve cancellation and its task state.
+        with pytest.raises(asyncio.CancelledError):
             await pending
+        assert pending.cancelled()
     assert calls == 1
     assert len(metrics.counters) == len(metrics.histograms) == 1
     tags = dict(next(iter(metrics.counters))[1])
