@@ -186,3 +186,80 @@ async def test_worker_reports_original_three_mib_exception(server_url: str, serv
             assert observed["diagnostics"]["failure_report"]["omitted_fields"]["message"] == 3 * 1024 * 1024
 
     await asyncio.wait_for(exercise(), timeout=30)
+
+
+@pytest.mark.parametrize("prepared", [False, True], ids=["legacy", "prepared"])
+@pytest.mark.parametrize("non_retryable", [False, True])
+@pytest.mark.parametrize("limit", [1024 * 1024, 3500])
+async def test_local_workflow_observation_matches_recorded_failure_and_cold_replay(
+    server_url: str, server_token: str, prepared: bool, non_retryable: bool, limit: int, tmp_path: Any,
+) -> None:
+    import hashlib
+
+    from durable_workflow import Worker
+    from tests.failure_reporting_cases import LocalFailureObservation, large_local_failure
+
+    async def exercise() -> None:
+        identity = "py-bounded-local-" + uuid.uuid4().hex[:12]
+        recorded: list[tuple[str, int, bytes]] = []
+        async with Client(
+            server_url, worker_token=server_token,
+            control_token=os.environ.get("DURABLE_WORKFLOW_CONTROL_TOKEN", server_token),
+            timeout=5, failure_report_limit_bytes=limit,
+        ) as client:
+            async def capture(response: httpx.Response) -> None:
+                await response.aread()
+                path = response.request.url.path
+                if path.endswith(("/complete", "/outcome", "/export")):
+                    index = len(recorded)
+                    body = response.request.content
+                    recorded.append((path, response.status_code, body))
+                    (tmp_path / f"request-{index}.json").write_bytes(body)
+                    (tmp_path / f"response-{index}.json").write_bytes(response.content)
+
+            client._http.event_hooks["response"].append(capture)
+            worker = Worker(
+                client, task_queue=identity, worker_id=identity, workflows=[LocalFailureObservation],
+                activities=[large_local_failure],
+                capabilities=["cooperative_cancellation", "prepared_local_activities"] if prepared else [],
+            )
+            await worker._register()
+            try:
+                handle = await client.start_workflow(
+                    workflow_type="tests.local.failure-observation", task_queue=identity,
+                    workflow_id=identity, input=[non_retryable],
+                )
+                task = await client.poll_workflow_task(worker_id=identity, task_queue=identity, timeout=2)
+                assert isinstance(task, dict)
+                commands = await worker._run_workflow_task(task)
+                assert commands is not None
+                first = await handle.result(timeout=3, poll_interval=.05)
+                history = await handle.get_history()
+                (tmp_path / "history.json").write_text(json.dumps(history, separators=(",", ":")))
+                events = history.get("events", history.get("history_events", []))
+                failure = next(event["payload"] for event in events if event["event_type"] == "ActivityFailed")
+                message = failure["message"]
+                assert first["bytes"] == len(message.encode()) <= 62 * 1024
+                assert first["digest"] == hashlib.sha256(message.encode()).hexdigest()
+                assert first["marked"] is True
+                assert first["type"] == ("NonRetryableError" if non_retryable else "OriginalFailure")
+                assert first["non_retryable"] is non_retryable
+                cold = replay(
+                    LocalFailureObservation, events, [non_retryable], workflow_id=identity, run_id=handle.run_id or "",
+                    prepare_local_activities=prepared,
+                    local_activity_executor=lambda _command: pytest.fail("cold replay reran local callback"),
+                )
+                assert len(cold.commands) == 1 and cold.commands[0].result == first
+                await handle.export_history()
+                reports = [(path, status, body) for path, status, body in recorded if not path.endswith("/export")]
+                assert reports and all(status == 200 and len(body) <= limit for _, status, body in reports)
+                (tmp_path / "observation.json").write_text(json.dumps({
+                    "workflow_id": identity, "run_id": handle.run_id, "prepared": prepared,
+                    "first_and_cold": first, "limit": limit,
+                    "requests": [{"path": path, "status": status, "bytes": len(body),
+                                  "sha256": hashlib.sha256(body).hexdigest()} for path, status, body in recorded],
+                }, indent=2))
+            finally:
+                await worker.stop()
+
+    await asyncio.wait_for(exercise(), timeout=30)

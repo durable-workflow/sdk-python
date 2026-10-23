@@ -1,0 +1,45 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "local-failure-first-and-cold-observation",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "sdk.local-failure-observation",
+    "input": [
+      {
+        "limit": 3500,
+        "non_retryable": false
+      }
+    ],
+    "payload_codec": "avro"
+  },
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "local_failure_observation",
+        "first_and_cold": {
+          "bytes": 1023,
+          "digest": "8dbf34111991fa7eefa92751fe8f096bb4aebbb332857f55652040ace0ca3fe9",
+          "marked": true,
+          "type": "OriginalFailure",
+          "non_retryable": false
+        }
+      }
+    ]
+  },
+  "provenance": {
+    "fixture_form": "Input reproducer and expected observation derived from fresh published-runtime qualification. The runner exercises first execution, captured JSON report and cold replay. Not a raw history export.",
+    "original_message_utf8_bytes": 3145728,
+    "server_version": "2.11.1",
+    "core_version": "2.10.2",
+    "mysql_version": "8.0.46",
+    "image_digest": "sha256:bf8bed13f5f809ee3425233180a581353eac4683adbee5c4ecbf63bb18bbd102",
+    "workflow_id": "py-bounded-local-43dd91f310e9",
+    "run_id": "01m5mtkcdn779b6qqbk89fnswm",
+    "history_json_sha256": "3ace2024928c5aef8dc2267b8f0fe5f195f7c428d1778ee6e8cb60cf36e2fa40",
+    "observation_sha256": "8ddccec720b28fc449172d4b6649b78f5ca7a8b07f738a86b61aa1e83b79bab3"
+  }
+}

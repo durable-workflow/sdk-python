@@ -10,7 +10,7 @@ from durable_workflow import serializer
 from durable_workflow.client import Client
 
 MIB = 1024 * 1024
-MESSAGE_LIMIT = 64 * 1024
+MESSAGE_LIMIT = 62 * 1024
 STACK_LIMIT = 128 * 1024
 
 

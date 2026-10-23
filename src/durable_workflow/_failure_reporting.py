@@ -12,7 +12,7 @@ import httpx
 
 from .errors import FailureReportTooLarge
 
-MESSAGE_BYTES = 64 * 1024
+MESSAGE_BYTES = 62 * 1024
 STACK_BYTES = 128 * 1024
 DETAIL_BYTES = 64 * 1024
 REQUEST_BYTES = 1024 * 1024
@@ -49,6 +49,14 @@ def _marker(omitted: dict[str, int | None]) -> str:
     return "\n[truncated " + encoded_json({"omitted_fields": omitted}).decode("utf-8") + "]"
 
 
+class _ObservedLocalFailure(str):
+    """A local message already delivered to workflow code.
+
+    JSON serializes this as ordinary text. Keep the in-memory distinction until
+    encoding so final batch fitting cannot change first-run/replay behavior.
+    """
+
+
 @dataclass
 class _Report:
     original: dict[str, Any]
@@ -71,6 +79,8 @@ class _Report:
 
     def render(self, budget: int) -> dict[str, Any]:
         result = self._copy()
+        if isinstance(result.get("message"), _ObservedLocalFailure):
+            return result
         previous: dict[str, int | None] = {}
         if self.structured:
             self._previous_sizes(previous)
@@ -253,3 +263,25 @@ def bound_failure_request(path: str, body: Any, limit: int = REQUEST_BYTES) -> A
         if budget == 0:
             raise FailureReportTooLarge(limit)
         budget //= 2
+
+
+def normalize_local_failure(
+    command: dict[str, Any], *, lease_owner: str, workflow_task_attempt: int, limit: int = REQUEST_BYTES,
+) -> dict[str, Any]:
+    """Fit local diagnostics before the workflow sees its durable failure.
+
+    Business arguments can still be externalized by Client. Include all claim,
+    retry and attempt data here; the final complete request is measured again.
+    An already observed message is then immutable, including on a lower limit
+    discovered later or when another command makes the batch unfit.
+    """
+    frame = {key: value for key, value in command.items() if key != "arguments"}
+    body = {"lease_owner": lease_owner, "workflow_task_attempt": workflow_task_attempt, "commands": [frame]}
+    normalized = bound_failure_request("/worker/workflow-tasks/local/complete", body, limit)["commands"][0]
+    normalized = {**command, **normalized}
+    if isinstance(normalized.get("message"), str):
+        normalized["message"] = _ObservedLocalFailure(normalized["message"])
+    for attempt in normalized.get("attempts", []):
+        if isinstance(attempt, dict) and isinstance(attempt.get("message"), str):
+            attempt["message"] = _ObservedLocalFailure(attempt["message"])
+    return normalized

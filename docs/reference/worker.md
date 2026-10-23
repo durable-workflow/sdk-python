@@ -34,10 +34,12 @@ execution; selecting a default thread does not enable that protocol.
 This behavior is available in unreleased SDK source. Published packages still
 need the compatible release before these limits apply.
 
-Failure reports retain at most 64 KiB of UTF-8 message text, 128 KiB of stack
+Failure reports retain at most 62 KiB of UTF-8 message text, 128 KiB of stack
 text and 64 KiB of serialized details and diagnostics. These budgets include
 truncation markers. The complete encoded JSON request body defaults to at most
 1 MiB, counting JSON escaping, claim identities, command batches and metadata.
+The message budget reserves 2 KiB below the original 64 KiB ceiling for
+runtime-derived summaries.
 A lower discovered Server `limits.max_payload_bytes` also applies. Configure
 `Client(..., failure_report_limit_bytes=...)` when a proxy or transport has a
 lower request limit. This option can lower the default cap; it cannot raise it.
@@ -56,6 +58,12 @@ claim identity remain exact. Activity, workflow-task, query and update rejection
 reports, terminal workflow/update failures and local-activity attempt reports
 share the complete-request bound. A workflow-task replay failure still leaves
 the run open for repair; it does not become a terminal workflow failure.
+
+A local activity's failure is bounded before workflow code observes it. First
+execution and cold replay therefore see the same persisted message. If a later
+command batch or newly discovered lower limit cannot fit that observed value,
+reporting fails explicitly rather than changing a value already used by the
+workflow. Prepared local activities observe the runtime's canonical history.
 
 If essential identity or semantic fields cannot fit even without optional
 text, the client raises `FailureReportTooLarge` before sending the report.
