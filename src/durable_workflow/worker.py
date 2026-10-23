@@ -1197,7 +1197,7 @@ class Worker:
         self._last_cpu_sample_at: float | None = None
         self._last_cpu_total_seconds: float = 0.0
         configured_metrics = metrics if metrics is not None else getattr(client, "metrics", NOOP_METRICS)
-        self.metrics: MetricsRecorder = configured_metrics or NOOP_METRICS
+        self.metrics: MetricsRecorder = configured_metrics if configured_metrics is not None else NOOP_METRICS
         self.interceptors = tuple(interceptors)
         self.external_storage = (
             external_storage

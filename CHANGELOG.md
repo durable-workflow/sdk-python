@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bound client metric routes to reviewed operation templates, including
+  update-validation tasks, worker sessions, streams and Nexus operations.
+  Unknown paths emit `unknown`; static poll routes retain `/poll`. Variable
+  identifiers and query strings do not create metric series.
+- Honor explicitly configured and inherited metric recorders even when they
+  evaluate to false, rather than silently replacing them with the no-op.
 - Back off workflow, activity and query polling independently after repeated
   HTTP or transport failures, with jitter and a 30-second cap. Successful polls
   reset the delay, and repeated authentication warnings are rate-limited.
