@@ -41,8 +41,8 @@ empty response, resets the ceiling to 1 second. Shutdown interrupts the wait.
 The first failure is logged immediately. An unchanged failure is logged at most
 once per minute per poller until polling succeeds. HTTP 401 identifies rejected
 authentication; HTTP 403 identifies denied authorization. Check the worker
-credentials and their permissions. Replacing or restoring credentials takes
-effect on the next poll, within the current retry delay. Poll-error metrics
+credentials and their permissions. Once requests succeed again, polling
+recovers without a worker restart. Poll-error metrics
 still count every failed poll, including failures whose warning is suppressed.
 
 Typed capacity backpressure follows the Server's advertised retry delay.
