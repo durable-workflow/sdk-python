@@ -48,6 +48,13 @@ credentials and their permissions. Once requests succeed again, polling
 recovers without a worker restart. Poll-error metrics
 still count every failed poll, including failures whose warning is suppressed.
 
+**Unreleased diagnostics:** warnings name the exception class and static poll
+route even when an httpx exception has an empty message. Transport exception
+messages are omitted because they can contain private request details. Server
+refusals retain their status and bounded reason; authentication failures retain
+their credential-safe summary. See [request outcomes and errors](metrics.md#request-outcomes-and-errors)
+for local cancellation and transport retry behavior.
+
 Typed capacity backpressure follows the Server's advertised retry delay.
 Storage-admission failures retain their separate identity-preserving retry and
 worker-stop behavior. Neither uses this generic poll-failure backoff.
