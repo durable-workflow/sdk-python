@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and operation. Register canned responses or synchronous callables; workflow
   code receives completion, acceptance or `NexusOperationFailed` through replay.
 
+### Fixed
+
+- Back off workflow, activity and query polling independently after repeated
+  HTTP or transport failures, with jitter and a 30-second cap. Successful polls
+  reset the delay, and repeated authentication warnings are rate-limited.
+
 ## [2.9.1] - 2026-10-22
 
 ### Security

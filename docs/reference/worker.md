@@ -29,6 +29,29 @@ isolated worker processes and their resource limits. The separately
 negotiated cooperative-cancellation capability retains its supervised process
 execution; selecting a default thread does not enable that protocol.
 
+## Poll failures and recovery
+
+This backoff is available in unreleased SDK source. Until the next package
+release, published workers retain their fixed one-second poll-error wait.
+
+Workflow, activity and query pollers back off independently after failed polls,
+including HTTP errors, rejected credentials and unreachable runtimes. The
+retry ceiling starts at 1 second, doubles on each consecutive failure and stops
+at 30 seconds. Each delay is chosen randomly between half and all of that
+ceiling, so workers do not retry in lockstep. Any successful poll, including an
+empty response, resets the ceiling to 1 second. Shutdown interrupts the wait.
+
+The first failure is logged immediately. An unchanged failure is logged at most
+once per minute per poller until polling succeeds. HTTP 401 identifies rejected
+authentication; HTTP 403 identifies denied authorization. Check the worker
+credentials and their permissions. Once requests succeed again, polling
+recovers without a worker restart. Poll-error metrics
+still count every failed poll, including failures whose warning is suppressed.
+
+Typed capacity backpressure follows the Server's advertised retry delay.
+Storage-admission failures retain their separate identity-preserving retry and
+worker-stop behavior. Neither uses this generic poll-failure backoff.
+
 ## Lifecycle and shutdown
 
 `Worker.run()` and `Worker.run_until()` register through the worker protocol

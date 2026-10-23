@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "poll-error-recovery-cold-history",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.poll.failure.recovery",
+    "input": [
+      "017"
+    ],
+    "run_id": "original-run",
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "charge"
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "charge",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4EDGFtb3VudATGAQ5yZWNlaXB0CghwYWlkAA=="
+        }
+      }
+    }
+  ],
+  "expected": {
+    "command_type": "CompleteWorkflow",
+    "result": {
+      "order": "017",
+      "charged": {
+        "amount": 99,
+        "receipt": "paid"
+      },
+      "run": "original-run"
+    }
+  }
+}
