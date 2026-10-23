@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Explicit verified `tls_context` configuration for async and synchronous
+  clients, including cloned query clients and runtime payload transfers.
+  Applications can add a private CA while retaining certifi's public roots.
+
 ## [2.9.1] - 2026-10-22
 
 ### Security

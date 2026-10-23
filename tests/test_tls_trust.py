@@ -43,13 +43,17 @@ def tls_endpoint(tmp_path_factory: pytest.TempPathFactory) -> Iterator[TLSEndpoi
     directory = tmp_path_factory.mktemp("private-ca")
     commands = [
         ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=SDK Test CA",
-         "-addext", "basicConstraints=critical,CA:TRUE", "-keyout", "ca.key", "-out", "ca.pem"],
+         "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+         "-keyout", "ca.key", "-out", "ca.pem"],
         ["req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost",
          "-keyout", "server.key", "-out", "server.csr"],
         ["x509", "-req", "-in", "server.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
          "-days", "1", "-extfile", "server.ext", "-out", "server.pem"],
     ]
-    (directory / "server.ext").write_text("subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n")
+    (directory / "server.ext").write_text(
+        "subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\nbasicConstraints=critical,CA:FALSE\n"
+        "keyUsage=critical,digitalSignature,keyEncipherment\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n"
+    )
     for arguments in commands:
         subprocess.run([openssl, *arguments], cwd=directory, check=True, capture_output=True, timeout=15)
     runtime = FakeRuntimePayloadServer()
@@ -148,7 +152,8 @@ async def test_query_clone_and_nexus_view_preserve_the_same_context(tls_endpoint
 async def test_worker_poll_and_payload_upload_fetch_use_verified_https(tls_endpoint: TLSEndpoint) -> None:
     runtime = tls_endpoint.runtime
     runtime.responses[("POST", "/api/worker/query-tasks/poll")] = {"task": None}
-    async with Client(tls_endpoint.url, tls_context=tls_endpoint.context(), **options(tls_endpoint)) as client:
+    context = tls_endpoint.context()
+    async with Client(tls_endpoint.url, tls_context=context, **options(tls_endpoint)) as client:
         assert await client.poll_query_task(worker_id="test-worker", task_queue="orders", timeout=0.05) is None
         expected = {"customer": "synthetic", "value": "x" * 200}
         wire = await client._externalize_runtime_payloads(
@@ -156,11 +161,14 @@ async def test_worker_poll_and_payload_upload_fetch_use_verified_https(tls_endpo
             transport=await client._runtime_external_payload_transport(), uploaded={}, slot=("arguments",),
         )
         assert "external_payload" in wire
+    # A fresh client has no upload cache and must fetch the actual HTTPS bytes.
+    async with Client(tls_endpoint.url, tls_context=context, **options(tls_endpoint)) as client:
         decoded = await client._resolve_runtime_payloads(
             wire, worker=False, transport=await client._runtime_external_payload_transport(), resolved={},
         )
         assert serializer.decode_envelope(decoded) == expected
-    assert runtime.upload_count == runtime.fetch_count == 1
+    assert runtime.upload_count == 1
+    assert runtime.fetch_count == 1
 
 
 async def test_default_environment_ca_selection_remains_supported(
