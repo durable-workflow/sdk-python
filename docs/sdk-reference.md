@@ -1048,6 +1048,12 @@ client = Client("http://server:8080", token="dev-token-123", metrics=metrics)
 
 Custom recorders implement `increment(name, value=1.0, tags=None)` and `record(name, value, tags=None)`.
 
+The [metrics reference](reference/metrics.md#recorder-contract) explains the
+shared names, count/second units, recorder inheritance and exporter conventions.
+In unreleased source, client routes use reviewed templates without variable IDs or query strings;
+unknown operations use `unknown`. Keep configured worker queue names and any
+exporter resource labels bounded.
+
 ## Worker interceptors
 
 Use `Worker(interceptors=[...])` when instrumentation needs the task payload,
