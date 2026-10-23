@@ -340,3 +340,22 @@ async def test_worker_surfaces_definitive_refusal_without_retry(status: int, rea
     assert error.value is failure
     assert worker._registered
     client.deregister_worker_registration.assert_awaited_once()
+
+
+def test_recovered_registration_replays_genuine_completed_activity() -> None:
+    import json
+    from pathlib import Path
+
+    from durable_workflow import serializer
+    from durable_workflow.workflow import replay
+    from tests.deregistration_recovery import RecoveredWorkflow
+
+    path = Path(__file__).parent / "fixtures/replay_regressions/fenced-deregistration-cold-recovery.json"
+    fixture = json.loads(path.read_text())
+    outcome = replay(
+        RecoveredWorkflow, fixture["history"], fixture["workflow"]["input"], run_id=fixture["workflow"]["run_id"],
+    )
+    assert len(outcome.commands) == 1
+    command = outcome.commands[0].to_server_command("recovered")
+    assert command["type"] == "complete_workflow"
+    assert serializer.decode_envelope(command["result"]) == fixture["expected"]["result"]

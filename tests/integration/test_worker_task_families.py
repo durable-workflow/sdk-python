@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
+import os
 import uuid
 from collections import Counter
 from contextvars import ContextVar
@@ -69,9 +70,14 @@ async def test_workers_execute_without_polling_empty_task_families(
     suffix = uuid.uuid4().hex[:12]
     queue = f"task-family-{suffix}"
     async with (
-        Client(server_url, token=server_token, namespace="default") as control,
-        Client(server_url, token=server_token, namespace="default") as workflow_client,
-        Client(server_url, token=server_token, namespace="default") as activity_client,
+        Client(server_url, control_token=os.environ.get("DURABLE_WORKFLOW_CONTROL_TOKEN", server_token),
+               namespace="default") as control,
+        Client(server_url, worker_token=server_token,
+               control_token=os.environ.get("DURABLE_WORKFLOW_CONTROL_TOKEN", server_token),
+               namespace="default") as workflow_client,
+        Client(server_url, worker_token=server_token,
+               control_token=os.environ.get("DURABLE_WORKFLOW_CONTROL_TOKEN", server_token),
+               namespace="default") as activity_client,
     ):
         observation.clients.update({
             id(control._http): "control", id(workflow_client._http): "workflow",
@@ -143,7 +149,12 @@ async def test_workers_execute_without_polling_empty_task_families(
         assert workflow_polls["workflow"] > 0, observation.report()
         assert (workflow_polls["activity"] > 0) is (mode == "mixed"), observation.report()
         assert observation.successful["POST registration"] >= len(workers), observation.report()
-        assert observation.successful["DELETE registration"] >= len(workers), observation.report()
+        deregistrations = (observation.successful["POST deregistration"]
+                           + observation.successful["DELETE deregistration"])
+        assert deregistrations >= len(workers), observation.report()
+        assert all(not selected._registered for selected in workers), observation.report()
+        assert not workflow_client._http.is_closed
+        assert not activity_client._http.is_closed
         assert observation.active_count == 0, observation.report()
         if mode == "split":
             assert activity_polls["activity"] > 0, observation.report()

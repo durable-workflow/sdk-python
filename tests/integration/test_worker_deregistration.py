@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 import uuid
+from typing import Any
 
 import httpx
 import pytest
 
 from durable_workflow import Client, ServerError, Worker
+from durable_workflow.workflow import replay
+from tests.deregistration_recovery import DiscardCompletedResponse, RecoveredWorkflow, echo
 
 
 def make_worker(client: Client, worker_id: str) -> Worker:
@@ -94,35 +99,7 @@ async def test_lost_completed_response_retries_receipt_after_replacement_registr
     ):
         replacement = make_worker(replacement_client, worker_id)
 
-        class DiscardCompletedResponse(httpx.AsyncBaseTransport):
-            def __init__(self) -> None:
-                self.inner = httpx.AsyncHTTPTransport()
-                self.discarded = False
-                self.deregistration_bodies: list[bytes] = []
-
-            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-                response = await self.inner.handle_async_request(request)
-                if request.method != "POST" or not request.url.path.endswith("/deregister"):
-                    return response
-                self.deregistration_bodies.append(request.content)
-                if self.discarded:
-                    return response
-                # The real Server has committed and answered. Only the caller's
-                # response is discarded; no Server behavior is mocked here.
-                await response.aread()
-                assert response.status_code == 200
-                receipt = response.json()
-                assert receipt["outcome"] == "deregistered"
-                await response.aclose()
-                await replacement._register()
-                assert replacement._registration_token != receipt["registration_token"]
-                self.discarded = True
-                raise httpx.RemoteProtocolError("test discarded a committed response", request=request)
-
-            async def aclose(self) -> None:
-                await self.inner.aclose()
-
-        fault = DiscardCompletedResponse()
+        fault = DiscardCompletedResponse(replacement)
         await client._http.aclose()
         client._http = httpx.AsyncClient(base_url=client.base_url, transport=fault)
         first = make_worker(client, worker_id)
@@ -138,3 +115,75 @@ async def test_lost_completed_response_retries_receipt_after_replacement_registr
             assert (await replacement_client.heartbeat_worker(worker_id=worker_id))["acknowledged"] is True
         finally:
             await replacement.stop()
+
+
+async def exercise_recovered_claim(client: Client, replacement_client: Client, identity: str) -> dict[str, Any]:
+    first = Worker(client, task_queue=identity, worker_id=identity, workflows=[RecoveredWorkflow], activities=[echo])
+    replacement = Worker(
+        replacement_client, task_queue=identity, worker_id=identity, workflows=[RecoveredWorkflow], activities=[echo],
+    )
+    fault = DiscardCompletedResponse(replacement)
+    await client._http.aclose()
+    client._http = httpx.AsyncClient(base_url=client.base_url, transport=fault)
+    await first._register()
+    handle = await client.start_workflow(
+        workflow_type="tests.deregistration.cold-recovery", task_queue=identity,
+        workflow_id=identity, input=["handoff"],
+    )
+    old = await client.poll_workflow_task(worker_id=identity, task_queue=identity, timeout=2)
+    assert isinstance(old, dict)
+    try:
+        await first.stop()
+        assert not first._registered
+        assert fault.discarded
+        assert fault.recovered_workflow_task_count == 1
+        assert len(fault.deregistration_bodies) == 2
+        assert fault.deregistration_bodies[0] == fault.deregistration_bodies[1]
+        claimed = await replacement_client.poll_workflow_task(worker_id=identity, task_queue=identity, timeout=2)
+        assert isinstance(claimed, dict)
+        assert claimed["task_id"] == old["task_id"]
+        assert claimed["workflow_task_attempt"] > old["workflow_task_attempt"]
+        outcome = replay(RecoveredWorkflow, claimed["history_events"], ["handoff"], run_id=handle.run_id)
+        assert len(outcome.commands) == 1
+        await replacement_client.complete_workflow_task(
+            task_id=claimed["task_id"], lease_owner=identity, workflow_task_attempt=claimed["workflow_task_attempt"],
+            commands=[command.to_server_command(identity) for command in outcome.commands],
+        )
+        task = await replacement_client.poll_activity_task(worker_id=identity, task_queue=identity, timeout=2)
+        assert isinstance(task, dict)
+        await replacement_client.complete_activity_task(
+            task_id=task["task_id"], activity_attempt_id=task["activity_attempt_id"],
+            lease_owner=identity, result="handoff",
+        )
+        resumed = await replacement_client.poll_workflow_task(worker_id=identity, task_queue=identity, timeout=2)
+        assert isinstance(resumed, dict)
+        cold = replay(RecoveredWorkflow, resumed["history_events"], ["handoff"], run_id=handle.run_id)
+        assert len(cold.commands) == 1
+        assert cold.commands[0].to_server_command(identity)["type"] == "complete_workflow"
+        await replacement_client.complete_workflow_task(
+            task_id=resumed["task_id"], lease_owner=identity, workflow_task_attempt=resumed["workflow_task_attempt"],
+            commands=[command.to_server_command(identity) for command in cold.commands],
+        )
+        result = await handle.result(timeout=3, poll_interval=.05)
+        assert result == {"value": "handoff", "run": handle.run_id}
+        return {"history": resumed["history_events"], "run_id": handle.run_id, "workflow_id": handle.workflow_id,
+                "result": result, "old_attempt": old["workflow_task_attempt"],
+                "replacement_attempt": claimed["workflow_task_attempt"], "recovered_claim_count": 1,
+                "deregistration_attempts": 2, "same_request_bytes": True,
+                "replacement_preserved": True, "cold_replay_did_not_reschedule_activity": True}
+    finally:
+        await replacement.stop()
+
+
+@pytest.mark.asyncio
+async def test_recovered_claim_cold_replays_after_lost_receipt_and_replacement(
+    server_url: str, server_token: str,
+) -> None:
+    async with (
+        Client(server_url, worker_token=server_token,
+               control_token=os.environ.get("DURABLE_WORKFLOW_CONTROL_TOKEN", server_token)) as client,
+        Client(server_url, worker_token=server_token) as replacement_client,
+    ):
+        await asyncio.wait_for(
+            exercise_recovered_claim(client, replacement_client, "py-dereg-cold-" + uuid.uuid4().hex[:12]), timeout=30,
+        )
