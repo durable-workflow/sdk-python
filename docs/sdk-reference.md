@@ -976,6 +976,20 @@ transfers reuse that trust configuration. See the
 for root selection and `SSL_CERT_FILE` / `SSL_CERT_DIR` behavior. Published
 packages gain this option with the next SDK release.
 
+## Poll failures
+
+The backoff described here is available in unreleased SDK source. Published
+workers retain their fixed one-second poll-error wait until the next release.
+
+Workflow, activity and query pollers use independent exponential backoff after
+HTTP, authentication or transport failures. The retry ceiling doubles from 1
+second to a maximum of 30 seconds; each wait uses random jitter between half
+and all of that ceiling. Any successful poll, including an empty result, resets
+it. Shutdown interrupts the wait. Identical warnings repeat at most once per
+minute per poller, while poll-error metrics count each failure. HTTP 401 and 403
+diagnostics identify credential and permission failures. Typed capacity and
+storage-admission handling remain separate. See [Worker recovery](reference/worker.md#poll-failures-and-recovery).
+
 ## Activity heartbeat refusals
 
 Use `await activity.context().heartbeat(details)` in an async activity or

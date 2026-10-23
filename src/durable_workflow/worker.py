@@ -23,6 +23,7 @@ import inspect
 import json
 import logging
 import pickle
+import random
 import sys
 import threading
 import time
@@ -79,6 +80,7 @@ from .errors import (
     QueryFailed,
     QueryTaskAuthorityLost,
     ServerError,
+    Unauthorized,
     UpdateRejected,
     UpdateValidationFailed,
     WorkflowEntryArgumentsMismatchError,
@@ -228,12 +230,39 @@ def _is_storage_admission_error(error: BaseException) -> bool:
 
 
 def _poll_error_summary(error: BaseException) -> str:
+    if isinstance(error, Unauthorized) or isinstance(error, ServerError) and error.status == 401:
+        return "authentication failed (HTTP 401); check the worker credentials"
+    if isinstance(error, ServerError) and error.status == 403:
+        return "authorization failed (HTTP 403); check the worker credentials and permissions"
     if not isinstance(error, ServerError):
         return str(error)
     reason = error.reason()
     if not isinstance(reason, str) or not reason:
         return f"server returned {error.status}"
     return f"server returned {error.status} reason={reason[:64]!r}"
+
+
+class _PollFailureBackoff:
+    """One failure streak per poller, independent of durable retry policies."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._ceiling = 1.0
+        self._last_summary: str | None = None
+        self._last_warning_at = 0.0
+
+    def retry_delay(self, error: Exception, task_kind: str) -> float:
+        delay = random.uniform(self._ceiling / 2, self._ceiling)
+        self._ceiling = min(30.0, self._ceiling * 2)
+        summary = _poll_error_summary(error)
+        now = time.monotonic()
+        if summary != self._last_summary or now - self._last_warning_at >= 60.0:
+            log.warning("%s poll error: %s; retrying in %.2f s", task_kind, summary, delay)
+            self._last_summary = summary
+            self._last_warning_at = now
+        return delay
 
 
 def _poll_capacity_delay(error: BaseException, task_kind: str, task_queue: str) -> int | None:
@@ -3680,6 +3709,7 @@ class Worker:
         return dispatched
 
     async def _poll_workflow_tasks(self) -> None:
+        failures = _PollFailureBackoff()
         while not self._stop.is_set():
             await self._reserve_workflow_capacity()
             if self._stop.is_set():
@@ -3711,9 +3741,9 @@ class Worker:
                     await asyncio.sleep(delay)
                     continue
                 self._record_poll_metrics("workflow", "error", time.perf_counter() - poll_start)
-                log.warning("workflow poll error: %s", _poll_error_summary(e))
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(failures.retry_delay(e, "workflow"))
                 continue
+            failures.reset()
             if task is None:
                 self._release_workflow_capacity()
                 self._record_poll_metrics("workflow", "empty", time.perf_counter() - poll_start)
@@ -3786,6 +3816,7 @@ class Worker:
             )
 
     async def _poll_activity_tasks(self) -> None:
+        failures = _PollFailureBackoff()
         while not self._stop.is_set():
             self._validate_cooperative_activity_handlers()
             if (len(self._remote_activity_threads) + len(self._remote_activity_processes)
@@ -3820,9 +3851,9 @@ class Worker:
                     await asyncio.sleep(delay)
                     continue
                 self._record_poll_metrics("activity", "error", time.perf_counter() - poll_start)
-                log.warning("activity poll error: %s", _poll_error_summary(e))
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(failures.retry_delay(e, "activity"))
                 continue
+            failures.reset()
             if task is None:
                 self._act_semaphore.release()
                 self._record_poll_metrics("activity", "empty", time.perf_counter() - poll_start)
@@ -3850,6 +3881,7 @@ class Worker:
             self._act_semaphore.release()
 
     async def _poll_query_tasks(self, *, client: Client | None = None, track_tasks: bool = True) -> None:
+        failures = _PollFailureBackoff()
         query_thread_stop = self._query_thread_stop if client is not None else None
         client = client or self.client
         while not self._stop.is_set() and (
@@ -3877,9 +3909,9 @@ class Worker:
                     await asyncio.sleep(delay)
                     continue
                 self._record_poll_metrics("query", "error", time.perf_counter() - poll_start)
-                log.warning("query poll error: %s", _poll_error_summary(e))
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(failures.retry_delay(e, "query"))
                 continue
+            failures.reset()
             if task is None:
                 self._record_poll_metrics("query", "empty", time.perf_counter() - poll_start)
                 if self._stop.is_set() or (
