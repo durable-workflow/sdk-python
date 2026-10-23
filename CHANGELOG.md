@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   update-validation tasks, worker sessions, streams and Nexus operations.
   Unknown paths emit `unknown`; static poll routes retain `/poll`. Variable
   identifiers and query strings do not create metric series.
+- Honor explicitly configured and inherited metric recorders even when they
+  evaluate to false, rather than silently replacing them with the no-op.
 
 ## [2.9.1] - 2026-10-22
 

@@ -1630,7 +1630,7 @@ class Client:
         self._observability_capability = False
         self.timeout = timeout
         self.retry_policy = retry_policy or TransportRetryPolicy()
-        self.metrics = metrics or NOOP_METRICS
+        self.metrics = metrics if metrics is not None else NOOP_METRICS
         self.payload_size_warning_config = (
             serializer.PayloadSizeWarningConfig(
                 limit_bytes=payload_size_limit_bytes,

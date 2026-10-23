@@ -11,6 +11,8 @@ Client request, worker poll and task dispatch observations follow the
 It defines six recorder names, counter or histogram instruments, count or
 second units, and the exact tag keys. The default recorder drops observations.
 A worker inherits its client's recorder unless given an explicit recorder.
+Selection uses `None` to mean unspecified; an empty or false-valued recorder
+still receives observations. Pass `NoopMetrics()` explicitly to discard them.
 
 Each instrumented operation increments its counter by one and records one
 nonnegative monotonic duration in seconds. Client observations include the

@@ -39,6 +39,11 @@ class Recorder:
         self.calls.append(("record", name, value, dict(tags or {})))
 
 
+class FalseyRecorder(Recorder):
+    def __bool__(self) -> bool:
+        return False
+
+
 def assert_contract(recorder: Recorder, *, duration: float | None = None) -> set[str]:
     assert recorder.calls
     assert len(recorder.calls) % 2 == 0
@@ -74,10 +79,11 @@ def test_contract_is_an_exact_pinned_copy() -> None:
 
 
 @pytest.mark.parametrize("outcome", ["ok", "http_error", "ConnectError", "retry"])
+@pytest.mark.parametrize("recorder_class", [Recorder, FalseyRecorder], ids=["normal", "falsey"])
 async def test_actual_client_request_pair_matches_the_contract(
-    outcome: str, monkeypatch: pytest.MonkeyPatch,
+    outcome: str, recorder_class: type[Recorder], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorder = Recorder()
+    recorder = recorder_class()
     now = 1.0
     attempts = 0
 
@@ -185,8 +191,11 @@ async def test_actual_task_dispatch_pair_matches_the_contract(
 
 
 @pytest.mark.parametrize("override", [False, True], ids=["inherit", "override"])
-async def test_actual_client_and_worker_respect_recorder_selection(override: bool) -> None:
-    client_recorder, worker_recorder = Recorder(), Recorder()
+@pytest.mark.parametrize("recorder_class", [Recorder, FalseyRecorder], ids=["normal", "falsey"])
+async def test_actual_client_and_worker_respect_recorder_selection(
+    override: bool, recorder_class: type[Recorder],
+) -> None:
+    client_recorder, worker_recorder = recorder_class(), recorder_class()
     client = Client("https://runtime.example", worker_token="synthetic-token", metrics=client_recorder)
     worker = Worker(client, task_queue="orders", metrics=worker_recorder if override else None)
 
