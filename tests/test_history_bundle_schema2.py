@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from durable_workflow import serializer
-from durable_workflow.history_bundle_verify import main, verify_bundle, verify_bundle_json
+from durable_workflow.history_bundle_verify import _canonicalize, main, verify_bundle, verify_bundle_json
 from durable_workflow.replay_verify import main as replay_main
 from durable_workflow.replay_verify import simulate_bundles
 
@@ -43,7 +43,7 @@ def _rules(report: dict[str, Any]) -> set[str]:
     return {finding["rule"] for finding in report["findings"]}
 
 
-@pytest.mark.parametrize("name", ["waiting", "completed"])
+@pytest.mark.parametrize("name", ["waiting", "completed", "unicode_waiting", "unicode_completed"])
 def test_genuine_published_schema2_export_verifies_without_rewriting(name: str) -> None:
     raw = (FIXTURES / "bundles" / f"{name}.json").read_bytes()
     provenance = json.loads((FIXTURES / "provenance.json").read_text())["exports"][name]
@@ -174,3 +174,19 @@ def test_direct_api_reports_non_json_memo_projection_without_raising() -> None:
     assert report["status"] == "failed"
     assert "workflow.memo_projection_mismatch" in _rules(report)
     assert "integrity.canonicalization_failed" in _rules(report)
+
+
+def test_canonical_json_matches_independent_published_php_bytes() -> None:
+    reference = json.loads((FIXTURES / "php-canonical-reference.json").read_text())
+    for case in reference["cases"]:
+        observed = _canonicalize(case["body"])
+        assert observed == case["canonical_json"], case["name"]
+        assert hashlib.sha256(observed.encode()).hexdigest() == case["sha256"]
+
+
+def test_published_php_signed_unicode_control_verifies_and_rejects_a_wrong_key() -> None:
+    reference = json.loads((FIXTURES / "php-canonical-reference.json").read_text())["unicode_signature_control"]
+    report = verify_bundle(reference["bundle"], reference["test_signing_key"])
+    assert report["status"] == "ok", report["findings"]
+    assert report["integrity"]["signature_verified"] is True
+    assert "integrity.signature_mismatch" in _rules(verify_bundle(reference["bundle"], "wrong-key"))
