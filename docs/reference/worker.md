@@ -68,7 +68,7 @@ removing that worker-plane registration. Work still running at the deadline is
 cancelled. Calling `stop()` more than once shares the same shutdown operation
 and result. No deregistration is sent if registration failed.
 
-**Unreleased source behavior:** the final HTTP call and any recovery use the
+**Unreleased source behavior, prepared for SDK 2.10.1:** the final HTTP call and any recovery use the
 original remaining shutdown budget. If Server advertises
 `worker_deregistration_fencing`, Worker retains its registration token and uses
 the fenced receipt endpoint. Matching transient responses and transport losses
