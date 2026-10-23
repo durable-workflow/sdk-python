@@ -45,6 +45,22 @@ Workflow retry and timeout settings are durable command budgets. Use
 `ChildWorkflowRetryPolicy` on `ctx.start_child_workflow(...)` for child workflow
 attempts. Use `TransportRetryPolicy` only for client HTTP retries.
 
+## Durable delay resolution
+
+`ActivityRetryPolicy` uses whole-second durable retry intervals:
+
+| Parameter | Accepted value and conversion |
+| --- | --- |
+| `initial_interval_seconds` | Non-negative float. Each generated interval is rounded up to a whole second. `0.1` becomes `1`. |
+| `maximum_interval_seconds` | Optional non-negative float. Caps the generated interval before rounding, so a cap of `0.1` still encodes one second. |
+| `backoff_seconds` | Explicit list of integer seconds. Use integers rather than fractional values. |
+
+`ctx.start_timer(seconds)` takes integer seconds. `ctx.sleep(seconds)` accepts
+a float and rounds positive fractions up to the next whole second. Zero stays
+zero. These are durable scheduling delays, so queue latency or worker load can
+make actual execution later. HTTP transport retry delays are a separate policy
+and do not use this durable-command conversion.
+
 Use `ctx.call_nexus_service(...)` from workflow code to start a Nexus service
 operation durably. Admission uses the leased workflow command. Synchronous
 completion waits remain suspended until a durable terminal service event,

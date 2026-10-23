@@ -316,6 +316,13 @@ class ActivityRetryPolicy:
     budget for an already-scheduled activity. It is a server-side durable
     retry policy, not the SDK HTTP transport retry policy.
 
+    ``initial_interval_seconds`` and ``maximum_interval_seconds`` accept
+    fractional seconds. Each generated interval is capped first, then rounded
+    up to a whole second for the durable command. For example, an initial
+    interval of ``0.1`` becomes one second. The explicit ``backoff_seconds``
+    list instead takes integer seconds. This resolution does not guarantee
+    when a worker will start the next attempt.
+
     ``non_retryable_error_types`` names failure types that should bypass this
     retry budget. An activity worker can also report ``non_retryable=True`` on
     a failure to stop retrying that activity execution.
