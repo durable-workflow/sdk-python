@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   markers, and respects lower configured or discovered limits. Preserve failure
   type, retry policy and claim identity; refuse an identity that cannot fit.
 
+## [2.10.1] - Unreleased
+
+### Fixed
+
+- Keep worker deregistration inside the remaining shutdown deadline. When the
+  runtime advertises generation-fenced receipts, retry matching transient or
+  lost responses with the original registration token. Without advertised
+  fencing, use one legacy attempt. Exhausted or uncertain shutdown keeps
+  registration removal unconfirmed instead of reporting success.
+
 ## [2.10.0] - 2026-10-23
 
 ### Added

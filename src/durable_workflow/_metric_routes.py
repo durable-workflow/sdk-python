@@ -12,6 +12,7 @@ _ROUTES = (
       for suffix in ("", "/pass")),
     "/workers", "/workers/{worker_id}",
     "/worker/register", "/worker/heartbeat", "/worker/registrations/{worker_id}",
+    "/worker/registrations/{worker_id}/deregister",
     "/worker/sessions", "/worker/sessions/{session_id}", "/worker/sessions/{session_id}/heartbeat",
     *(f"/worker/{kind}-tasks/poll" for kind in ("workflow", "activity", "query", "update-validation")),
     *(f"/worker/{kind}-tasks/{{task_id}}/{action}" for kind, actions in (

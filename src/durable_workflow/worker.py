@@ -37,6 +37,8 @@ from functools import wraps
 from types import FunctionType
 from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Union, get_args, get_origin, get_type_hints
 
+import httpx
+
 from . import serializer
 from ._activity_lease import activity_lease_renewal_supported, current_activity_authority
 from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProcessLost, SupervisedCallback
@@ -1171,6 +1173,10 @@ class Worker:
         self._in_flight: set[asyncio.Task[Any]] = set()
         self._poller_tasks: set[asyncio.Task[Any]] = set()
         self._registered = False
+        self._deregistration_fenced = False
+        self._registration_token: str | None = None
+        self._registration_worker_id: str | None = None
+        self._registration_namespace: object = None
         self._run_started = False
         self._registration_done = asyncio.Event()
         self._shutdown_task: asyncio.Task[None] | None = None
@@ -1297,6 +1303,18 @@ class Worker:
         _validate_server_compatibility(info)
         protocol = info.get("worker_protocol")
         server_capabilities = protocol.get("server_capabilities") if isinstance(protocol, Mapping) else None
+        deregistration = (
+            server_capabilities.get("worker_deregistration_fencing")
+            if isinstance(server_capabilities, Mapping) else None
+        )
+        self._deregistration_fenced = isinstance(deregistration, Mapping) and deregistration.get("supported") is True
+        if isinstance(deregistration, Mapping) and self._deregistration_fenced and (
+            deregistration.get("schema") != "durable-workflow.v2.worker-deregistration.v1"
+            or deregistration.get("endpoint") != "/worker/registrations/{workerId}/deregister"
+            or type(deregistration.get("receipt_retention_seconds")) is not int
+            or deregistration["receipt_retention_seconds"] <= 0
+        ):
+            raise RuntimeError("Server compatibility error: invalid worker_deregistration_fencing contract")
         sticky_support = (
             server_capabilities.get("sticky_execution") if isinstance(server_capabilities, Mapping) else None
         )
@@ -1451,6 +1469,20 @@ class Worker:
             task_slots=self._current_task_slots(),
             process_metrics=self._current_process_metrics(),
         )
+        if self._deregistration_fenced:
+            token = ack.get("registration_token") if isinstance(ack, dict) else None
+            if (
+                not isinstance(token, str) or len(token) != 32
+                or any(character not in "0123456789abcdef" for character in token)
+                or ack.get("worker_id") != self.worker_id or ack.get("registered") is not True
+            ):
+                raise RuntimeError(
+                    "Server returned an invalid registration_token acknowledgement; "
+                    "registration may remain active and unfenced cleanup is unsafe"
+                )
+            self._registration_token = token
+        self._registration_worker_id = self.worker_id
+        self._registration_namespace = getattr(self.client, "namespace", None)
         self._registered = True
         # Adapt to the server-advertised cadence when present so a cluster
         # can pin the worker fleet's heartbeat beat without each worker
@@ -4581,8 +4613,9 @@ class Worker:
     async def stop(self) -> None:
         """Stop polling, drain tasks, and remove the worker registration.
 
-        Repeated calls share one shutdown result. A failed deregistration is
-        therefore propagated to every caller without sending another DELETE.
+        Repeated calls share one shutdown result. Generation-fenced recovery
+        stays within the original shutdown deadline. Unfenced deregistration
+        makes one attempt and does not retry an uncertain outcome.
         """
         self._stop.set()
         if self._shutdown_task is None:
@@ -4678,8 +4711,9 @@ class Worker:
                 log.warning("worker session %s close failed: %s", session.options.session_id, error)
 
         if self._registered:
-            await self.client.deregister_worker_registration(self.worker_id)
+            await self._deregister_before_deadline(deadline)
             self._registered = False
+            self._registration_token = None
             log.info("worker %s deregistered", self.worker_id)
         self._sticky_cache.clear()
         payload_observers = getattr(self.client, "_workflow_payload_observers", None)
@@ -4690,3 +4724,62 @@ class Worker:
     @staticmethod
     def _remaining_shutdown_time(deadline: float) -> float:
         return max(0.0, deadline - asyncio.get_running_loop().time())
+
+    def _check_deregistration_identity(self) -> None:
+        if self._deregistration_fenced and self._registration_token is None:
+            raise RuntimeError("worker registration token is missing; registration removal is unconfirmed")
+        if self._registration_worker_id is not None and (
+            self.worker_id != self._registration_worker_id
+            or getattr(self.client, "namespace", None) != self._registration_namespace
+        ):
+            raise RuntimeError("worker registration identity changed; registration removal is unconfirmed")
+
+    async def _deregistration_attempt(self, remaining: float) -> tuple[float | None, Exception] | None:
+        kwargs: dict[str, Any] = {}
+        if self._deregistration_fenced:
+            kwargs = {"registration_token": self._registration_token, "timeout": remaining}
+        if isinstance(self._registration_namespace, str):
+            kwargs["expected_namespace"] = self._registration_namespace
+        try:
+            await asyncio.wait_for(
+                self.client.deregister_worker_registration(self.worker_id, **kwargs),
+                timeout=remaining,
+            )
+        except asyncio.TimeoutError as error:
+            raise RuntimeError(
+                "worker shutdown timed out during deregistration; registration removal is unconfirmed"
+            ) from error
+        except ServerError as error:
+            retry_delay = (
+                error.worker_deregistration_retry_delay(self.worker_id, self._registration_token)
+                if self._deregistration_fenced and self._registration_token is not None else None
+            )
+            if retry_delay is None:
+                raise
+            return float(retry_delay), error
+        except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError) as error:
+            if not self._deregistration_fenced:
+                raise
+            return None, error
+        return None
+
+    async def _deregister_before_deadline(self, deadline: float) -> None:
+        attempt = 0
+        while True:
+            self._check_deregistration_identity()
+            remaining = self._remaining_shutdown_time(deadline)
+            if remaining <= 0:
+                raise RuntimeError("worker shutdown deadline exhausted; registration removal is unconfirmed")
+            retry = await self._deregistration_attempt(remaining)
+            if retry is None:
+                return
+            retry_delay, failure = retry
+            delay = min(1.0, 0.1 * 2 ** min(attempt, 4)) if retry_delay is None else retry_delay
+            if delay >= self._remaining_shutdown_time(deadline):
+                raise RuntimeError(
+                    "worker shutdown cannot retry within its deadline; registration removal is unconfirmed"
+                ) from failure
+            if attempt == 0:
+                log.warning("worker deregistration is unconfirmed; retrying the fenced request within its deadline")
+            attempt += 1
+            await asyncio.sleep(delay)

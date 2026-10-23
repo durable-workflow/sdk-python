@@ -3226,7 +3226,7 @@ class TestUpdateValidationTaskExecution:
         assert worker._current_task_slots()["workflow_available"] == 1
 
     @pytest.mark.asyncio
-    async def test_shutdown_cancels_validation_and_deregisters_after_releasing_capacity(
+    async def test_shutdown_releases_validation_capacity_without_deregistering_after_deadline(
         self, mock_client: AsyncMock
     ) -> None:
         validation_started = asyncio.Event()
@@ -3279,15 +3279,16 @@ class TestUpdateValidationTaskExecution:
         await asyncio.wait_for(validation_started.wait(), timeout=1.0)
         assert worker._current_task_slots()["workflow_available"] == 0
 
-        await worker.stop()
+        with pytest.raises(RuntimeError, match="deadline exhausted.*registration.*unconfirmed"):
+            await worker.stop()
 
         assert validation_cancelled.is_set()
         assert worker._workflow_inflight == 0
         assert worker._workflow_reserved == 0
         assert worker._wf_semaphore._value == 1
         assert worker._current_task_slots()["workflow_available"] == 1
-        assert worker._registered is False
-        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+        assert worker._registered is True
+        mock_client.deregister_worker_registration.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cancellation_before_dispatch_starts_releases_admitted_capacity(self, mock_client: AsyncMock) -> None:
@@ -4516,7 +4517,7 @@ class TestWorkerShutdown:
         mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
 
     @pytest.mark.asyncio
-    async def test_shutdown_deadline_cancels_work_before_deregistering(
+    async def test_shutdown_deadline_cancels_work_without_sending_late_deregistration(
         self, mock_client: AsyncMock
     ) -> None:
         events: list[str] = []
@@ -4539,11 +4540,13 @@ class TestWorkerShutdown:
         tracked_task = worker._track(accepted_work())
         await work_started.wait()
 
-        await worker.stop()
+        with pytest.raises(RuntimeError, match="deadline exhausted.*registration.*unconfirmed"):
+            await worker.stop()
 
         assert tracked_task.cancelled()
-        assert events == ["work_cancelled", "deregister"]
-        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+        assert events == ["work_cancelled"]
+        assert worker._registered is True
+        mock_client.deregister_worker_registration.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_failed_registration_does_not_deregister(self, mock_client: AsyncMock) -> None:
