@@ -17,6 +17,7 @@ STACK_BYTES = 128 * 1024
 DETAIL_BYTES = 64 * 1024
 REQUEST_BYTES = 1024 * 1024
 UNENCODABLE_DETAILS = object()
+_STACK_MARKER = "\n[truncated]"
 _OPTIONAL = ("details", "diagnostics", "runtime_diagnostics", "validation_errors")
 _EXCEPTION_IDENTITY = frozenset({
     "type", "class", "code", "reason", "non_retryable", "retryable", "retry_after_seconds",
@@ -27,13 +28,13 @@ _EXCEPTION_IDENTITY = frozenset({
 
 def encoded_json(value: Any) -> bytes:
     """Use HTTPX's actual JSON settings, including escaping and NaN refusal."""
-    return httpx.Request("POST", "http://failure.invalid", json=value).content
+    return httpx.Request("POST", "https://failure.invalid", json=value).content
 
 
 def _size(value: Any) -> int | None:
     try:
         return len(encoded_json(value))
-    except (TypeError, ValueError, UnicodeError, RecursionError):
+    except (TypeError, ValueError, RecursionError):
         return None
 
 
@@ -93,8 +94,8 @@ class _Report:
             omitted.setdefault("message", len(_utf8(message)))
         if isinstance(stack, str) and len(_utf8(stack)) > stack_limit:
             omitted.setdefault("stack_trace", len(_utf8(stack)))
-            if stack_limit >= len("\n[truncated]"):
-                result["stack_trace"] = _prefix(stack, stack_limit - len("\n[truncated]")) + "\n[truncated]"
+            if stack_limit >= len(_STACK_MARKER):
+                result["stack_trace"] = _prefix(stack, stack_limit - len(_STACK_MARKER)) + _STACK_MARKER
             else:
                 result.pop("stack_trace", None)
         self._bound_metadata(result, omitted, min(DETAIL_BYTES, budget))
@@ -176,6 +177,7 @@ class _Report:
         # Avro envelope is either valid and intact or explicitly absent.
         if existing is not None:
             omitted.setdefault("diagnostics", _size(existing))
+        # Snapshot the keys because the loop removes entries from this dictionary.
         for key in list(container):
             removable = key not in _EXCEPTION_IDENTITY if self.terminal else key in _OPTIONAL
             if removable and key != "diagnostics":
@@ -198,7 +200,7 @@ def _command_reports(command: dict[str, Any]) -> list[tuple[tuple[str | int, ...
 
 def _reports(path: str, body: dict[str, Any]) -> list[tuple[tuple[str | int, ...], _Report]]:
     failure = body.get("failure")
-    if isinstance(failure, dict) and (path.endswith("/fail") or path.endswith("/reject")):
+    if isinstance(failure, dict) and (path.endswith(("/fail", "/reject"))):
         return [(("failure",), _Report(failure, structured="/activity-tasks/" in path))]
     if "/local-activities/" in path and path.endswith("/outcome"):
         report = body.get("report")
@@ -238,6 +240,22 @@ def prepare_failure_request(path: str, body: Any) -> Any:
     return result
 
 
+def _render_reports(
+    body: dict[str, Any], reports: list[tuple[tuple[str | int, ...], _Report]], budget: int, limit: int,
+) -> dict[str, Any]:
+    result = body
+    for location, report in reports:
+        rendered = report.render(budget)
+        metadata = rendered.get("exception", {}) if report.terminal else {
+            key: rendered[key] for key in _OPTIONAL if key in rendered
+        }
+        metadata_size = _size(metadata)
+        if metadata_size is None or metadata_size > DETAIL_BYTES:
+            raise FailureReportTooLarge(limit)
+        result = _replace_report(result, location, rendered)
+    return result
+
+
 def bound_failure_request(path: str, body: Any, limit: int = REQUEST_BYTES) -> Any:
     if not path.startswith("/worker/") or not isinstance(body, dict):
         return body
@@ -247,16 +265,7 @@ def bound_failure_request(path: str, body: Any, limit: int = REQUEST_BYTES) -> A
     limit = min(limit, REQUEST_BYTES)
     budget = STACK_BYTES
     while True:
-        result = body
-        for location, report in reports:
-            rendered = report.render(budget)
-            metadata = rendered.get("exception", {}) if report.terminal else {
-                key: rendered[key] for key in _OPTIONAL if key in rendered
-            }
-            metadata_size = _size(metadata)
-            if metadata_size is None or metadata_size > DETAIL_BYTES:
-                raise FailureReportTooLarge(limit)
-            result = _replace_report(result, location, rendered)
+        result = _render_reports(body, reports, budget, limit)
         size = _size(result)
         if size is not None and size <= limit:
             return result

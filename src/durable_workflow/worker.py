@@ -2456,7 +2456,7 @@ class Worker:
                 try:
                     if len(exception_type.encode("utf-8")) > 255:
                         raise ValueError("local activity failure type exceeds the wire limit")
-                except (ValueError, UnicodeError) as error:
+                except ValueError as error:
                     raise LocalActivityExecutionAborted(
                         "local activity failure type cannot cross the HTTP boundary",
                     ) from error
