@@ -4127,6 +4127,7 @@ class Worker:
                 else serializer.DEFAULT_WARNING_THRESHOLD_PERCENT
             ),
             payload_size_warnings=warning_config is not None,
+            failure_report_limit_bytes=self.client.failure_report_limit_bytes,
             external_storage=self.external_storage,
             external_storage_threshold_bytes=self.external_storage_threshold_bytes,
             external_storage_cache=self.external_storage_cache,

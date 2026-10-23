@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Bound failure messages, stacks and diagnostic payloads before reporting them.
+  The complete encoded request defaults to 1 MiB, including JSON escaping and
+  markers, and respects lower configured or discovered limits. Preserve failure
+  type, retry policy and claim identity; refuse an identity that cannot fit.
+
 ## [2.10.0] - Unreleased
 
 ### Added

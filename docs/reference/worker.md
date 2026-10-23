@@ -29,6 +29,40 @@ isolated worker processes and their resource limits. The separately
 negotiated cooperative-cancellation capability retains its supervised process
 execution; selecting a default thread does not enable that protocol.
 
+## Bounded failure reports
+
+This behavior is available in unreleased SDK source. Published packages still
+need the compatible release before these limits apply.
+
+Failure reports retain at most 64 KiB of UTF-8 message text, 128 KiB of stack
+text and 64 KiB of serialized details and diagnostics. These budgets include
+truncation markers. The complete encoded JSON request body defaults to at most
+1 MiB, counting JSON escaping, claim identities, command batches and metadata.
+A lower discovered Server `limits.max_payload_bytes` also applies. Configure
+`Client(..., failure_report_limit_bytes=...)` when a proxy or transport has a
+lower request limit. This option can lower the default cap; it cannot raise it.
+Query-client clones inherit it. Payload warning thresholds remain advisory.
+
+Oversized diagnostics produce a visible `[truncated ...]` message marker with
+structured omitted-field names and original byte sizes. Activity failures also
+carry this information in `failure.diagnostics.failure_report`; terminal
+workflow failures use `exception.diagnostics.failure_report`. Other existing
+report shapes keep the diagnostic JSON in the message marker. Unknown sizes
+are `null` when optional details could not be encoded. Avro details are kept as
+an intact valid envelope or omitted whole, before an unnecessary payload upload.
+
+The original failure type, retry/non-retryable choice, authored retry delay and
+claim identity remain exact. Activity, workflow-task, query and update rejection
+reports, terminal workflow/update failures and local-activity attempt reports
+share the complete-request bound. A workflow-task replay failure still leaves
+the run open for repair; it does not become a terminal workflow failure.
+
+If essential identity or semantic fields cannot fit even without optional
+text, the client raises `FailureReportTooLarge` before sending the report.
+This reporting refusal is separate from the application failure. The worker's
+existing reporting-error log identifies it; shortening a task ID or replacing
+the application type would change which failure the runtime records.
+
 ## Poll failures and recovery
 
 This backoff is available in unreleased SDK source. Until the next package

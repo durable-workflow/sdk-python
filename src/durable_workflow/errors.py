@@ -27,6 +27,20 @@ class DurableWorkflowError(Exception):
     """Base class for every exception raised by the SDK."""
 
 
+class FailureReportTooLarge(DurableWorkflowError, ValueError):
+    """Required failure identity or semantics cannot fit the reporting budget.
+
+    This is a local reporting refusal, not the application's failure. No claim
+    identity, failure type or retry decision is shortened to make it fit.
+    """
+
+    def __init__(self, limit_bytes: int) -> None:
+        self.limit_bytes = limit_bytes
+        super().__init__(
+            f"failure report identity or semantics cannot fit the {limit_bytes}-byte encoded request budget"
+        )
+
+
 class QueryTaskAuthorityLost(DurableWorkflowError):
     """A query delivery cannot safely load or invoke its handler."""
 
