@@ -971,8 +971,8 @@ class TestWorkerRegistration:
         ]
         assert len(warnings) == 1
         assert warnings[0].startswith(
-            f"{task_kind} poll error: server returned 429 "
-            "reason='long_poll_capacity_exhausted'; retrying in "
+            f"{task_kind} poll error: ServerError: server returned 429 "
+            f"reason='long_poll_capacity_exhausted'; route=/worker/{task_kind}-tasks/poll; retrying in "
         )
         assert "server_capabilities" not in caplog.text
 
@@ -980,9 +980,9 @@ class TestWorkerRegistration:
         summary = worker_module._poll_error_summary(
             ServerError(429, {"reason": "x" * 10_000})
         )
-        assert summary == f"server returned 429 reason={'x' * 64!r}"
-        assert worker_module._poll_error_summary(ServerError(503, {})) == "server returned 503"
-        assert worker_module._poll_error_summary(ValueError("transport failed")) == "transport failed"
+        assert summary == f"ServerError: server returned 429 reason={'x' * 64!r}"
+        assert worker_module._poll_error_summary(ServerError(503, {})) == "ServerError: server returned 503"
+        assert worker_module._poll_error_summary(ValueError("transport failed")) == "ValueError"
 
     @pytest.mark.asyncio
     async def test_register_omits_build_id_when_not_configured(

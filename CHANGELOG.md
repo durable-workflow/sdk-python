@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Name exception classes and static routes in poll warnings, including
+  message-less transport failures, while preserving credential-safe summaries.
+  Record local request cancellation as `CancelledError` instead of `pending`,
+  including cancellation during transport retry backoff.
+
 ## [2.10.0] - Unreleased
 
 ### Added

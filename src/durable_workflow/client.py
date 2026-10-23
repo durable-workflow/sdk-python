@@ -1981,6 +1981,9 @@ class Client:
                 await query_authority.confirm()
             outcome = "ok"
             return result
+        except asyncio.CancelledError:
+            outcome = "CancelledError"
+            raise
         except Exception as exc:
             if outcome == "pending":
                 outcome = type(exc).__name__
@@ -2667,6 +2670,9 @@ class Client:
                 )
             outcome = "bridge_rejected" if resp.status_code == 422 else "ok"
             return data
+        except asyncio.CancelledError:
+            outcome = "CancelledError"
+            raise
         except Exception as exc:
             if outcome == "pending":
                 outcome = type(exc).__name__

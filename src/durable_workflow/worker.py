@@ -230,16 +230,18 @@ def _is_storage_admission_error(error: BaseException) -> bool:
 
 
 def _poll_error_summary(error: BaseException) -> str:
+    error_class = type(error).__name__
     if isinstance(error, Unauthorized) or isinstance(error, ServerError) and error.status == 401:
-        return "authentication failed (HTTP 401); check the worker credentials"
+        return f"{error_class}: authentication failed (HTTP 401); check the worker credentials"
     if isinstance(error, ServerError) and error.status == 403:
-        return "authorization failed (HTTP 403); check the worker credentials and permissions"
+        return f"{error_class}: authorization failed (HTTP 403); check the worker credentials and permissions"
     if not isinstance(error, ServerError):
-        return str(error)
+        # Transport messages may be empty or contain private URLs/credentials.
+        return error_class
     reason = error.reason()
     if not isinstance(reason, str) or not reason:
-        return f"server returned {error.status}"
-    return f"server returned {error.status} reason={reason[:64]!r}"
+        return f"{error_class}: server returned {error.status}"
+    return f"{error_class}: server returned {error.status} reason={reason[:64]!r}"
 
 
 class _PollFailureBackoff:
@@ -259,7 +261,10 @@ class _PollFailureBackoff:
         summary = _poll_error_summary(error)
         now = time.monotonic()
         if summary != self._last_summary or now - self._last_warning_at >= 60.0:
-            log.warning("%s poll error: %s; retrying in %.2f s", task_kind, summary, delay)
+            log.warning(
+                "%s poll error: %s; route=/worker/%s-tasks/poll; retrying in %.2f s",
+                task_kind, summary, task_kind, delay,
+            )
             self._last_summary = summary
             self._last_warning_at = now
         return delay

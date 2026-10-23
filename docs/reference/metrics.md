@@ -41,4 +41,41 @@ to use this adapter. Applications own scrape/export configuration and additional
 resource labels. Custom recorders should remain fast and handle their exporter
 failures without throwing into the client or worker.
 
+## Request outcomes and errors
+
+**Unreleased:** named poll warnings and the local cancellation outcome below
+await package publication. Until then, a locally cancelled request may still
+be recorded as `pending`.
+
+The client counter and duration share one terminal `outcome` per logical
+request, including its transport retries:
+
+| Outcome | Meaning |
+| --- | --- |
+| `ok` | The client accepted the response. |
+| `http_error` | An HTTP error response was surfaced through the SDK error mapping. |
+| `bridge_rejected` | A webhook bridge returned its machine-readable HTTP 422 rejection. |
+| Exception class, such as `ReadTimeout`, `ReadError` or `RemoteProtocolError` | The operation ended with that exception. |
+| `CancelledError` | The Python request await was locally cancelled, including during retry backoff. |
+
+`status_code=none` means the client did not capture a terminal HTTP status.
+Exception messages, cancellation messages and request credentials are omitted
+from these labels. Cancellation still propagates immediately and is not retried.
+
+HTTP responses can carry a Server status and reason. Connection failures,
+timeouts and peer disconnects instead use httpx transport exceptions. The
+transport retry policy re-raises its last exception on exhaustion; individual
+poll APIs also retain their documented timeout-to-empty behavior.
+
+`TransportRetryPolicy` already retries `httpx.RemoteProtocolError`, including a
+peer disconnect before a response, within its configured attempt budget. Worker
+poll retries keep the same `poll_request_id`, namespace, credentials and
+serialized body. `httpx.LocalProtocolError` fails without a retry. These HTTP
+attempts do not renew durable execution budgets or rerun authored workflow code.
+
+Local `asyncio.CancelledError` ends the Python await. Durable `WorkflowCancelled`
+and `ActivityCancelled` describe separate workflow or activity cancellation
+outcomes. Inspect the runtime or its history to establish durable effects after
+an interrupted request.
+
 ::: durable_workflow.metrics
