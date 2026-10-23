@@ -39,11 +39,18 @@ from pathlib import Path
 from typing import Any
 
 from . import serializer
-from .errors import DuplicateRegistrationError, WorkflowCancelled, WorkflowFailed, WorkflowTerminated
+from .errors import (
+    DuplicateRegistrationError,
+    NexusOperationFailed,
+    WorkflowCancelled,
+    WorkflowFailed,
+    WorkflowTerminated,
+)
 from .workflow import (
     CompleteWorkflow,
     ContinueAsNew,
     FailWorkflow,
+    NexusServiceCall,
     RecordSideEffect,
     RecordVersionMarker,
     ReplayOutcome,
@@ -98,6 +105,8 @@ class WorkflowEnvironment:
         self._activity_results: dict[str, Any] = {}
         self._activity_fns: dict[str, Callable[..., Any]] = {}
         self._child_workflow_results: dict[str, Any] = {}
+        self._nexus_results: dict[tuple[str, str, str], Any] = {}
+        self._nexus_fns: dict[tuple[str, str, str], Callable[..., Any]] = {}
         self._pending_signals: list[tuple[str, list[Any]]] = []
         self._queued_signals_by_run: dict[int, list[tuple[str, list[Any]]]] = {}
         self._iteration_limit = iteration_limit
@@ -120,6 +129,33 @@ class WorkflowEnvironment:
     def register_child_workflow_result(self, workflow_type: str, result: Any) -> None:
         """Canned response for child workflow completions."""
         self._child_workflow_results[workflow_type] = result
+
+    def register_nexus_operation_result(
+        self, endpoint_name: str, service_name: str, operation_name: str, result: Any,
+    ) -> None:
+        """Mock a service response for the named operation.
+
+        Completion waits receive ``result`` through ``NexusOperationResult.result``.
+        Acceptance waits receive a started operation without a completed result.
+        A later registration for the same three names replaces this mock.
+        """
+        key = (endpoint_name, service_name, operation_name)
+        self._nexus_results[key] = result
+        self._nexus_fns.pop(key, None)
+
+    def register_nexus_operation(
+        self, endpoint_name: str, service_name: str, operation_name: str, fn: Callable[..., Any],
+    ) -> None:
+        """Call synchronous ``fn(*arguments)`` once per mocked operation.
+
+        Exceptions become service failures delivered as ``NexusOperationFailed``
+        at the workflow yield. Raise that type explicitly to supply a service
+        error type, reason or other failure metadata. A later registration for
+        the same three names replaces this mock.
+        """
+        key = (endpoint_name, service_name, operation_name)
+        self._nexus_fns[key] = fn
+        self._nexus_results.pop(key, None)
 
     def register_workflow(self, workflow_cls: type) -> None:
         """Make ``workflow_cls`` resolvable by name for continue-as-new.
@@ -305,6 +341,8 @@ class WorkflowEnvironment:
                 history.append({"event_type": "TimerFired", "payload": {}})
             elif isinstance(cmd, StartChildWorkflow):
                 history.append(self._resolve_child_workflow(cmd))
+            elif isinstance(cmd, NexusServiceCall):
+                history.append(self._resolve_nexus_operation(cmd, f"test-nexus-{len(history) + 1}"))
             elif isinstance(cmd, RecordSideEffect):
                 history.append(
                     {
@@ -329,6 +367,22 @@ class WorkflowEnvironment:
             else:
                 raise TypeError(f"unsupported command in test harness: {cmd!r}")
         return _SENTINEL, None
+
+    def _resolve_nexus_operation(self, cmd: NexusServiceCall, call_id: str) -> dict[str, Any]:
+        key = (cmd.endpoint_name, cmd.service_name, cmd.operation_name)
+        if key not in self._nexus_fns and key not in self._nexus_results:
+            raise KeyError(
+                f"no mock registered for Nexus operation endpoint={cmd.endpoint_name!r}, "
+                f"service={cmd.service_name!r}, operation={cmd.operation_name!r}; "
+                "call env.register_nexus_operation_result() or env.register_nexus_operation()."
+            )
+        try:
+            result = (
+                self._nexus_fns[key](*cmd.arguments) if key in self._nexus_fns else self._nexus_results[key]
+            )
+        except Exception as error:
+            return _nexus_operation_event(cmd, call_id, error=error)
+        return _nexus_operation_event(cmd, call_id, result=result)
 
     def _resolve_activity(self, cmd: ScheduleActivity) -> dict[str, Any]:
         if cmd.activity_type in self._activity_fns:
@@ -361,6 +415,56 @@ class WorkflowEnvironment:
                 "payload_codec": serializer.AVRO_CODEC,
             },
         }
+
+
+def _nexus_operation_event(
+    cmd: NexusServiceCall, call_id: str, *, result: Any = None, error: Exception | None = None,
+) -> dict[str, Any]:
+    # Acceptance resumes before service completion, just as ServiceCallStarted
+    # does on a real worker. Do not invent a completed result for an async start.
+    accepted_only = cmd.wait_for == "accepted" or cmd.mode == "async"
+    if error is not None:
+        status, event_type = "failed", "ServiceCallFailed"
+    elif accepted_only:
+        status, event_type = "started", "ServiceCallStarted"
+    else:
+        status, event_type = "completed", "ServiceCallCompleted"
+    surface: dict[str, Any] = {
+        "service_call_id": call_id,
+        "endpoint_name": cmd.endpoint_name,
+        "service_name": cmd.service_name,
+        "operation_name": cmd.operation_name,
+        "target_namespace": cmd.target_namespace,
+        "idempotency_key": cmd.idempotency_key,
+        "status": status,
+        "accepted": error is None,
+    }
+    if isinstance(error, NexusOperationFailed):
+        for name in (
+            "status", "outcome", "reason", "service_error_type", "caller_observed_error_type", "typed_error_message",
+        ):
+            value = getattr(error, name)
+            if value is not None:
+                surface[name] = value
+    elif error is not None:
+        surface["service_error_type"] = type(error).__name__
+    if error is not None:
+        surface["message"] = str(error)
+    return {
+        "event_type": event_type,
+        "payload": {
+            "service_call_id": call_id,
+            "endpoint_name": cmd.endpoint_name,
+            "service_name": cmd.service_name,
+            "operation_name": cmd.operation_name,
+            "operation_mode": cmd.mode,
+            "wait_for": cmd.wait_for,
+            "request_payload": serializer.envelope(cmd.arguments),
+            "response_payload": serializer.envelope(result) if status == "completed" else None,
+            "payload_codec": serializer.AVRO_CODEC,
+            "service_call": surface,
+        },
+    }
 
 
 def _workflow_name(cls: type) -> str:

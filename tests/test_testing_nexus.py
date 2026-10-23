@@ -125,7 +125,7 @@ def test_unhandled_mock_failure_fails_the_workflow(method: str) -> None:
     env.register_nexus_operation("billing", "invoices", "create", refuse)
     with pytest.raises(WorkflowFailed, match="service unavailable") as caught:
         env.execute_workflow(NexusCaller, method)
-    assert caught.value.exception_type == "NexusOperationFailed"
+    assert caught.value.exception_class == "NexusOperationFailed"
 
 
 @pytest.mark.parametrize("method", METHODS)
