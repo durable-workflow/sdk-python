@@ -1052,6 +1052,13 @@ From Python SDK 2.10.0, client routes use reviewed templates without variable ID
 unknown operations use `unknown`. Keep configured worker queue names and any
 exporter resource labels bounded.
 
+The [request outcome reference](reference/metrics.md#request-outcomes-and-errors)
+distinguishes HTTP refusals, httpx transport failures and local Python
+cancellation. Unreleased diagnostics name exception classes and static poll
+routes; local cancellation records `CancelledError` and still propagates
+immediately. These diagnostic changes are separate from durable cancellation
+and preserve the existing transport retry policy.
+
 ## Worker interceptors
 
 Use `Worker(interceptors=[...])` when instrumentation needs the task payload,
