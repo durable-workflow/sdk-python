@@ -151,8 +151,9 @@ def test_attempt_cap_does_not_misreport_policy_exhaustion(kind: str, monkeypatch
     monkeypatch.setattr(ActivityRetryPolicy, "_backoff_seconds", no_expansion)
     env = WorkflowEnvironment(mock_attempt_limit=3)
     _register(env, kind, _failure)
+    policy = ActivityRetryPolicy(max_attempts=10**12)
     with pytest.raises(RuntimeError, match="mock attempt limit.*3") as exc:
-        env.execute_workflow(FailureBoundary, kind, ActivityRetryPolicy(max_attempts=10**12))
+        env.execute_workflow(FailureBoundary, kind, policy)
     assert isinstance(exc.value.__cause__, ValueError)
     assert env.mock_calls[0].attempt_count == 3
     assert env.mock_calls[0].status == "attempt_limit_exceeded"
