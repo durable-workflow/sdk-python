@@ -158,6 +158,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          command -v openssl
           # Leave room within the 15-minute job for bounded failure diagnostics.
           timeout --signal=INT --kill-after=10s 13m \
             pytest tests/ -m "not integration" -vv \

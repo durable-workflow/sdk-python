@@ -2,6 +2,10 @@
 
 Run Ruff, mypy, and focused pytest coverage for changed code.
 
+The TLS tests use the OpenSSL CLI to create a throwaway private CA and run a
+local HTTPS endpoint. Install `openssl` to run those controls locally; the
+supported-version CI requires it before running tests.
+
 Replay and payload-codec fixes also follow the organization
 [regression-corpus contract](https://github.com/durable-workflow/.github/tree/main/regression-corpus).
 Put minimal replay histories in the existing golden-history format when

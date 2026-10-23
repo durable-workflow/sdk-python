@@ -984,6 +984,16 @@ compatibility manifest. A client configured with only the opposite role's token
 still fails before transport for actual worker or control operations; use
 `token` when one shared credential intentionally authorizes both planes.
 
+## TLS trust
+
+Unreleased SDK source accepts `tls_context=ssl_context` on async and synchronous
+clients. Use a verifying `ssl.SSLContext` initialized with certifi's public
+roots, then load your private CA. Worker query clones and runtime-owned payload
+transfers reuse that trust configuration. See the
+[private CA recipe](reference/client.md#trust-a-private-certificate-authority)
+for root selection and `SSL_CERT_FILE` / `SSL_CERT_DIR` behavior. Published
+packages gain this option with the next SDK release.
+
 ## Poll failures
 
 The backoff described here is available in unreleased SDK source. Published
