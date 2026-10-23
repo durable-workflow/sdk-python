@@ -968,6 +968,9 @@ still fails before transport for actual worker or control operations; use
 
 ## Poll failures
 
+The backoff described here is available in unreleased SDK source. Published
+workers retain their fixed one-second poll-error wait until the next release.
+
 Workflow, activity and query pollers use independent exponential backoff after
 HTTP, authentication or transport failures. The retry ceiling doubles from 1
 second to a maximum of 30 seconds; each wait uses random jitter between half

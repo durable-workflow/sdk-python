@@ -31,6 +31,9 @@ execution; selecting a default thread does not enable that protocol.
 
 ## Poll failures and recovery
 
+This backoff is available in unreleased SDK source. Until the next package
+release, published workers retain their fixed one-second poll-error wait.
+
 Workflow, activity and query pollers back off independently after failed polls,
 including HTTP errors, rejected credentials and unreachable runtimes. The
 retry ceiling starts at 1 second, doubles on each consecutive failure and stops
