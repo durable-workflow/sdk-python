@@ -19,6 +19,7 @@ POLL_KINDS = ["workflow", "activity", "query"]
 
 
 @pytest.mark.parametrize("kind", POLL_KINDS)
+@pytest.mark.parametrize("successful_task", [False, True], ids=["empty", "task"])
 @pytest.mark.parametrize("error", [
     Unauthorized("Invalid or missing authentication token"),
     ServerError(401, {"message": "private response"}),
@@ -27,7 +28,7 @@ POLL_KINDS = ["workflow", "activity", "query"]
     httpx.ConnectError("connection refused"),
 ])
 async def test_poll_failure_growth_cap_and_empty_success_reset(
-    kind: str, error: Exception, monkeypatch: pytest.MonkeyPatch,
+    kind: str, successful_task: bool, error: Exception, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = AsyncMock(spec=Client)
     worker = Worker(client, task_queue="orders")
@@ -35,11 +36,11 @@ async def test_poll_failure_growth_cap_and_empty_success_reset(
     calls = 0
     delays: list[float] = []
 
-    async def respond(**_: object) -> None:
+    async def respond(**_: object) -> dict[str, object] | None:
         nonlocal calls
         calls += 1
         if calls == 10:
-            return None
+            return {"task_id": "recovered"} if successful_task else None
         if calls == 12:
             worker._stop.set()
             return None
@@ -49,16 +50,66 @@ async def test_poll_failure_growth_cap_and_empty_success_reset(
         if delay:
             delays.append(delay)
 
+    dispatched: list[object] = []
+
+    async def dispatch(task: object, **_: object) -> None:
+        dispatched.append(task)
+        if kind == "activity":
+            worker._act_semaphore.release()
+
     poll.side_effect = respond
+    monkeypatch.setattr(worker, f"_dispatch_{kind}_task", dispatch)
     monkeypatch.setattr(worker_module.asyncio, "sleep", sleep)
     monkeypatch.setattr(random, "uniform", lambda low, high: high)
     await getattr(worker, f"_poll_{kind}_tasks")()
+    await asyncio.gather(*worker._in_flight)
 
     assert delays == [1, 2, 4, 8, 16, 30, 30, 30, 30, 1]
     assert calls == 12
+    assert len(dispatched) == int(successful_task)
     # Failed/empty polls must release their reservations before retrying.
     assert worker._act_semaphore._value == worker.max_concurrent_activity_tasks
     assert worker._workflow_reserved == 0
+
+
+def test_jitter_uses_a_fresh_sample_with_bounded_delays(monkeypatch: pytest.MonkeyPatch) -> None:
+    bounds: list[tuple[float, float]] = []
+
+    def uniform(low: float, high: float) -> float:
+        bounds.append((low, high))
+        return low if len(bounds) % 2 else high
+
+    monkeypatch.setattr(random, "uniform", uniform)
+    backoff = worker_module._PollFailureBackoff()
+    delays = [backoff.retry_delay(Unauthorized(), "workflow") for _ in range(8)]
+    assert delays == [0.5, 2, 2, 8, 8, 30, 15, 30]
+    assert bounds == [(0.5, 1), (1, 2), (2, 4), (4, 8), (8, 16), (15, 30), (15, 30), (15, 30)]
+
+
+@pytest.mark.parametrize("kind", POLL_KINDS)
+async def test_changed_auth_failure_is_reported_immediately(
+    kind: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = AsyncMock(spec=Client)
+    worker = Worker(client, task_queue="orders")
+    getattr(client, f"poll_{kind}_task").side_effect = [
+        Unauthorized(), Unauthorized(), ServerError(403, {}), ServerError(403, {}),
+    ]
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+        if len(delays) == 4:
+            worker._stop.set()
+
+    monkeypatch.setattr(worker_module.asyncio, "sleep", sleep)
+    with caplog.at_level(logging.WARNING, logger="durable_workflow.worker"):
+        await getattr(worker, f"_poll_{kind}_tasks")()
+    warnings = [r.getMessage() for r in caplog.records if r.name == "durable_workflow.worker"]
+    assert len(warnings) == 2
+    assert "HTTP 401" in warnings[0]
+    assert "HTTP 403" in warnings[1]
+    assert delays[2] >= 2  # A changed failure does not reset the request backoff.
 
 
 @pytest.mark.parametrize("kind", POLL_KINDS)
@@ -100,8 +151,8 @@ async def test_identical_auth_warnings_are_rate_limited_and_reset_after_success(
         await getattr(worker, f"_poll_{kind}_tasks")()
 
     warnings = [r.getMessage() for r in caplog.records if r.name == "durable_workflow.worker"]
-    # First refusal at 0, reminders at 61 and 121, and the new streak after success.
-    assert len(warnings) == 4
+    # First refusal at 0, reminders at 61, 121 and 181, then the post-success streak.
+    assert len(warnings) == 5
     assert all(diagnostic in message and "credentials" in message for message in warnings)
     assert "private response" not in caplog.text
     assert outcomes.count("error") == 12

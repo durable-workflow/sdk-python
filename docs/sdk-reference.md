@@ -966,6 +966,17 @@ compatibility manifest. A client configured with only the opposite role's token
 still fails before transport for actual worker or control operations; use
 `token` when one shared credential intentionally authorizes both planes.
 
+## Poll failures
+
+Workflow, activity and query pollers use independent exponential backoff after
+HTTP, authentication or transport failures. The retry ceiling doubles from 1
+second to a maximum of 30 seconds; each wait uses random jitter between half
+and all of that ceiling. Any successful poll, including an empty result, resets
+it. Shutdown interrupts the wait. Identical warnings repeat at most once per
+minute per poller, while poll-error metrics count each failure. HTTP 401 and 403
+diagnostics identify credential and permission failures. Typed capacity and
+storage-admission handling remain separate. See [Worker recovery](reference/worker.md#poll-failures-and-recovery).
+
 ## Activity heartbeat refusals
 
 Use `await activity.context().heartbeat(details)` in an async activity or
