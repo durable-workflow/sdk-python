@@ -219,6 +219,21 @@ class ServerError(DurableWorkflowError):
             return self.body.get("reason")
         return None
 
+    def worker_deregistration_retry_delay(self, worker_id: str, registration_token: str) -> int | None:
+        """Return a delay only for an identity-preserving fenced transient."""
+        body = self.body
+        if (
+            self.status != 503 or not isinstance(body, dict)
+            or body.get("reason") not in ("backend_lock_pressure", "backend_unavailable")
+            or body.get("operation") != "deregister_worker" or body.get("outcome") != "unknown"
+            or body.get("worker_id") != worker_id or body.get("registration_token") != registration_token
+            or body.get("retryable") is not True
+            or type(body.get("retry_after_seconds")) is not int
+            or not 0 < body["retry_after_seconds"] <= 60
+        ):
+            return None
+        return int(body["retry_after_seconds"])
+
     def poll_capacity_backpressure_delay(self, task_kind: str, task_queue: str) -> int | None:
         """Return the advertised wait only for a complete poll-capacity refusal."""
         body = self.body
