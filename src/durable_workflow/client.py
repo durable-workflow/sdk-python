@@ -5248,6 +5248,7 @@ class Client:
 
     async def deregister_worker_registration(
         self, worker_id: str, *, registration_token: str | None = None, timeout: float | None = None,
+        expected_namespace: str | None = None,
     ) -> dict[str, Any]:
         """Remove this runtime's successful worker-plane registration.
 
@@ -5259,7 +5260,11 @@ class Client:
         receipt endpoint. Each call makes one attempt: Worker owns safe retries
         and the remaining shutdown budget. An unfenced DELETE cannot safely be
         repeated after an uncertain response because the worker ID may be reused.
+        ``expected_namespace`` is a local registration-scope precondition, not
+        a namespace override.
         """
+        if expected_namespace is not None and self.namespace != expected_namespace:
+            raise RuntimeError("worker registration namespace changed; registration removal is unconfirmed")
         if registration_token is not None and (
             not isinstance(registration_token, str) or re.fullmatch(r"[a-f0-9]{32}", registration_token) is None
         ):

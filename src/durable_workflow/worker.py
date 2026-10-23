@@ -4724,6 +4724,8 @@ class Worker:
         kwargs: dict[str, Any] = {}
         if self._deregistration_fenced:
             kwargs = {"registration_token": self._registration_token, "timeout": remaining}
+        if isinstance(self._registration_namespace, str):
+            kwargs["expected_namespace"] = self._registration_namespace
         try:
             await asyncio.wait_for(
                 self.client.deregister_worker_registration(self.worker_id, **kwargs),
@@ -4748,9 +4750,9 @@ class Worker:
         return None
 
     async def _deregister_before_deadline(self, deadline: float) -> None:
-        self._check_deregistration_identity()
         attempt = 0
         while True:
+            self._check_deregistration_identity()
             remaining = self._remaining_shutdown_time(deadline)
             if remaining <= 0:
                 raise RuntimeError("worker shutdown deadline exhausted; registration removal is unconfirmed")

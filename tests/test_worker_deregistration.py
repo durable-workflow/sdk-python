@@ -232,6 +232,38 @@ async def test_original_worker_error_remains_primary_during_fenced_cleanup_failu
 
 @pytest.mark.parametrize("fenced", [False, True])
 @pytest.mark.asyncio
+async def test_client_checks_registration_namespace_before_constructing_http_headers(fenced: bool) -> None:
+    async with Client("http://runtime", namespace="replacement-namespace") as client:
+        kwargs = {"registration_token": TOKEN} if fenced else {}
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock) as request,
+            pytest.raises(RuntimeError, match="namespace changed.*unconfirmed"),
+        ):
+            await client.deregister_worker_registration("worker / one", expected_namespace="original", **kwargs)
+        request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_namespace_cannot_change_between_fenced_retry_attempts() -> None:
+    client = worker_client()
+    client.namespace = "original"
+    worker = Worker(client, task_queue="orders", worker_id="worker / one", shutdown_timeout=3)
+    await worker._register()
+
+    async def change_namespace(*_: Any, **kwargs: Any) -> None:
+        assert kwargs["expected_namespace"] == "original"
+        client.namespace = "replacement-namespace"
+        raise refusal()
+
+    client.deregister_worker_registration.side_effect = change_namespace
+    with pytest.raises(RuntimeError, match="identity changed.*unconfirmed"):
+        await worker.stop()
+    assert worker._registered
+    client.deregister_worker_registration.assert_awaited_once()
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+@pytest.mark.asyncio
 async def test_shutdown_bounds_final_http_and_keeps_uncertain_registration(fenced: bool) -> None:
     client = worker_client(fenced=fenced)
     cancelled = asyncio.Event()
