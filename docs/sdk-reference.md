@@ -1131,6 +1131,19 @@ else:
     print(outcome.outcome, outcome.reason)
 ```
 
+## Test workflows that call Nexus services
+
+The Nexus mock registration API below is available in unreleased SDK source
+and will be included in the next package release.
+
+`WorkflowEnvironment` can mock service operations by endpoint, service and
+operation name. Use `register_nexus_operation_result()` for a fixed response or
+`register_nexus_operation()` for a synchronous callable. The production replayer
+delivers the result or `NexusOperationFailed` at the yield point. Asynchronous
+starts return acceptance without a completed result. See the
+[Nexus testing recipe](reference/testing.md#mock-a-nexus-service-operation) for
+success, failure handling and the limits of in-process mocks.
+
 ## Development
 
 ```bash

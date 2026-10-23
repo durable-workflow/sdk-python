@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Nexus operation mocks in `WorkflowEnvironment`, keyed by endpoint, service
+  and operation. Register canned responses or synchronous callables; workflow
+  code receives completion, acceptance or `NexusOperationFailed` through replay.
+
 ### Fixed
 
 - Back off workflow, activity and query polling independently after repeated
