@@ -26,6 +26,7 @@ import json as json_module
 import math
 import os
 import re
+import ssl
 import time
 import uuid
 import warnings
@@ -1600,6 +1601,10 @@ class Client:
 
     The client owns one `httpx.AsyncClient` connection pool. Use it as an async
     context manager or call `aclose()` when finished.
+
+    ``tls_context`` selects an explicit trust configuration. It must require
+    certificate and hostname verification. Treat the context as read-only after
+    construction; worker query clones and Nexus namespace views reuse it.
     """
 
     def __init__(
@@ -1611,6 +1616,7 @@ class Client:
         worker_token: str | None = None,
         namespace: str = "default",
         timeout: float = 60.0,
+        tls_context: ssl.SSLContext | None = None,
         retry_policy: TransportRetryPolicy | None = None,
         metrics: MetricsRecorder | None = None,
         payload_size_limit_bytes: int = serializer.DEFAULT_PAYLOAD_SIZE_BYTES,
@@ -1621,6 +1627,11 @@ class Client:
         external_storage_cache: ExternalPayloadCache | None = None,
         telemetry: ExecutionTelemetry | None = None,
     ) -> None:
+        if tls_context is not None:
+            if not isinstance(tls_context, ssl.SSLContext):
+                raise TypeError("tls_context must be an ssl.SSLContext")
+            if tls_context.verify_mode != ssl.CERT_REQUIRED or not tls_context.check_hostname:
+                raise ValueError("tls_context must enable certificate and hostname verification")
         self.base_url = _normalize_base_url(base_url)
         self.token = token
         self.control_token = control_token
@@ -1629,6 +1640,7 @@ class Client:
         self.telemetry = telemetry
         self._observability_capability = False
         self.timeout = timeout
+        self._tls_context = tls_context
         self.retry_policy = retry_policy or TransportRetryPolicy()
         self.metrics = metrics if metrics is not None else NOOP_METRICS
         self.payload_size_warning_config = (
@@ -1648,7 +1660,9 @@ class Client:
             if external_storage_cache is not None
             else ExternalPayloadCache()
         )
-        self._http = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
+        self._http = httpx.AsyncClient(
+            base_url=self.base_url, timeout=timeout, verify=tls_context if tls_context is not None else True,
+        )
         self._cluster_info: dict[str, Any] | None = None
         self._cluster_info_lock = asyncio.Lock()
         self._runtime_external_payload_transport_cache: (
@@ -1656,6 +1670,11 @@ class Client:
         ) = None
         self._runtime_external_payload_transport_resolved = False
         self._workflow_payload_observers: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {}
+
+    @property
+    def tls_context(self) -> ssl.SSLContext | None:
+        """The explicit TLS context, or ``None`` for httpx's default trust selection."""
+        return self._tls_context
 
     async def aclose(self) -> None:
         """Close the underlying ``httpx`` connection pool.

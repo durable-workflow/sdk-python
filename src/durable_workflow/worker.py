@@ -4110,6 +4110,7 @@ class Worker:
             worker_token=self.client.worker_token,
             namespace=self.client.namespace,
             timeout=getattr(self.client, "timeout", 60.0),
+            tls_context=self.client.tls_context,
             retry_policy=self.client.retry_policy,
             metrics=self.metrics,
             payload_size_limit_bytes=(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
@@ -266,6 +267,9 @@ class Client:
 
     The client keeps one event loop for its lifetime so its async HTTP connection
     pool and returned handles always run on the loop that owns them.
+
+    ``tls_context`` forwards the same verified trust configuration accepted by
+    the async client. Treat the supplied context as read-only during use.
     """
 
     def __init__(
@@ -277,6 +281,7 @@ class Client:
         worker_token: str | None = None,
         namespace: str = "default",
         timeout: float = 60.0,
+        tls_context: ssl.SSLContext | None = None,
         retry_policy: TransportRetryPolicy | None = None,
         metrics: MetricsRecorder | None = None,
         external_storage: ExternalStorageDriver | None = None,
@@ -290,6 +295,7 @@ class Client:
             worker_token=worker_token,
             namespace=namespace,
             timeout=timeout,
+            tls_context=tls_context,
             retry_policy=retry_policy,
             metrics=metrics,
             external_storage=external_storage,
