@@ -1,0 +1,148 @@
+{
+  "core_version": "2.7.2",
+  "core_composer_reference": "9477eaaf970e9ce09da337f662e71178a05c6342",
+  "core_source_commit": "64efa176e4c37e5d6ae80e767ba3b41464024e53",
+  "core_source_files_sha256_verified": 615,
+  "workflow_run_id": "01m5m3adn2czzgqn3ngev1x7cn",
+  "actual_workflow_status": "completed",
+  "actual_activity_attempt_count": 1,
+  "runtime": "published PHP image; real SQLite task rows and actual workflow/activity job handlers",
+  "export": "published workflow:v2:history-export --run --pretty; files untouched",
+  "execution_timeout_seconds": 30,
+  "run_timeout_seconds": 30,
+  "observation": "Published CLI drops fractional-zero memo JSON kind; correct verifiers must reject these producer-invalid exports",
+  "server_version": "2.9.7",
+  "server_source_commit": "150f3fbcbf3911a2a20abb53b4a714081ee53dd7",
+  "image_amd64": "ghcr.io/durable-workflow/server@sha256:40e969d0b6b240b835dcdb2fc531507266216ec34a83f59f561674f41e35f461",
+  "exports": {
+    "waiting": {
+      "report": {
+        "schema": "durable-workflow.v2.history-bundle-verification",
+        "schema_version": 1,
+        "status": "failed",
+        "bundle": {
+          "schema": "durable-workflow.v2.history-export",
+          "schema_version": 2,
+          "exported_at": "2026-10-23T10:01:20.676631Z",
+          "dedupe_key": "01m5m3adn2czzgqn3ngev1x7cn:3:2026-10-23T10:01:20.549321Z",
+          "workflow_run_id": "01m5m3adn2czzgqn3ngev1x7cn",
+          "workflow_instance_id": "python-bundle-schema2-float-20261023",
+          "history_event_count": 3
+        },
+        "integrity": {
+          "present": true,
+          "canonicalization": "json-recursive-ksort-v1",
+          "checksum_algorithm": "sha256",
+          "expected_checksum": "38c1b65717058fbaa588c52919a223941b04d3c7a57620f557356938eea28070",
+          "recomputed_checksum": "49dff74395d6c75f118377fcadb9515cf414cefa0cb7755c7e6d5af5d55b7c76",
+          "checksum_matches": false,
+          "signature_algorithm": null,
+          "signature_present": false,
+          "signature_verified": null,
+          "key_id": null
+        },
+        "summary": {
+          "errors": 2,
+          "warnings": 0,
+          "info": 0,
+          "findings_by_rule": {
+            "integrity.checksum_mismatch": 1,
+            "workflow.memo_projection_mismatch": 1
+          }
+        },
+        "findings": [
+          {
+            "rule": "workflow.memo_projection_mismatch",
+            "severity": "error",
+            "message": "Bundle workflow.memo does not match the JSON-safe projection of workflow.memo_payload.",
+            "path": "workflow.memo",
+            "context": []
+          },
+          {
+            "rule": "integrity.checksum_mismatch",
+            "severity": "error",
+            "message": "Recomputed bundle checksum does not match the recorded checksum; the bundle has been altered after export.",
+            "path": "integrity.checksum",
+            "context": {
+              "expected": "38c1b65717058fbaa588c52919a223941b04d3c7a57620f557356938eea28070",
+              "actual": "49dff74395d6c75f118377fcadb9515cf414cefa0cb7755c7e6d5af5d55b7c76"
+            }
+          }
+        ]
+      },
+      "decoded_projection_type": "int",
+      "decoded_authority_type": "float",
+      "file_sha256": "2a11c8ce20d7433fe6b15d98f958f31daac34e34f92eaca451868d0fb9794fea"
+    },
+    "completed": {
+      "report": {
+        "schema": "durable-workflow.v2.history-bundle-verification",
+        "schema_version": 1,
+        "status": "failed",
+        "bundle": {
+          "schema": "durable-workflow.v2.history-export",
+          "schema_version": 2,
+          "exported_at": "2026-10-23T10:01:20.884584Z",
+          "dedupe_key": "01m5m3adn2czzgqn3ngev1x7cn:6:2026-10-23T10:01:20.851900Z",
+          "workflow_run_id": "01m5m3adn2czzgqn3ngev1x7cn",
+          "workflow_instance_id": "python-bundle-schema2-float-20261023",
+          "history_event_count": 6
+        },
+        "integrity": {
+          "present": true,
+          "canonicalization": "json-recursive-ksort-v1",
+          "checksum_algorithm": "sha256",
+          "expected_checksum": "2b900246391a0293ccb2fde0bf4d1cf1ae5f67c2c1d6d6ddacaccdb55a976761",
+          "recomputed_checksum": "0dfe2dc726f70c9519b1943b3c2b63cc2235ef3aa78a42d533f70ac4d66c2be6",
+          "checksum_matches": false,
+          "signature_algorithm": null,
+          "signature_present": false,
+          "signature_verified": null,
+          "key_id": null
+        },
+        "summary": {
+          "errors": 2,
+          "warnings": 0,
+          "info": 0,
+          "findings_by_rule": {
+            "integrity.checksum_mismatch": 1,
+            "workflow.memo_projection_mismatch": 1
+          }
+        },
+        "findings": [
+          {
+            "rule": "workflow.memo_projection_mismatch",
+            "severity": "error",
+            "message": "Bundle workflow.memo does not match the JSON-safe projection of workflow.memo_payload.",
+            "path": "workflow.memo",
+            "context": []
+          },
+          {
+            "rule": "integrity.checksum_mismatch",
+            "severity": "error",
+            "message": "Recomputed bundle checksum does not match the recorded checksum; the bundle has been altered after export.",
+            "path": "integrity.checksum",
+            "context": {
+              "expected": "2b900246391a0293ccb2fde0bf4d1cf1ae5f67c2c1d6d6ddacaccdb55a976761",
+              "actual": "0dfe2dc726f70c9519b1943b3c2b63cc2235ef3aa78a42d533f70ac4d66c2be6"
+            }
+          }
+        ]
+      },
+      "decoded_projection_type": "int",
+      "decoded_authority_type": "float",
+      "file_sha256": "71bc8043b9634297abfe26b58bca788f4c245129adc4d16851cab36889c719e7"
+    }
+  },
+  "source_overlay": false,
+  "actual_cli_verification": {
+    "waiting": {
+      "exit_code": 1,
+      "file_sha256": "2a11c8ce20d7433fe6b15d98f958f31daac34e34f92eaca451868d0fb9794fea"
+    },
+    "completed": {
+      "exit_code": 1,
+      "file_sha256": "71bc8043b9634297abfe26b58bca788f4c245129adc4d16851cab36889c719e7"
+    }
+  }
+}
