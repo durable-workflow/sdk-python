@@ -13,6 +13,7 @@ import pytest
 import durable_workflow.worker as worker_module
 from durable_workflow.client import Client
 from durable_workflow.errors import ServerError, Unauthorized
+from durable_workflow.retry_policy import TransportRetryPolicy
 from durable_workflow.worker import Worker
 
 POLL_KINDS = ["workflow", "activity", "query"]
@@ -168,8 +169,9 @@ async def test_backoff_does_not_absorb_storage_admission(
     getattr(client, f"poll_{kind}_task").side_effect = refusal
     sleep = AsyncMock()
     monkeypatch.setattr(worker_module.asyncio, "sleep", sleep)
+    polling = getattr(worker, f"_poll_{kind}_tasks")()
     with pytest.raises(ServerError) as caught:
-        await getattr(worker, f"_poll_{kind}_tasks")()
+        await polling
     assert caught.value is refusal
     sleep.assert_not_awaited()
 
@@ -198,3 +200,44 @@ async def test_shutdown_interrupts_a_capped_backoff(kind: str, monkeypatch: pyte
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("kind", POLL_KINDS)
+@pytest.mark.parametrize("status", [401, 403, 503, None], ids=["401", "403", "503", "transport"])
+async def test_actual_client_poll_errors_back_off_then_recover(
+    kind: str, status: int | None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(
+        "https://runtime.example", worker_token="test-worker-token", namespace="orders",
+        retry_policy=TransportRetryPolicy(max_attempts=1),
+    )
+    worker = Worker(client, task_queue="orders")
+    calls = 0
+    delays: list[float] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == f"/api/worker/{kind}-tasks/poll"
+        assert request.headers["Authorization"] == "Bearer test-worker-token"
+        assert request.headers["X-Namespace"] == "orders"
+        if calls in (4, 6):
+            if calls == 6:
+                worker._stop.set()
+            return httpx.Response(200, json={"task": None})
+        if status is None:
+            raise httpx.ConnectError("runtime unavailable", request=request)
+        return httpx.Response(status, json={"message": "poll refused"})
+
+    async def sleep(delay: float) -> None:
+        if delay:
+            delays.append(delay)
+
+    client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(respond))
+    client._runtime_external_payload_transport_resolved = True
+    monkeypatch.setattr(worker_module.asyncio, "sleep", sleep)
+    monkeypatch.setattr(random, "uniform", lambda low, high: high)
+    async with client:
+        await getattr(worker, f"_poll_{kind}_tasks")()
+    assert calls == 6
+    assert delays == [1, 2, 4, 1]
