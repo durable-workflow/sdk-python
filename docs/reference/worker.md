@@ -31,8 +31,8 @@ execution; selecting a default thread does not enable that protocol.
 
 ## Poll failures and recovery
 
-This backoff is available in unreleased SDK source. Until the next package
-release, published workers retain their fixed one-second poll-error wait.
+This backoff requires Python SDK 2.10.0 or later. Earlier packages use a fixed
+one-second poll-error wait.
 
 Workflow, activity and query pollers back off independently after failed polls,
 including HTTP errors, rejected credentials and unreachable runtimes. The

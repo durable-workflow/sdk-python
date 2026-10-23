@@ -2,9 +2,8 @@
 
 ## Recorder contract
 
-The expanded route normalization described here is available in unreleased
-SDK source. Published packages retain their existing route labels until the
-next package release.
+The expanded route normalization described here requires Python SDK 2.10.0
+or later.
 
 Client request, worker poll and task dispatch observations follow the
 [shared SDK metrics contract](https://github.com/durable-workflow/.github/tree/main/sdk-metrics).
