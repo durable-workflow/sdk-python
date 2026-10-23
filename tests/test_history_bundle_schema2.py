@@ -125,18 +125,9 @@ def test_v2_memo_authority_and_projection_are_structurally_checked(mutation: str
 
 def test_v2_typed_memos_preserve_bytes_maps_and_numeric_kinds() -> None:
     bundle = _bundle()
-    bundle["workflow"]["memo_payload"] = serializer.envelope({
-        "binary": b"\x00\xff", "nested": {"0": "zero", "other": {}},
-        "values": [True, 1, 1.5, None, "text", []],
-    }, codec="avro")
-    bundle["workflow"]["memo"] = {
-        "binary": {"$type": "bytes", "base64": "AP8="},
-        "nested": {"$type": "map", "entries": [
-            {"key": "0", "value": "zero"},
-            {"key": "other", "value": {"$type": "map", "entries": []}},
-        ]},
-        "values": [True, 1, 1.5, None, "text", []],
-    }
+    reference = json.loads((FIXTURES / "typed-memo-reference.json").read_text())
+    bundle["workflow"]["memo_payload"] = reference["memo_payload"]
+    bundle["workflow"]["memo"] = reference["memo"]
     report = verify_bundle(_resign_negative_control(bundle))
     assert report["status"] == "ok", report["findings"]
     bundle["workflow"]["memo"]["values"][0] = 1

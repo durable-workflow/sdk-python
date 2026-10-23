@@ -23,9 +23,11 @@ a workflow-php verdict, so promotion gates can compare them directly.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -37,7 +39,9 @@ REPORT_SCHEMA = "durable-workflow.v2.history-bundle-verification"
 REPORT_SCHEMA_VERSION = 1
 
 BUNDLE_SCHEMA = "durable-workflow.v2.history-export"
+# Retained for callers that construct the supported legacy format.
 BUNDLE_SCHEMA_VERSION = 1
+SUPPORTED_BUNDLE_SCHEMA_VERSIONS = frozenset({1, 2})
 
 STATUS_OK = "ok"
 STATUS_WARNING = "warning"
@@ -138,13 +142,14 @@ def _check_envelope(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -
                 "Bundle is missing the [schema_version] field.",
             )
         )
-    elif bundle["schema_version"] != BUNDLE_SCHEMA_VERSION:
+    elif (type(bundle["schema_version"]) is not int
+          or bundle["schema_version"] not in SUPPORTED_BUNDLE_SCHEMA_VERSIONS):
         findings.append(
             _finding(
                 "bundle.schema_version_unsupported",
                 SEVERITY_ERROR,
                 f"Bundle schema_version [{bundle['schema_version']!s}] is unsupported; "
-                f"expected {BUNDLE_SCHEMA_VERSION}.",
+                "expected integer 1 or 2.",
                 {"observed": bundle["schema_version"]},
             )
         )
@@ -230,6 +235,9 @@ def _check_workflow(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -
             )
         )
 
+    if type(bundle.get("schema_version")) is int and bundle["schema_version"] == 2:
+        _check_v2_memo(bundle, workflow, findings)
+
     declared = _int_or_none(workflow.get("last_history_sequence"))
     events = bundle.get("history_events")
     if declared is not None and isinstance(events, list) and events:
@@ -251,6 +259,80 @@ def _check_workflow(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -
                     {"declared": declared, "observed": highest},
                 )
             )
+
+
+def _check_v2_memo(
+    bundle: Mapping[str, Any], workflow: Mapping[str, Any], findings: list[dict[str, Any]],
+) -> None:
+    redaction = bundle.get("redaction")
+    paths = redaction.get("paths") if isinstance(redaction, Mapping) else None
+    paths = paths if isinstance(paths, list) else []
+    if "workflow.memo_payload" in paths:
+        return
+
+    payload = workflow.get("memo_payload")
+    if not isinstance(payload, dict):
+        findings.append(_finding(
+            "workflow.memo_payload_missing", SEVERITY_ERROR,
+            "Schema-2 workflow.memo_payload must contain the lossless portable Avro memo authority.",
+        ))
+        return
+    try:
+        entries = _decode_memo_entries(payload)
+    except (TypeError, ValueError) as exc:
+        findings.append(_finding(
+            "workflow.memo_payload_invalid", SEVERITY_ERROR,
+            f"workflow.memo_payload is not a valid portable Avro memo map: {exc}",
+        ))
+        return
+    if "workflow.memo" in paths:
+        return
+
+    # MemoPayload::decodeEntries normalizes the top-level map to a PHP array;
+    # its empty display projection is [], while nested empty maps retain an
+    # explicit map adapter. Compare JSON kinds as well as values (True != 1).
+    projection = {key: _memo_value_projection(value) for key, value in entries.items()} if entries else []
+    if json.dumps(workflow.get("memo"), sort_keys=True) != json.dumps(projection, sort_keys=True):
+        findings.append(_finding(
+            "workflow.memo_projection_mismatch", SEVERITY_ERROR,
+            "workflow.memo does not match the JSON-safe projection of workflow.memo_payload.",
+        ))
+
+
+def _decode_memo_entries(payload: dict[str, Any]) -> dict[str, Any]:
+    if set(payload) != {"codec", "blob"} or payload["codec"] != "avro":
+        raise ValueError("expected exactly the codec=avro and blob fields")
+    if not isinstance(payload["blob"], str) or not payload["blob"]:
+        raise ValueError("blob must be a non-empty base64 string")
+    entries = _avro.decode(payload["blob"])
+    if not isinstance(entries, dict):
+        raise ValueError("memo authority must decode to a string-keyed map")
+    for key in entries:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", key) or re.fullmatch(r"-?[0-9]+", key):
+            raise ValueError(f"invalid portable memo key: {key!r}")
+    return entries
+
+
+def _memo_value_projection(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return {"$type": "bytes", "base64": base64.b64encode(value).decode("ascii")}
+    if isinstance(value, list):
+        return [_memo_value_projection(item) for item in value]
+    if isinstance(value, dict):
+        # PHP uses AvroMapValue for empty maps and maps containing keys that
+        # its native arrays would coerce to signed 64-bit integers.
+        if not value or any(_php_integer_key(key) for key in value):
+            return {"$type": "map", "entries": [
+                {"key": key, "value": _memo_value_projection(item)} for key, item in value.items()
+            ]}
+        return {key: _memo_value_projection(item) for key, item in value.items()}
+    return value
+
+
+def _php_integer_key(key: str) -> bool:
+    if len(key) > 20 or not re.fullmatch(r"0|-?[1-9][0-9]*", key):
+        return False
+    return -(2**63) <= int(key) <= 2**63 - 1
 
 
 def _check_history_events(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -> None:

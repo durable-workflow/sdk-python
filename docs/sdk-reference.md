@@ -685,6 +685,24 @@ bundle simulation does not execute workflow code in Python, a clean
 integrity-only simulation recommends `review_before_promote` rather than
 `safe_to_promote`.
 
+**Unreleased:** schema-2 history-bundle verification is implemented in source
+and is awaiting package publication. The published Python SDK 2.9.0 still
+refuses these exports; changing a bundle's version or checksum does not make
+it compatible.
+
+The source verifier supports history-export structural versions 1 and 2.
+Schema 2 retains the lossless Avro memo map in `workflow.memo_payload` and its
+JSON-safe display projection in `workflow.memo`. Both are checked, except for
+fields explicitly listed in the export's redaction paths. Unknown or malformed
+versions, invalid memo payloads, projection mismatches, bad checksums and
+invalid supplied signatures refuse verification. Version-1 exports retain
+their existing format; they do not require schema-2 memo fields.
+
+Verify the original exported bytes. Do not rewrite `schema_version`, remove
+integrity metadata or recompute a checksum to force acceptance. A clean bundle
+simulation still records `replay_checked_count: 0` and `replay_skipped: true`;
+it checks integrity, rather than executing the candidate workflow code.
+
 ## Python conformance gate
 
 The package includes the Python SDK published-artifact parity contract used by
