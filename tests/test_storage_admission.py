@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 import pytest
@@ -544,7 +545,12 @@ async def test_running_worker_preserves_activity_outcome_without_reexecution(
             info = compatible_cluster_info()
             info["worker_protocol"]["server_capabilities"]["query_tasks"] = False
             return httpx.Response(200, json=info)
-        if path.endswith("/register") or request.method == "DELETE":
+        if request.method == "DELETE":
+            return httpx.Response(200, json={
+                "worker_id": unquote(path.rsplit("/", 1)[-1]),
+                "outcome": "deregistered", "recovered_workflow_task_count": 0,
+            })
+        if path.endswith("/register"):
             return httpx.Response(200, json={"registered": True})
         if path.endswith("/activity-tasks/poll"):
             claims += 1
@@ -656,7 +662,10 @@ async def test_run_until_timeout_interrupts_storage_pressure(phase: str) -> None
             return httpx.Response(200, json=info)
         if request.method == "DELETE":
             deregistered += 1
-            return httpx.Response(200, json={})
+            return httpx.Response(200, json={
+                "worker_id": unquote(path.rsplit("/", 1)[-1]),
+                "outcome": "deregistered", "recovered_workflow_task_count": 0,
+            })
         if (
             (phase == "registration" and path.endswith("/register"))
             or (phase == "poll" and path.endswith("/poll"))
@@ -813,7 +822,12 @@ async def test_cold_replay_completion_retries_only_its_prepared_acknowledgement(
             info = compatible_cluster_info()
             info["worker_protocol"]["server_capabilities"]["query_tasks"] = False
             return httpx.Response(200, json=info)
-        if path.endswith("/register") or request.method == "DELETE":
+        if request.method == "DELETE":
+            return httpx.Response(200, json={
+                "worker_id": unquote(path.rsplit("/", 1)[-1]),
+                "outcome": "deregistered", "recovered_workflow_task_count": 0,
+            })
+        if path.endswith("/register"):
             return httpx.Response(200, json={})
         if path.endswith("/workflows/cold-replay"):
             return httpx.Response(200, json={"status": "completed" if completed else "running"})
