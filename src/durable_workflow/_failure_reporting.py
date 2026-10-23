@@ -90,9 +90,7 @@ class _Report:
         self._bound_metadata(result, omitted, min(DETAIL_BYTES, budget))
         if not omitted:
             return result
-        if (previous and previous == omitted and message.endswith(_marker(previous))
-                and len(_utf8(message)) <= message_limit
-                and (not isinstance(stack, str) or len(_utf8(stack)) <= stack_limit)):
+        if self._unchanged(previous, omitted, budget):
             return result
         # Inserting the marker can itself shorten an otherwise small message,
         # and inserting diagnostics can require omitting another optional field.
@@ -108,6 +106,17 @@ class _Report:
         retained = max(0, message_limit - len(_utf8(marker)))
         result["message"] = _prefix(message, retained) + marker
         return result
+
+    def _unchanged(
+        self, previous: dict[str, int | None], omitted: dict[str, int | None], budget: int,
+    ) -> bool:
+        message = self.original.get("message", "")
+        stack = self.original.get("stack_trace")
+        return bool(
+            previous and previous == omitted and message.endswith(_marker(previous))
+            and len(_utf8(message)) <= min(MESSAGE_BYTES, budget)
+            and (not isinstance(stack, str) or len(_utf8(stack)) <= min(STACK_BYTES, budget))
+        )
 
     def _bound_metadata(self, result: dict[str, Any], omitted: dict[str, int | None], budget: int) -> None:
         fields = ("exception",) if self.terminal else _OPTIONAL
