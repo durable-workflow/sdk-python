@@ -259,3 +259,67 @@ async def test_query_client_clone_retains_explicit_reporting_limit() -> None:
 def test_invalid_reporting_limit_is_rejected(limit: Any) -> None:
     with pytest.raises(ValueError, match="failure_report_limit_bytes"):
         Client("http://test", failure_report_limit_bytes=limit)
+
+
+async def test_final_budget_follows_runtime_externalization_of_other_commands() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    requests: list[httpx.Request] = []
+    async with Client("http://test") as client:
+        client._cluster_info = {}
+        client._http._transport = httpx.MockTransport(
+            lambda request: requests.append(request) or httpx.Response(200, json={"recorded": True}),
+        )
+        commands = [
+            {"type": "upsert_memo", "memo": serializer.envelope({"large": "m" * (2 * MIB)})},
+            {"type": "fail_workflow", "message": "f" * (3 * MIB), "exception_type": "OriginalFailure"},
+        ]
+
+        async def externalize(body: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+            client._cluster_info = {"limits": {"max_payload_bytes": 2100}}
+            return {**body, "commands": [
+                {"type": "upsert_memo", "memo": serializer.envelope({"small": "transformed payload"})},
+                body["commands"][1],
+            ]}
+
+        transport = SimpleNamespace(completion_context=False)
+        with (
+            patch.object(client, "_runtime_external_payload_transport", AsyncMock(return_value=transport)),
+            patch.object(client, "_externalize_runtime_payloads", side_effect=externalize) as transformed,
+        ):
+            await client.complete_workflow_task(
+                task_id="task", lease_owner="exact-owner", workflow_task_attempt=7, commands=commands,
+            )
+        transformed.assert_awaited_once()
+    assert len(requests) == 1
+    assert len(requests[0].content) <= 2100
+    body = json.loads(requests[0].content)
+    assert body["lease_owner"] == "exact-owner"
+    assert body["workflow_task_attempt"] == 7
+    failure = body["commands"][1]
+    assert failure["exception_type"] == "OriginalFailure"
+    assert "[truncated" in failure["message"]
+    assert failure["exception"]["diagnostics"]["failure_report"]["omitted_fields"]["message"] == 3 * MIB
+    assert len(commands[1]["message"]) == 3 * MIB
+
+
+def test_prepared_metadata_and_refitting_retain_original_sizes() -> None:
+    from durable_workflow._failure_reporting import bound_failure_request, prepare_failure_request
+
+    body = {"lease_owner": "owner", "activity_attempt_id": "attempt", "failure": {
+        "message": "m" * (3 * MIB), "stack_trace": "s" * (3 * MIB),
+        "type": "OriginalFailure", "details": serializer.envelope({"nested": "d" * (3 * MIB)}),
+    }}
+    path = "/worker/activity-tasks/task/fail"
+    prepared = prepare_failure_request(path, body)
+    assert len(prepared["failure"]["message"]) == 3 * MIB
+    assert "details" not in prepared["failure"]
+    bounded = bound_failure_request(path, prepared)
+    assert bound_failure_request(path, bounded) == bounded
+    smaller = bound_failure_request(path, bounded, 2000)
+    sizes = smaller["failure"]["diagnostics"]["failure_report"]["omitted_fields"]
+    assert sizes["message"] == 3 * MIB
+    assert sizes["stack_trace"] == 3 * MIB
+    assert sizes["details"] > 3 * MIB
+    assert len(body["failure"]["message"]) == 3 * MIB

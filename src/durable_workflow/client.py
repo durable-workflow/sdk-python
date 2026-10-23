@@ -54,6 +54,7 @@ from ._failure_reporting import (
     UNENCODABLE_DETAILS,
     bound_failure_request,
     encoded_json,
+    prepare_failure_request,
 )
 from ._metric_routes import route_for_metrics as _route_for_metrics
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
@@ -1887,7 +1888,7 @@ class Client:
         activity_authority = current_activity_authority.get()
         if worker and activity_authority is not None and activity_authority.governs(self, self.namespace, path):
             activity_authority.remaining()
-        request_json = bound_failure_request(path, json, self._failure_report_limit())
+        request_json = prepare_failure_request(path, json)
         if (
             not discovery
             and json is not None

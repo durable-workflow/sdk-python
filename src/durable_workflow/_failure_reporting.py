@@ -45,25 +45,44 @@ def _prefix(value: str, size: int) -> str:
     return _utf8(value)[:max(0, size)].decode("utf-8", errors="ignore")
 
 
+def _marker(omitted: dict[str, int | None]) -> str:
+    return "\n[truncated " + encoded_json({"omitted_fields": omitted}).decode("utf-8") + "]"
+
+
 @dataclass
 class _Report:
     original: dict[str, Any]
     terminal: bool = False
     structured: bool = False
 
-    def render(self, budget: int) -> dict[str, Any]:
+    def _copy(self) -> dict[str, Any]:
         result = dict(self.original)
         if self.terminal and isinstance(result.get("exception"), dict):
             result["exception"] = dict(result["exception"])
+        return result
+
+    def prepare(self) -> dict[str, Any]:
+        result = self._copy()
         omitted: dict[str, int | None] = {}
+        self._bound_metadata(result, omitted, DETAIL_BYTES)
+        if omitted:
+            self._attach_diagnostics(result, omitted)
+        return result
+
+    def render(self, budget: int) -> dict[str, Any]:
+        result = self._copy()
+        previous: dict[str, int | None] = {}
+        if self.structured:
+            self._previous_sizes(previous)
+        omitted = dict(previous)
         message = result.get("message", "")
         stack = result.get("stack_trace")
         message_limit = min(MESSAGE_BYTES, budget)
         stack_limit = min(STACK_BYTES, budget)
         if len(_utf8(message)) > message_limit or _prefix(message, len(_utf8(message))) != message:
-            omitted["message"] = len(_utf8(message))
+            omitted.setdefault("message", len(_utf8(message)))
         if isinstance(stack, str) and len(_utf8(stack)) > stack_limit:
-            omitted["stack_trace"] = len(_utf8(stack))
+            omitted.setdefault("stack_trace", len(_utf8(stack)))
             if stack_limit >= len("\n[truncated]"):
                 result["stack_trace"] = _prefix(stack, stack_limit - len("\n[truncated]")) + "\n[truncated]"
             else:
@@ -71,13 +90,17 @@ class _Report:
         self._bound_metadata(result, omitted, min(DETAIL_BYTES, budget))
         if not omitted:
             return result
+        if (previous and previous == omitted and message.endswith(_marker(previous))
+                and len(_utf8(message)) <= message_limit
+                and (not isinstance(stack, str) or len(_utf8(stack)) <= stack_limit)):
+            return result
         # Inserting the marker can itself shorten an otherwise small message,
         # and inserting diagnostics can require omitting another optional field.
         # Recompute until the finite set of omitted fields is stable.
         while True:
             before = dict(omitted)
             self._attach_diagnostics(result, omitted)
-            marker = "\n[truncated " + encoded_json({"omitted_fields": omitted}).decode("utf-8") + "]"
+            marker = _marker(omitted)
             if len(_utf8(message)) + len(_utf8(marker)) > message_limit:
                 omitted.setdefault("message", len(_utf8(message)))
             if omitted == before:
@@ -93,7 +116,7 @@ class _Report:
         if size is not None and size <= budget:
             return
         for key, value in values.items():
-            omitted[key] = _size(value)
+            omitted.setdefault(key, _size(value))
             if key == "exception" and isinstance(value, dict):
                 result[key] = {k: v for k, v in value.items() if k in _EXCEPTION_IDENTITY}
             else:
@@ -178,6 +201,21 @@ def _replace_report(body: Any, location: tuple[str | int, ...], report: dict[str
     result: Any = dict(body) if isinstance(body, dict) else list(body)
     key = location[0]
     result[key] = _replace_report(body[key], location[1:], report)
+    return result
+
+
+def prepare_failure_request(path: str, body: Any) -> Any:
+    """Omit oversized diagnostic envelopes before optional payload uploads.
+
+    Keep original message/stack text until the final fit so its original sizes
+    survive normal externalization of unrelated business payloads in a batch.
+    """
+    if not path.startswith("/worker/") or not isinstance(body, dict):
+        return body
+    result = body
+    for location, report in _reports(path, body):
+        if report.structured:
+            result = _replace_report(result, location, report.prepare())
     return result
 
 
