@@ -292,7 +292,11 @@ def _check_v2_memo(
     # its empty display projection is [], while nested empty maps retain an
     # explicit map adapter. Compare JSON kinds as well as values (True != 1).
     projection = {key: _memo_value_projection(value) for key, value in entries.items()} if entries else []
-    if json.dumps(workflow.get("memo"), sort_keys=True) != json.dumps(projection, sort_keys=True):
+    try:
+        projection_matches = json.dumps(workflow.get("memo"), sort_keys=True) == json.dumps(projection, sort_keys=True)
+    except (TypeError, ValueError):
+        projection_matches = False
+    if not projection_matches:
         findings.append(_finding(
             "workflow.memo_projection_mismatch", SEVERITY_ERROR,
             "workflow.memo does not match the JSON-safe projection of workflow.memo_payload.",
@@ -928,6 +932,7 @@ __all__ = [
     "REPORT_SCHEMA_VERSION",
     "BUNDLE_SCHEMA",
     "BUNDLE_SCHEMA_VERSION",
+    "SUPPORTED_BUNDLE_SCHEMA_VERSIONS",
     "STATUS_OK",
     "STATUS_WARNING",
     "STATUS_FAILED",

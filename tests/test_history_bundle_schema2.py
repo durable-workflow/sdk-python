@@ -165,3 +165,12 @@ def test_supported_schema1_does_not_require_v2_memos() -> None:
     del bundle["workflow"]["memo_payload"]
     report = verify_bundle(_resign_negative_control(bundle))
     assert report["status"] == "ok", report["findings"]
+
+
+def test_direct_api_reports_non_json_memo_projection_without_raising() -> None:
+    bundle = _bundle()
+    bundle["workflow"]["memo"] = b"not a JSON projection"
+    report = verify_bundle(bundle)
+    assert report["status"] == "failed"
+    assert "workflow.memo_projection_mismatch" in _rules(report)
+    assert "integrity.canonicalization_failed" in _rules(report)
