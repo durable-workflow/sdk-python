@@ -607,8 +607,11 @@ async def test_shutdown_timeout_abandons_cleanup_and_replacement_replays_origina
     await asyncio.wait_for(entered.wait(), timeout=1)
     original_history = deepcopy(server.history)
     heartbeats_before_stop = server.client.heartbeat_workflow_task.await_count
-    await asyncio.wait_for(worker.stop(), timeout=1)
-    release_thread.set()
+    try:
+        with pytest.raises(RuntimeError, match="deadline exhausted.*registration.*unconfirmed"):
+            await asyncio.wait_for(worker.stop(), timeout=1)
+    finally:
+        release_thread.set()
     await asyncio.wait_for(discarded.wait(), timeout=1)
     assert fenced_heartbeats == [True]
     assert server.client.heartbeat_workflow_task.await_count == heartbeats_before_stop
@@ -616,7 +619,8 @@ async def test_shutdown_timeout_abandons_cleanup_and_replacement_replays_origina
     assert server.history == original_history
     server.client.complete_workflow_task.assert_not_awaited()
     server.client.fail_workflow_task.assert_not_awaited()
-    server.client.deregister_worker_registration.assert_awaited_once_with("cooperative-worker")
+    assert worker._registered
+    server.client.deregister_worker_registration.assert_not_awaited()
 
     replacement = ClaimServer(history=original_history, lease_owner="replacement-worker", workflow_task_attempt=5)
     cleanup_ids: list[str] = []

@@ -162,6 +162,7 @@ async def test_worker_retries_matching_transient_with_same_token_and_one_deadlin
     {"reason": "unrelated"}, {"operation": "destroy"}, {"worker_id": "replacement"},
     {"registration_token": "b" * 32}, {"outcome": "deferred"}, {"retryable": False},
     {"retry_after_seconds": True}, {"retry_after_seconds": 0}, {"retry_after_seconds": 1.0},
+    {"retry_after_seconds": 61}, {"reason": {"unexpected": "object"}}, {"worker_id": None},
 ])
 @pytest.mark.asyncio
 async def test_worker_never_retries_incomplete_or_mismatched_transient(changes: dict[str, Any]) -> None:
@@ -174,6 +175,58 @@ async def test_worker_never_retries_incomplete_or_mismatched_transient(changes: 
         await worker.stop()
     assert error.value is failure
     assert worker._registered
+    client.deregister_worker_registration.assert_awaited_once()
+
+
+@pytest.mark.parametrize("changes", [
+    {"schema": "unknown"}, {"endpoint": "https://other-runtime/deregister"},
+    {"receipt_retention_seconds": 0}, {"receipt_retention_seconds": True},
+    {"receipt_retention_seconds": 1.0},
+])
+@pytest.mark.asyncio
+async def test_worker_rejects_malformed_advertised_fencing_before_registration(changes: dict[str, Any]) -> None:
+    client = worker_client()
+    client.get_cluster_info.return_value["worker_protocol"]["server_capabilities"][
+        "worker_deregistration_fencing"
+    ].update(changes)
+    worker = Worker(client, task_queue="orders", worker_id="worker / one")
+    with pytest.raises(RuntimeError, match="worker_deregistration_fencing"):
+        await worker._register()
+    client.register_worker.assert_not_awaited()
+    client.deregister_worker_registration.assert_not_awaited()
+
+
+@pytest.mark.parametrize("changed", ["worker_id", "namespace", "missing_token"])
+@pytest.mark.asyncio
+async def test_worker_does_not_deregister_after_registration_identity_changes(changed: str) -> None:
+    client = worker_client()
+    client.namespace = "orders"
+    worker = Worker(client, task_queue="orders", worker_id="worker / one")
+    await worker._register()
+    if changed == "worker_id":
+        worker.worker_id = "replacement"
+    elif changed == "namespace":
+        client.namespace = "another-namespace"
+    else:
+        worker._registration_token = None
+    with pytest.raises(RuntimeError, match="registration.*unconfirmed"):
+        await worker.stop()
+    assert worker._registered
+    client.deregister_worker_registration.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_original_worker_error_remains_primary_during_fenced_cleanup_failure() -> None:
+    client = worker_client()
+    cleanup = ServerError(403, {"reason": "worker_registration_forbidden"})
+    client.deregister_worker_registration.side_effect = cleanup
+    worker = Worker(client, task_queue="orders", worker_id="worker / one")
+    original = RuntimeError("original worker failure")
+    worker._heartbeat_loop = AsyncMock(side_effect=original)  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError) as error:
+        await worker.run()
+    assert error.value is original
+    assert error.value.__cause__ is cleanup
     client.deregister_worker_registration.assert_awaited_once()
 
 

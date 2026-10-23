@@ -92,8 +92,7 @@ async def application_failure(kind: str) -> None:
     raise ActivityCancelled()
 
 
-@pytest_asyncio.fixture
-async def owner(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+async def make_owner(monkeypatch: pytest.MonkeyPatch) -> tuple[Worker, AsyncMock]:
     monkeypatch.delenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", raising=False)
     client = AsyncMock(spec=Client)
     client.get_cluster_info.return_value = compatible_cluster_info(worker_protocol={
@@ -106,6 +105,12 @@ async def owner(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def
     worker = Worker(client, task_queue="queue", worker_id="owner", capabilities=["cooperative_cancellation"],
                     max_concurrent_activity_tasks=1)
     await worker._register()
+    return worker, client
+
+
+@pytest_asyncio.fixture
+async def owner(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    worker, client = await make_owner(monkeypatch)
     try:
         yield worker, client
     finally:
@@ -152,18 +157,26 @@ async def test_authority_loss_stops_and_joins_the_actual_callback_before_reporti
     client.fail_activity_task.assert_not_awaited()
 
 
-async def test_shutdown_timeout_joins_the_remote_callback_before_returning(owner: Any, tmp_path: Path) -> None:
-    worker, client = owner
+async def test_shutdown_timeout_joins_the_remote_callback_before_returning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    worker, client = await make_owner(monkeypatch)
     worker._shutdown_timeout = 0.01
     marker = tmp_path / "callback"
     worker.activities["remote"] = blocked_async
     execution = worker._track(worker._run_activity_task(task(str(marker))))
     await wait_for_file(marker)
     pid = int(marker.read_text())
-    await asyncio.wait_for(worker.stop(), timeout=4.0)
+    with pytest.raises(RuntimeError, match="deadline exhausted.*registration.*unconfirmed") as failed:
+        await asyncio.wait_for(worker.stop(), timeout=4.0)
     await wait_for_exit(pid)
     assert execution.cancelled() or execution.result() == "claim_aborted"
     assert not worker._remote_activity_processes
+    assert worker._registered
+    client.deregister_worker_registration.assert_not_awaited()
+    with pytest.raises(RuntimeError) as repeated:
+        await worker.stop()
+    assert repeated.value is failed.value
     client.complete_activity_task.assert_not_awaited()
     client.fail_activity_task.assert_not_awaited()
 

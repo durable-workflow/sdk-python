@@ -65,8 +65,24 @@ worker-stop behavior. Neither uses this generic poll-failure backoff.
 before polling. After registration succeeds, shutdown stops every poller and
 waits for accepted work within the shared `shutdown_timeout` deadline before
 removing that worker-plane registration. Work still running at the deadline is
-cancelled. Calling `stop()` more than once is safe and sends at most one
-deregistration request. No deregistration is sent if registration failed.
+cancelled. Calling `stop()` more than once shares the same shutdown operation
+and result. No deregistration is sent if registration failed.
+
+**Unreleased source behavior:** the final HTTP call and any recovery use the
+original remaining shutdown budget. If Server advertises
+`worker_deregistration_fencing`, Worker retains its registration token and uses
+the fenced receipt endpoint. Matching transient responses and transport losses
+can retry that same generation. A completed receipt can replay safely even if
+a replacement now owns the worker ID. Authentication, malformed or mismatched
+receipts, lost authority and expired receipts fail without retrying. Older
+runtimes keep the worker-plane DELETE, with one attempt and no unsafe replay.
+
+If drain consumes the deadline, no late deregistration request is sent. A final
+HTTP timeout or exhausted recovery raises `RuntimeError` and leaves removal
+unconfirmed. The Server might have committed a request whose response was lost;
+an exception is not proof that the registration still exists. Inspect the
+runtime before taking an operator recovery action. These changes are not in a
+published package yet.
 
 Cancelling an await cannot stop a running synchronous activity thread. Its
 physical slot remains occupied until the callback returns, and a late return
