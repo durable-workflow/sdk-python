@@ -10,9 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Keep worker deregistration inside the remaining shutdown deadline. When the
   runtime advertises generation-fenced receipts, retry matching transient or
-  lost responses with the original registration token. An older runtime uses
-  one unfenced attempt. Exhausted or uncertain shutdown keeps registration
-  removal unconfirmed instead of deleting a replacement or reporting success.
+  lost responses with the original registration token. Without advertised
+  fencing, use one legacy attempt. Exhausted or uncertain shutdown keeps
+  registration removal unconfirmed instead of reporting success.
 
 ## [2.10.0] - Unreleased
 

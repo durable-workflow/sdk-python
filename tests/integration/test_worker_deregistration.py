@@ -25,7 +25,8 @@ async def test_completed_receipt_replays_without_deleting_replacement(
         token = first._registration_token
         # This integration cohort must expose the contract being qualified;
         # SDK unit controls separately preserve capability-absent operation.
-        assert first._deregistration_fenced and token
+        assert first._deregistration_fenced
+        assert token
         result = await client.deregister_worker_registration(worker_id, registration_token=token)
         assert result["outcome"] == "deregistered"
         replacement = make_worker(client, worker_id)
@@ -47,7 +48,8 @@ async def test_superseded_generation_is_refused_without_touching_replacement(
     async with Client(server_url, token=server_token) as client:
         first = make_worker(client, worker_id)
         await first._register()
-        assert first._deregistration_fenced and first._registration_token
+        assert first._deregistration_fenced
+        assert first._registration_token
         replacement = make_worker(client, worker_id)
         await replacement._register()
         try:
@@ -69,7 +71,8 @@ async def test_unknown_registration_token_is_not_already_deregistered(
     async with Client(server_url, token=server_token) as client:
         worker = make_worker(client, worker_id)
         await worker._register()
-        assert worker._deregistration_fenced and worker._registration_token
+        assert worker._deregistration_fenced
+        assert worker._registration_token
         try:
             with pytest.raises(ServerError) as failure:
                 await client.deregister_worker_registration(worker_id, registration_token=uuid.uuid4().hex)
@@ -124,7 +127,8 @@ async def test_lost_completed_response_retries_receipt_after_replacement_registr
         client._http = httpx.AsyncClient(base_url=client.base_url, transport=fault)
         first = make_worker(client, worker_id)
         await first._register()
-        assert first._deregistration_fenced and first._registration_token
+        assert first._deregistration_fenced
+        assert first._registration_token
         try:
             await first.stop()
             assert fault.discarded

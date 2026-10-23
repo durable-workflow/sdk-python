@@ -105,6 +105,24 @@ async def test_fenced_client_refuses_mismatched_or_malformed_receipt(changes: di
         assert error.value.reason() == "invalid_worker_deregistration_response"
 
 
+@pytest.mark.parametrize("changes", [
+    {"worker_id": "replacement"}, {"worker_id": None}, {"outcome": "unknown"}, {"outcome": None},
+    {"recovered_workflow_task_count": -1}, {"recovered_workflow_task_count": True},
+    {"recovered_workflow_task_count": 1.0}, {"recovered_workflow_task_count": None},
+])
+@pytest.mark.asyncio
+async def test_legacy_http_success_still_requires_the_existing_receipt_identity(changes: dict[str, Any]) -> None:
+    async with Client("http://runtime") as client:
+        response = httpx.Response(200, request=httpx.Request("DELETE", "http://runtime"), json=completed(**changes))
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=response) as request,
+            pytest.raises(ServerError) as error,
+        ):
+            await client.deregister_worker_registration("worker / one")
+        assert error.value.reason() == "invalid_worker_deregistration_response"
+        request.assert_awaited_once()
+
+
 @pytest.mark.parametrize("fenced", [False, True])
 @pytest.mark.asyncio
 async def test_deregistration_does_not_inherit_generic_503_retries(fenced: bool) -> None:

@@ -74,8 +74,11 @@ original remaining shutdown budget. If Server advertises
 the fenced receipt endpoint. Matching transient responses and transport losses
 can retry that same generation. A completed receipt can replay safely even if
 a replacement now owns the worker ID. Authentication, malformed or mismatched
-receipts, lost authority and expired receipts fail without retrying. Older
-runtimes keep the worker-plane DELETE, with one attempt and no unsafe replay.
+receipts, lost authority and expired receipts fail without retrying. Without
+advertised fencing, Worker keeps one attempt through the legacy worker-plane
+DELETE and does not replay an uncertain result. That legacy route has no
+generation fence. Keep worker IDs unique to a process, and do not reuse an ID
+until the prior worker has fully stopped.
 
 If drain consumes the deadline, no late deregistration request is sent. A final
 HTTP timeout or exhausted recovery raises `RuntimeError` and leaves removal

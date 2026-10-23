@@ -5288,13 +5288,7 @@ class Client:
                     "recovered_workflow_task_count": 0,
                 }
             raise
-        if not isinstance(data, dict) or fenced and (
-            data.get("worker_id") != worker_id
-            or data.get("registration_token") != registration_token
-            or data.get("outcome") != "deregistered"
-            or type(data.get("recovered_workflow_task_count")) is not int
-            or data["recovered_workflow_task_count"] < 0
-        ):
+        if not self._valid_worker_deregistration_response(data, worker_id, registration_token):
             raise ServerError(
                 200,
                 {
@@ -5302,7 +5296,19 @@ class Client:
                     "message": "expected a deregistration receipt for this worker registration",
                 },
             )
-        return data
+        return cast(dict[str, Any], data)
+
+    @staticmethod
+    def _valid_worker_deregistration_response(data: Any, worker_id: str, token: str | None) -> bool:
+        if not isinstance(data, dict):
+            return False
+        count = data.get("recovered_workflow_task_count")
+        return (
+            data.get("worker_id") == worker_id
+            and data.get("outcome") == "deregistered"
+            and type(count) is int and count >= 0
+            and (token is None or data.get("registration_token") == token)
+        )
 
     async def heartbeat_worker(
         self,
