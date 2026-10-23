@@ -329,12 +329,8 @@ class WorkflowEnvironment:
         self, outcome: ReplayOutcome, history: list[dict[str, Any]]
     ) -> tuple[Any, ContinueAsNew | None]:
         for cmd in outcome.commands:
-            if isinstance(cmd, CompleteWorkflow):
-                return cmd, None
-            if isinstance(cmd, FailWorkflow):
-                return WorkflowFailed(cmd.message, cmd.exception_type), None
-            if isinstance(cmd, ContinueAsNew):
-                return _SENTINEL, cmd
+            if isinstance(cmd, CompleteWorkflow | FailWorkflow | ContinueAsNew):
+                return _terminal_outcome(cmd)
             if isinstance(cmd, ScheduleActivity):
                 history.append(self._resolve_activity(cmd))
             elif isinstance(cmd, StartTimer):
@@ -415,6 +411,14 @@ class WorkflowEnvironment:
                 "payload_codec": serializer.AVRO_CODEC,
             },
         }
+
+
+def _terminal_outcome(cmd: CompleteWorkflow | FailWorkflow | ContinueAsNew) -> tuple[Any, ContinueAsNew | None]:
+    if isinstance(cmd, ContinueAsNew):
+        return _SENTINEL, cmd
+    if isinstance(cmd, FailWorkflow):
+        return WorkflowFailed(cmd.message, cmd.exception_type), None
+    return cmd, None
 
 
 def _nexus_operation_event(
