@@ -84,7 +84,8 @@ async def test_recovered_poll_replays_recorded_activity_without_rescheduling(
     assert publication["task_id"] == "recovered-task"
     assert publication["workflow_task_attempt"] == 3
     commands = publication["commands"]
-    assert len(commands) == 1 and commands[0]["type"] == "complete_workflow"
+    assert len(commands) == 1
+    assert commands[0]["type"] == "complete_workflow"
     assert serializer.decode_envelope(commands[0]["result"], codec="avro") == fixture["expected"]["result"]
     client.fail_workflow_task.assert_not_awaited()
     assert worker._workflow_reserved == 0
