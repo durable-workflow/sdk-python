@@ -491,6 +491,21 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
         _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
         assert report["implementation_identity"]["version"] == metadata.version("durable-workflow")
         return commands
+    if workflow_type == "sdk.local-failure-observation":
+        # Exercise first execution and cold replay at the real JSON boundary.
+        # The fixture holds a reproducer input, not an invented Server history.
+        from tests.test_local_failure_reporting import observe_local_failure
+
+        assert "history" not in fixture
+        inputs = workflow.get("input")
+        assert isinstance(inputs, list)
+        assert len(inputs) == 1
+        assert isinstance(inputs[0], dict)
+        control = inputs[0]
+        first = asyncio.run(observe_local_failure(control["non_retryable"], control["limit"]))
+        commands = [{"type": "local_failure_observation", "first_and_cold": first}]
+        _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
+        return commands
     assert workflow_type in WORKFLOW_TYPES, (
         f"replay fixture workflow {workflow_type!r} has no Python implementation; "
         "register its reproducer workflow in WORKFLOWS"

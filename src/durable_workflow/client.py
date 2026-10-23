@@ -48,6 +48,14 @@ from ._cancellation_scope_history import (
     scope_timestamp,
 )
 from ._cooperative_cancellation import CancellationDelivery, CancellationRequest
+from ._failure_reporting import (
+    DETAIL_BYTES,
+    REQUEST_BYTES,
+    UNENCODABLE_DETAILS,
+    bound_failure_request,
+    encoded_json,
+    prepare_failure_request,
+)
 from ._metric_routes import route_for_metrics as _route_for_metrics
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
 from .errors import (
@@ -1622,6 +1630,7 @@ class Client:
         payload_size_limit_bytes: int = serializer.DEFAULT_PAYLOAD_SIZE_BYTES,
         payload_size_warning_threshold_percent: int = serializer.DEFAULT_WARNING_THRESHOLD_PERCENT,
         payload_size_warnings: bool = True,
+        failure_report_limit_bytes: int = REQUEST_BYTES,
         external_storage: ExternalStorageDriver | None = None,
         external_storage_threshold_bytes: int | None = None,
         external_storage_cache: ExternalPayloadCache | None = None,
@@ -1643,6 +1652,9 @@ class Client:
         self._tls_context = tls_context
         self.retry_policy = retry_policy or TransportRetryPolicy()
         self.metrics = metrics if metrics is not None else NOOP_METRICS
+        if type(failure_report_limit_bytes) is not int or failure_report_limit_bytes < 1:
+            raise ValueError("failure_report_limit_bytes must be a positive integer")
+        self.failure_report_limit_bytes = min(REQUEST_BYTES, failure_report_limit_bytes)
         self.payload_size_warning_config = (
             serializer.PayloadSizeWarningConfig(
                 limit_bytes=payload_size_limit_bytes,
@@ -1843,6 +1855,14 @@ class Client:
             ),
         )
 
+    def _failure_report_limit(self) -> int:
+        limit = self.failure_report_limit_bytes
+        limits = (self._cluster_info or {}).get("limits")
+        advertised = limits.get("max_payload_bytes") if isinstance(limits, dict) else None
+        if type(advertised) is int and advertised > 0:
+            limit = min(limit, advertised)
+        return limit
+
     async def _request(
         self,
         method: str,
@@ -1869,22 +1889,22 @@ class Client:
         activity_authority = current_activity_authority.get()
         if worker and activity_authority is not None and activity_authority.governs(self, self.namespace, path):
             activity_authority.remaining()
-        request_json = json
+        request_json = prepare_failure_request(path, json)
         if (
             not discovery
             and json is not None
-            and _contains_direct_external_storage_envelope(json)
+            and _contains_direct_external_storage_envelope(request_json)
         ):
             await self._require_direct_external_storage_support()
         if (
             not discovery
             and json is not None
-            and _contains_inline_payload_envelope(json)
+            and _contains_inline_payload_envelope(request_json)
         ):
             transport = await self._runtime_external_payload_transport()
             if transport is not None:
                 request_json = await self._externalize_runtime_payloads(
-                    json,
+                    request_json,
                     worker=worker,
                     transport=transport,
                     uploaded={},
@@ -1894,6 +1914,9 @@ class Client:
                     ),
                 )
 
+        # Discovery/external payload references may change the known limit or
+        # final envelope. Measure again after those transformations.
+        request_json = bound_failure_request(path, request_json, self._failure_report_limit())
         start = time.perf_counter()
         route = _route_for_metrics(path)
         discovery_uses_worker_token = discovery and bool(self.worker_token)
@@ -6208,11 +6231,20 @@ class Client:
         if non_retryable:
             failure["non_retryable"] = True
         if details is not None:
-            failure["details"] = self._payload_envelope(
-                details,
-                codec=codec,
-                kind="activity_failure_details",
-                activity_name=activity_name,
+            # Inspect the official inline encoding before an optional storage
+            # driver uploads diagnostics that the failure budget will omit.
+            try:
+                inline_details: Any = serializer.envelope(details, codec=codec, size_warning=None)
+            except (TypeError, ValueError, RecursionError):
+                if codec != serializer.AVRO_CODEC:
+                    raise
+                inline_details = UNENCODABLE_DETAILS
+            failure["details"] = (
+                self._payload_envelope(
+                    details, codec=codec, kind="activity_failure_details", activity_name=activity_name,
+                )
+                if isinstance(inline_details, dict) and len(encoded_json(inline_details)) <= DETAIL_BYTES
+                else inline_details
             )
         body: dict[str, Any] = {
             "activity_attempt_id": activity_attempt_id,

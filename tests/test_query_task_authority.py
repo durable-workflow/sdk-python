@@ -182,11 +182,14 @@ async def test_query_transport_discovery_uses_original_loading_budget() -> None:
 
     server = FakeRuntimePayloadServer()
     task = delivery(workflow_arguments=runtime_envelope(server, ["large"]))
-    task["lease_expires_at"] = timestamp(datetime.now(timezone.utc) + timedelta(seconds=0.1))
     server.responses[("POST", "/api/worker/query-tasks/poll")] = {"task": task}
     cancelled = asyncio.Event()
 
     async def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/query-tasks/poll"):
+            # Issue the original 100ms lease when the runtime delivers the claim.
+            # Client/TLS construction happens before the task exists in reality.
+            task["lease_expires_at"] = timestamp(datetime.now(timezone.utc) + timedelta(seconds=0.1))
         if request.url.path.endswith("/cluster/info"):
             try:
                 await asyncio.sleep(60)

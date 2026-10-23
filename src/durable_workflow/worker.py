@@ -44,6 +44,7 @@ from ._activity_lease import activity_lease_renewal_supported, current_activity_
 from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProcessLost, SupervisedCallback
 from ._cancellation_scope_history import CancellationScopeBudget, CancellationScopeDeliveryReceipt
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
+from ._failure_reporting import REQUEST_BYTES, normalize_local_failure
 from ._prepared_local_activity import PreparedAttempt, PreparedCancellationObserved, PreparedLocalRunner
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
 from ._sticky_workflow_cache import CacheKey, StickyWorkflowCache, complete_history
@@ -76,6 +77,7 @@ from .errors import (
     DuplicateRegistrationError,
     DurableWorkflowError,
     ExternalPayloadError,
+    FailureReportTooLarge,
     InvalidArgument,
     NonDeterministicReplayError,
     NonRetryableError,
@@ -2328,8 +2330,22 @@ class Worker:
             }
             if timeout_kind is not None:
                 command.outcome["timeout_kind"] = timeout_kind
+            known_limit = getattr(self.client, "_failure_report_limit", None)
+            limit = known_limit() if callable(known_limit) else REQUEST_BYTES
+            if type(limit) is not int:
+                limit = REQUEST_BYTES
+            try:
+                normalized = normalize_local_failure(
+                    command.to_server_command(self.task_queue, payload_codec=payload_codec),
+                    lease_owner=self.worker_id, workflow_task_attempt=task["workflow_task_attempt"], limit=limit,
+                )
+            except FailureReportTooLarge as error:
+                raise LocalActivityExecutionAborted(
+                    "local failure report cannot fit before workflow observation",
+                ) from error
+            command.outcome = {key: normalized[key] for key in command.outcome}
             return ActivityFailed(
-                message,
+                command.outcome["message"],
                 activity_type=command.activity_type,
                 exception_type=exception_type,
                 non_retryable=non_retryable,
@@ -2469,18 +2485,15 @@ class Worker:
                 cancelled = isinstance(exc, ActivityCancelled)
                 exception_type = type(exc).__name__
                 message = str(exc).strip() or f"local activity failed with {exception_type}"
-                invalid_report = len(exception_type.encode("utf-8")) > 255
                 try:
-                    json.dumps({"message": message, "exception_type": exception_type}, allow_nan=False).encode("utf-8")
-                except (TypeError, ValueError, UnicodeError):
-                    invalid_report = True
-                if invalid_report:
-                    exception_type = "InvalidLocalActivityReport"
-                    message = "local activity failure metadata cannot cross the HTTP JSON boundary"
-                    timed_out = False
-                    cancelled = False
+                    if len(exception_type.encode("utf-8")) > 255:
+                        raise ValueError("local activity failure type exceeds the wire limit")
+                except ValueError as error:
+                    raise LocalActivityExecutionAborted(
+                        "local activity failure type cannot cross the HTTP boundary",
+                    ) from error
                 non_retryable = (
-                    cancelled or invalid_report or isinstance(exc, NonRetryableError)
+                    cancelled or isinstance(exc, NonRetryableError)
                     or exception_type in non_retryable_types
                 )
                 retry = not non_retryable and attempt_number < max_attempts
@@ -4159,6 +4172,7 @@ class Worker:
                 else serializer.DEFAULT_WARNING_THRESHOLD_PERCENT
             ),
             payload_size_warnings=warning_config is not None,
+            failure_report_limit_bytes=self.client.failure_report_limit_bytes,
             external_storage=self.external_storage,
             external_storage_threshold_bytes=self.external_storage_threshold_bytes,
             external_storage_cache=self.external_storage_cache,
