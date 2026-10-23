@@ -33,10 +33,17 @@ jobs:
         with:
           python-version: "3.12"
       - name: Bootstrap patched pip trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python
       - name: Install package and documentation dependencies
         run: pip install -e '.[docs]'
       - name: Install Chromium
+        env:
+          NODE_OPTIONS: --use-openssl-ca
+          NODE_EXTRA_CA_CERTS: ''
+          NODE_USE_SYSTEM_CA: '0'
+          NODE_TLS_REJECT_UNAUTHORIZED: '1'
         run: python -m playwright install --with-deps chromium
       - name: Build and check the portal
         run: |

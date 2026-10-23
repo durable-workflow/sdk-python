@@ -50,7 +50,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Bootstrap patched pip trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Install policy dependencies
         run: python -m pip install PyYAML==6.0.2
       - name: Require centrally approved immutable action commits
@@ -73,7 +73,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Bootstrap patched pip trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python
       - name: Install the SDK
         run: pip install -e .
       - name: Require durable replay and codec evidence
@@ -97,7 +99,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Bootstrap patched pip trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python
       - run: pip install -e '.[dev]'
       - run: ruff check src/ tests/
       - run: mypy src/durable_workflow/
@@ -114,7 +118,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Bootstrap patched pip trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python
       - run: pip install -e .
       - name: Measure the bounded absolute throughput signal
         continue-on-error: true
@@ -143,7 +149,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Bootstrap patched pip trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python
       - run: pip install -e '.[dev]'
       - name: Run unit tests with stalled-thread diagnostics
         id: unit_tests
@@ -178,7 +186,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Bootstrap patched pip trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python
       - run: pip install build twine
       - run: python -m build
       - name: Compare built release metadata with the exact source commit
@@ -229,7 +239,9 @@ jobs:
           printf 'COMPOSE_FILE=docker-compose.test.yml:docker-compose.native-cancellation.yml\n' >> "$GITHUB_ENV"
           printf 'DURABLE_WORKFLOW_NATIVE_SOURCE_QUALIFICATION=1\n' >> "$GITHUB_ENV"
       - name: Bootstrap patched pip trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python
       - run: pip install -e '.[dev]'
         working-directory: sdk-python
       - name: Configure isolated Docker project
