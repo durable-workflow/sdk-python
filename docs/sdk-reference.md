@@ -698,6 +698,12 @@ versions, invalid memo payloads, projection mismatches, bad checksums and
 invalid supplied signatures refuse verification. Version-1 exports retain
 their existing format; they do not require schema-2 memo fields.
 
+Checksum and signature verification use the published
+`json-recursive-ksort-v1` byte representation, including recursive key order,
+Unicode escapes and finite floating-point notation. A producer that loses a
+memo's numeric kind during JSON export still produces a projection/integrity
+failure; the verifier does not repair or silently coerce those bytes.
+
 Verify the original exported bytes. Do not rewrite `schema_version`, remove
 integrity metadata or recompute a checksum to force acceptance. A clean bundle
 simulation still records `replay_checked_count: 0` and `replay_skipped: true`;

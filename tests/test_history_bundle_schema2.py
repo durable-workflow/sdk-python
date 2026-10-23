@@ -190,3 +190,25 @@ def test_published_php_signed_unicode_control_verifies_and_rejects_a_wrong_key()
     assert report["status"] == "ok", report["findings"]
     assert report["integrity"]["signature_verified"] is True
     assert "integrity.signature_mismatch" in _rules(verify_bundle(reference["bundle"], "wrong-key"))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), "\ud800"])
+def test_non_finite_numbers_and_invalid_unicode_fail_closed(value: Any) -> None:
+    bundle = _bundle()
+    bundle["malformed_json_probe"] = value
+    report = verify_bundle(bundle)
+    assert report["status"] == "failed"
+    assert "integrity.canonicalization_failed" in _rules(report)
+
+
+@pytest.mark.parametrize("name", ["waiting", "completed"])
+def test_producer_invalid_float_exports_are_not_repaired_or_rescued(name: str) -> None:
+    invalid = FIXTURES / "producer_invalid"
+    raw = (invalid / f"{name}.json").read_bytes()
+    provenance = json.loads((invalid / "provenance.json").read_text())["exports"][name]
+    assert hashlib.sha256(raw).hexdigest() == provenance["file_sha256"]
+    report = verify_bundle_json(raw.decode())
+    assert report["status"] == "failed"
+    assert report["integrity"]["checksum_matches"] is False
+    assert "workflow.memo_projection_mismatch" in _rules(report)
+    assert "integrity.checksum_mismatch" in _rules(report)

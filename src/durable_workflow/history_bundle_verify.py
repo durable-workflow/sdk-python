@@ -27,9 +27,11 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import re
 import sys
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -312,7 +314,7 @@ def _decode_memo_entries(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(entries, dict):
         raise ValueError("memo authority must decode to a string-keyed map")
     for key in entries:
-        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", key) or re.fullmatch(r"-?[0-9]+", key):
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", key) or re.fullmatch(r"-?\d+", key, flags=re.ASCII):
             raise ValueError(f"invalid portable memo key: {key!r}")
     return entries
 
@@ -334,7 +336,8 @@ def _memo_value_projection(value: Any) -> Any:
 
 
 def _php_integer_key(key: str) -> bool:
-    if len(key) > 20 or not re.fullmatch(r"0|-?[1-9][0-9]*", key):
+    # PHP numeric array keys use ASCII digits; Unicode decimal digits remain strings.
+    if len(key) > 20 or not re.fullmatch(r"0|-?[1-9]\d*", key, flags=re.ASCII):
         return False
     return -(2**63) <= int(key) <= 2**63 - 1
 
@@ -750,7 +753,57 @@ def _check_integrity(
 def _canonicalize(bundle: Mapping[str, Any]) -> str:
     cloned = {k: v for k, v in bundle.items() if k != "integrity"}
     canonical = _canonicalize_value(cloned)
-    return json.dumps(canonical, separators=(",", ":"), ensure_ascii=False, sort_keys=False)
+    return _canonical_json_value(canonical)
+
+
+def _canonical_json_value(value: Any) -> str:
+    """Encode the existing PHP json-recursive-ksort-v1 byte representation."""
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("History bundle JSON object keys must be strings")
+        return "{" + ",".join(_canonical_json_string(key) + ":" + _canonical_json_value(item)
+                              for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(_canonical_json_value(item) for item in value) + "]"
+    if isinstance(value, str):
+        return _canonical_json_string(value)
+    if isinstance(value, float):
+        return _canonical_json_float(value)
+    return json.dumps(value, separators=(",", ":"), allow_nan=False)
+
+
+def _canonical_json_string(value: str) -> str:
+    # PHP escapes non-ASCII characters as UTF-16 code units while leaving
+    # ASCII DEL unescaped. Start with standard JSON quoting, then escape only
+    # its non-ASCII characters. Invalid surrogate strings fail encoding.
+    encoded = json.dumps(value, ensure_ascii=False)
+    if encoded.isascii():
+        return encoded
+    return "".join(character if ord(character) < 128 else _json_utf16_escape(character) for character in encoded)
+
+
+def _json_utf16_escape(character: str) -> str:
+    units = character.encode("utf-16-be").hex()
+    return "".join("\\u" + units[offset:offset + 4] for offset in range(0, len(units), 4))
+
+
+def _canonical_json_float(value: float) -> str:
+    if not math.isfinite(value):
+        raise ValueError("History bundle JSON numbers must be finite")
+    text = float.__repr__(value)
+    mantissa, separator, exponent_text = text.partition("e")
+    if not separator:
+        return text
+    exponent = int(exponent_text)
+    # PHP uses fixed notation through exponent 16 and preserves a decimal
+    # fraction for floats. Both runtimes otherwise use shortest-roundtrip
+    # digits, but PHP omits exponent leading zeros and writes 1.0e rather than 1e.
+    if -4 <= exponent < 17:
+        fixed = format(Decimal(text), "f")
+        return fixed if "." in fixed else fixed + ".0"
+    if "." not in mantissa:
+        mantissa += ".0"
+    return f"{mantissa}e{exponent:+d}"
 
 
 def _canonicalize_value(value: Any) -> Any:

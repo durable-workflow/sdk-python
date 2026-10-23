@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Verify schema-2 history exports, including the lossless Avro memo authority
   and its JSON projection. Retain schema-1 support, reject malformed or unknown
-  versions and preserve integrity-only promotion limits.
+  versions and preserve integrity-only promotion limits. Match the published
+  canonical JSON encoding for Unicode and finite floats in checksums/signatures.
 - Back off workflow, activity and query polling independently after repeated
   HTTP or transport failures, with jitter and a 30-second cap. Successful polls
   reset the delay, and repeated authentication warnings are rate-limited.
