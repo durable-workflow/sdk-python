@@ -41,5 +41,17 @@
     "run_id": "01m5mtkcdn779b6qqbk89fnswm",
     "history_json_sha256": "3ace2024928c5aef8dc2267b8f0fe5f195f7c428d1778ee6e8cb60cf36e2fa40",
     "observation_sha256": "8ddccec720b28fc449172d4b6649b78f5ca7a8b07f738a86b61aa1e83b79bab3"
-  }
+  },
+  "command_sequence": [
+    {
+      "type": "local_failure_observation",
+      "first_and_cold": {
+        "bytes": 1023,
+        "digest": "8dbf34111991fa7eefa92751fe8f096bb4aebbb332857f55652040ace0ca3fe9",
+        "marked": true,
+        "type": "OriginalFailure",
+        "non_retryable": false
+      }
+    }
+  ]
 }
