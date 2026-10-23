@@ -685,12 +685,11 @@ bundle simulation does not execute workflow code in Python, a clean
 integrity-only simulation recommends `review_before_promote` rather than
 `safe_to_promote`.
 
-**Unreleased:** schema-2 history-bundle verification is implemented in source
-and is awaiting package publication. The published Python SDK 2.9.0 still
-refuses these exports; changing a bundle's version or checksum does not make
-it compatible.
+Schema-2 history-bundle verification requires Python SDK 2.10.0 or later.
+Earlier packages refuse these exports; upgrade the SDK while preserving the
+original bundle's version, checksum and bytes.
 
-The source verifier supports history-export structural versions 1 and 2.
+The verifier supports history-export structural versions 1 and 2.
 Schema 2 retains the lossless Avro memo map in `workflow.memo_payload` and its
 JSON-safe display projection in `workflow.memo`. Both are checked, except for
 fields explicitly listed in the export's redaction paths. Unknown or malformed
@@ -992,18 +991,17 @@ still fails before transport for actual worker or control operations; use
 
 ## TLS trust
 
-Unreleased SDK source accepts `tls_context=ssl_context` on async and synchronous
-clients. Use a verifying `ssl.SSLContext` initialized with certifi's public
+Starting with Python SDK 2.10.0, async and synchronous clients accept
+`tls_context=ssl_context`. Use a verifying `ssl.SSLContext` initialized with certifi's public
 roots, then load your private CA. Worker query clones and runtime-owned payload
 transfers reuse that trust configuration. See the
 [private CA recipe](reference/client.md#trust-a-private-certificate-authority)
-for root selection and `SSL_CERT_FILE` / `SSL_CERT_DIR` behavior. Published
-packages gain this option with the next SDK release.
+for root selection and `SSL_CERT_FILE` / `SSL_CERT_DIR` behavior.
 
 ## Poll failures
 
-The backoff described here is available in unreleased SDK source. Published
-workers retain their fixed one-second poll-error wait until the next release.
+The backoff described here requires Python SDK 2.10.0 or later. Earlier
+packages use a fixed one-second poll-error wait.
 
 Workflow, activity and query pollers use independent exponential backoff after
 HTTP, authentication or transport failures. The retry ceiling doubles from 1
@@ -1050,14 +1048,14 @@ Custom recorders implement `increment(name, value=1.0, tags=None)` and `record(n
 
 The [metrics reference](reference/metrics.md#recorder-contract) explains the
 shared names, count/second units, recorder inheritance and exporter conventions.
-In unreleased source, client routes use reviewed templates without variable IDs or query strings;
+From Python SDK 2.10.0, client routes use reviewed templates without variable IDs or query strings;
 unknown operations use `unknown`. Keep configured worker queue names and any
 exporter resource labels bounded.
 
 The [request outcome reference](reference/metrics.md#request-outcomes-and-errors)
 distinguishes HTTP refusals, httpx transport failures and local Python
-cancellation. Unreleased diagnostics name exception classes and static poll
-routes; local cancellation records `CancelledError` and still propagates
+cancellation. From Python SDK 2.10.0, diagnostics name exception classes and
+static poll routes; local cancellation records `CancelledError` and still propagates
 immediately. These diagnostic changes are separate from durable cancellation
 and preserve the existing transport retry policy.
 
@@ -1180,8 +1178,7 @@ else:
 
 ## Test workflows that call Nexus services
 
-The Nexus mock registration API below is available in unreleased SDK source
-and will be included in the next package release.
+The Nexus mock registration API below requires Python SDK 2.10.0 or later.
 
 `WorkflowEnvironment` can mock service operations by endpoint, service and
 operation name. Use `register_nexus_operation_result()` for a fixed response or

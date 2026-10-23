@@ -2,9 +2,9 @@
 
 ## Test failures, retries and compensation
 
-This behavior is available in unreleased SDK source and awaits package
-publication. Published Python SDK 2.9.0 still lets activity mock exceptions
-escape and does not provide callable child mocks or these retry observations.
+This failure/retry behavior and callable child mocks require Python SDK
+2.10.0 or later. Earlier packages let activity mock exceptions escape and do
+not provide these child callables or retry observations.
 
 Synchronous mock exceptions become terminal history events. The production
 replayer then raises `ActivityFailed` or `ChildWorkflowFailed` at the authored
@@ -88,8 +88,7 @@ backend recovery; qualify those behaviors with a real Server and workers.
 
 ## Mock a Nexus service operation
 
-This API is available in unreleased SDK source. Published packages gain these
-registration methods with the next SDK release.
+These Nexus mock registration methods require Python SDK 2.10.0 or later.
 
 Register a result or a synchronous callable by endpoint, service and operation
 name. The mock runs once for each authored call, even when later workflow tasks

@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fencing, use one legacy attempt. Exhausted or uncertain shutdown keeps
   registration removal unconfirmed instead of reporting success.
 
-## [2.10.0] - Unreleased
+## [2.10.0] - 2026-10-23
 
 ### Added
 
