@@ -25,6 +25,7 @@ from durable_workflow.workflow import (
     commands_to_server_commands,
     query_state,
 )
+from tests.deregistration_recovery import RecoveredWorkflow as FencedRecoveryWorkflow
 from tests.test_condition_replay_drift import ConditionIdentityWorkflow
 from tests.test_golden_history_replay import (
     GoldenSagaCompensationWorkflow,
@@ -371,6 +372,7 @@ WORKFLOWS = [
     RepeatedPatchWorkflow,
     PendingOperation,
     RecoveredWorkflow,
+    FencedRecoveryWorkflow,
     PagedRecordedSideEffectsWorkflow,
     PostConditionReceiversWorkflow,
     RecordedSideEffectWorkflow,

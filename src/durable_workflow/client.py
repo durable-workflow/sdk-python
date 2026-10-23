@@ -1853,6 +1853,7 @@ class Client:
         json: Any = None,
         timeout: float | None = None,
         context: str = "",
+        retry: bool = True,
     ) -> Any:
         if worker and discovery:
             raise ValueError("a request cannot be both worker-plane and cluster discovery")
@@ -1920,7 +1921,7 @@ class Client:
 
         try:
             try:
-                resp = await self.retry_policy.execute(_do_request)
+                resp = await self.retry_policy.execute(_do_request) if retry else await _do_request()
             except httpx.HTTPStatusError as exc:
                 status_code = str(exc.response.status_code)
                 outcome = "http_error"
@@ -5245,39 +5246,69 @@ class Client:
             json={"worker_id": worker_id, "reason": reason},
         ))
 
-    async def deregister_worker_registration(self, worker_id: str) -> dict[str, Any]:
+    async def deregister_worker_registration(
+        self, worker_id: str, *, registration_token: str | None = None, timeout: float | None = None,
+        expected_namespace: str | None = None,
+    ) -> dict[str, Any]:
         """Remove this runtime's successful worker-plane registration.
 
         Called by :class:`~durable_workflow.Worker` after its pollers and
         in-flight tasks have drained. This is distinct from the operator-only
         :meth:`deregister_worker` control-plane management operation. Returns
         the worker deregistration envelope, including recovered workflow-task
-        count.
+        count. With a registration token, use the runtime's generation-fenced
+        receipt endpoint. Each call makes one attempt: Worker owns safe retries
+        and the remaining shutdown budget. An unfenced DELETE cannot safely be
+        repeated after an uncertain response because the worker ID may be reused.
+        ``expected_namespace`` is a local registration-scope precondition, not
+        a namespace override.
         """
+        if expected_namespace is not None and self.namespace != expected_namespace:
+            raise RuntimeError("worker registration namespace changed; registration removal is unconfirmed")
+        if registration_token is not None and (
+            not isinstance(registration_token, str) or re.fullmatch(r"[a-f0-9]{32}", registration_token) is None
+        ):
+            raise ValueError("registration_token must contain exactly 32 lowercase hexadecimal characters")
+        fenced = registration_token is not None
         try:
             data = await self._request(
-                "DELETE",
-                f"/worker/registrations/{quote(worker_id, safe='')}",
+                "POST" if fenced else "DELETE",
+                f"/worker/registrations/{quote(worker_id, safe='')}" + ("/deregister" if fenced else ""),
                 worker=True,
                 context=worker_id,
+                json={"registration_token": registration_token} if fenced else None,
+                timeout=timeout,
+                retry=False,
             )
         except ServerError as error:
-            if error.status == 404 and error.reason() == "worker_not_found":
+            if not fenced and error.status == 404 and error.reason() == "worker_not_found":
                 return {
                     "worker_id": worker_id,
                     "outcome": "already_deregistered",
                     "recovered_workflow_task_count": 0,
                 }
             raise
-        if not isinstance(data, dict):
+        if not self._valid_worker_deregistration_response(data, worker_id, registration_token):
             raise ServerError(
                 200,
                 {
                     "reason": "invalid_worker_deregistration_response",
-                    "message": f"expected JSON object, got {type(data).__name__}",
+                    "message": "expected a deregistration receipt for this worker registration",
                 },
             )
-        return data
+        return cast(dict[str, Any], data)
+
+    @staticmethod
+    def _valid_worker_deregistration_response(data: Any, worker_id: str, token: str | None) -> bool:
+        if not isinstance(data, dict):
+            return False
+        count = data.get("recovered_workflow_task_count")
+        return (
+            data.get("worker_id") == worker_id
+            and data.get("outcome") == "deregistered"
+            and type(count) is int and count >= 0
+            and (token is None or data.get("registration_token") == token)
+        )
 
     async def heartbeat_worker(
         self,

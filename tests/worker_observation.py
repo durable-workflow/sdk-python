@@ -27,7 +27,11 @@ def route_name(request: httpx.Request) -> str:
             return f"{family}_poll"
         if f"/worker/{family}-tasks/" in path:
             return f"{family}_submission"
-    if path.endswith("/worker/register") or "/worker/registrations" in path:
+    if "/worker/registrations/" in path:
+        if request.method == "DELETE" or request.method == "POST" and path.endswith("/deregister"):
+            return "deregistration"
+        return "registration"
+    if path.endswith("/worker/register"):
         return "registration"
     if path.endswith("/cluster/info"):
         return "discovery"
