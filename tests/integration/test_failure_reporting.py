@@ -249,10 +249,12 @@ async def test_local_workflow_observation_matches_recorded_failure_and_cold_repl
                     prepare_local_activities=prepared,
                     local_activity_executor=lambda _command: pytest.fail("cold replay reran local callback"),
                 )
-                assert len(cold.commands) == 1 and cold.commands[0].result == first
+                assert len(cold.commands) == 1
+                assert cold.commands[0].result == first
                 await handle.export_history()
                 reports = [(path, status, body) for path, status, body in recorded if not path.endswith("/export")]
-                assert reports and all(status == 200 and len(body) <= limit for _, status, body in reports)
+                assert reports
+                assert all(status == 200 and len(body) <= limit for _, status, body in reports)
                 (tmp_path / "observation.json").write_text(json.dumps({
                     "workflow_id": identity, "run_id": handle.run_id, "prepared": prepared,
                     "first_and_cold": first, "limit": limit,

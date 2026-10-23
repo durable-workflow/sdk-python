@@ -496,7 +496,9 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
 
         assert "history" not in fixture
         inputs = workflow.get("input")
-        assert isinstance(inputs, list) and len(inputs) == 1 and isinstance(inputs[0], dict)
+        assert isinstance(inputs, list)
+        assert len(inputs) == 1
+        assert isinstance(inputs[0], dict)
         control = inputs[0]
         first = asyncio.run(observe_local_failure(control["non_retryable"], control["limit"]))
         commands = [{"type": "local_failure_observation", "first_and_cold": first}]

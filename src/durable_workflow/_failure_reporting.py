@@ -87,17 +87,10 @@ class _Report:
             self._previous_sizes(previous)
         omitted = dict(previous)
         message = result.get("message", "")
-        stack = result.get("stack_trace")
         message_limit = min(MESSAGE_BYTES, budget)
-        stack_limit = min(STACK_BYTES, budget)
         if len(_utf8(message)) > message_limit or _prefix(message, len(_utf8(message))) != message:
             omitted.setdefault("message", len(_utf8(message)))
-        if isinstance(stack, str) and len(_utf8(stack)) > stack_limit:
-            omitted.setdefault("stack_trace", len(_utf8(stack)))
-            if stack_limit >= len(_STACK_MARKER):
-                result["stack_trace"] = _prefix(stack, stack_limit - len(_STACK_MARKER)) + _STACK_MARKER
-            else:
-                result.pop("stack_trace", None)
+        self._bound_stack(result, omitted, min(STACK_BYTES, budget))
         self._bound_metadata(result, omitted, min(DETAIL_BYTES, budget))
         if not omitted:
             return result
@@ -117,6 +110,16 @@ class _Report:
         retained = max(0, message_limit - len(_utf8(marker)))
         result["message"] = _prefix(message, retained) + marker
         return result
+
+    @staticmethod
+    def _bound_stack(result: dict[str, Any], omitted: dict[str, int | None], stack_limit: int) -> None:
+        stack = result.get("stack_trace")
+        if isinstance(stack, str) and len(_utf8(stack)) > stack_limit:
+            omitted.setdefault("stack_trace", len(_utf8(stack)))
+            if stack_limit >= len(_STACK_MARKER):
+                result["stack_trace"] = _prefix(stack, stack_limit - len(_STACK_MARKER)) + _STACK_MARKER
+            else:
+                result.pop("stack_trace", None)
 
     def _unchanged(
         self, previous: dict[str, int | None], omitted: dict[str, int | None], budget: int,
