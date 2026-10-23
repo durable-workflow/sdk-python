@@ -40,7 +40,8 @@ class Recorder:
 
 
 def assert_contract(recorder: Recorder, *, duration: float | None = None) -> set[str]:
-    assert recorder.calls and len(recorder.calls) % 2 == 0
+    assert recorder.calls
+    assert len(recorder.calls) % 2 == 0
     scopes: set[str] = set()
     for counter, histogram in zip(recorder.calls[::2], recorder.calls[1::2], strict=True):
         for method, name, value, tags in (counter, histogram):
@@ -48,10 +49,13 @@ def assert_contract(recorder: Recorder, *, duration: float | None = None) -> set
             assert method == spec["recorder_method"]
             assert set(tags) == set(spec["tags"])
             assert all(isinstance(value, str) for value in tags.values())
-            assert math.isfinite(value) and value >= 0
+            assert math.isfinite(value)
+            assert value >= 0
         counter_spec, duration_spec = SPECS[counter[1]], SPECS[histogram[1]]
-        assert counter_spec["type"] == "counter" and counter_spec["unit"] == "1"
-        assert duration_spec["type"] == "histogram" and duration_spec["unit"] == "s"
+        assert counter_spec["type"] == "counter"
+        assert counter_spec["unit"] == "1"
+        assert duration_spec["type"] == "histogram"
+        assert duration_spec["unit"] == "s"
         assert counter_spec["scope"] == duration_spec["scope"]
         assert counter[2] == 1
         assert counter[3] == histogram[3]
@@ -214,7 +218,8 @@ async def test_default_noop_handles_real_client_and_worker_observations() -> Non
     client._runtime_external_payload_transport_resolved = True
     async with client:
         await worker._poll_workflow_tasks()
-    assert client.metrics is NOOP_METRICS and worker.metrics is NOOP_METRICS
+    assert client.metrics is NOOP_METRICS
+    assert worker.metrics is NOOP_METRICS
 
 
 def test_prometheus_adapter_exports_counter_and_seconds_samples() -> None:
