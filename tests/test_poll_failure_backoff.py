@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import time
+from collections.abc import Generator
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,12 +14,80 @@ import httpx
 import pytest
 
 import durable_workflow.worker as worker_module
+from durable_workflow import serializer, workflow
 from durable_workflow.client import Client
 from durable_workflow.errors import ServerError, Unauthorized
 from durable_workflow.retry_policy import TransportRetryPolicy
 from durable_workflow.worker import Worker
+from durable_workflow.workflow import WorkflowContext
 
 POLL_KINDS = ["workflow", "activity", "query"]
+
+
+@workflow.defn(name="tests.poll.failure.recovery")
+class RecoveredWorkflow:
+    def run(self, ctx: WorkflowContext, order: str) -> Generator[object, object, object]:
+        charged = yield ctx.schedule_activity("charge", [order])
+        return {"order": order, "charged": charged, "run": ctx.run_id}
+
+
+async def test_recovered_poll_replays_recorded_activity_without_rescheduling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = json.loads((Path(__file__).parent / "fixtures/replay_regressions/poll-error-recovery-cold-history.json")
+                         .read_text())
+    client = AsyncMock(spec=Client)
+    worker = Worker(client, task_queue="orders", workflows=[RecoveredWorkflow])
+    real_sleep = asyncio.sleep
+    completed = asyncio.Event()
+    calls = 0
+    delays: list[float] = []
+    task = {
+        "task_id": "recovered-task", "workflow_task_attempt": 3,
+        "workflow_type": fixture["workflow"]["type"], "workflow_id": "order-017",
+        "run_id": fixture["workflow"]["run_id"], "payload_codec": "avro",
+        "arguments": serializer.encode(fixture["workflow"]["input"]), "history_events": fixture["history"],
+    }
+
+    async def poll(**_: object) -> dict[str, object] | None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise Unauthorized()
+        if calls == 2:
+            raise ServerError(503, {})
+        if calls == 3:
+            raise httpx.ConnectError("runtime unavailable")
+        if calls == 4:
+            return task
+        await completed.wait()
+        worker._stop.set()
+        return None
+
+    async def complete(**_: object) -> dict[str, str]:
+        completed.set()
+        return {"outcome": "completed"}
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    client.poll_workflow_task.side_effect = poll
+    client.complete_workflow_task.side_effect = complete
+    monkeypatch.setattr(worker_module.asyncio, "sleep", sleep)
+    monkeypatch.setattr(random, "uniform", lambda low, high: high)
+    await asyncio.wait_for(worker._poll_workflow_tasks(), timeout=2)
+    await asyncio.gather(*worker._in_flight)
+    await real_sleep(0)  # Let task done callbacks return their reservations.
+    assert delays == [1, 2, 4]
+    client.complete_workflow_task.assert_awaited_once()
+    publication = client.complete_workflow_task.call_args.kwargs
+    assert publication["task_id"] == "recovered-task"
+    assert publication["workflow_task_attempt"] == 3
+    commands = publication["commands"]
+    assert len(commands) == 1 and commands[0]["type"] == "complete_workflow"
+    assert serializer.decode_envelope(commands[0]["result"], codec="avro") == fixture["expected"]["result"]
+    client.fail_workflow_task.assert_not_awaited()
+    assert worker._workflow_reserved == 0
 
 
 @pytest.mark.parametrize("kind", POLL_KINDS)
