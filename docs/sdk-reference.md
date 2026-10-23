@@ -1054,8 +1054,8 @@ exporter resource labels bounded.
 
 The [request outcome reference](reference/metrics.md#request-outcomes-and-errors)
 distinguishes HTTP refusals, httpx transport failures and local Python
-cancellation. Unreleased diagnostics name exception classes and static poll
-routes; local cancellation records `CancelledError` and still propagates
+cancellation. From Python SDK 2.10.0, diagnostics name exception classes and
+static poll routes; local cancellation records `CancelledError` and still propagates
 immediately. These diagnostic changes are separate from durable cancellation
 and preserve the existing transport retry policy.
 

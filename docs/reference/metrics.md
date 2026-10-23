@@ -42,9 +42,9 @@ failures without throwing into the client or worker.
 
 ## Request outcomes and errors
 
-**Unreleased:** named poll warnings and the local cancellation outcome below
-await package publication. Until then, a locally cancelled request may still
-be recorded as `pending`.
+Named poll warnings and the local cancellation outcome below require Python
+SDK 2.10.0 or later. Earlier packages may record a locally cancelled request
+as `pending`.
 
 The client counter and duration share one terminal `outcome` per logical
 request, including its transport retries:
