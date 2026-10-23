@@ -4711,7 +4711,7 @@ class Worker:
     def _remaining_shutdown_time(deadline: float) -> float:
         return max(0.0, deadline - asyncio.get_running_loop().time())
 
-    async def _deregister_before_deadline(self, deadline: float) -> None:
+    def _check_deregistration_identity(self) -> None:
         if self._deregistration_fenced and self._registration_token is None:
             raise RuntimeError("worker registration token is missing; registration removal is unconfirmed")
         if self._registration_worker_id is not None and (
@@ -4719,38 +4719,46 @@ class Worker:
             or getattr(self.client, "namespace", None) != self._registration_namespace
         ):
             raise RuntimeError("worker registration identity changed; registration removal is unconfirmed")
+
+    async def _deregistration_attempt(self, remaining: float) -> tuple[float | None, Exception] | None:
+        kwargs: dict[str, Any] = {}
+        if self._deregistration_fenced:
+            kwargs = {"registration_token": self._registration_token, "timeout": remaining}
+        try:
+            await asyncio.wait_for(
+                self.client.deregister_worker_registration(self.worker_id, **kwargs),
+                timeout=remaining,
+            )
+        except asyncio.TimeoutError as error:
+            raise RuntimeError(
+                "worker shutdown timed out during deregistration; registration removal is unconfirmed"
+            ) from error
+        except ServerError as error:
+            retry_delay = (
+                error.worker_deregistration_retry_delay(self.worker_id, self._registration_token)
+                if self._deregistration_fenced and self._registration_token is not None else None
+            )
+            if retry_delay is None:
+                raise
+            return float(retry_delay), error
+        except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError) as error:
+            if not self._deregistration_fenced:
+                raise
+            return None, error
+        return None
+
+    async def _deregister_before_deadline(self, deadline: float) -> None:
+        self._check_deregistration_identity()
         attempt = 0
         while True:
             remaining = self._remaining_shutdown_time(deadline)
             if remaining <= 0:
                 raise RuntimeError("worker shutdown deadline exhausted; registration removal is unconfirmed")
-            kwargs: dict[str, Any] = {}
-            if self._deregistration_fenced:
-                kwargs = {"registration_token": self._registration_token, "timeout": remaining}
-            try:
-                await asyncio.wait_for(
-                    self.client.deregister_worker_registration(self.worker_id, **kwargs),
-                    timeout=remaining,
-                )
+            retry = await self._deregistration_attempt(remaining)
+            if retry is None:
                 return
-            except asyncio.TimeoutError as error:
-                raise RuntimeError(
-                    "worker shutdown timed out during deregistration; registration removal is unconfirmed"
-                ) from error
-            except ServerError as error:
-                retry_delay = (
-                    error.worker_deregistration_retry_delay(self.worker_id, self._registration_token)
-                    if self._deregistration_fenced and self._registration_token is not None else None
-                )
-                if retry_delay is None:
-                    raise
-                delay = float(retry_delay)
-                failure: Exception = error
-            except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError) as error:
-                if not self._deregistration_fenced:
-                    raise
-                delay = min(1.0, 0.1 * 2 ** min(attempt, 4))
-                failure = error
+            retry_delay, failure = retry
+            delay = min(1.0, 0.1 * 2 ** min(attempt, 4)) if retry_delay is None else retry_delay
             if delay >= self._remaining_shutdown_time(deadline):
                 raise RuntimeError(
                     "worker shutdown cannot retry within its deadline; registration removal is unconfirmed"

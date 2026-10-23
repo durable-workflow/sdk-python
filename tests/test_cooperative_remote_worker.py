@@ -167,8 +167,9 @@ async def test_shutdown_timeout_joins_the_remote_callback_before_returning(
     execution = worker._track(worker._run_activity_task(task(str(marker))))
     await wait_for_file(marker)
     pid = int(marker.read_text())
+    stopping = worker.stop()
     with pytest.raises(RuntimeError, match="deadline exhausted.*registration.*unconfirmed") as failed:
-        await asyncio.wait_for(worker.stop(), timeout=4.0)
+        await asyncio.wait_for(stopping, timeout=4.0)
     await wait_for_exit(pid)
     assert execution.cancelled() or execution.result() == "claim_aborted"
     assert not worker._remote_activity_processes

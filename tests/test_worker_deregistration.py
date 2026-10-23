@@ -248,8 +248,9 @@ async def test_shutdown_bounds_final_http_and_keeps_uncertain_registration(fence
     # The outer bound diagnoses the original unbounded implementation without
     # leaving its shielded shutdown task alive after the regression fails.
     try:
+        stopping = worker.stop()
         with pytest.raises(RuntimeError, match="registration.*unconfirmed"):
-            await asyncio.wait_for(worker.stop(), timeout=0.3)
+            await asyncio.wait_for(stopping, timeout=0.3)
     finally:
         if worker._shutdown_task is not None and not worker._shutdown_task.done():
             worker._shutdown_task.cancel()

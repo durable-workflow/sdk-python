@@ -607,9 +607,10 @@ async def test_shutdown_timeout_abandons_cleanup_and_replacement_replays_origina
     await asyncio.wait_for(entered.wait(), timeout=1)
     original_history = deepcopy(server.history)
     heartbeats_before_stop = server.client.heartbeat_workflow_task.await_count
+    stopping = worker.stop()
     try:
         with pytest.raises(RuntimeError, match="deadline exhausted.*registration.*unconfirmed"):
-            await asyncio.wait_for(worker.stop(), timeout=1)
+            await asyncio.wait_for(stopping, timeout=1)
     finally:
         release_thread.set()
     await asyncio.wait_for(discarded.wait(), timeout=1)
