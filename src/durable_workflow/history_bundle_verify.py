@@ -23,11 +23,15 @@ a workflow-php verdict, so promotion gates can compare them directly.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
+import math
+import re
 import sys
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +41,9 @@ REPORT_SCHEMA = "durable-workflow.v2.history-bundle-verification"
 REPORT_SCHEMA_VERSION = 1
 
 BUNDLE_SCHEMA = "durable-workflow.v2.history-export"
+# Retained for callers that construct the supported legacy format.
 BUNDLE_SCHEMA_VERSION = 1
+SUPPORTED_BUNDLE_SCHEMA_VERSIONS = frozenset({1, 2})
 
 STATUS_OK = "ok"
 STATUS_WARNING = "warning"
@@ -138,13 +144,14 @@ def _check_envelope(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -
                 "Bundle is missing the [schema_version] field.",
             )
         )
-    elif bundle["schema_version"] != BUNDLE_SCHEMA_VERSION:
+    elif (type(bundle["schema_version"]) is not int
+          or bundle["schema_version"] not in SUPPORTED_BUNDLE_SCHEMA_VERSIONS):
         findings.append(
             _finding(
                 "bundle.schema_version_unsupported",
                 SEVERITY_ERROR,
                 f"Bundle schema_version [{bundle['schema_version']!s}] is unsupported; "
-                f"expected {BUNDLE_SCHEMA_VERSION}.",
+                "expected integer 1 or 2.",
                 {"observed": bundle["schema_version"]},
             )
         )
@@ -230,6 +237,9 @@ def _check_workflow(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -
             )
         )
 
+    if type(bundle.get("schema_version")) is int and bundle["schema_version"] == 2:
+        _check_v2_memo(bundle, workflow, findings)
+
     declared = _int_or_none(workflow.get("last_history_sequence"))
     events = bundle.get("history_events")
     if declared is not None and isinstance(events, list) and events:
@@ -251,6 +261,85 @@ def _check_workflow(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -
                     {"declared": declared, "observed": highest},
                 )
             )
+
+
+def _check_v2_memo(
+    bundle: Mapping[str, Any], workflow: Mapping[str, Any], findings: list[dict[str, Any]],
+) -> None:
+    redaction = bundle.get("redaction")
+    paths = redaction.get("paths") if isinstance(redaction, Mapping) else None
+    paths = paths if isinstance(paths, list) else []
+    if "workflow.memo_payload" in paths:
+        return
+
+    payload = workflow.get("memo_payload")
+    if not isinstance(payload, dict):
+        findings.append(_finding(
+            "workflow.memo_payload_missing", SEVERITY_ERROR,
+            "Schema-2 workflow.memo_payload must contain the lossless portable Avro memo authority.",
+        ))
+        return
+    try:
+        entries = _decode_memo_entries(payload)
+    except (TypeError, ValueError) as exc:
+        findings.append(_finding(
+            "workflow.memo_payload_invalid", SEVERITY_ERROR,
+            f"workflow.memo_payload is not a valid portable Avro memo map: {exc}",
+        ))
+        return
+    if "workflow.memo" in paths:
+        return
+
+    # MemoPayload::decodeEntries normalizes the top-level map to a PHP array;
+    # its empty display projection is [], while nested empty maps retain an
+    # explicit map adapter. Compare JSON kinds as well as values (True != 1).
+    projection = {key: _memo_value_projection(value) for key, value in entries.items()} if entries else []
+    try:
+        projection_matches = json.dumps(workflow.get("memo"), sort_keys=True) == json.dumps(projection, sort_keys=True)
+    except (TypeError, ValueError):
+        projection_matches = False
+    if not projection_matches:
+        findings.append(_finding(
+            "workflow.memo_projection_mismatch", SEVERITY_ERROR,
+            "workflow.memo does not match the JSON-safe projection of workflow.memo_payload.",
+        ))
+
+
+def _decode_memo_entries(payload: dict[str, Any]) -> dict[str, Any]:
+    if set(payload) != {"codec", "blob"} or payload["codec"] != "avro":
+        raise ValueError("expected exactly the codec=avro and blob fields")
+    if not isinstance(payload["blob"], str) or not payload["blob"]:
+        raise ValueError("blob must be a non-empty base64 string")
+    entries = _avro.decode(payload["blob"])
+    if not isinstance(entries, dict):
+        raise ValueError("memo authority must decode to a string-keyed map")
+    for key in entries:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", key) or re.fullmatch(r"-?\d+", key, flags=re.ASCII):
+            raise ValueError(f"invalid portable memo key: {key!r}")
+    return entries
+
+
+def _memo_value_projection(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return {"$type": "bytes", "base64": base64.b64encode(value).decode("ascii")}
+    if isinstance(value, list):
+        return [_memo_value_projection(item) for item in value]
+    if isinstance(value, dict):
+        # PHP uses AvroMapValue for empty maps and maps containing keys that
+        # its native arrays would coerce to signed 64-bit integers.
+        if not value or any(_php_integer_key(key) for key in value):
+            return {"$type": "map", "entries": [
+                {"key": key, "value": _memo_value_projection(item)} for key, item in value.items()
+            ]}
+        return {key: _memo_value_projection(item) for key, item in value.items()}
+    return value
+
+
+def _php_integer_key(key: str) -> bool:
+    # PHP numeric array keys use ASCII digits; Unicode decimal digits remain strings.
+    if len(key) > 20 or not re.fullmatch(r"0|-?[1-9]\d*", key, flags=re.ASCII):
+        return False
+    return -(2**63) <= int(key) <= 2**63 - 1
 
 
 def _check_history_events(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -> None:
@@ -664,7 +753,57 @@ def _check_integrity(
 def _canonicalize(bundle: Mapping[str, Any]) -> str:
     cloned = {k: v for k, v in bundle.items() if k != "integrity"}
     canonical = _canonicalize_value(cloned)
-    return json.dumps(canonical, separators=(",", ":"), ensure_ascii=False, sort_keys=False)
+    return _canonical_json_value(canonical)
+
+
+def _canonical_json_value(value: Any) -> str:
+    """Encode the existing PHP json-recursive-ksort-v1 byte representation."""
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("History bundle JSON object keys must be strings")
+        return "{" + ",".join(_canonical_json_string(key) + ":" + _canonical_json_value(item)
+                              for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(_canonical_json_value(item) for item in value) + "]"
+    if isinstance(value, str):
+        return _canonical_json_string(value)
+    if isinstance(value, float):
+        return _canonical_json_float(value)
+    return json.dumps(value, separators=(",", ":"), allow_nan=False)
+
+
+def _canonical_json_string(value: str) -> str:
+    # PHP escapes non-ASCII characters as UTF-16 code units while leaving
+    # ASCII DEL unescaped. Start with standard JSON quoting, then escape only
+    # its non-ASCII characters. Invalid surrogate strings fail encoding.
+    encoded = json.dumps(value, ensure_ascii=False)
+    if encoded.isascii():
+        return encoded
+    return "".join(character if ord(character) < 128 else _json_utf16_escape(character) for character in encoded)
+
+
+def _json_utf16_escape(character: str) -> str:
+    units = character.encode("utf-16-be").hex()
+    return "".join("\\u" + units[offset:offset + 4] for offset in range(0, len(units), 4))
+
+
+def _canonical_json_float(value: float) -> str:
+    if not math.isfinite(value):
+        raise ValueError("History bundle JSON numbers must be finite")
+    text = float.__repr__(value)
+    mantissa, separator, exponent_text = text.partition("e")
+    if not separator:
+        return text
+    exponent = int(exponent_text)
+    # PHP uses fixed notation through exponent 16 and preserves a decimal
+    # fraction for floats. Both runtimes otherwise use shortest-roundtrip
+    # digits, but PHP omits exponent leading zeros and writes 1.0e rather than 1e.
+    if -4 <= exponent < 17:
+        fixed = format(Decimal(text), "f")
+        return fixed if "." in fixed else fixed + ".0"
+    if "." not in mantissa:
+        mantissa += ".0"
+    return f"{mantissa}e{exponent:+d}"
 
 
 def _canonicalize_value(value: Any) -> Any:
@@ -846,6 +985,7 @@ __all__ = [
     "REPORT_SCHEMA_VERSION",
     "BUNDLE_SCHEMA",
     "BUNDLE_SCHEMA_VERSION",
+    "SUPPORTED_BUNDLE_SCHEMA_VERSIONS",
     "STATUS_OK",
     "STATUS_WARNING",
     "STATUS_FAILED",

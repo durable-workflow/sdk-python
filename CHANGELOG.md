@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Verify schema-2 history exports, including the lossless Avro memo authority
+  and its JSON projection. Retain schema-1 support, reject malformed or unknown
+  versions and preserve integrity-only promotion limits. Match the published
+  canonical JSON encoding for Unicode and finite floats in checksums/signatures.
 - Bound client metric routes to reviewed operation templates, including
   update-validation tasks, worker sessions, streams and Nexus operations.
   Unknown paths emit `unknown`; static poll routes retain `/poll`. Variable

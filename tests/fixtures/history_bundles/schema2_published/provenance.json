@@ -1,0 +1,63 @@
+{
+  "core_version": "2.7.2",
+  "core_composer_reference": "9477eaaf970e9ce09da337f662e71178a05c6342",
+  "core_source_commit": "64efa176e4c37e5d6ae80e767ba3b41464024e53",
+  "core_source_files_sha256_verified": 615,
+  "workflow_run_id": "01m5m054bemb0myp2fth9gt9wc",
+  "actual_workflow_status": "completed",
+  "actual_activity_attempt_count": 1,
+  "runtime": "published PHP image; real SQLite task rows and actual workflow/activity job handlers",
+  "export": "published workflow:v2:history-export --run --pretty; files untouched",
+  "execution_timeout_seconds": 30,
+  "run_timeout_seconds": 30,
+  "server_version": "2.9.7",
+  "server_source_commit": "150f3fbcbf3911a2a20abb53b4a714081ee53dd7",
+  "server_image_amd64": "ghcr.io/durable-workflow/server@sha256:40e969d0b6b240b835dcdb2fc531507266216ec34a83f59f561674f41e35f461",
+  "qualified_at_utc": "2026-10-23T09:06:01.631235Z",
+  "original_issue": "https://github.com/durable-workflow/sdk-python/issues/173",
+  "fresh_confirming_cohort": true,
+  "source_overlay": false,
+  "exports": {
+    "waiting": {
+      "file_sha256": "ca68e50959c21b882758237d35ec7747e624f61dd575cdf64a085ac9aa44e037",
+      "canonical_checksum": "9e05bfe99d52634732bff14d034ac65181aca19ea6a9abe1058981b06c0e52eb",
+      "history_event_count": 3,
+      "schema_version": 2
+    },
+    "completed": {
+      "file_sha256": "109645f0c488501cbf00eb6ce9be82419d8206bdb02051561a0b209836dbffde",
+      "canonical_checksum": "100cd57e8f1860c1af8a6d12c6da7e5536f3fed121f38cb0156889158acc7b43",
+      "history_event_count": 6,
+      "schema_version": 2
+    },
+    "unicode_waiting": {
+      "file_sha256": "605a07985b1eb23ade868f8fbac64d5d367eeacc95ed3ff405fa10bac5d65c65",
+      "canonical_checksum": "9933f52967d1bbf809ccfd04403e9c4c07d7009d8e1cb6bab290f6ec173d656f",
+      "history_event_count": 3,
+      "schema_version": 2
+    },
+    "unicode_completed": {
+      "file_sha256": "8adec35ad6f23a6506a433689243d6d69273f53f25a33dfc774bd79b009c028c",
+      "canonical_checksum": "d4230ab808496daf776182863292e780e423020d3cc6551a035a1e021d800910",
+      "history_event_count": 6,
+      "schema_version": 2
+    }
+  },
+  "unicode_cohort": {
+    "core_version": "2.7.2",
+    "core_composer_reference": "9477eaaf970e9ce09da337f662e71178a05c6342",
+    "core_source_commit": "64efa176e4c37e5d6ae80e767ba3b41464024e53",
+    "core_source_files_sha256_verified": 615,
+    "workflow_run_id": "01m5m2sesfyvk2n0cf6nhpxsxp",
+    "actual_workflow_status": "completed",
+    "actual_activity_attempt_count": 1,
+    "runtime": "published PHP image; real SQLite task rows and actual workflow/activity job handlers",
+    "export": "published workflow:v2:history-export --run --pretty; files untouched",
+    "execution_timeout_seconds": 30,
+    "run_timeout_seconds": 30
+  },
+  "original_website320_raw_retired_receipts": [
+    "https://github.com/durable-workflow/durable-workflow.github.io/issues/320#issuecomment-6292145406",
+    "https://github.com/durable-workflow/durable-workflow.github.io/issues/320#issuecomment-6293341657"
+  ]
+}
