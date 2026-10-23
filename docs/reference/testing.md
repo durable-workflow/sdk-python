@@ -2,6 +2,9 @@
 
 ## Mock a Nexus service operation
 
+This API is available in unreleased SDK source. Published packages gain these
+registration methods with the next SDK release.
+
 Register a result or a synchronous callable by endpoint, service and operation
 name. The mock runs once for each authored call, even when later workflow tasks
 replay that call. A later registration for the same three names replaces the

@@ -1119,6 +1119,9 @@ else:
 
 ## Test workflows that call Nexus services
 
+The Nexus mock registration API below is available in unreleased SDK source
+and will be included in the next package release.
+
 `WorkflowEnvironment` can mock service operations by endpoint, service and
 operation name. Use `register_nexus_operation_result()` for a fixed response or
 `register_nexus_operation()` for a synchronous callable. The production replayer
