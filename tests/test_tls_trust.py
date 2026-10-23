@@ -58,6 +58,7 @@ def tls_endpoint(tmp_path_factory: pytest.TempPathFactory) -> Iterator[TLSEndpoi
         subprocess.run([openssl, *arguments], cwd=directory, check=True, capture_output=True, timeout=15)
     runtime = FakeRuntimePayloadServer()
     runtime.responses[("GET", "/api/health")] = {"status": "serving"}
+    runtime.responses[("POST", "/api/worker/query-tasks/poll")] = {"task": None}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -126,7 +127,7 @@ async def test_explicit_private_ca_context_preserves_public_roots(tls_endpoint: 
 async def test_explicit_context_still_refuses_a_hostname_mismatch(tls_endpoint: TLSEndpoint) -> None:
     async with Client(tls_endpoint.mismatch_url, tls_context=tls_endpoint.context(), **options(tls_endpoint)) as client:
         polling = client.health()
-        with pytest.raises(httpx.ConnectError, match="CERTIFICATE_VERIFY_FAILED"):
+        with pytest.raises(httpx.ConnectError, match="mismatch"):
             await polling
 
 
@@ -141,7 +142,7 @@ async def test_query_clone_and_nexus_view_preserve_the_same_context(tls_endpoint
         worker = Worker(client, task_queue="orders")
         async with worker._clone_client_for_query_tasks() as clone:
             assert clone.tls_context is context
-            assert await clone.health() == {"status": "serving"}
+            assert await clone.poll_query_task(worker_id=worker.worker_id, task_queue="orders", timeout=0.05) is None
         scoped = client._nexus_target_client("another-namespace")
         assert scoped.tls_context is context
         assert scoped._http is client._http
@@ -151,7 +152,6 @@ async def test_query_clone_and_nexus_view_preserve_the_same_context(tls_endpoint
 
 async def test_worker_poll_and_payload_upload_fetch_use_verified_https(tls_endpoint: TLSEndpoint) -> None:
     runtime = tls_endpoint.runtime
-    runtime.responses[("POST", "/api/worker/query-tasks/poll")] = {"task": None}
     context = tls_endpoint.context()
     async with Client(tls_endpoint.url, tls_context=context, **options(tls_endpoint)) as client:
         assert await client.poll_query_task(worker_id="test-worker", task_queue="orders", timeout=0.05) is None
@@ -179,16 +179,16 @@ async def test_default_environment_ca_selection_remains_supported(
         assert await client.health() == {"status": "serving"}
 
 
-@pytest.mark.parametrize("disable_hostname,disable_certificates", [(True, False), (True, True)])
+@pytest.mark.parametrize("hostname,mode", [
+    (False, ssl.CERT_REQUIRED), (False, ssl.CERT_NONE), (True, ssl.CERT_OPTIONAL),
+])
 @pytest.mark.parametrize("client_class", [Client, SyncClient])
 def test_contexts_with_disabled_verification_are_rejected(
-    disable_hostname: bool, disable_certificates: bool, client_class: type,
+    hostname: bool, mode: ssl.VerifyMode, client_class: type,
 ) -> None:
     context = ssl.create_default_context(cafile=certifi.where())
-    if disable_hostname:
-        context.check_hostname = False
-    if disable_certificates:
-        context.verify_mode = ssl.CERT_NONE
+    context.check_hostname = hostname
+    context.verify_mode = mode
     with pytest.raises(ValueError, match="certificate and hostname verification"):
         client_class("https://runtime.example", tls_context=context)
 
