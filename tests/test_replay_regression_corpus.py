@@ -40,6 +40,7 @@ from tests.test_patch_history import (
     RepeatedPatchWorkflow,
 )
 from tests.test_pending_operation_replay import PendingOperation
+from tests.test_poll_failure_backoff import RecoveredWorkflow
 from tests.test_replay_clock import PersistedClockWorkflow
 from tests.test_update_signal_condition_replay import (
     PostConditionReceiversWorkflow,
@@ -369,6 +370,7 @@ WORKFLOWS = [
     MixedPatchHelpersWorkflow,
     RepeatedPatchWorkflow,
     PendingOperation,
+    RecoveredWorkflow,
     PagedRecordedSideEffectsWorkflow,
     PostConditionReceiversWorkflow,
     RecordedSideEffectWorkflow,
