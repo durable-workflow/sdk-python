@@ -47,6 +47,7 @@ from ._cancellation_scope_history import (
     scope_timestamp,
 )
 from ._cooperative_cancellation import CancellationDelivery, CancellationRequest
+from ._metric_routes import route_for_metrics as _route_for_metrics
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
 from .errors import (
     REQUEST_ID_CONFLICT,
@@ -287,38 +288,6 @@ def _command_request_failure(exc: Exception, *, command: str, request_id: str) -
         )
     _attach_request_id(exc, request_id)
     return exc
-
-
-def _route_for_metrics(path: str) -> str:
-    clean_path = path.split("?", 1)[0]
-    parts = [part for part in clean_path.strip("/").split("/") if part]
-    if not parts:
-        return "/"
-
-    if parts[0] == "workflows" and len(parts) >= 2:
-        parts[1] = "{workflow_id}"
-        if len(parts) >= 4 and parts[2] in {"signal", "query", "update"}:
-            parts[3] = "{name}"
-        if len(parts) >= 4 and parts[2] == "runs":
-            parts[3] = "{run_id}"
-    elif parts[0] == "schedules" and len(parts) >= 2:
-        parts[1] = "{schedule_id}"
-    elif parts[0] in {"namespaces", "search-attributes"} and len(parts) >= 2:
-        parts[1] = "{name}"
-    elif parts[0] == "workers" and len(parts) >= 2:
-        parts[1] = "{worker_id}"
-    elif parts[:2] == ["worker", "registrations"] and len(parts) >= 3:
-        parts[2] = "{worker_id}"
-    elif parts[:2] == ["bridge-adapters", "webhook"] and len(parts) >= 3:
-        parts[2] = "{adapter}"
-    elif (
-        parts[:2] == ["worker", "workflow-tasks"]
-        or parts[:2] == ["worker", "activity-tasks"]
-        or parts[:2] == ["worker", "query-tasks"]
-    ) and len(parts) >= 3:
-        parts[2] = "{task_id}"
-
-    return "/" + "/".join(parts)
 
 
 def _resolve_namespace_name(
