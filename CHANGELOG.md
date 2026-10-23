@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep the bounded `Worker.run_until` helper polling after a matching typed
+  backend-lock refusal. Backoff stays inside the original caller deadline,
+  releases reserved capacity and stops promptly on cancellation. Malformed,
+  foreign and fatal refusals retain their existing error behavior.
+
 ## [2.11.0] - Unreleased
 
 ### Fixed
