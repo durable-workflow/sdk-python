@@ -2,9 +2,8 @@
 
 ## Recorder contract
 
-The expanded route normalization described here is available in unreleased
-SDK source. Published packages retain their existing route labels until the
-next package release.
+The expanded route normalization described here requires Python SDK 2.10.0
+or later.
 
 Client request, worker poll and task dispatch observations follow the
 [shared SDK metrics contract](https://github.com/durable-workflow/.github/tree/main/sdk-metrics).
@@ -43,9 +42,9 @@ failures without throwing into the client or worker.
 
 ## Request outcomes and errors
 
-**Unreleased:** named poll warnings and the local cancellation outcome below
-await package publication. Until then, a locally cancelled request may still
-be recorded as `pending`.
+Named poll warnings and the local cancellation outcome below require Python
+SDK 2.10.0 or later. Earlier packages may record a locally cancelled request
+as `pending`.
 
 The client counter and duration share one terminal `outcome` per logical
 request, including its transport retries:

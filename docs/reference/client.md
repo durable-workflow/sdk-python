@@ -2,8 +2,7 @@
 
 ## Trust a private certificate authority
 
-The `tls_context` option is available in unreleased SDK source and will be
-included in the next package release.
+The `tls_context` option requires Python SDK 2.10.0 or later.
 
 Pass a verifying `ssl.SSLContext` to configure trust for this client without
 changing trust for other clients in the process. Start with certifi's public
