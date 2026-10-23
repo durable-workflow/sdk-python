@@ -177,7 +177,9 @@ async def test_worker_reports_original_three_mib_exception(server_url: str, serv
             worker = Worker(
                 client, task_queue=identity, worker_id=identity, workflows=[FailureConsumer], activities=[fail],
             )
-            observed = await worker.run_until(handle, timeout=20)
+            execution = await worker.run_until(workflow_id=handle.workflow_id, timeout=20, poll_interval=.1)
+            assert execution.status.lower() == "completed"
+            observed = await handle.result(timeout=3, poll_interval=.05)
             assert observed["type"] == "OriginalFailure"
             assert observed["non_retryable"] is False
             assert "[truncated" in observed["message"]
