@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.1] - 2026-10-24
+
 ### Fixed
 
 - Keep the bounded `Worker.run_until` helper polling after a matching typed
@@ -13,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   releases reserved capacity and stops promptly on cancellation. Malformed,
   foreign and fatal refusals retain their existing error behavior.
 
-## [2.11.0] - Unreleased
+## [2.11.0] - 2026-10-23
 
 ### Fixed
 
@@ -22,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   markers, and respects lower configured or discovered limits. Preserve failure
   type, retry policy and claim identity; refuse an identity that cannot fit.
 
-## [2.10.1] - Unreleased
+## [2.10.1] - 2026-10-23
 
 ### Fixed
 
