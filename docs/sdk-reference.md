@@ -84,6 +84,12 @@ own `/api` routes. For example, use `http://server:8080`, not
 `http://server:8080/api`. Managed-runtime paths such as
 `https://cloud.example/api/runtime/v1/namespaces/acme` are valid as written.
 
+`Worker.run_until` is a bounded helper for examples and single-workflow scripts.
+Its timeout includes registration and waits through matching typed backend-lock
+poll refusals without restarting the budget. Persistent pressure still times
+out; malformed, foreign and authorization errors still raise. Worker shutdown
+uses its separate drain timeout. Use `Worker.run` for long-running workers.
+
 ### Duplicate workflow IDs
 
 A workflow ID is the durable identity of an instance. The PHP Server start

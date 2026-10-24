@@ -259,8 +259,8 @@ class _PollFailureBackoff:
         self._last_summary: str | None = None
         self._last_warning_at = 0.0
 
-    def retry_delay(self, error: Exception, task_kind: str) -> float:
-        delay = random.uniform(self._ceiling / 2, self._ceiling)
+    def retry_delay(self, error: Exception, task_kind: str, *, minimum_delay: float = 0.0) -> float:
+        delay = max(minimum_delay, random.uniform(self._ceiling / 2, self._ceiling))
         self._ceiling = min(30.0, self._ceiling * 2)
         summary = _poll_error_summary(error)
         now = time.monotonic()
@@ -278,6 +278,28 @@ def _poll_capacity_delay(error: BaseException, task_kind: str, task_queue: str) 
     if not isinstance(error, ServerError):
         return None
     return error.poll_capacity_backpressure_delay(task_kind, task_queue)
+
+
+def _backend_lock_poll_delay(
+    error: Exception, task_kind: str, task_queue: str, namespace: object,
+) -> int | None:
+    if not isinstance(error, ServerError) or error.status != 503:
+        return None
+    body = error.body
+    if (
+        not isinstance(body, dict) or not isinstance(namespace, str) or not namespace
+        or body.get("reason") != "backend_lock_pressure"
+        or body.get("poll_status") != "backend_lock_pressure"
+        or "task" not in body or body["task"] is not None
+        or body.get("task_kind") != task_kind + "_task"
+        or body.get("task_queue") != task_queue or body.get("namespace") != namespace
+        or ("retryable" in body and body["retryable"] is not True)
+        or ("request_admitted" in body and body["request_admitted"] is not False)
+        or type(body.get("retry_after_seconds")) is not int
+        or not 0 < body["retry_after_seconds"] <= 60
+    ):
+        return None
+    return int(body["retry_after_seconds"])
 
 
 def _command_payload_codec(codec: object) -> str:
@@ -4468,6 +4490,7 @@ class Worker:
     ) -> WorkflowExecution:
         deadline = time.monotonic() + timeout
         next_task_kind = "workflow"
+        failures = {"workflow": _PollFailureBackoff(), "activity": _PollFailureBackoff()}
 
         while not self._stop.is_set():
             desc = await self.client.describe_workflow(workflow_id)
@@ -4494,9 +4517,14 @@ class Worker:
                         task_kinds=self._workflow_poll_task_kinds(),
                         history_page_size=WORKFLOW_HISTORY_PAGE_SIZE,
                     )
-                except BaseException:
+                except BaseException as error:
                     self._release_workflow_capacity()
+                    if isinstance(error, Exception) and await self._retry_run_until_poll_refusal(
+                        error, "workflow", poll_start, deadline, failures["workflow"],
+                    ):
+                        continue
                     raise
+                failures["workflow"].reset()
                 if self._stop.is_set():
                     self._release_workflow_capacity()
                     raise asyncio.CancelledError
@@ -4543,12 +4571,20 @@ class Worker:
                 await asyncio.sleep(poll_interval)
                 continue
             poll_start = time.perf_counter()
-            task = await self.client.poll_activity_task(
-                worker_id=self.worker_id,
-                task_queue=self.task_queue,
-                timeout=self._poll_timeout,
-                build_id=self.build_id,
-            )
+            try:
+                task = await self.client.poll_activity_task(
+                    worker_id=self.worker_id,
+                    task_queue=self.task_queue,
+                    timeout=self._poll_timeout,
+                    build_id=self.build_id,
+                )
+            except Exception as error:
+                if await self._retry_run_until_poll_refusal(
+                    error, "activity", poll_start, deadline, failures["activity"],
+                ):
+                    continue
+                raise
+            failures["activity"].reset()
             if self._stop.is_set():
                 raise asyncio.CancelledError
             self._record_poll_metrics(
@@ -4565,6 +4601,28 @@ class Worker:
             next_task_kind = "workflow"
 
         raise asyncio.CancelledError
+
+    async def _retry_run_until_poll_refusal(
+        self, error: Exception, kind: str, poll_start: float, deadline: float,
+        failures: _PollFailureBackoff,
+    ) -> bool:
+        delay = _backend_lock_poll_delay(
+            error, kind, self.task_queue, getattr(self.client, "namespace", None),
+        )
+        if delay is None:
+            return False
+        self._record_poll_metrics(kind, "error", time.perf_counter() - poll_start)
+        backoff = failures.retry_delay(error, kind, minimum_delay=delay)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        # Both the public caller timer and this local wait retain their original
+        # deadline. Stop interrupts the backoff without another poll or dispatch.
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._stop.wait(), timeout=min(backoff, remaining))
+        if time.monotonic() >= deadline:
+            raise asyncio.TimeoutError
+        return True
 
     async def _run_until_activity_task(self, task: dict[str, Any]) -> None:
         task_start = time.perf_counter()
