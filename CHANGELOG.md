@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.2] - 2026-10-25
+
+### Fixed
+
+- Bound each worker poll HTTP attempt with an absolute deadline, including
+  responses that keep sending progress. Preserve cancellation, retry budgets
+  and the original poll identity.
+- Accept negotiated poll-progress responses alongside ordinary JSON, applying
+  their original status and retry headers before normal error handling.
+- Warn when a connection failure or gateway error cuts a poll short, naming
+  the observed duration and configured wait.
+
 ## [2.11.1] - 2026-10-24
 
 ### Fixed

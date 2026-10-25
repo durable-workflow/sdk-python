@@ -73,6 +73,20 @@ the application type would change which failure the runtime records.
 
 ## Poll failures and recovery
 
+Worker poll requests advertise optional JSON progress responses and also accept
+the ordinary JSON response from Servers that do not implement that transport.
+When a Server sends progress while waiting, each HTTP attempt still has an
+absolute deadline. Receiving another progress byte does not extend it. The
+existing transport retry budget and logical poll identity continue to apply.
+The SDK interprets the terminal status and retry headers before the ordinary
+error handling, including errors that arrive after HTTP 200 progress began.
+
+If a connection failure, HTTP 502 or HTTP 504 ends a poll before its requested
+wait, a warning names the observed duration and configured wait. Check the
+proxy and HTTP timeout budgets. An intentional cancellation does not produce
+this cutoff warning. These transport observations do not establish that a task
+was delivered or authorize revoking its lease.
+
 This backoff requires Python SDK 2.10.0 or later. Earlier packages use a fixed
 one-second poll-error wait.
 

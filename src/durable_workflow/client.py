@@ -57,6 +57,10 @@ from ._failure_reporting import (
     prepare_failure_request,
 )
 from ._metric_routes import route_for_metrics as _route_for_metrics
+from ._poll_transport import ACCEPT as _POLL_ACCEPT
+from ._poll_transport import POLL_PATHS as _POLL_PATHS
+from ._poll_transport import unwrap_response as _unwrap_poll_response
+from ._poll_transport import warn_early_cutoff as _warn_poll_cutoff
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
 from .errors import (
     REQUEST_ID_CONFLICT,
@@ -1882,6 +1886,7 @@ class Client:
 
         query_poll = worker and path == "/worker/query-tasks/poll"
         activity_poll = worker and path == "/worker/activity-tasks/poll"
+        progress_poll = worker and method.upper() == "POST" and path in _POLL_PATHS
         if query_poll:
             current_query_authority.set(None)
         if activity_poll:
@@ -1931,15 +1936,34 @@ class Client:
             request_timeout = self.timeout if timeout is None else timeout
             if worker and activity_authority is not None and activity_authority.governs(self, self.namespace, path):
                 request_timeout = min(request_timeout, activity_authority.remaining())
-            resp = await self._http.request(
+            headers = self._discovery_headers() if discovery else self._headers(worker=worker)
+            if progress_poll:
+                headers["Accept"] = _POLL_ACCEPT
+            pending = self._http.request(
                 method,
                 f"/api{path}",
-                headers=self._discovery_headers() if discovery else self._headers(worker=worker),
+                headers=headers,
                 json=request_json,
                 timeout=request_timeout,
             )
-            # Raise HTTPStatusError for 4xx/5xx so retry policy can catch it
-            resp.raise_for_status()
+            try:
+                if progress_poll:
+                    try:
+                        resp = await asyncio.wait_for(pending, timeout=request_timeout)
+                    except asyncio.TimeoutError as error:
+                        raise httpx.ReadTimeout(
+                            "Worker poll exceeded its absolute HTTP attempt deadline.",
+                            request=self._http.build_request(method, f"/api{path}"),
+                        ) from error
+                    resp = _unwrap_poll_response(resp)
+                else:
+                    resp = await pending
+                # Interpret negotiated late errors before the usual retry policy.
+                resp.raise_for_status()
+            except (httpx.TransportError, httpx.HTTPStatusError) as error:
+                if progress_poll:
+                    _warn_poll_cutoff(path, request_json, request_started, error)
+                raise
             return resp
 
         try:
