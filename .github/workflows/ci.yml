@@ -200,7 +200,7 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: [lint, test]
+    needs: [lint]
     env:
       DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION: ${{ inputs.cooperative_qualification && '1' || '0' }}
       DURABLE_WORKFLOW_NATIVE_SOURCE: ${{ github.workspace }}/native
