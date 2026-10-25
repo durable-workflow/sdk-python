@@ -75,13 +75,15 @@ def test_unwrap_preserves_task_values_and_original_headers() -> None:
     {"headers": {"authorization": "not-allowed"}}, {"headers": {"retry-after": "2\r\nX-Test: bad"}},
 ])
 def test_invalid_transport_is_not_silently_treated_as_an_empty_poll(change: dict[str, Any]) -> None:
+    response = wire_response(envelope(200, {"task": None}) | change)
     with pytest.raises(httpx.RemoteProtocolError, match="Invalid worker poll transport"):
-        unwrap_response(wire_response(envelope(200, {"task": None}) | change))
+        unwrap_response(response)
 
 
 def test_outer_http_error_cannot_be_rewritten_as_success() -> None:
+    response = wire_response(envelope(200, {"task": None}), status=503)
     with pytest.raises(httpx.RemoteProtocolError):
-        unwrap_response(wire_response(envelope(200, {"task": None}), status=503))
+        unwrap_response(response)
 
 
 @pytest.mark.asyncio
@@ -179,11 +181,10 @@ async def test_progress_cannot_renew_the_absolute_attempt_deadline(
         Client(endpoint, retry_policy=TransportRetryPolicy(max_attempts=1)) as client,
     ):
         started = time.monotonic()
+        request = client._request("POST", f"/worker/{kind}-tasks/poll", worker=True,
+                                  json={"timeout_seconds": 30}, timeout=0.12)
         with caplog.at_level(logging.WARNING), pytest.raises(httpx.ReadTimeout, match="absolute HTTP attempt"):
-            await asyncio.wait_for(client._request(
-                "POST", f"/worker/{kind}-tasks/poll", worker=True,
-                json={"timeout_seconds": 30}, timeout=0.12,
-            ), timeout=2)
+            await asyncio.wait_for(request, timeout=2)
         assert time.monotonic() - started < 0.5
         await asyncio.wait_for(events[1].wait(), timeout=1)
         assert "configured wait of 30.000s" in caplog.text

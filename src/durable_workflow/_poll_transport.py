@@ -37,7 +37,7 @@ def unwrap_response(response: httpx.Response) -> httpx.Response:
         # Apply the original status and retry headers before the normal client
         # error handling. Outer HTTP 200 may have been committed by progress.
         return httpx.Response(status, headers=headers, json=body, request=response.request)
-    except (ValueError, TypeError, UnicodeError) as error:
+    except (ValueError, TypeError) as error:
         raise httpx.RemoteProtocolError("Invalid worker poll transport response.", request=response.request) from error
 
 
