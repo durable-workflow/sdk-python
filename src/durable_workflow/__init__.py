@@ -7,7 +7,7 @@ except PackageNotFoundError:  # source checkout without installed metadata
     __version__ = "0.0.0+unknown"
 
 from . import activity, sync, testing, workflow
-from .activity import ActivityContext, ActivityInfo
+from .activity import ActivityContext, ActivityInfo, ActivityRetryInfo
 from .auth_composition import (
     AUTH_COMPOSITION_CONTRACT_SCHEMA,
     AUTH_COMPOSITION_CONTRACT_VERSION,
@@ -248,6 +248,7 @@ __all__ = [
     "ActivityContext",
     "ActivityHandler",
     "ActivityInfo",
+    "ActivityRetryInfo",
     "ActivityInterceptorContext",
     "ActivityRetryPolicy",
     "BridgeAdapterOutcome",

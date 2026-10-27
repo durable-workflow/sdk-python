@@ -2105,6 +2105,7 @@ class Worker:
             handler, tuple(call.command.arguments), ActivityInfo(
                 task_id, call.command.activity_type, attempt.attempt_id, attempt.attempt_number,
                 self.task_queue, self.worker_id,
+                task_metadata={"workflow_id": task.get("workflow_id"), "run_id": task.get("run_id")},
             ), {**task, "activity_attempt_id": attempt.attempt_id}, self.interceptors,
             namespace=getattr(self.client, "namespace", None),
             execution_context=telemetry.capture() if telemetry is not None else None,
@@ -2462,6 +2463,7 @@ class Worker:
                     attempt_number=attempt_number,
                     task_queue=self.task_queue,
                     worker_id=self.worker_id,
+                    task_metadata={"workflow_id": task.get("workflow_id"), "run_id": task.get("run_id")},
                 )
                 _set_context(ActivityContext(info=info, client=self.client, heartbeat_callback=heartbeat))
                 try:
@@ -3196,6 +3198,7 @@ class Worker:
                 attempt_number=attempt_number,
                 task_queue=self.task_queue,
                 worker_id=self.worker_id,
+                task_metadata=task,
             ),
             client=self.client,
         )
