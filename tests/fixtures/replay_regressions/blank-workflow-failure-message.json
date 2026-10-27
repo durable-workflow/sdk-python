@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "blank-workflow-failure-message",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {"type": "tests.replay.blank-failure", "input": [" \t\n"], "payload_codec": "avro"},
+  "history": [{"event_type": "WorkflowStarted", "payload": {}}],
+  "expected": {
+    "type": "fail_workflow",
+    "message": "AssertionError",
+    "exception_type": "AssertionError",
+    "exception_class": "builtins.AssertionError"
+  }
+}

@@ -342,7 +342,14 @@ class NexusCooperativeDeliveryWorkflow:
             return error.request_id
 
 
+@workflow.defn(name="tests.replay.blank-failure")
+class BlankFailureWorkflow:
+    def run(self, ctx: WorkflowContext, message: str) -> None:
+        raise AssertionError(message)
+
+
 WORKFLOWS = [
+    BlankFailureWorkflow,
     IdentityAcrossReplay,
     IdentityContinueAsNew,
     PersistedClockWorkflow,
