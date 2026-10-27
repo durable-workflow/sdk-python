@@ -169,7 +169,8 @@ jobs:
         shell: bash
         run: |
           if [[ -f "$RUNNER_TEMP/sdk-unit-tests.log" ]]; then
-            phase_unit_tail="$(tail -c 12000 "$RUNNER_TEMP/sdk-unit-tests.log")"
+            # Check annotations truncate at 4096 bytes; keep the final summary.
+            phase_unit_tail="$(tail -c 3000 "$RUNNER_TEMP/sdk-unit-tests.log")"
             phase_unit_tail="${phase_unit_tail//'%'/'%25'}"
             phase_unit_tail="${phase_unit_tail//$'\r'/'%0D'}"
             phase_unit_tail="${phase_unit_tail//$'\n'/'%0A'}"
