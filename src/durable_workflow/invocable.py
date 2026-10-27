@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, cast
 
 from . import serializer
+from ._failure_reporting import exception_message
 from .errors import ActivityCancelled, NonRetryableError
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .external_task_input import ExternalTaskInput, parse_external_task_input
@@ -105,7 +106,7 @@ class InvocableActivityHandler:
                 started,
                 kind="application",
                 classification="application_error",
-                message=str(exc),
+                message=exception_message(exc),
                 failure_type=type(exc).__name__,
                 stack_trace=traceback.format_exc(),
                 retryable=False,
@@ -116,7 +117,7 @@ class InvocableActivityHandler:
                 started,
                 kind="timeout",
                 classification="deadline_exceeded",
-                message=str(exc) or "Invocable activity handler exceeded its deadline.",
+                message=exception_message(exc, fallback="Invocable activity handler exceeded its deadline."),
                 failure_type=type(exc).__name__,
                 stack_trace=traceback.format_exc(),
                 timeout_type="deadline_exceeded",
@@ -140,7 +141,7 @@ class InvocableActivityHandler:
                 started,
                 kind="application",
                 classification="application_error",
-                message=str(exc),
+                message=exception_message(exc),
                 failure_type=type(exc).__name__,
                 stack_trace=traceback.format_exc(),
                 retryable=True,

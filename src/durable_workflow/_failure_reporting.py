@@ -26,6 +26,12 @@ _EXCEPTION_IDENTITY = frozenset({
 })
 
 
+def exception_message(error: BaseException, *, fallback: str | None = None) -> str:
+    """Keep useful diagnostic text; blank exceptions still need a valid report."""
+    message = str(error)
+    return message if message.strip() else fallback or type(error).__name__
+
+
 def encoded_json(value: Any) -> bytes:
     """Use HTTPX's actual JSON settings, including escaping and NaN refusal."""
     return httpx.Request("POST", "https://failure.invalid", json=value).content
