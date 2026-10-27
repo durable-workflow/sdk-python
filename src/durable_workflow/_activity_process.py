@@ -24,6 +24,7 @@ from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Any, cast
 
+from ._failure_reporting import exception_message
 from .activity import ActivityContext, ActivityInfo, _set_context
 from .errors import ActivityCancelled, NonRetryableError
 from .interceptors import ActivityInterceptorContext, WorkerInterceptor
@@ -139,7 +140,7 @@ def _callback(directory: str, channel: socket.socket) -> None:
         except BaseException as error:
             code = getattr(error, "code", None)
             _write_payload(directory, "outcome", CallbackOutcome(failure=CallbackFailure(
-                message=str(error), failure_type=type(error).__name__,
+                message=exception_message(error), failure_type=type(error).__name__,
                 failure_class=f"{type(error).__module__}.{type(error).__qualname__}",
                 failure_code=code if isinstance(code, int) and not isinstance(code, bool) else None,
                 stack_trace=traceback.format_exc(), non_retryable=isinstance(error, NonRetryableError),
