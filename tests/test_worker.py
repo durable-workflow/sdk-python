@@ -48,6 +48,7 @@ from durable_workflow.worker import (
     _should_fail_workflow_task_after_completion_error,
 )
 from tests.query_task_helpers import leased_query_task
+from tests.test_activity_retry_info import inspect_activity_context
 
 
 class TypedCancelFlightError(Exception):
@@ -1340,6 +1341,27 @@ class TestWorkflowTaskExecution:
         assert replayed is not None
         assert [command["type"] for command in replayed] == ["complete_workflow"]
         mock_client.heartbeat_workflow_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inline_local_activity_preserves_parent_context_only(self, mock_client: AsyncMock) -> None:
+        mock_client.heartbeat_workflow_task.return_value = {
+            "task_id": "local-task", "lease_owner": "local-worker", "workflow_task_attempt": 1, "renewed": True,
+        }
+        worker = Worker(mock_client, task_queue="q1", worker_id="local-worker",
+                        workflows=[LocalWorkerWorkflow], activities=[local_echo])
+        worker.activities["local.echo"] = inspect_activity_context
+        commands = await worker._run_workflow_task({
+            "task_id": "local-task", "workflow_type": "local-worker-wf", "workflow_task_attempt": 1,
+            "workflow_id": "0", "run_id": "017", "retry_policy": {"max_attempts": 9},
+            "history_events": [], "arguments": serializer.envelope(["ignored"]), "payload_codec": "avro",
+        })
+        assert commands is not None
+        assert [command["type"] for command in commands] == ["record_local_activity", "complete_workflow"]
+        assert serializer.decode_envelope(commands[-1]["result"]) == {
+            "workflow_id": "0", "run_id": "017", "attempt": 1, "policy_provided": False,
+            "policy": None, "maximum": None, "unlimited": False, "last": None,
+        }
+        mock_client.fail_workflow_task.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_local_activity_lease_refusal_never_completes_task(self, mock_client: AsyncMock) -> None:
@@ -3316,6 +3338,23 @@ class TestUpdateValidationTaskExecution:
 
 
 class TestActivityTaskExecution:
+    @pytest.mark.parametrize("configured", [False, True])
+    async def test_ordinary_worker_preserves_received_context(self, mock_client: AsyncMock, configured: bool) -> None:
+        worker = Worker(mock_client, task_queue="q1", activities=[inspect_activity_context])
+        metadata = {"attempt_number": 3, "workflow_id": "0", "run_id": "017",
+                    "retry_policy": {"max_attempts": 3, "future": [True, None]}} if configured else {}
+        task = {"task_id": "metadata-task", "activity_attempt_id": "metadata-attempt",
+                "activity_type": "context.metadata", "arguments": serializer.envelope([]), "payload_codec": "avro",
+                **metadata}
+        assert await worker._run_activity_task(task) == "completed"
+        mock_client.fail_activity_task.assert_not_awaited()
+        assert mock_client.complete_activity_task.await_args.kwargs["result"] == {
+            "workflow_id": "0" if configured else None, "run_id": "017" if configured else None,
+            "attempt": 3 if configured else 1, "policy_provided": configured,
+            "policy": {"max_attempts": 3, "future": [True, None]} if configured else None,
+            "maximum": 3 if configured else None, "unlimited": False, "last": True if configured else None,
+        }
+
     @pytest.mark.asyncio
     async def test_sync_activity(self, mock_client: AsyncMock) -> None:
         worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[echo_activity])
