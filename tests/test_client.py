@@ -870,6 +870,41 @@ class TestWorkflowHandleControlPlane:
 
 class TestSignalWorkflow:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("use_handle", [False, True])
+    async def test_signal_keeps_original_run_and_business_key(self, client: Client, use_handle: bool) -> None:
+        seen = []
+
+        def receive(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(202, json={"outcome": "received"})
+
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(receive))
+        async with client:
+            if use_handle:
+                handle = client.get_workflow_handle("invoice-42", run_id="original-run")
+                await handle.signal("payment_recorded", ["payment-17"], request_id="payment:17")
+            else:
+                await client.signal_workflow("invoice-42", "payment_recorded", args=["payment-17"],
+                                             run_id="original-run", request_id="payment:17")
+        assert len(seen) == 1
+        assert seen[0].url.path == "/api/workflows/invoice-42/runs/original-run/signal/payment_recorded"
+        body = json.loads(seen[0].content)
+        assert body["request_id"] == "payment:17"
+        assert serializer.decode_envelope(body["input"]) == ["payment-17"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("run_id", ["", False, 1])
+    async def test_invalid_run_pin_never_falls_back_to_current(self, client: Client, run_id: Any) -> None:
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock) as request,
+            pytest.raises(ValueError, match="run_id"),
+        ):
+            await client.signal_workflow("invoice-42", "payment_recorded", run_id=run_id)
+        request.assert_not_awaited()
+        await client.aclose()
+
+    @pytest.mark.asyncio
     async def test_signal(self, client: Client) -> None:
         resp = _mock_response(200, {"ok": True})
         with patch.object(client._http, "request", new_callable=AsyncMock, return_value=resp) as mock:

@@ -1386,6 +1386,10 @@ class WorkflowHandle:
         request_id: str | None = None,
     ) -> dict[str, Any]:
         """Deliver an external signal to this workflow. See :meth:`Client.signal_workflow`."""
+        if self.run_id is not None:
+            return await self._client.signal_workflow(
+                self.workflow_id, signal_name, args=args, request_id=request_id, run_id=self.run_id,
+            )
         return await self._client.signal_workflow(
             self.workflow_id, signal_name, args=args, request_id=request_id,
         )
@@ -4461,6 +4465,7 @@ class Client:
         *,
         args: list[Any] | None = None,
         request_id: str | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """Deliver an external signal to a running workflow.
 
@@ -4469,12 +4474,18 @@ class Client:
         observe the signal. See the main docs for how to declare the allowed
         signal names on a workflow type.
 
+        Pass ``run_id`` to target the original run. Omitting it targets the
+        current run when the Server receives the request. A run-pinned
+        :class:`WorkflowHandle` forwards its run identity automatically.
+
         ``request_id`` is the caller command key (1-255 opaque, case-sensitive
-        bytes) that makes a retry of this signal safe. When omitted the client
+        bytes). When omitted the client
         generates ``sdk-python-signal-<uuid>`` once per call, so the transport
         retry policy resends the same key. Resending the same key with the same
         signal name, arguments and run target returns the original receipt
-        instead of recording a second signal.
+        only when the runtime supports and applies command-key retention.
+        A runtime without that retention can record repeated signals. Keep
+        business-event processing idempotent and reconcile uncertain delivery.
 
         Returns the Server's admission receipt. ``request_id`` is always
         present (the key that was sent); a Server that retains command keys
@@ -4486,6 +4497,12 @@ class Client:
         in its ``details``. Every exception raised after the key was chosen,
         including transport errors, carries it as ``request_id``.
         """
+        if run_id is not None and (not isinstance(run_id, str) or not run_id):
+            raise ValueError("run_id must be a non-empty string when provided")
+        path = f"/workflows/{quote(workflow_id, safe='')}"
+        if run_id is not None:
+            path += f"/runs/{quote(run_id, safe='')}"
+        path += f"/signal/{quote(signal_name, safe='')}"
         key = _command_request_id(request_id, "signal")
         body: dict[str, Any] = {}
         if args:
@@ -4493,12 +4510,13 @@ class Client:
                 args,
                 kind="signal",
                 workflow_id=workflow_id,
+                run_id=run_id,
                 signal_name=signal_name,
             )
         body["request_id"] = key
         try:
             data = await self._request(
-                "POST", f"/workflows/{workflow_id}/signal/{signal_name}",
+                "POST", path,
                 json=self._with_observability_context(body), context=workflow_id,
             )
         except Exception as exc:

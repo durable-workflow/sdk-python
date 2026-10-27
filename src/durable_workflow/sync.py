@@ -535,9 +535,10 @@ class Client:
         *,
         args: list[Any] | None = None,
         request_id: str | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         result: dict[str, Any] = self._runner.run(
-            self._async.signal_workflow(workflow_id, signal_name, args=args, request_id=request_id)
+            self._async.signal_workflow(workflow_id, signal_name, args=args, request_id=request_id, run_id=run_id)
         )
         return result
 
