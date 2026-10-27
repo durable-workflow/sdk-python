@@ -20,6 +20,7 @@ from durable_workflow.errors import WorkflowCancelled
 from durable_workflow.worker import Worker
 from durable_workflow.workflow import LocalActivityExecutionAborted, replay
 from tests.test_activity_process import blocked_without_python_progress, wait_for_exit, wait_for_file, wait_for_release
+from tests.test_activity_retry_info import inspect_activity_context
 from tests.test_cancellation_context import delivery, request, snapshot
 from tests.test_replay_regression_corpus import PreparedLocalColdResultsWorkflow
 from tests.test_worker import compatible_cluster_info
@@ -413,6 +414,26 @@ async def test_worker_runs_only_an_admitted_process_then_replays_canonical_resul
     assert not worker._prepared_local_activity_processes
     server.client.fail_workflow_task.assert_not_awaited()
     await wait_for_exit(int((tmp_path / "callback").read_text()))
+
+
+async def test_prepared_local_activity_preserves_parent_context_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    server = PreparedServer()
+    worker = await server.worker(monkeypatch, handler=inspect_activity_context)
+    task = server.task(tmp_path / "unused")
+    task["retry_policy"] = {"max_attempts": 9}
+    try:
+        commands = await worker._run_workflow_task(task)
+        assert commands is not None and [command["type"] for command in commands] == ["complete_workflow"]
+        assert serializer.decode_envelope(commands[0]["result"]) == {
+            "workflow_id": "workflow-1", "run_id": "run-1", "attempt": 1, "policy_provided": False,
+            "policy": None, "maximum": None, "unlimited": False, "last": None,
+        }
+        server.client.fail_workflow_task.assert_not_awaited()
+        assert not worker._prepared_local_activity_processes
+    finally:
+        await worker.stop()
 
 
 async def test_bad_admission_never_spawns_and_never_completes_or_fails_a_claim(

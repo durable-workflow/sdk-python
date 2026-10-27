@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-10-27
+
+### Added
+
+- Expose immutable received retry policy and original attempt metadata through
+  `ActivityInfo.retry_info`, with explicit unknown, legacy-null and unlimited
+  states and a last-configured-attempt check.
+- Expose nullable original workflow/run IDs in remote, inline and prepared
+  activity contexts without substituting task or activity-attempt IDs.
+- Add an optional `run_id` to async and sync signal calls, with canonical
+  activity guidance for stable business-event keys and delivery reconciliation.
+
+### Fixed
+
+- Preserve the bound run when `WorkflowHandle.signal` sends a signal, instead
+  of silently targeting whichever run is current.
+
 ## [2.11.2] - 2026-10-25
 
 ### Fixed

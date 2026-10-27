@@ -19,6 +19,7 @@ from durable_workflow.errors import ActivityCancelled, NonRetryableError, Server
 from durable_workflow.retry_policy import TransportRetryPolicy
 from durable_workflow.worker import Worker
 from tests.test_activity_process import wait_for_exit, wait_for_file
+from tests.test_activity_retry_info import inspect_activity_context
 from tests.test_worker import compatible_cluster_info
 
 
@@ -203,6 +204,25 @@ async def test_authored_heartbeat_stays_on_owner_loop_and_preserves_typed_result
     assert not worker._remote_activity_processes
     client.acknowledge_activity_cancellation.assert_not_awaited()
     client.fail_activity_task.assert_not_awaited()
+
+
+@pytest.mark.parametrize("configured", [False, True])
+async def test_supervised_worker_preserves_received_context(owner: Any, configured: bool) -> None:
+    worker, client = owner
+    worker.activities["remote"] = inspect_activity_context
+    work = task()
+    if configured:
+        work.update(attempt_number=3, workflow_id="0", run_id="017",
+                    retry_policy={"max_attempts": 3, "future": [True, None]})
+    assert await worker._run_activity_task(work) == "completed"
+    client.fail_activity_task.assert_not_awaited()
+    assert client.complete_activity_task.await_args.kwargs["result"] == {
+        "workflow_id": "0" if configured else None, "run_id": "017" if configured else None,
+        "attempt": 3 if configured else 1, "policy_provided": configured,
+        "policy": {"max_attempts": 3, "future": [True, None]} if configured else None,
+        "maximum": 3 if configured else None, "unlimited": False, "last": True if configured else None,
+    }
+    assert not worker._remote_activity_processes
 
 
 @pytest.mark.parametrize("field", ["lease", "heartbeat", "start_to_close", "schedule_to_close", "session", "malformed"])

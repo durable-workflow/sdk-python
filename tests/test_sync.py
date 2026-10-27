@@ -221,6 +221,14 @@ class TestSyncClientDescribe:
 
 
 class TestSyncClientSignal:
+    def test_signal_pins_the_original_run(self) -> None:
+        with Client("http://localhost:8080") as client:
+            with patch.object(client._async._http, "request", new_callable=AsyncMock,
+                              return_value=_mock_response(202, {"outcome": "received"})) as request:
+                client.signal_workflow("invoice-42", "payment_recorded", run_id="original-run", request_id="payment:17")
+            assert request.call_args.args[1] == "/api/workflows/invoice-42/runs/original-run/signal/payment_recorded"
+            assert request.call_args.kwargs["json"]["request_id"] == "payment:17"
+
     def test_signal(self) -> None:
         client = Client("http://localhost:8080")
         resp = _mock_response(202, {"outcome": "received"})
