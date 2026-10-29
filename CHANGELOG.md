@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.1] - 2026-10-29
+
+### Fixed
+
+- Preserve the committed condition reopen when another signal arrives during
+  a signal's completion. Replacement workers replay both signals exactly once
+  without skipping durable waits or weakening definition-drift checks.
+
 ## [2.12.0] - 2026-10-27
 
 ### Added
