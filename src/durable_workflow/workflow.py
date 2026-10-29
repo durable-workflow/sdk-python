@@ -4661,6 +4661,7 @@ def _replay_state(
     # Receiver replay uses this exact boundary so interleaved input is applied
     # in durable order without leaking input recorded after the terminal row.
     condition_wait_terminal_indexes: dict[str, int] = {}
+    condition_wait_opened_indexes: dict[str, int] = {}
     # Selection members are bound by their durable sequence instead of being
     # inserted into the ordinary completion-order cursor. This is what lets a
     # loser complete before or after unrelated successor work without changing
@@ -5006,6 +5007,7 @@ def _replay_state(
                 wait_id = payload.get("condition_wait_id")
                 if not isinstance(wait_id, str) or not wait_id:
                     continue
+                condition_wait_opened_indexes.setdefault(wait_id, index)
 
                 if current_wait_id is None:
                     for receiver_index in prefix_receivers:
@@ -5070,7 +5072,14 @@ def _replay_state(
 
             for receiver_index in receivers_since_wait:
                 if receiver_index is not None and receiver_index not in bindings:
-                    bindings[receiver_index] = current_wait_id
+                    if boundary_kind == "condition":
+                        # A terminal row can precede the next physical reopen.
+                        # Later inputs admitted during the first receiver's
+                        # leased replay belong to that reopen, not the wait
+                        # already resolved by the first receiver.
+                        prefix_receivers.append(receiver_index)
+                    else:
+                        bindings[receiver_index] = current_wait_id
             current_wait_id = None
             receivers_since_wait = []
             prefix_can_bind_to_first_wait = boundary_kind == "condition"
@@ -5431,6 +5440,11 @@ def _replay_state(
         terminal_index = condition_wait_terminal_indexes.get(condition_wait_id)
         if terminal_index is not None:
             while pending_receivers and pending_receivers[0].history_index < terminal_index:
+                receiver_wait_id = pending_receivers[0].condition_wait_id
+                receiver_wait_index = (condition_wait_opened_indexes.get(receiver_wait_id)
+                                       if receiver_wait_id is not None else None)
+                if receiver_wait_index is not None and receiver_wait_index > terminal_index:
+                    break
                 _apply_receiver(pending_receivers.pop(0))
             return
         target_index = next(

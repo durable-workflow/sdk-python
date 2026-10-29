@@ -1,0 +1,88 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "signal-before-condition-reopen-completion",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "signal-counter-until-finished",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "condition_wait_id": "wait-first",
+        "condition_key": "done",
+        "sequence": 1
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_name": "increment",
+        "value": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCBAYA"
+        },
+        "payload_codec": "avro",
+        "workflow_sequence": 1
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_name": "finish",
+        "value": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwA"
+        },
+        "payload_codec": "avro",
+        "workflow_sequence": 1
+      }
+    },
+    {
+      "event_type": "SignalApplied",
+      "payload": {
+        "signal_name": "increment"
+      }
+    },
+    {
+      "event_type": "ConditionWaitSatisfied",
+      "payload": {
+        "condition_wait_id": "wait-first",
+        "condition_key": "done",
+        "sequence": 1
+      }
+    },
+    {
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "condition_wait_id": "wait-reopened",
+        "condition_key": "done",
+        "sequence": 2
+      }
+    }
+  ],
+  "expected": {
+    "command_type": "CompleteWorkflow",
+    "result": {
+      "count": 3,
+      "done": true,
+      "events": [
+        {
+          "signal": "increment",
+          "amount": 3,
+          "count": 3
+        },
+        {
+          "signal": "finish",
+          "count": 3
+        }
+      ]
+    }
+  }
+}

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from durable_workflow import serializer, workflow
-from durable_workflow.errors import NonDeterministicReplayError
+from durable_workflow.errors import NonDeterministicReplayError, QueryFailed
 from durable_workflow.workflow import (
     CompleteWorkflow,
     WaitCondition,
@@ -562,6 +562,46 @@ class TestReplayWaitCondition:
 
         outcome = replay(SignalCounterUntilFinished, history, [])
 
+        assert len(outcome.commands) == 1
+        assert isinstance(outcome.commands[0], CompleteWorkflow)
+        assert outcome.commands[0].result == expected
+        assert query_state(SignalCounterUntilFinished, history, [], "current") == expected
+
+    @pytest.mark.parametrize("receiver_sequence", [None, 1])
+    @pytest.mark.parametrize("changed_identity", [None, "condition_key", "condition_definition_fingerprint"])
+    def test_signal_during_condition_completion_keeps_its_physical_reopen(
+        self, receiver_sequence: int | None, changed_identity: str | None,
+    ) -> None:
+        history = [
+            {"event_type": "ConditionWaitOpened", "payload": {
+                "condition_wait_id": "wait-first", "condition_key": "done", "sequence": 1,
+            }},
+            _signal_received_event("increment", [3], workflow_sequence=receiver_sequence),
+            _signal_received_event("finish", [], workflow_sequence=receiver_sequence),
+            {"event_type": "SignalApplied", "payload": {"signal_name": "increment"}},
+            {"event_type": "ConditionWaitSatisfied", "payload": {
+                "condition_wait_id": "wait-first", "condition_key": "done", "sequence": 1,
+            }},
+            {"event_type": "ConditionWaitOpened", "payload": {
+                "condition_wait_id": "wait-reopened", "condition_key": "done", "sequence": 2,
+            }},
+        ]
+
+        if changed_identity is not None:
+            history[-1]["payload"][changed_identity] = "changed-definition"
+            with pytest.raises(NonDeterministicReplayError, match="ConditionWaitOpened") as captured:
+                replay(SignalCounterUntilFinished, history, [])
+            assert captured.value.workflow_sequence == 2
+            with pytest.raises(QueryFailed, match="ConditionWaitOpened") as query_error:
+                query_state(SignalCounterUntilFinished, history, [], "current")
+            assert isinstance(query_error.value.__cause__, NonDeterministicReplayError)
+            assert query_error.value.__cause__.workflow_sequence == 2
+            return
+
+        expected = {"count": 3, "done": True, "events": [
+            {"signal": "increment", "amount": 3, "count": 3}, {"signal": "finish", "count": 3},
+        ]}
+        outcome = replay(SignalCounterUntilFinished, history, [])
         assert len(outcome.commands) == 1
         assert isinstance(outcome.commands[0], CompleteWorkflow)
         assert outcome.commands[0].result == expected
