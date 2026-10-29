@@ -47,6 +47,7 @@ from tests.test_update_signal_condition_replay import (
     PostConditionReceiversWorkflow,
     UpdateSignalConditionTimerWorkflow,
 )
+from tests.test_wait_condition import SignalCounterUntilFinished
 from tests.test_worker import compatible_cluster_info
 from tests.test_workflow_identity import IdentityAcrossReplay, IdentityContinueAsNew
 
@@ -375,6 +376,7 @@ WORKFLOWS = [
     FencedRecoveryWorkflow,
     PagedRecordedSideEffectsWorkflow,
     PostConditionReceiversWorkflow,
+    SignalCounterUntilFinished,
     RecordedSideEffectWorkflow,
     SelectionAwaitMarkerWorkflow,
     SelectionCancellationQueryWorkflow,
