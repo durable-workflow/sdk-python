@@ -27,6 +27,20 @@ class DurableWorkflowError(Exception):
     """Base class for every exception raised by the SDK."""
 
 
+class FailureReportTooLarge(DurableWorkflowError, ValueError):
+    """Required failure identity or semantics cannot fit the reporting budget.
+
+    This is a local reporting refusal, not the application's failure. No claim
+    identity, failure type or retry decision is shortened to make it fit.
+    """
+
+    def __init__(self, limit_bytes: int) -> None:
+        self.limit_bytes = limit_bytes
+        super().__init__(
+            f"failure report identity or semantics cannot fit the {limit_bytes}-byte encoded request budget"
+        )
+
+
 class QueryTaskAuthorityLost(DurableWorkflowError):
     """A query delivery cannot safely load or invoke its handler."""
 
@@ -218,6 +232,21 @@ class ServerError(DurableWorkflowError):
         if isinstance(self.body, dict):
             return self.body.get("reason")
         return None
+
+    def worker_deregistration_retry_delay(self, worker_id: str, registration_token: str) -> int | None:
+        """Return a delay only for an identity-preserving fenced transient."""
+        body = self.body
+        if (
+            self.status != 503 or not isinstance(body, dict)
+            or body.get("reason") not in ("backend_lock_pressure", "backend_unavailable")
+            or body.get("operation") != "deregister_worker" or body.get("outcome") != "unknown"
+            or body.get("worker_id") != worker_id or body.get("registration_token") != registration_token
+            or body.get("retryable") is not True
+            or type(body.get("retry_after_seconds")) is not int
+            or not 0 < body["retry_after_seconds"] <= 60
+        ):
+            return None
+        return int(body["retry_after_seconds"])
 
     def poll_capacity_backpressure_delay(self, task_kind: str, task_queue: str) -> int | None:
         """Return the advertised wait only for a complete poll-capacity refusal."""

@@ -48,7 +48,19 @@ from ._cancellation_scope_history import (
     scope_timestamp,
 )
 from ._cooperative_cancellation import CancellationDelivery, CancellationRequest
+from ._failure_reporting import (
+    DETAIL_BYTES,
+    REQUEST_BYTES,
+    UNENCODABLE_DETAILS,
+    bound_failure_request,
+    encoded_json,
+    prepare_failure_request,
+)
 from ._metric_routes import route_for_metrics as _route_for_metrics
+from ._poll_transport import ACCEPT as _POLL_ACCEPT
+from ._poll_transport import POLL_PATHS as _POLL_PATHS
+from ._poll_transport import unwrap_response as _unwrap_poll_response
+from ._poll_transport import warn_early_cutoff as _warn_poll_cutoff
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
 from .errors import (
     REQUEST_ID_CONFLICT,
@@ -1374,6 +1386,10 @@ class WorkflowHandle:
         request_id: str | None = None,
     ) -> dict[str, Any]:
         """Deliver an external signal to this workflow. See :meth:`Client.signal_workflow`."""
+        if self.run_id is not None:
+            return await self._client.signal_workflow(
+                self.workflow_id, signal_name, args=args, request_id=request_id, run_id=self.run_id,
+            )
         return await self._client.signal_workflow(
             self.workflow_id, signal_name, args=args, request_id=request_id,
         )
@@ -1622,6 +1638,7 @@ class Client:
         payload_size_limit_bytes: int = serializer.DEFAULT_PAYLOAD_SIZE_BYTES,
         payload_size_warning_threshold_percent: int = serializer.DEFAULT_WARNING_THRESHOLD_PERCENT,
         payload_size_warnings: bool = True,
+        failure_report_limit_bytes: int = REQUEST_BYTES,
         external_storage: ExternalStorageDriver | None = None,
         external_storage_threshold_bytes: int | None = None,
         external_storage_cache: ExternalPayloadCache | None = None,
@@ -1643,6 +1660,9 @@ class Client:
         self._tls_context = tls_context
         self.retry_policy = retry_policy or TransportRetryPolicy()
         self.metrics = metrics if metrics is not None else NOOP_METRICS
+        if type(failure_report_limit_bytes) is not int or failure_report_limit_bytes < 1:
+            raise ValueError("failure_report_limit_bytes must be a positive integer")
+        self.failure_report_limit_bytes = min(REQUEST_BYTES, failure_report_limit_bytes)
         self.payload_size_warning_config = (
             serializer.PayloadSizeWarningConfig(
                 limit_bytes=payload_size_limit_bytes,
@@ -1843,6 +1863,14 @@ class Client:
             ),
         )
 
+    def _failure_report_limit(self) -> int:
+        limit = self.failure_report_limit_bytes
+        limits = (self._cluster_info or {}).get("limits")
+        advertised = limits.get("max_payload_bytes") if isinstance(limits, dict) else None
+        if type(advertised) is int and advertised > 0:
+            limit = min(limit, advertised)
+        return limit
+
     async def _request(
         self,
         method: str,
@@ -1853,6 +1881,7 @@ class Client:
         json: Any = None,
         timeout: float | None = None,
         context: str = "",
+        retry: bool = True,
     ) -> Any:
         if worker and discovery:
             raise ValueError("a request cannot be both worker-plane and cluster discovery")
@@ -1861,6 +1890,7 @@ class Client:
 
         query_poll = worker and path == "/worker/query-tasks/poll"
         activity_poll = worker and path == "/worker/activity-tasks/poll"
+        progress_poll = worker and method.upper() == "POST" and path in _POLL_PATHS
         if query_poll:
             current_query_authority.set(None)
         if activity_poll:
@@ -1868,22 +1898,22 @@ class Client:
         activity_authority = current_activity_authority.get()
         if worker and activity_authority is not None and activity_authority.governs(self, self.namespace, path):
             activity_authority.remaining()
-        request_json = json
+        request_json = prepare_failure_request(path, json)
         if (
             not discovery
             and json is not None
-            and _contains_direct_external_storage_envelope(json)
+            and _contains_direct_external_storage_envelope(request_json)
         ):
             await self._require_direct_external_storage_support()
         if (
             not discovery
             and json is not None
-            and _contains_inline_payload_envelope(json)
+            and _contains_inline_payload_envelope(request_json)
         ):
             transport = await self._runtime_external_payload_transport()
             if transport is not None:
                 request_json = await self._externalize_runtime_payloads(
-                    json,
+                    request_json,
                     worker=worker,
                     transport=transport,
                     uploaded={},
@@ -1893,6 +1923,9 @@ class Client:
                     ),
                 )
 
+        # Discovery/external payload references may change the known limit or
+        # final envelope. Measure again after those transformations.
+        request_json = bound_failure_request(path, request_json, self._failure_report_limit())
         start = time.perf_counter()
         route = _route_for_metrics(path)
         discovery_uses_worker_token = discovery and bool(self.worker_token)
@@ -1907,20 +1940,39 @@ class Client:
             request_timeout = self.timeout if timeout is None else timeout
             if worker and activity_authority is not None and activity_authority.governs(self, self.namespace, path):
                 request_timeout = min(request_timeout, activity_authority.remaining())
-            resp = await self._http.request(
+            headers = self._discovery_headers() if discovery else self._headers(worker=worker)
+            if progress_poll:
+                headers["Accept"] = _POLL_ACCEPT
+            pending = self._http.request(
                 method,
                 f"/api{path}",
-                headers=self._discovery_headers() if discovery else self._headers(worker=worker),
+                headers=headers,
                 json=request_json,
                 timeout=request_timeout,
             )
-            # Raise HTTPStatusError for 4xx/5xx so retry policy can catch it
-            resp.raise_for_status()
+            try:
+                if progress_poll:
+                    try:
+                        resp = await asyncio.wait_for(pending, timeout=request_timeout)
+                    except asyncio.TimeoutError as error:
+                        raise httpx.ReadTimeout(
+                            "Worker poll exceeded its absolute HTTP attempt deadline.",
+                            request=self._http.build_request(method, f"/api{path}"),
+                        ) from error
+                    resp = _unwrap_poll_response(resp)
+                else:
+                    resp = await pending
+                # Interpret negotiated late errors before the usual retry policy.
+                resp.raise_for_status()
+            except (httpx.TransportError, httpx.HTTPStatusError) as error:
+                if progress_poll:
+                    _warn_poll_cutoff(path, request_json, request_started, error)
+                raise
             return resp
 
         try:
             try:
-                resp = await self.retry_policy.execute(_do_request)
+                resp = await self.retry_policy.execute(_do_request) if retry else await _do_request()
             except httpx.HTTPStatusError as exc:
                 status_code = str(exc.response.status_code)
                 outcome = "http_error"
@@ -4413,6 +4465,7 @@ class Client:
         *,
         args: list[Any] | None = None,
         request_id: str | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """Deliver an external signal to a running workflow.
 
@@ -4421,12 +4474,18 @@ class Client:
         observe the signal. See the main docs for how to declare the allowed
         signal names on a workflow type.
 
+        Pass ``run_id`` to target the original run. Omitting it targets the
+        current run when the Server receives the request. A run-pinned
+        :class:`WorkflowHandle` forwards its run identity automatically.
+
         ``request_id`` is the caller command key (1-255 opaque, case-sensitive
-        bytes) that makes a retry of this signal safe. When omitted the client
+        bytes). When omitted the client
         generates ``sdk-python-signal-<uuid>`` once per call, so the transport
         retry policy resends the same key. Resending the same key with the same
         signal name, arguments and run target returns the original receipt
-        instead of recording a second signal.
+        only when the runtime supports and applies command-key retention.
+        A runtime without that retention can record repeated signals. Keep
+        business-event processing idempotent and reconcile uncertain delivery.
 
         Returns the Server's admission receipt. ``request_id`` is always
         present (the key that was sent); a Server that retains command keys
@@ -4438,6 +4497,12 @@ class Client:
         in its ``details``. Every exception raised after the key was chosen,
         including transport errors, carries it as ``request_id``.
         """
+        if run_id is not None and (not isinstance(run_id, str) or not run_id):
+            raise ValueError("run_id must be a non-empty string when provided")
+        path = f"/workflows/{quote(workflow_id, safe='')}"
+        if run_id is not None:
+            path += f"/runs/{quote(run_id, safe='')}"
+        path += f"/signal/{quote(signal_name, safe='')}"
         key = _command_request_id(request_id, "signal")
         body: dict[str, Any] = {}
         if args:
@@ -4445,12 +4510,13 @@ class Client:
                 args,
                 kind="signal",
                 workflow_id=workflow_id,
+                run_id=run_id,
                 signal_name=signal_name,
             )
         body["request_id"] = key
         try:
             data = await self._request(
-                "POST", f"/workflows/{workflow_id}/signal/{signal_name}",
+                "POST", path,
                 json=self._with_observability_context(body), context=workflow_id,
             )
         except Exception as exc:
@@ -5245,39 +5311,69 @@ class Client:
             json={"worker_id": worker_id, "reason": reason},
         ))
 
-    async def deregister_worker_registration(self, worker_id: str) -> dict[str, Any]:
+    async def deregister_worker_registration(
+        self, worker_id: str, *, registration_token: str | None = None, timeout: float | None = None,
+        expected_namespace: str | None = None,
+    ) -> dict[str, Any]:
         """Remove this runtime's successful worker-plane registration.
 
         Called by :class:`~durable_workflow.Worker` after its pollers and
         in-flight tasks have drained. This is distinct from the operator-only
         :meth:`deregister_worker` control-plane management operation. Returns
         the worker deregistration envelope, including recovered workflow-task
-        count.
+        count. With a registration token, use the runtime's generation-fenced
+        receipt endpoint. Each call makes one attempt: Worker owns safe retries
+        and the remaining shutdown budget. An unfenced DELETE cannot safely be
+        repeated after an uncertain response because the worker ID may be reused.
+        ``expected_namespace`` is a local registration-scope precondition, not
+        a namespace override.
         """
+        if expected_namespace is not None and self.namespace != expected_namespace:
+            raise RuntimeError("worker registration namespace changed; registration removal is unconfirmed")
+        if registration_token is not None and (
+            not isinstance(registration_token, str) or re.fullmatch(r"[a-f0-9]{32}", registration_token) is None
+        ):
+            raise ValueError("registration_token must contain exactly 32 lowercase hexadecimal characters")
+        fenced = registration_token is not None
         try:
             data = await self._request(
-                "DELETE",
-                f"/worker/registrations/{quote(worker_id, safe='')}",
+                "POST" if fenced else "DELETE",
+                f"/worker/registrations/{quote(worker_id, safe='')}" + ("/deregister" if fenced else ""),
                 worker=True,
                 context=worker_id,
+                json={"registration_token": registration_token} if fenced else None,
+                timeout=timeout,
+                retry=False,
             )
         except ServerError as error:
-            if error.status == 404 and error.reason() == "worker_not_found":
+            if not fenced and error.status == 404 and error.reason() == "worker_not_found":
                 return {
                     "worker_id": worker_id,
                     "outcome": "already_deregistered",
                     "recovered_workflow_task_count": 0,
                 }
             raise
-        if not isinstance(data, dict):
+        if not self._valid_worker_deregistration_response(data, worker_id, registration_token):
             raise ServerError(
                 200,
                 {
                     "reason": "invalid_worker_deregistration_response",
-                    "message": f"expected JSON object, got {type(data).__name__}",
+                    "message": "expected a deregistration receipt for this worker registration",
                 },
             )
-        return data
+        return cast(dict[str, Any], data)
+
+    @staticmethod
+    def _valid_worker_deregistration_response(data: Any, worker_id: str, token: str | None) -> bool:
+        if not isinstance(data, dict):
+            return False
+        count = data.get("recovered_workflow_task_count")
+        return (
+            data.get("worker_id") == worker_id
+            and data.get("outcome") == "deregistered"
+            and type(count) is int and count >= 0
+            and (token is None or data.get("registration_token") == token)
+        )
 
     async def heartbeat_worker(
         self,
@@ -6177,11 +6273,20 @@ class Client:
         if non_retryable:
             failure["non_retryable"] = True
         if details is not None:
-            failure["details"] = self._payload_envelope(
-                details,
-                codec=codec,
-                kind="activity_failure_details",
-                activity_name=activity_name,
+            # Inspect the official inline encoding before an optional storage
+            # driver uploads diagnostics that the failure budget will omit.
+            try:
+                inline_details: Any = serializer.envelope(details, codec=codec, size_warning=None)
+            except (TypeError, ValueError, RecursionError):
+                if codec != serializer.AVRO_CODEC:
+                    raise
+                inline_details = UNENCODABLE_DETAILS
+            failure["details"] = (
+                self._payload_envelope(
+                    details, codec=codec, kind="activity_failure_details", activity_name=activity_name,
+                )
+                if isinstance(inline_details, dict) and len(encoded_json(inline_details)) <= DETAIL_BYTES
+                else inline_details
             )
         body: dict[str, Any] = {
             "activity_attempt_id": activity_attempt_id,

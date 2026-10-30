@@ -169,7 +169,8 @@ jobs:
         shell: bash
         run: |
           if [[ -f "$RUNNER_TEMP/sdk-unit-tests.log" ]]; then
-            phase_unit_tail="$(tail -c 12000 "$RUNNER_TEMP/sdk-unit-tests.log")"
+            # Check annotations truncate at 4096 bytes; keep the final summary.
+            phase_unit_tail="$(tail -c 3000 "$RUNNER_TEMP/sdk-unit-tests.log")"
             phase_unit_tail="${phase_unit_tail//'%'/'%25'}"
             phase_unit_tail="${phase_unit_tail//$'\r'/'%0D'}"
             phase_unit_tail="${phase_unit_tail//$'\n'/'%0A'}"
@@ -200,7 +201,7 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: [lint, test]
+    needs: [lint]
     env:
       DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION: ${{ inputs.cooperative_qualification && '1' || '0' }}
       DURABLE_WORKFLOW_NATIVE_SOURCE: ${{ github.workspace }}/native
@@ -267,11 +268,38 @@ jobs:
         working-directory: sdk-python
         run: python scripts/ci/configure-integration-endpoint.py
       - name: Run integration tests
+        id: integration_tests
         shell: bash
         working-directory: sdk-python
         env:
           DURABLE_WORKFLOW_AUTH_TOKEN: test-token
         run: pytest tests/integration/ -v --capture=tee-sys --junitxml=integration-results.xml 2>&1 | tee integration-scenarios.log
+      - name: Report bounded integration failure identities
+        if: ${{ always() && steps.integration_tests.outcome == 'failure' }}
+        working-directory: sdk-python
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import xml.etree.ElementTree as ET
+
+          report = Path("integration-results.xml")
+          if not report.is_file():
+              print("::error title=Integration diagnostics::JUnit report unavailable")
+              raise SystemExit(0)
+          failed = 0
+          for case in ET.parse(report).getroot().iter("testcase"):
+              if case.find("failure") is None and case.find("error") is None:
+                  continue
+              failed += 1
+              if failed > 20:
+                  continue
+              identity = case.get("classname", "") + "." + case.get("name", "").partition("[")[0]
+              if len(identity) > 256 or re.fullmatch(r"[A-Za-z0-9_.]+", identity) is None:
+                  identity = "unidentified_integration_case"
+              print(f"::error title=Integration test failure::{identity}")
+          print(f"::notice title=Integration summary::failed_test_cases={failed}")
+          PY
       - name: Retain connected scenario results
         if: ${{ always() && github.server_url == 'https://github.com' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7

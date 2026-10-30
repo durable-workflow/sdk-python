@@ -37,11 +37,14 @@ from functools import wraps
 from types import FunctionType
 from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Union, get_args, get_origin, get_type_hints
 
+import httpx
+
 from . import serializer
 from ._activity_lease import activity_lease_renewal_supported, current_activity_authority
 from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProcessLost, SupervisedCallback
 from ._cancellation_scope_history import CancellationScopeBudget, CancellationScopeDeliveryReceipt
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
+from ._failure_reporting import REQUEST_BYTES, normalize_local_failure
 from ._prepared_local_activity import PreparedAttempt, PreparedCancellationObserved, PreparedLocalRunner
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
 from ._sticky_workflow_cache import CacheKey, StickyWorkflowCache, complete_history
@@ -74,6 +77,7 @@ from .errors import (
     DuplicateRegistrationError,
     DurableWorkflowError,
     ExternalPayloadError,
+    FailureReportTooLarge,
     InvalidArgument,
     NonDeterministicReplayError,
     NonRetryableError,
@@ -255,8 +259,8 @@ class _PollFailureBackoff:
         self._last_summary: str | None = None
         self._last_warning_at = 0.0
 
-    def retry_delay(self, error: Exception, task_kind: str) -> float:
-        delay = random.uniform(self._ceiling / 2, self._ceiling)
+    def retry_delay(self, error: Exception, task_kind: str, *, minimum_delay: float = 0.0) -> float:
+        delay = max(minimum_delay, random.uniform(self._ceiling / 2, self._ceiling))
         self._ceiling = min(30.0, self._ceiling * 2)
         summary = _poll_error_summary(error)
         now = time.monotonic()
@@ -274,6 +278,28 @@ def _poll_capacity_delay(error: BaseException, task_kind: str, task_queue: str) 
     if not isinstance(error, ServerError):
         return None
     return error.poll_capacity_backpressure_delay(task_kind, task_queue)
+
+
+def _backend_lock_poll_delay(
+    error: Exception, task_kind: str, task_queue: str, namespace: object,
+) -> int | None:
+    if not isinstance(error, ServerError) or error.status != 503:
+        return None
+    body = error.body
+    if (
+        not isinstance(body, dict) or not isinstance(namespace, str) or not namespace
+        or body.get("reason") != "backend_lock_pressure"
+        or body.get("poll_status") != "backend_lock_pressure"
+        or "task" not in body or body["task"] is not None
+        or body.get("task_kind") != task_kind + "_task"
+        or body.get("task_queue") != task_queue or body.get("namespace") != namespace
+        or ("retryable" in body and body["retryable"] is not True)
+        or ("request_admitted" in body and body["request_admitted"] is not False)
+        or type(body.get("retry_after_seconds")) is not int
+        or not 0 < body["retry_after_seconds"] <= 60
+    ):
+        return None
+    return int(body["retry_after_seconds"])
 
 
 def _command_payload_codec(codec: object) -> str:
@@ -1169,6 +1195,10 @@ class Worker:
         self._in_flight: set[asyncio.Task[Any]] = set()
         self._poller_tasks: set[asyncio.Task[Any]] = set()
         self._registered = False
+        self._deregistration_fenced = False
+        self._registration_token: str | None = None
+        self._registration_worker_id: str | None = None
+        self._registration_namespace: object = None
         self._run_started = False
         self._registration_done = asyncio.Event()
         self._shutdown_task: asyncio.Task[None] | None = None
@@ -1295,6 +1325,18 @@ class Worker:
         _validate_server_compatibility(info)
         protocol = info.get("worker_protocol")
         server_capabilities = protocol.get("server_capabilities") if isinstance(protocol, Mapping) else None
+        deregistration = (
+            server_capabilities.get("worker_deregistration_fencing")
+            if isinstance(server_capabilities, Mapping) else None
+        )
+        self._deregistration_fenced = isinstance(deregistration, Mapping) and deregistration.get("supported") is True
+        if isinstance(deregistration, Mapping) and self._deregistration_fenced and (
+            deregistration.get("schema") != "durable-workflow.v2.worker-deregistration.v1"
+            or deregistration.get("endpoint") != "/worker/registrations/{workerId}/deregister"
+            or type(deregistration.get("receipt_retention_seconds")) is not int
+            or deregistration["receipt_retention_seconds"] <= 0
+        ):
+            raise RuntimeError("Server compatibility error: invalid worker_deregistration_fencing contract")
         sticky_support = (
             server_capabilities.get("sticky_execution") if isinstance(server_capabilities, Mapping) else None
         )
@@ -1449,6 +1491,20 @@ class Worker:
             task_slots=self._current_task_slots(),
             process_metrics=self._current_process_metrics(),
         )
+        if self._deregistration_fenced:
+            token = ack.get("registration_token") if isinstance(ack, dict) else None
+            if (
+                not isinstance(token, str) or len(token) != 32
+                or any(character not in "0123456789abcdef" for character in token)
+                or ack.get("worker_id") != self.worker_id or ack.get("registered") is not True
+            ):
+                raise RuntimeError(
+                    "Server returned an invalid registration_token acknowledgement; "
+                    "registration may remain active and unfenced cleanup is unsafe"
+                )
+            self._registration_token = token
+        self._registration_worker_id = self.worker_id
+        self._registration_namespace = getattr(self.client, "namespace", None)
         self._registered = True
         # Adapt to the server-advertised cadence when present so a cluster
         # can pin the worker fleet's heartbeat beat without each worker
@@ -2049,6 +2105,7 @@ class Worker:
             handler, tuple(call.command.arguments), ActivityInfo(
                 task_id, call.command.activity_type, attempt.attempt_id, attempt.attempt_number,
                 self.task_queue, self.worker_id,
+                task_metadata={"workflow_id": task.get("workflow_id"), "run_id": task.get("run_id")},
             ), {**task, "activity_attempt_id": attempt.attempt_id}, self.interceptors,
             namespace=getattr(self.client, "namespace", None),
             execution_context=telemetry.capture() if telemetry is not None else None,
@@ -2296,8 +2353,22 @@ class Worker:
             }
             if timeout_kind is not None:
                 command.outcome["timeout_kind"] = timeout_kind
+            known_limit = getattr(self.client, "_failure_report_limit", None)
+            limit = known_limit() if callable(known_limit) else REQUEST_BYTES
+            if type(limit) is not int:
+                limit = REQUEST_BYTES
+            try:
+                normalized = normalize_local_failure(
+                    command.to_server_command(self.task_queue, payload_codec=payload_codec),
+                    lease_owner=self.worker_id, workflow_task_attempt=task["workflow_task_attempt"], limit=limit,
+                )
+            except FailureReportTooLarge as error:
+                raise LocalActivityExecutionAborted(
+                    "local failure report cannot fit before workflow observation",
+                ) from error
+            command.outcome = {key: normalized[key] for key in command.outcome}
             return ActivityFailed(
-                message,
+                command.outcome["message"],
                 activity_type=command.activity_type,
                 exception_type=exception_type,
                 non_retryable=non_retryable,
@@ -2392,6 +2463,7 @@ class Worker:
                     attempt_number=attempt_number,
                     task_queue=self.task_queue,
                     worker_id=self.worker_id,
+                    task_metadata={"workflow_id": task.get("workflow_id"), "run_id": task.get("run_id")},
                 )
                 _set_context(ActivityContext(info=info, client=self.client, heartbeat_callback=heartbeat))
                 try:
@@ -2437,18 +2509,15 @@ class Worker:
                 cancelled = isinstance(exc, ActivityCancelled)
                 exception_type = type(exc).__name__
                 message = str(exc).strip() or f"local activity failed with {exception_type}"
-                invalid_report = len(exception_type.encode("utf-8")) > 255
                 try:
-                    json.dumps({"message": message, "exception_type": exception_type}, allow_nan=False).encode("utf-8")
-                except (TypeError, ValueError, UnicodeError):
-                    invalid_report = True
-                if invalid_report:
-                    exception_type = "InvalidLocalActivityReport"
-                    message = "local activity failure metadata cannot cross the HTTP JSON boundary"
-                    timed_out = False
-                    cancelled = False
+                    if len(exception_type.encode("utf-8")) > 255:
+                        raise ValueError("local activity failure type exceeds the wire limit")
+                except ValueError as error:
+                    raise LocalActivityExecutionAborted(
+                        "local activity failure type cannot cross the HTTP boundary",
+                    ) from error
                 non_retryable = (
-                    cancelled or invalid_report or isinstance(exc, NonRetryableError)
+                    cancelled or isinstance(exc, NonRetryableError)
                     or exception_type in non_retryable_types
                 )
                 retry = not non_retryable and attempt_number < max_attempts
@@ -3129,6 +3198,7 @@ class Worker:
                 attempt_number=attempt_number,
                 task_queue=self.task_queue,
                 worker_id=self.worker_id,
+                task_metadata=task,
             ),
             client=self.client,
         )
@@ -4127,6 +4197,7 @@ class Worker:
                 else serializer.DEFAULT_WARNING_THRESHOLD_PERCENT
             ),
             payload_size_warnings=warning_config is not None,
+            failure_report_limit_bytes=self.client.failure_report_limit_bytes,
             external_storage=self.external_storage,
             external_storage_threshold_bytes=self.external_storage_threshold_bytes,
             external_storage_cache=self.external_storage_cache,
@@ -4422,6 +4493,7 @@ class Worker:
     ) -> WorkflowExecution:
         deadline = time.monotonic() + timeout
         next_task_kind = "workflow"
+        failures = {"workflow": _PollFailureBackoff(), "activity": _PollFailureBackoff()}
 
         while not self._stop.is_set():
             desc = await self.client.describe_workflow(workflow_id)
@@ -4448,9 +4520,14 @@ class Worker:
                         task_kinds=self._workflow_poll_task_kinds(),
                         history_page_size=WORKFLOW_HISTORY_PAGE_SIZE,
                     )
-                except BaseException:
+                except BaseException as error:
                     self._release_workflow_capacity()
+                    if isinstance(error, Exception) and await self._retry_run_until_poll_refusal(
+                        error, "workflow", poll_start, deadline, failures["workflow"],
+                    ):
+                        continue
                     raise
+                failures["workflow"].reset()
                 if self._stop.is_set():
                     self._release_workflow_capacity()
                     raise asyncio.CancelledError
@@ -4497,12 +4574,20 @@ class Worker:
                 await asyncio.sleep(poll_interval)
                 continue
             poll_start = time.perf_counter()
-            task = await self.client.poll_activity_task(
-                worker_id=self.worker_id,
-                task_queue=self.task_queue,
-                timeout=self._poll_timeout,
-                build_id=self.build_id,
-            )
+            try:
+                task = await self.client.poll_activity_task(
+                    worker_id=self.worker_id,
+                    task_queue=self.task_queue,
+                    timeout=self._poll_timeout,
+                    build_id=self.build_id,
+                )
+            except Exception as error:
+                if await self._retry_run_until_poll_refusal(
+                    error, "activity", poll_start, deadline, failures["activity"],
+                ):
+                    continue
+                raise
+            failures["activity"].reset()
             if self._stop.is_set():
                 raise asyncio.CancelledError
             self._record_poll_metrics(
@@ -4519,6 +4604,28 @@ class Worker:
             next_task_kind = "workflow"
 
         raise asyncio.CancelledError
+
+    async def _retry_run_until_poll_refusal(
+        self, error: Exception, kind: str, poll_start: float, deadline: float,
+        failures: _PollFailureBackoff,
+    ) -> bool:
+        delay = _backend_lock_poll_delay(
+            error, kind, self.task_queue, getattr(self.client, "namespace", None),
+        )
+        if delay is None:
+            return False
+        self._record_poll_metrics(kind, "error", time.perf_counter() - poll_start)
+        backoff = failures.retry_delay(error, kind, minimum_delay=delay)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        # Both the public caller timer and this local wait retain their original
+        # deadline. Stop interrupts the backoff without another poll or dispatch.
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._stop.wait(), timeout=min(backoff, remaining))
+        if time.monotonic() >= deadline:
+            raise asyncio.TimeoutError
+        return True
 
     async def _run_until_activity_task(self, task: dict[str, Any]) -> None:
         task_start = time.perf_counter()
@@ -4567,8 +4674,9 @@ class Worker:
     async def stop(self) -> None:
         """Stop polling, drain tasks, and remove the worker registration.
 
-        Repeated calls share one shutdown result. A failed deregistration is
-        therefore propagated to every caller without sending another DELETE.
+        Repeated calls share one shutdown result. Generation-fenced recovery
+        stays within the original shutdown deadline. Unfenced deregistration
+        makes one attempt and does not retry an uncertain outcome.
         """
         self._stop.set()
         if self._shutdown_task is None:
@@ -4664,8 +4772,9 @@ class Worker:
                 log.warning("worker session %s close failed: %s", session.options.session_id, error)
 
         if self._registered:
-            await self.client.deregister_worker_registration(self.worker_id)
+            await self._deregister_before_deadline(deadline)
             self._registered = False
+            self._registration_token = None
             log.info("worker %s deregistered", self.worker_id)
         self._sticky_cache.clear()
         payload_observers = getattr(self.client, "_workflow_payload_observers", None)
@@ -4676,3 +4785,62 @@ class Worker:
     @staticmethod
     def _remaining_shutdown_time(deadline: float) -> float:
         return max(0.0, deadline - asyncio.get_running_loop().time())
+
+    def _check_deregistration_identity(self) -> None:
+        if self._deregistration_fenced and self._registration_token is None:
+            raise RuntimeError("worker registration token is missing; registration removal is unconfirmed")
+        if self._registration_worker_id is not None and (
+            self.worker_id != self._registration_worker_id
+            or getattr(self.client, "namespace", None) != self._registration_namespace
+        ):
+            raise RuntimeError("worker registration identity changed; registration removal is unconfirmed")
+
+    async def _deregistration_attempt(self, remaining: float) -> tuple[float | None, Exception] | None:
+        kwargs: dict[str, Any] = {}
+        if self._deregistration_fenced:
+            kwargs = {"registration_token": self._registration_token, "timeout": remaining}
+        if isinstance(self._registration_namespace, str):
+            kwargs["expected_namespace"] = self._registration_namespace
+        try:
+            await asyncio.wait_for(
+                self.client.deregister_worker_registration(self.worker_id, **kwargs),
+                timeout=remaining,
+            )
+        except asyncio.TimeoutError as error:
+            raise RuntimeError(
+                "worker shutdown timed out during deregistration; registration removal is unconfirmed"
+            ) from error
+        except ServerError as error:
+            retry_delay = (
+                error.worker_deregistration_retry_delay(self.worker_id, self._registration_token)
+                if self._deregistration_fenced and self._registration_token is not None else None
+            )
+            if retry_delay is None:
+                raise
+            return float(retry_delay), error
+        except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError) as error:
+            if not self._deregistration_fenced:
+                raise
+            return None, error
+        return None
+
+    async def _deregister_before_deadline(self, deadline: float) -> None:
+        attempt = 0
+        while True:
+            self._check_deregistration_identity()
+            remaining = self._remaining_shutdown_time(deadline)
+            if remaining <= 0:
+                raise RuntimeError("worker shutdown deadline exhausted; registration removal is unconfirmed")
+            retry = await self._deregistration_attempt(remaining)
+            if retry is None:
+                return
+            retry_delay, failure = retry
+            delay = min(1.0, 0.1 * 2 ** min(attempt, 4)) if retry_delay is None else retry_delay
+            if delay >= self._remaining_shutdown_time(deadline):
+                raise RuntimeError(
+                    "worker shutdown cannot retry within its deadline; registration removal is unconfirmed"
+                ) from failure
+            if attempt == 0:
+                log.warning("worker deregistration is unconfirmed; retrying the fenced request within its deadline")
+            attempt += 1
+            await asyncio.sleep(delay)

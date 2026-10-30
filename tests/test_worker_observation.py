@@ -297,3 +297,15 @@ async def test_interceptors_preserve_results_and_exceptions() -> None:
     assert report["milestones"]["activity_handler_error"]["count"] == 1
     assert report["milestones"]["workflow_task_enter"]["first"]["task_id"] == "original"
     assert "SECRET" not in json.dumps(report)
+
+
+@pytest.mark.parametrize(("method", "path", "expected"), [
+    ("POST", "/api/worker/register", "registration"),
+    ("POST", "/api/worker/registrations/worker/deregister", "deregistration"),
+    ("DELETE", "/api/worker/registrations/worker", "deregistration"),
+    ("GET", "/api/worker/registrations/worker", "registration"),
+])
+def test_registration_and_deregistration_are_counted_separately(method: str, path: str, expected: str) -> None:
+    from tests.worker_observation import route_name
+
+    assert route_name(httpx.Request(method, "http://runtime" + path)) == expected

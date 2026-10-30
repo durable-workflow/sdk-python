@@ -29,7 +29,63 @@ isolated worker processes and their resource limits. The separately
 negotiated cooperative-cancellation capability retains its supervised process
 execution; selecting a default thread does not enable that protocol.
 
+## Bounded failure reports
+
+This behavior is available in unreleased SDK source. Published packages still
+need the compatible release before these limits apply.
+
+Failure reports retain at most 62 KiB of UTF-8 message text, 128 KiB of stack
+text and 64 KiB of serialized details and diagnostics. These budgets include
+truncation markers. The complete encoded JSON request body defaults to at most
+1 MiB, counting JSON escaping, claim identities, command batches and metadata.
+The message budget reserves 2 KiB below the original 64 KiB ceiling for
+runtime-derived summaries.
+A lower discovered Server `limits.max_payload_bytes` also applies. Configure
+`Client(..., failure_report_limit_bytes=...)` when a proxy or transport has a
+lower request limit. This option can lower the default cap; it cannot raise it.
+Query-client clones inherit it. Payload warning thresholds remain advisory.
+
+Oversized diagnostics produce a visible `[truncated ...]` message marker with
+structured omitted-field names and original byte sizes. Activity failures also
+carry this information in `failure.diagnostics.failure_report`; terminal
+workflow failures use `exception.diagnostics.failure_report`. Other existing
+report shapes keep the diagnostic JSON in the message marker. Unknown sizes
+are `null` when optional details could not be encoded. Avro details are kept as
+an intact valid envelope or omitted whole, before an unnecessary payload upload.
+
+The original failure type, retry/non-retryable choice, authored retry delay and
+claim identity remain exact. Activity, workflow-task, query and update rejection
+reports, terminal workflow/update failures and local-activity attempt reports
+share the complete-request bound. A workflow-task replay failure still leaves
+the run open for repair; it does not become a terminal workflow failure.
+
+A local activity's failure is bounded before workflow code observes it. First
+execution and cold replay therefore see the same persisted message. If a later
+command batch or newly discovered lower limit cannot fit that observed value,
+reporting fails explicitly rather than changing a value already used by the
+workflow. Prepared local activities observe the runtime's canonical history.
+
+If essential identity or semantic fields cannot fit even without optional
+text, the client raises `FailureReportTooLarge` before sending the report.
+This reporting refusal is separate from the application failure. The worker's
+existing reporting-error log identifies it; shortening a task ID or replacing
+the application type would change which failure the runtime records.
+
 ## Poll failures and recovery
+
+Worker poll requests advertise optional JSON progress responses and also accept
+the ordinary JSON response from Servers that do not implement that transport.
+When a Server sends progress while waiting, each HTTP attempt still has an
+absolute deadline. Receiving another progress byte does not extend it. The
+existing transport retry budget and logical poll identity continue to apply.
+The SDK interprets the terminal status and retry headers before the ordinary
+error handling, including errors that arrive after HTTP 200 progress began.
+
+If a connection failure, HTTP 502 or HTTP 504 ends a poll before its requested
+wait, a warning names the observed duration and configured wait. Check the
+proxy and HTTP timeout budgets. An intentional cancellation does not produce
+this cutoff warning. These transport observations do not establish that a task
+was delivered or authorize revoking its lease.
 
 This backoff requires Python SDK 2.10.0 or later. Earlier packages use a fixed
 one-second poll-error wait.
@@ -65,8 +121,27 @@ worker-stop behavior. Neither uses this generic poll-failure backoff.
 before polling. After registration succeeds, shutdown stops every poller and
 waits for accepted work within the shared `shutdown_timeout` deadline before
 removing that worker-plane registration. Work still running at the deadline is
-cancelled. Calling `stop()` more than once is safe and sends at most one
-deregistration request. No deregistration is sent if registration failed.
+cancelled. Calling `stop()` more than once shares the same shutdown operation
+and result. No deregistration is sent if registration failed.
+
+**Unreleased source behavior, prepared for SDK 2.10.1:** the final HTTP call and any recovery use the
+original remaining shutdown budget. If Server advertises
+`worker_deregistration_fencing`, Worker retains its registration token and uses
+the fenced receipt endpoint. Matching transient responses and transport losses
+can retry that same generation. A completed receipt can replay safely even if
+a replacement now owns the worker ID. Authentication, malformed or mismatched
+receipts, lost authority and expired receipts fail without retrying. Without
+advertised fencing, Worker keeps one attempt through the legacy worker-plane
+DELETE and does not replay an uncertain result. That legacy route has no
+generation fence. Keep worker IDs unique to a process, and do not reuse an ID
+until the prior worker has fully stopped.
+
+If drain consumes the deadline, no late deregistration request is sent. A final
+HTTP timeout or exhausted recovery raises `RuntimeError` and leaves removal
+unconfirmed. The Server might have committed a request whose response was lost;
+an exception is not proof that the registration still exists. Inspect the
+runtime before taking an operator recovery action. These changes are not in a
+published package yet.
 
 Cancelling an await cannot stop a running synchronous activity thread. Its
 physical slot remains occupied until the callback returns, and a late return

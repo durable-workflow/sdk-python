@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import sys
 import threading
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -46,6 +48,7 @@ from durable_workflow.worker import (
     _should_fail_workflow_task_after_completion_error,
 )
 from tests.query_task_helpers import leased_query_task
+from tests.test_activity_retry_info import inspect_activity_context
 
 
 class TypedCancelFlightError(Exception):
@@ -1338,6 +1341,27 @@ class TestWorkflowTaskExecution:
         assert replayed is not None
         assert [command["type"] for command in replayed] == ["complete_workflow"]
         mock_client.heartbeat_workflow_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inline_local_activity_preserves_parent_context_only(self, mock_client: AsyncMock) -> None:
+        mock_client.heartbeat_workflow_task.return_value = {
+            "task_id": "local-task", "lease_owner": "local-worker", "workflow_task_attempt": 1, "renewed": True,
+        }
+        worker = Worker(mock_client, task_queue="q1", worker_id="local-worker",
+                        workflows=[LocalWorkerWorkflow], activities=[local_echo])
+        worker.activities["local.echo"] = inspect_activity_context
+        commands = await worker._run_workflow_task({
+            "task_id": "local-task", "workflow_type": "local-worker-wf", "workflow_task_attempt": 1,
+            "workflow_id": "0", "run_id": "017", "retry_policy": {"max_attempts": 9},
+            "history_events": [], "arguments": serializer.envelope(["ignored"]), "payload_codec": "avro",
+        })
+        assert commands is not None
+        assert [command["type"] for command in commands] == ["record_local_activity", "complete_workflow"]
+        assert serializer.decode_envelope(commands[-1]["result"]) == {
+            "workflow_id": "0", "run_id": "017", "attempt": 1, "policy_provided": False,
+            "policy": None, "maximum": None, "unlimited": False, "last": None,
+        }
+        mock_client.fail_workflow_task.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_local_activity_lease_refusal_never_completes_task(self, mock_client: AsyncMock) -> None:
@@ -3226,7 +3250,7 @@ class TestUpdateValidationTaskExecution:
         assert worker._current_task_slots()["workflow_available"] == 1
 
     @pytest.mark.asyncio
-    async def test_shutdown_cancels_validation_and_deregisters_after_releasing_capacity(
+    async def test_shutdown_releases_validation_capacity_without_deregistering_after_deadline(
         self, mock_client: AsyncMock
     ) -> None:
         validation_started = asyncio.Event()
@@ -3279,15 +3303,16 @@ class TestUpdateValidationTaskExecution:
         await asyncio.wait_for(validation_started.wait(), timeout=1.0)
         assert worker._current_task_slots()["workflow_available"] == 0
 
-        await worker.stop()
+        with pytest.raises(RuntimeError, match="deadline exhausted.*registration.*unconfirmed"):
+            await worker.stop()
 
         assert validation_cancelled.is_set()
         assert worker._workflow_inflight == 0
         assert worker._workflow_reserved == 0
         assert worker._wf_semaphore._value == 1
         assert worker._current_task_slots()["workflow_available"] == 1
-        assert worker._registered is False
-        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+        assert worker._registered is True
+        mock_client.deregister_worker_registration.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cancellation_before_dispatch_starts_releases_admitted_capacity(self, mock_client: AsyncMock) -> None:
@@ -3313,6 +3338,23 @@ class TestUpdateValidationTaskExecution:
 
 
 class TestActivityTaskExecution:
+    @pytest.mark.parametrize("configured", [False, True])
+    async def test_ordinary_worker_preserves_received_context(self, mock_client: AsyncMock, configured: bool) -> None:
+        worker = Worker(mock_client, task_queue="q1", activities=[inspect_activity_context])
+        metadata = {"attempt_number": 3, "workflow_id": "0", "run_id": "017",
+                    "retry_policy": {"max_attempts": 3, "future": [True, None]}} if configured else {}
+        task = {"task_id": "metadata-task", "activity_attempt_id": "metadata-attempt",
+                "activity_type": "context.metadata", "arguments": serializer.envelope([]), "payload_codec": "avro",
+                **metadata}
+        assert await worker._run_activity_task(task) == "completed"
+        mock_client.fail_activity_task.assert_not_awaited()
+        assert mock_client.complete_activity_task.await_args.kwargs["result"] == {
+            "workflow_id": "0" if configured else None, "run_id": "017" if configured else None,
+            "attempt": 3 if configured else 1, "policy_provided": configured,
+            "policy": {"max_attempts": 3, "future": [True, None]} if configured else None,
+            "maximum": 3 if configured else None, "unlimited": False, "last": True if configured else None,
+        }
+
     @pytest.mark.asyncio
     async def test_sync_activity(self, mock_client: AsyncMock) -> None:
         worker = Worker(mock_client, task_queue="q1", workflows=[], activities=[echo_activity])
@@ -4516,7 +4558,7 @@ class TestWorkerShutdown:
         mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
 
     @pytest.mark.asyncio
-    async def test_shutdown_deadline_cancels_work_before_deregistering(
+    async def test_shutdown_deadline_cancels_work_without_sending_late_deregistration(
         self, mock_client: AsyncMock
     ) -> None:
         events: list[str] = []
@@ -4539,11 +4581,13 @@ class TestWorkerShutdown:
         tracked_task = worker._track(accepted_work())
         await work_started.wait()
 
-        await worker.stop()
+        with pytest.raises(RuntimeError, match="deadline exhausted.*registration.*unconfirmed"):
+            await worker.stop()
 
         assert tracked_task.cancelled()
-        assert events == ["work_cancelled", "deregister"]
-        mock_client.deregister_worker_registration.assert_awaited_once_with(worker.worker_id)
+        assert events == ["work_cancelled"]
+        assert worker._registered is True
+        mock_client.deregister_worker_registration.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_failed_registration_does_not_deregister(self, mock_client: AsyncMock) -> None:
@@ -5026,6 +5070,232 @@ class TestWorkerHeartbeats:
 
 
 class TestRunUntil:
+    @pytest.mark.asyncio
+    async def test_lock_refusal_then_cold_history_preserves_original_activity_result(
+        self, mock_client: AsyncMock,
+    ) -> None:
+        from tests.test_poll_failure_backoff import RecoveredWorkflow
+
+        fixture = json.loads((Path(__file__).parent / "fixtures/replay_regressions/"
+                              "run-until-lock-refusal-cold-history.json").read_text())
+        mock_client.namespace = "default"
+        mock_client.get_cluster_info.return_value = compatible_cluster_info(worker_protocol={
+            "version": PROTOCOL_VERSION,
+            "server_capabilities": {"query_tasks": False, "long_poll_timeout": 30},
+        })
+        run_id = fixture["workflow"]["run_id"]
+        completed = False
+
+        async def describe(workflow_id: str) -> WorkflowExecution:
+            return WorkflowExecution(
+                workflow_id, run_id, fixture["workflow"]["type"], "completed" if completed else "running",
+            )
+
+        async def complete(**kwargs: object) -> dict[str, str]:
+            nonlocal completed
+            completed = True
+            return {"outcome": "completed"}
+
+        mock_client.describe_workflow.side_effect = describe
+        mock_client.complete_workflow_task.side_effect = complete
+        mock_client.poll_workflow_task.side_effect = [ServerError(503, {
+            "task": None, "poll_status": "backend_lock_pressure", "reason": "backend_lock_pressure",
+            "namespace": "default", "task_queue": "orders", "task_kind": "workflow_task",
+            "retry_after_seconds": 1,
+        }), {
+            "task_id": "original-cold-task", "workflow_task_attempt": 3,
+            "workflow_type": fixture["workflow"]["type"], "workflow_id": "order-0",
+            "run_id": run_id, "payload_codec": "avro",
+            "arguments": serializer.encode(fixture["workflow"]["input"]), "history_events": fixture["history"],
+        }]
+        worker = Worker(
+            mock_client, task_queue="orders", workflows=[RecoveredWorkflow],
+            max_concurrent_workflow_tasks=1, poll_timeout=0.01,
+        )
+        execution = await worker.run_until(workflow_id="order-0", timeout=3.0, poll_interval=0.01)
+        assert execution.run_id == run_id
+        assert execution.status == "completed"
+        mock_client.complete_workflow_task.assert_awaited_once()
+        publication = mock_client.complete_workflow_task.call_args.kwargs
+        assert publication["task_id"] == "original-cold-task"
+        assert publication["workflow_task_attempt"] == 3
+        commands = publication["commands"]
+        assert len(commands) == 1
+        assert commands[0]["type"] == "complete_workflow"
+        assert serializer.decode_envelope(commands[0]["result"], codec="avro") == fixture["expected"]["result"]
+        mock_client.complete_activity_task.assert_not_awaited()
+        mock_client.fail_workflow_task.assert_not_awaited()
+        assert worker._workflow_reserved == 0
+
+    def refusal_worker(
+        self, client: AsyncMock, kind: str,
+    ) -> tuple[Worker, AsyncMock, dict[str, object]]:
+        client.namespace = "default"
+        client.get_cluster_info.return_value = compatible_cluster_info(worker_protocol={
+            "version": PROTOCOL_VERSION,
+            "server_capabilities": {"query_tasks": False, "long_poll_timeout": 30},
+        })
+        client.describe_workflow.return_value = WorkflowExecution(
+            "original", "original-run", "test-wf", "running",
+        )
+        body: dict[str, object] = {
+            "task": None, "poll_status": "backend_lock_pressure", "reason": "backend_lock_pressure",
+            "namespace": "default", "task_queue": "orders", "task_kind": kind + "_task",
+            "retry_after_seconds": 1,
+        }
+        worker = Worker(
+            client, worker_id="w1", task_queue="orders",
+            workflows=[TestWorkflow] if kind == "workflow" else [],
+            activities=[echo_activity] if kind == "activity" else [], poll_timeout=0.01,
+            max_concurrent_workflow_tasks=1,
+        )
+        return worker, getattr(client, "poll_" + kind + "_task"), body
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["workflow", "activity"])
+    @pytest.mark.parametrize("registration_delay", [0.0, 0.04])
+    async def test_run_until_lock_pressure_retains_original_deadline(
+        self, mock_client: AsyncMock, kind: str, registration_delay: float,
+    ) -> None:
+        worker, poll, body = self.refusal_worker(mock_client, kind)
+        poll.side_effect = ServerError(503, body)
+
+        async def register(**kwargs: object) -> dict[str, object]:
+            await asyncio.sleep(registration_delay)
+            return {"worker_id": "w1", "registered": True}
+
+        mock_client.register_worker.side_effect = register
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(TimeoutError, match="original"):
+            await worker.run_until(workflow_id="original", timeout=0.08, poll_interval=0.01)
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert 0.06 <= elapsed < 1.0
+        poll.assert_awaited_once()
+        assert worker._stop.is_set()
+        mock_client.deregister_worker_registration.assert_awaited_once_with("w1", expected_namespace="default")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["workflow", "activity"])
+    async def test_run_until_stop_interrupts_lock_backoff(
+        self, mock_client: AsyncMock, kind: str,
+    ) -> None:
+        worker, poll, body = self.refusal_worker(mock_client, kind)
+        entered = asyncio.Event()
+
+        async def refuse(**kwargs: object) -> None:
+            entered.set()
+            raise ServerError(503, body)
+
+        poll.side_effect = refuse
+        running = asyncio.create_task(worker.run_until(workflow_id="original", timeout=5.0))
+        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        await asyncio.sleep(0)
+        await asyncio.wait_for(worker.stop(), timeout=0.5)
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+        poll.assert_awaited_once()
+        mock_client.complete_workflow_task.assert_not_awaited()
+        mock_client.complete_activity_task.assert_not_awaited()
+        mock_client.deregister_worker_registration.assert_awaited_once_with("w1", expected_namespace="default")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["workflow", "activity"])
+    @pytest.mark.parametrize("change", [
+        {"task_queue": "foreign"}, {"task_kind": "query_task"}, {"task": {"task_id": "claimed"}},
+        {"poll_status": "empty"}, {"retry_after_seconds": True}, {"retry_after_seconds": 61},
+        {"retryable": False}, {"request_admitted": True},
+    ])
+    async def test_run_until_refuses_malformed_or_admitted_poll_response(
+        self, mock_client: AsyncMock, kind: str, change: dict[str, object],
+    ) -> None:
+        worker, poll, body = self.refusal_worker(mock_client, kind)
+        refusal = ServerError(503, {**body, **change})
+        poll.side_effect = refusal
+        with pytest.raises(ServerError) as observed:
+            await worker.run_until(workflow_id="original", timeout=2.0)
+        assert observed.value is refusal
+        poll.assert_awaited_once()
+        mock_client.complete_workflow_task.assert_not_awaited()
+        mock_client.complete_activity_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["workflow", "activity"])
+    async def test_run_until_recovers_typed_lock_refusal(
+        self, mock_client: AsyncMock, kind: str,
+    ) -> None:
+        mock_client.namespace = "default"
+        mock_client.get_cluster_info.return_value = compatible_cluster_info(worker_protocol={
+            "version": PROTOCOL_VERSION,
+            "server_capabilities": {"query_tasks": False, "long_poll_timeout": 30},
+        })
+        mock_client.describe_workflow.side_effect = [
+            WorkflowExecution("original", "original-run", "test-wf", "running"),
+            WorkflowExecution("original", "original-run", "test-wf", "running"),
+            WorkflowExecution("original", "original-run", "test-wf", "completed"),
+        ]
+        refusal = ServerError(503, {
+            "task": None, "poll_status": "backend_lock_pressure", "reason": "backend_lock_pressure",
+            "namespace": "default", "task_queue": "orders", "task_kind": kind + "_task",
+            "retry_after_seconds": 1, "backend": {"driver": "sqlite", "lock_pressure": True},
+        })
+        poll = getattr(mock_client, "poll_" + kind + "_task")
+        poll.side_effect = [refusal, None]
+        worker = Worker(
+            mock_client, worker_id="w1", task_queue="orders",
+            workflows=[TestWorkflow] if kind == "workflow" else [],
+            activities=[echo_activity] if kind == "activity" else [],
+            poll_timeout=0.01,
+            max_concurrent_workflow_tasks=1,
+        )
+
+        execution = await worker.run_until(workflow_id="original", timeout=2.0, poll_interval=0.01)
+
+        assert execution.status == "completed"
+        assert execution.run_id == "original-run"
+        assert poll.await_count == 2
+        assert all(call.kwargs["worker_id"] == "w1" for call in poll.await_args_list)
+        assert all(call.kwargs["task_queue"] == "orders" for call in poll.await_args_list)
+        mock_client.register_worker.assert_awaited_once()
+        mock_client.deregister_worker_registration.assert_awaited_once_with("w1", expected_namespace="default")
+        mock_client.complete_workflow_task.assert_not_awaited()
+        mock_client.complete_activity_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["workflow", "activity"])
+    @pytest.mark.parametrize("refusal_kind", ["foreign_namespace", "unauthorized"])
+    async def test_run_until_preserves_fatal_or_foreign_poll_refusal(
+        self, mock_client: AsyncMock, kind: str, refusal_kind: str,
+    ) -> None:
+        mock_client.namespace = "default"
+        mock_client.get_cluster_info.return_value = compatible_cluster_info(worker_protocol={
+            "version": PROTOCOL_VERSION,
+            "server_capabilities": {"query_tasks": False, "long_poll_timeout": 30},
+        })
+        mock_client.describe_workflow.return_value = WorkflowExecution(
+            "original", "original-run", "test-wf", "running",
+        )
+        refusal = Unauthorized() if refusal_kind == "unauthorized" else ServerError(503, {
+            "task": None, "poll_status": "backend_lock_pressure", "reason": "backend_lock_pressure",
+            "namespace": "foreign", "task_queue": "orders", "task_kind": kind + "_task",
+            "retry_after_seconds": 1,
+        })
+        poll = getattr(mock_client, "poll_" + kind + "_task")
+        poll.side_effect = refusal
+        worker = Worker(
+            mock_client, worker_id="w1", task_queue="orders",
+            workflows=[TestWorkflow] if kind == "workflow" else [],
+            activities=[echo_activity] if kind == "activity" else [], poll_timeout=0.01,
+        )
+
+        with pytest.raises(type(refusal)) as observed:
+            await worker.run_until(workflow_id="original", timeout=2.0, poll_interval=0.01)
+
+        assert observed.value is refusal
+        poll.assert_awaited_once()
+        mock_client.deregister_worker_registration.assert_awaited_once_with("w1", expected_namespace="default")
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("has_workflows,has_activities", [(True, False), (False, True), (False, False)])
     async def test_run_until_polls_only_registered_task_families(

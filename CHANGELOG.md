@@ -6,6 +6,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.1] - 2026-10-29
+
+### Fixed
+
+- Preserve the committed condition reopen when another signal arrives during
+  a signal's completion. Replacement workers replay both signals exactly once
+  without skipping durable waits or weakening definition-drift checks.
+
+## [2.12.0] - 2026-10-27
+
+### Added
+
+- Expose immutable received retry policy and original attempt metadata through
+  `ActivityInfo.retry_info`, with explicit unknown, legacy-null and unlimited
+  states and a last-configured-attempt check.
+- Expose nullable original workflow/run IDs in remote, inline and prepared
+  activity contexts without substituting task or activity-attempt IDs.
+- Add an optional `run_id` to async and sync signal calls, with canonical
+  activity guidance for stable business-event keys and delivery reconciliation.
+
+### Fixed
+
+- Preserve the bound run when `WorkflowHandle.signal` sends a signal, instead
+  of silently targeting whichever run is current.
+
+## [2.11.2] - 2026-10-25
+
+### Fixed
+
+- Bound each worker poll HTTP attempt with an absolute deadline, including
+  responses that keep sending progress. Preserve cancellation, retry budgets
+  and the original poll identity.
+- Accept negotiated poll-progress responses alongside ordinary JSON, applying
+  their original status and retry headers before normal error handling.
+- Warn when a connection failure or gateway error cuts a poll short, naming
+  the observed duration and configured wait.
+
+## [2.11.1] - 2026-10-24
+
+### Fixed
+
+- Keep the bounded `Worker.run_until` helper polling after a matching typed
+  backend-lock refusal. Backoff stays inside the original caller deadline,
+  releases reserved capacity and stops promptly on cancellation. Malformed,
+  foreign and fatal refusals retain their existing error behavior.
+
+## [2.11.0] - 2026-10-23
+
+### Fixed
+
+- Bound failure messages, stacks and diagnostic payloads before reporting them.
+  The complete encoded request defaults to 1 MiB, including JSON escaping and
+  markers, and respects lower configured or discovered limits. Preserve failure
+  type, retry policy and claim identity; refuse an identity that cannot fit.
+
+## [2.10.1] - 2026-10-23
+
+### Fixed
+
+- Keep worker deregistration inside the remaining shutdown deadline. When the
+  runtime advertises generation-fenced receipts, retry matching transient or
+  lost responses with the original registration token. Without advertised
+  fencing, use one legacy attempt. Exhausted or uncertain shutdown keeps
+  registration removal unconfirmed instead of reporting success.
+
 ## [2.10.0] - 2026-10-23
 
 ### Added

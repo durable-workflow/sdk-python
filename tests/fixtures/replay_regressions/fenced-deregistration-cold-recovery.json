@@ -1,0 +1,64 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "fenced-deregistration-cold-recovery",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.deregistration.cold-recovery",
+    "input": [
+      "handoff"
+    ],
+    "run_id": "01m5mpg2jp77pe59qqcjrvg51x",
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "activity_execution_id": "01m5mpg4cw11vhx6w2b9mdssmg",
+        "activity_type": "tests.deregistration.echo",
+        "sequence": 1
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "activity_execution_id": "01m5mpg4cw11vhx6w2b9mdssmg",
+        "activity_attempt_id": "01M5MPG4MRZJB84ND7MZ1VRPRX",
+        "activity_type": "tests.deregistration.echo",
+        "sequence": 1,
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoOaGFuZG9mZg=="
+        },
+        "payload_codec": "avro"
+      }
+    }
+  ],
+  "expected": {
+    "command_type": "CompleteWorkflow",
+    "result": {
+      "value": "handoff",
+      "run": "01m5mpg2jp77pe59qqcjrvg51x"
+    }
+  },
+  "provenance": {
+    "qualification": "fresh published Server with candidate Python source; not registry publication",
+    "server_version": "2.11.1",
+    "server_source": "5336a98dd256e046edfdb67c81764cde4babd360",
+    "core_version": "2.10.2",
+    "core_source": "aca7928484083635e68a5a384b2dcecef842108e",
+    "image_digest": "sha256:bf8bed13f5f809ee3425233180a581353eac4683adbee5c4ecbf63bb18bbd102",
+    "workflow_id": "sdk175-cold-af7d38fbd6fa",
+    "observed_at": "2026-10-23T15:36:31.757789+00:00",
+    "observation_sha256": "90a75f09517c1ad852d48df2ad43d31b68837d2cc3f4895eaabfae2b095765eb",
+    "recovered_claim_count": 1,
+    "replacement_preserved": true,
+    "old_attempt": 1,
+    "replacement_attempt": 2,
+    "fixture_form": "minimal replay fields derived from the retained fresh observation; not a raw export"
+  }
+}

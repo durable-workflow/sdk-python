@@ -19,6 +19,7 @@ from durable_workflow.errors import ActivityCancelled, NonRetryableError, Server
 from durable_workflow.retry_policy import TransportRetryPolicy
 from durable_workflow.worker import Worker
 from tests.test_activity_process import wait_for_exit, wait_for_file
+from tests.test_activity_retry_info import inspect_activity_context
 from tests.test_worker import compatible_cluster_info
 
 
@@ -92,8 +93,7 @@ async def application_failure(kind: str) -> None:
     raise ActivityCancelled()
 
 
-@pytest_asyncio.fixture
-async def owner(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+async def make_owner(monkeypatch: pytest.MonkeyPatch) -> tuple[Worker, AsyncMock]:
     monkeypatch.delenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", raising=False)
     client = AsyncMock(spec=Client)
     client.get_cluster_info.return_value = compatible_cluster_info(worker_protocol={
@@ -106,6 +106,12 @@ async def owner(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def
     worker = Worker(client, task_queue="queue", worker_id="owner", capabilities=["cooperative_cancellation"],
                     max_concurrent_activity_tasks=1)
     await worker._register()
+    return worker, client
+
+
+@pytest_asyncio.fixture
+async def owner(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    worker, client = await make_owner(monkeypatch)
     try:
         yield worker, client
     finally:
@@ -152,18 +158,27 @@ async def test_authority_loss_stops_and_joins_the_actual_callback_before_reporti
     client.fail_activity_task.assert_not_awaited()
 
 
-async def test_shutdown_timeout_joins_the_remote_callback_before_returning(owner: Any, tmp_path: Path) -> None:
-    worker, client = owner
+async def test_shutdown_timeout_joins_the_remote_callback_before_returning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    worker, client = await make_owner(monkeypatch)
     worker._shutdown_timeout = 0.01
     marker = tmp_path / "callback"
     worker.activities["remote"] = blocked_async
     execution = worker._track(worker._run_activity_task(task(str(marker))))
     await wait_for_file(marker)
     pid = int(marker.read_text())
-    await asyncio.wait_for(worker.stop(), timeout=4.0)
+    stopping = worker.stop()
+    with pytest.raises(RuntimeError, match="deadline exhausted.*registration.*unconfirmed") as failed:
+        await asyncio.wait_for(stopping, timeout=4.0)
     await wait_for_exit(pid)
     assert execution.cancelled() or execution.result() == "claim_aborted"
     assert not worker._remote_activity_processes
+    assert worker._registered
+    client.deregister_worker_registration.assert_not_awaited()
+    with pytest.raises(RuntimeError) as repeated:
+        await worker.stop()
+    assert repeated.value is failed.value
     client.complete_activity_task.assert_not_awaited()
     client.fail_activity_task.assert_not_awaited()
 
@@ -189,6 +204,25 @@ async def test_authored_heartbeat_stays_on_owner_loop_and_preserves_typed_result
     assert not worker._remote_activity_processes
     client.acknowledge_activity_cancellation.assert_not_awaited()
     client.fail_activity_task.assert_not_awaited()
+
+
+@pytest.mark.parametrize("configured", [False, True])
+async def test_supervised_worker_preserves_received_context(owner: Any, configured: bool) -> None:
+    worker, client = owner
+    worker.activities["remote"] = inspect_activity_context
+    work = task()
+    if configured:
+        work.update(attempt_number=3, workflow_id="0", run_id="017",
+                    retry_policy={"max_attempts": 3, "future": [True, None]})
+    assert await worker._run_activity_task(work) == "completed"
+    client.fail_activity_task.assert_not_awaited()
+    assert client.complete_activity_task.await_args.kwargs["result"] == {
+        "workflow_id": "0" if configured else None, "run_id": "017" if configured else None,
+        "attempt": 3 if configured else 1, "policy_provided": configured,
+        "policy": {"max_attempts": 3, "future": [True, None]} if configured else None,
+        "maximum": 3 if configured else None, "unlimited": False, "last": True if configured else None,
+    }
+    assert not worker._remote_activity_processes
 
 
 @pytest.mark.parametrize("field", ["lease", "heartbeat", "start_to_close", "schedule_to_close", "session", "malformed"])

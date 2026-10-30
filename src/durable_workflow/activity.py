@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+import json
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import InitVar, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from ._activity_lease import current_activity_authority
@@ -20,6 +21,53 @@ _current_context: contextvars.ContextVar[ActivityContext | None] = contextvars.C
 )
 
 
+@dataclass(frozen=True, init=False)
+class ActivityRetryInfo:
+    """Original attempt and immutable received retry snapshot, without defaults."""
+
+    attempt_number: int
+    policy_provided: bool
+    # Immutable JSON also survives the supervised callback's spawn serialization.
+    _policy_json: str = field(repr=False)
+
+    def __init__(self, attempt_number: int, policy_provided: bool = False, policy: Any = None) -> None:
+        object.__setattr__(self, "attempt_number", attempt_number)
+        object.__setattr__(self, "policy_provided", policy_provided)
+        object.__setattr__(self, "_policy_json", json.dumps(policy))
+
+    @classmethod
+    def from_task(cls, attempt_number: int, task: Mapping[str, Any]) -> ActivityRetryInfo:
+        return cls(attempt_number, "retry_policy" in task, task.get("retry_policy"))
+
+    def policy(self) -> Any:
+        """Return a fresh copy, including unknown fields and explicit legacy null."""
+        return json.loads(self._policy_json)
+
+    def max_attempts(self) -> int | None:
+        """A positive configured limit. An unknown limit does not mean unlimited."""
+        policy = self.policy()
+        maximum = policy.get("max_attempts") if isinstance(policy, dict) else None
+        return maximum if type(maximum) is int and maximum > 0 else None
+
+    def is_unlimited(self) -> bool:
+        """Only an explicit max_attempts:null inside a policy means unlimited."""
+        policy = self.policy()
+        return isinstance(policy, dict) and "max_attempts" in policy and policy["max_attempts"] is None
+
+    def is_last_configured_attempt(self) -> bool | None:
+        """Check the budget, not whether another execution will actually occur.
+
+        Cancellation, non-retryable failure, workflow closure and deadlines can
+        end execution before the configured budget is exhausted.
+        """
+        if self.attempt_number < 1:
+            return None
+        maximum = self.max_attempts()
+        if maximum is not None:
+            return self.attempt_number >= maximum
+        return False if self.is_unlimited() else None
+
+
 @dataclass(frozen=True)
 class ActivityInfo:
     """Metadata attached to the currently running activity attempt."""
@@ -30,6 +78,17 @@ class ActivityInfo:
     attempt_number: int
     task_queue: str
     worker_id: str
+    task_metadata: InitVar[Mapping[str, Any] | None] = None
+    retry_info: ActivityRetryInfo = field(init=False)
+    workflow_id: str | None = field(init=False)
+    run_id: str | None = field(init=False)
+
+    def __post_init__(self, task_metadata: Mapping[str, Any] | None) -> None:
+        task = task_metadata if task_metadata is not None else {}
+        object.__setattr__(self, "retry_info", ActivityRetryInfo.from_task(self.attempt_number, task))
+        for name in ("workflow_id", "run_id"):
+            value = task.get(name)
+            object.__setattr__(self, name, value if isinstance(value, str) and value else None)
 
 
 class ActivityContext:
