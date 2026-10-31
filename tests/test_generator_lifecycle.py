@@ -305,8 +305,8 @@ def cleanup_side_effect_history() -> list[dict[str, Any]]:
 
 
 @pytest.mark.parametrize("operation", ["query", "validation", "update"])
-def test_read_only_reconstruction_does_not_execute_cleanup_side_effect(operation: str) -> None:
-    CleanupSideEffect.calls = 0
+def test_read_only_reconstruction_does_not_execute_cleanup_side_effect(operation: str, monkeypatch: Any) -> None:
+    monkeypatch.setattr(CleanupSideEffect, "calls", 0)
     history = cleanup_side_effect_history()
     if operation == "query":
         assert query_state(CleanupSideEffect, history, [], "phase") == "cleanup"
@@ -321,8 +321,8 @@ def test_read_only_reconstruction_does_not_execute_cleanup_side_effect(operation
     assert CleanupSideEffect.calls == 0
 
 
-def test_real_cleanup_side_effect_runs_once_and_replays_its_recorded_result() -> None:
-    CleanupSideEffect.calls = 0
+def test_real_cleanup_side_effect_runs_once_and_replays_its_recorded_result(monkeypatch: Any) -> None:
+    monkeypatch.setattr(CleanupSideEffect, "calls", 0)
     history = cleanup_side_effect_history()
     first = replay(CleanupSideEffect, history, [])
     assert len(first.commands) == 2
