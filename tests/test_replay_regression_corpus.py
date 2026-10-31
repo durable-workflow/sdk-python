@@ -27,6 +27,7 @@ from durable_workflow.workflow import (
 )
 from tests.deregistration_recovery import RecoveredWorkflow as FencedRecoveryWorkflow
 from tests.test_condition_replay_drift import ConditionIdentityWorkflow
+from tests.test_generator_lifecycle import PendingFinally
 from tests.test_golden_history_replay import (
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
@@ -344,6 +345,7 @@ class NexusCooperativeDeliveryWorkflow:
 
 
 WORKFLOWS = [
+    PendingFinally,
     IdentityAcrossReplay,
     IdentityContinueAsNew,
     PersistedClockWorkflow,
@@ -451,24 +453,31 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     assert isinstance(workflow_type, str) and workflow_type
     if workflow_type == "sdk.observed-worker-replay":
         return _execute_observed_worker_replay(fixture)
-    if workflow_type == "sdk.query-task-dispatch":
+    if workflow_type in {"sdk.query-task-dispatch", "sdk.generator-query-task-dispatch"}:
         # The regression is a worker delivery, not an invented durable history.
         assert "history" not in fixture
         inputs = workflow.get("input")
         assert isinstance(inputs, list) and len(inputs) == 1 and isinstance(inputs[0], dict)
         client = AsyncMock(spec=Client)
         client.namespace = "regression-corpus"
+        query_workflow = (
+            PendingFinally if workflow_type == "sdk.generator-query-task-dispatch" else QueryAuthorityWorkflow
+        )
         worker = Worker(client, task_queue="query-authority", worker_id="query-worker",
-                        workflows=[QueryAuthorityWorkflow])
-        task = {**inputs[0], "workflow_type": workflow_type, "payload_codec": "avro",
-                "workflow_arguments": serializer.envelope([], codec="avro"),
-                "query_arguments": serializer.envelope([], codec="avro"), "history_events": []}
+                        workflows=[query_workflow])
+        task = {**inputs[0], "workflow_type": query_workflow.__workflow_name__, "payload_codec": "avro",
+                "workflow_arguments": serializer.envelope(inputs[0].get("workflow_arguments", []), codec="avro"),
+                "query_arguments": serializer.envelope([], codec="avro"),
+                "history_events": inputs[0].get("history_events", [])}
         QueryAuthorityWorkflow.calls = 0
         outcome = asyncio.run(worker._run_query_task(task))
         commands = [{"type": "query_task_dispatch", "outcome": outcome,
-                     "handler_calls": QueryAuthorityWorkflow.calls,
                      "completion_calls": client.complete_query_task.await_count,
                      "failure_calls": client.fail_query_task.await_count}]
+        if workflow_type == "sdk.query-task-dispatch":
+            commands[0]["handler_calls"] = QueryAuthorityWorkflow.calls
+        elif client.complete_query_task.await_args is not None:
+            commands[0]["query_result"] = client.complete_query_task.await_args.kwargs["result"]
         _assert_matches(fixture["command_sequence"], commands, f"{fixture['id']}.command_sequence")
         _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
         return commands
@@ -659,7 +668,8 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
     expected = fixture.get("expected")
     assert isinstance(expected, dict) and expected
     if workflow.get("type") in {
-        "sdk.replay-conformance-report", "sdk.query-task-dispatch", "sdk.observed-worker-replay",
+        "sdk.replay-conformance-report", "sdk.query-task-dispatch", "sdk.generator-query-task-dispatch",
+        "sdk.observed-worker-replay",
     }:
         _execute_fixture(fixture)
         return

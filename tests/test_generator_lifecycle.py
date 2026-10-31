@@ -4,13 +4,29 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
+import weakref
 from contextlib import contextmanager
 from typing import Any
 
 import pytest
 
-from durable_workflow import workflow
-from durable_workflow.workflow import _prepare_query_state, query_state, replay
+from durable_workflow import serializer, workflow
+from durable_workflow.errors import QueryFailed
+from durable_workflow.workflow import (
+    CompleteUpdate,
+    CompleteWorkflow,
+    FailWorkflow,
+    ScheduleActivity,
+    _prepare_query_state,
+    _prepare_update_validation,
+    _UpdateValidationReplayOptions,
+    apply_update,
+    query_state,
+    replay,
+    validate_update,
+)
+from tests.test_cancellation_context import delivery, request
+from tests.test_cooperative_cancellation import completed_activity
 
 
 def pending(ctx: Any, kind: str) -> Any:
@@ -103,3 +119,203 @@ def test_discarded_pending_replay_does_not_emit_cleanup_logs(kind: str, caplog: 
     del outcome
     gc.collect()
     assert [r for r in caplog.records if r.message == "generator-lifecycle-cleanup"] == []
+
+
+@workflow.defn(name="tests.generator.pending-receivers")
+class PendingReceivers(PendingFinally):
+    @workflow.update("touch")
+    def touch(self) -> Any:
+        self.value["items"].append("updated")
+        return self.value
+
+    @workflow.update_validator("touch")
+    def check(self) -> Any:
+        assert self.value["phase"] == "waiting"
+        return self.value
+
+    @workflow.update("async-touch")
+    def async_touch(self) -> None:
+        pass
+
+    @workflow.update_validator("async-touch")
+    async def async_check(self) -> Any:
+        await asyncio.sleep(0)
+        assert self.value["phase"] == "waiting"
+        return self.value
+
+    @workflow.query("broken")
+    def broken(self) -> None:
+        raise RuntimeError("query-body-failed")
+
+
+@pytest.mark.parametrize("kind", ["activity", "timer", "condition", "child"])
+def test_update_uses_suspended_state_and_detaches_its_result(kind: str) -> None:
+    history = [{"event_type": "UpdateAccepted", "payload": {
+        "update_id": "update-1", "update_name": "touch",
+        "arguments": serializer.encode([], codec="avro"), "payload_codec": "avro",
+    }}]
+    result = apply_update(PendingReceivers, history, [kind], "update-1")
+    gc.collect()
+    assert isinstance(result, CompleteUpdate)
+    assert result.result == {"phase": "waiting", "items": ["waiting", "updated"]}
+
+
+@pytest.mark.parametrize("kind", ["activity", "timer", "condition", "child"])
+def test_validator_uses_suspended_state_and_detaches_its_result(kind: str) -> None:
+    result = validate_update(PendingReceivers, [], [kind], "touch", [])
+    gc.collect()
+    assert result == {"phase": "waiting", "items": ["waiting"]}
+
+
+@pytest.mark.parametrize("kind", ["activity", "timer", "condition", "child"])
+async def test_async_validator_owns_replay_through_await(kind: str) -> None:
+    invoke = _prepare_update_validation(
+        PendingReceivers, [], [kind], "async-touch", [], replay_options=_UpdateValidationReplayOptions(),
+    )
+    await asyncio.sleep(0)
+    result = await invoke()
+    del invoke
+    gc.collect()
+    assert result == {"phase": "waiting", "items": ["waiting"]}
+
+
+@pytest.mark.parametrize("consume", [False, True], ids=["abandoned", "handler-error"])
+def test_prepared_query_releases_instance_and_silences_discard(consume: bool, caplog: Any) -> None:
+    refs: list[Any] = []
+
+    @workflow.defn(name="tests.generator.owned-query")
+    class OwnedQuery(PendingReceivers):
+        def __init__(self) -> None:
+            refs.append(weakref.ref(self))
+
+    caplog.set_level(logging.INFO, logger="durable_workflow.workflow.replay")
+    invoke = _prepare_query_state(OwnedQuery, [], [], "broken" if consume else "state")
+    assert refs[0]() is not None
+    if consume:
+        with pytest.raises(QueryFailed, match="query-body-failed"):
+            invoke()
+    del invoke
+    gc.collect()
+    assert refs[0]() is None
+    assert [r for r in caplog.records if r.message == "generator-lifecycle-cleanup"] == []
+
+
+def test_unstarted_async_query_can_be_discarded_without_coroutine_warning(recwarn: Any, caplog: Any) -> None:
+    caplog.set_level(logging.INFO, logger="durable_workflow.workflow.replay")
+    invoke = _prepare_query_state(PendingFinally, [], [], "async_state")
+    result = invoke()
+    result.close()
+    del result, invoke
+    gc.collect()
+    assert not [warning for warning in recwarn if "never awaited" in str(warning.message)]
+    assert [r for r in caplog.records if r.message == "generator-lifecycle-cleanup"] == []
+
+
+@workflow.defn(name="tests.generator.actual-cleanup")
+class ActualCleanup:
+    def run(self, ctx: Any, finish: str) -> Any:
+        self.phase = "waiting"
+        try:
+            yield ctx.start_timer(10)
+            if finish == "failure":
+                raise ValueError("actual-workflow-failure")
+        finally:
+            self.phase = "cleanup"
+            ctx.logger.info("actual-generator-cleanup")
+            with ctx.cancellation_shield():
+                yield ctx.schedule_activity("cleanup", [])
+        return "done"
+
+    @workflow.query("phase")
+    def current_phase(self) -> str:
+        return self.phase
+
+
+@pytest.mark.parametrize("finish", ["success", "failure", "cancellation"])
+def test_real_cleanup_survives_pending_discard_and_cold_replay(finish: str, caplog: Any) -> None:
+    caplog.set_level(logging.INFO, logger="durable_workflow.workflow.replay")
+    history = [request(), delivery()] if finish == "cancellation" else [{"event_type": "TimerFired", "payload": {}}]
+    first = replay(ActualCleanup, history, [finish], run_id="run-1")
+    assert len(first.commands) == 1
+    assert isinstance(first.commands[0], ScheduleActivity)
+    assert first.commands[0].activity_type == "cleanup"
+    first.close()
+    assert len([r for r in caplog.records if r.message == "actual-generator-cleanup"]) == 1
+    caplog.clear()
+
+    history.append(completed_activity(2, "cleanup", "cleaned"))
+    for _restart in range(2):
+        final = replay(ActualCleanup, history, [finish], run_id="run-1")
+        if finish == "success":
+            assert final.commands == [CompleteWorkflow("done")]
+        else:
+            assert len(final.commands) == 1 and isinstance(final.commands[0], FailWorkflow)
+            assert final.commands[0].exception_type == ("ValueError" if finish == "failure" else "WorkflowCancelled")
+        final.close()
+    assert [r for r in caplog.records if r.message == "actual-generator-cleanup"] == []
+
+
+@pytest.mark.parametrize("finish", ["success", "failure", "cancellation"])
+def test_query_reconstruction_does_not_log_real_cleanup(finish: str, caplog: Any) -> None:
+    caplog.set_level(logging.INFO, logger="durable_workflow.workflow.replay")
+    history = [request(), delivery()] if finish == "cancellation" else [{"event_type": "TimerFired", "payload": {}}]
+    assert query_state(ActualCleanup, history, [finish], "phase", run_id="run-1") == "cleanup"
+    assert [r for r in caplog.records if r.message == "actual-generator-cleanup"] == []
+
+
+@pytest.mark.parametrize("delegated", [False, True])
+def test_yielding_discarded_finally_is_quiet_and_does_not_add_commands(
+    delegated: bool, caplog: Any, capfd: Any, recwarn: Any,
+) -> None:
+    @workflow.defn(name="tests.generator.yielded-finally")
+    class YieldingFinally:
+        def cleanup(self, ctx: Any) -> Any:
+            try:
+                yield ctx.schedule_activity("discarded-cleanup", [])
+            finally:
+                ctx.logger.info("discarded-finally")
+                yield ctx.start_timer(2)
+
+        def run(self, ctx: Any) -> Any:
+            try:
+                yield ctx.schedule_activity("work", [])
+            finally:
+                if delegated:
+                    yield from self.cleanup(ctx)
+                else:
+                    ctx.logger.info("discarded-finally")
+                    yield ctx.schedule_activity("discarded-cleanup", [])
+
+    caplog.set_level(logging.INFO, logger="durable_workflow.workflow.replay")
+    result = replay(YieldingFinally, [], [])
+    commands = result.commands
+    del result
+    gc.collect()
+    assert len(commands) == 1 and isinstance(commands[0], ScheduleActivity)
+    assert commands[0].activity_type == "work"
+    assert [r for r in caplog.records if r.message == "discarded-finally"] == []
+    assert "ignored" not in capfd.readouterr().err
+    assert not [warning for warning in recwarn if "unraisable" in str(warning.message).lower()]
+
+
+@workflow.defn(name="tests.generator.command-alias")
+class CommandAlias:
+    def run(self, ctx: Any, local: bool = False) -> Any:
+        value = {"phase": "waiting"}
+        try:
+            yield ctx.local_activity("work", [value]) if local else ctx.schedule_activity("work", [value])
+        finally:
+            value["phase"] = "cleanup"
+
+
+@pytest.mark.parametrize("local", [False, True], ids=["remote-command", "prepared-local-command"])
+def test_authored_command_payload_survives_releasing_replay_owner(local: bool) -> None:
+    outcome = replay(CommandAlias, [], [local], prepare_local_activities=local)
+    if local:
+        assert outcome.prepared_local_activity is not None
+        command = outcome.prepared_local_activity.command
+    else:
+        command = outcome.commands[0]
+    del outcome
+    gc.collect()
+    assert command.arguments == [{"phase": "waiting"}]
