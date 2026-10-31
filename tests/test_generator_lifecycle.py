@@ -16,6 +16,7 @@ from durable_workflow.workflow import (
     CompleteUpdate,
     CompleteWorkflow,
     FailWorkflow,
+    RecordSideEffect,
     ScheduleActivity,
     _prepare_query_state,
     _prepare_update_validation,
@@ -249,7 +250,8 @@ def test_real_cleanup_survives_pending_discard_and_cold_replay(finish: str, capl
         if finish == "success":
             assert final.commands == [CompleteWorkflow("done")]
         else:
-            assert len(final.commands) == 1 and isinstance(final.commands[0], FailWorkflow)
+            assert len(final.commands) == 1
+            assert isinstance(final.commands[0], FailWorkflow)
             assert final.commands[0].exception_type == ("ValueError" if finish == "failure" else "WorkflowCancelled")
         final.close()
     assert [r for r in caplog.records if r.message == "actual-generator-cleanup"] == []
@@ -261,6 +263,83 @@ def test_query_reconstruction_does_not_log_real_cleanup(finish: str, caplog: Any
     history = [request(), delivery()] if finish == "cancellation" else [{"event_type": "TimerFired", "payload": {}}]
     assert query_state(ActualCleanup, history, [finish], "phase", run_id="run-1") == "cleanup"
     assert [r for r in caplog.records if r.message == "actual-generator-cleanup"] == []
+
+
+@workflow.defn(name="tests.generator.cleanup-side-effect")
+class CleanupSideEffect:
+    calls = 0
+
+    def cleanup(self) -> str:
+        type(self).calls += 1
+        return "cleaned"
+
+    def run(self, ctx: Any) -> Any:
+        self.phase = "waiting"
+        try:
+            yield ctx.start_timer(1)
+        finally:
+            self.phase = "cleanup"
+            yield ctx.side_effect(self.cleanup)
+        return "done"
+
+    @workflow.query("phase")
+    def phase_query(self) -> str:
+        return self.phase
+
+    @workflow.update("observe")
+    def observe(self) -> str:
+        return self.phase
+
+    @observe.validator
+    def validate_observe(self) -> None:
+        if self.phase != "cleanup":
+            raise ValueError("Cleanup has not started.")
+
+
+def cleanup_side_effect_history() -> list[dict[str, Any]]:
+    return [
+        {"event_type": "WorkflowStarted", "payload": {"timestamp": "2026-10-31T00:00:00Z"}},
+        {"event_type": "TimerScheduled", "payload": {"sequence": 1, "timer_id": "wait", "delay_seconds": 1}},
+        {"event_type": "TimerFired", "payload": {"sequence": 1, "timer_id": "wait"}},
+    ]
+
+
+@pytest.mark.parametrize("operation", ["query", "validation", "update"])
+def test_read_only_reconstruction_does_not_execute_cleanup_side_effect(operation: str) -> None:
+    CleanupSideEffect.calls = 0
+    history = cleanup_side_effect_history()
+    if operation == "query":
+        assert query_state(CleanupSideEffect, history, [], "phase") == "cleanup"
+    elif operation == "validation":
+        assert validate_update(CleanupSideEffect, history, [], "observe", []) is None
+    else:
+        history.append({"event_type": "UpdateAccepted", "payload": {
+            "update_id": "update-1", "update_name": "observe",
+            "arguments": serializer.envelope([], codec="avro"), "payload_codec": "avro",
+        }})
+        assert apply_update(CleanupSideEffect, history, [], "update-1") == CompleteUpdate("update-1", "cleanup")
+    assert CleanupSideEffect.calls == 0
+
+
+def test_real_cleanup_side_effect_runs_once_and_replays_its_recorded_result() -> None:
+    CleanupSideEffect.calls = 0
+    history = cleanup_side_effect_history()
+    first = replay(CleanupSideEffect, history, [])
+    assert len(first.commands) == 2
+    assert isinstance(first.commands[0], RecordSideEffect)
+    assert first.commands[0].result == "cleaned"
+    assert first.commands[1] == CompleteWorkflow("done")
+    first.close()
+    assert CleanupSideEffect.calls == 1
+    history.append({"event_type": "SideEffectRecorded", "payload": {
+        "sequence": 2, "result": serializer.envelope("cleaned", codec="avro"), "payload_codec": "avro",
+    }})
+    for _restart in range(2):
+        cold = replay(CleanupSideEffect, history, [])
+        assert cold.commands == [CompleteWorkflow("done")]
+        cold.close()
+        assert query_state(CleanupSideEffect, history, [], "phase") == "cleanup"
+    assert CleanupSideEffect.calls == 1
 
 
 @pytest.mark.parametrize("delegated", [False, True])
@@ -291,7 +370,8 @@ def test_yielding_discarded_finally_is_quiet_and_does_not_add_commands(
     commands = result.commands
     del result
     gc.collect()
-    assert len(commands) == 1 and isinstance(commands[0], ScheduleActivity)
+    assert len(commands) == 1
+    assert isinstance(commands[0], ScheduleActivity)
     assert commands[0].activity_type == "work"
     assert [r for r in caplog.records if r.message == "discarded-finally"] == []
     assert "ignored" not in capfd.readouterr().err

@@ -3252,7 +3252,7 @@ def _prepare_query_state(
             workflow_cls,
             history_events,
             start_input,
-            suppress_workflow_logs=True,
+            reconstruction_only=True,
             workflow_id=workflow_id,
             run_id=run_id,
             payload_codec=payload_codec,
@@ -3365,7 +3365,7 @@ def apply_update(
             workflow_cls,
             events,
             start_input,
-            suppress_workflow_logs=True,
+            reconstruction_only=True,
             workflow_id=workflow_id,
             run_id=run_id,
             payload_codec=payload_codec,
@@ -3521,7 +3521,7 @@ def _prepare_update_validation(
             workflow_cls,
             events,
             start_input,
-            suppress_workflow_logs=True,
+            reconstruction_only=True,
             workflow_id=replay_options.workflow_id,
             run_id=replay_options.run_id,
             payload_codec=replay_options.payload_codec,
@@ -4471,7 +4471,7 @@ def _replay_state(
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
     stop_at_uncommitted_cancellation: bool = False,
-    suppress_workflow_logs: bool = False,
+    reconstruction_only: bool = False,
     allow_cancellation_scope_authoring: bool = False,
     allow_cancellation_scope_delivery: bool = False,
 ) -> _ReplayState:
@@ -4706,7 +4706,7 @@ def _replay_state(
     lifetime = _ReplayLifetime(ctx.logger)
 
     def _set_replaying(replaying: bool) -> None:
-        ctx.logger._set_replaying(replaying or suppress_workflow_logs)
+        ctx.logger._set_replaying(replaying or reconstruction_only)
 
     # Continue-as-new cursor checkpoints describe instance state that predates
     # this run. Seed them before the workflow opens its first stream wait so
@@ -7127,6 +7127,11 @@ def _replay_state(
                     continue
                 _set_replaying(False)
                 _assert_pending_step_matches(cmd)
+                if reconstruction_only:
+                    # A query/update rebuild cannot author a missing marker or
+                    # execute its callback. Only a workflow task may do that.
+                    pending.append(cmd)
+                    return _state(pending)
                 if cmd._effect is not None:
                     try:
                         cmd.result = cmd._effect()

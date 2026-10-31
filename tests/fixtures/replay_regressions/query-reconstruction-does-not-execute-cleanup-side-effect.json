@@ -1,0 +1,41 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "query-reconstruction-does-not-execute-cleanup-side-effect",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "sdk.generator-side-effect-query-task-dispatch",
+    "input": [{
+      "query_task_id": "cleanup-side-effect-query",
+      "query_task_attempt": 1,
+      "lease_owner": "query-worker",
+      "task_queue": "query-authority",
+      "lease_expires_at": "2099-01-01T00:00:00Z",
+      "workflow_id": "cleanup-side-effect",
+      "run_id": "cleanup-side-effect-run",
+      "query_name": "phase",
+      "history_events": [
+        {"event_type": "WorkflowStarted", "payload": {"timestamp": "2026-10-31T00:00:00Z"}},
+        {"event_type": "TimerScheduled", "payload": {"sequence": 1, "timer_id": "wait", "delay_seconds": 1}},
+        {"event_type": "TimerFired", "payload": {"sequence": 1, "timer_id": "wait"}}
+      ]
+    }]
+  },
+  "command_sequence": [{
+    "type": "query_task_dispatch", "outcome": "completed",
+    "completion_calls": 1, "failure_calls": 0,
+    "query_result": "cleanup", "cleanup_calls": 0
+  }],
+  "expected": {
+    "command_sequence": [{
+      "type": "query_task_dispatch", "outcome": "completed",
+      "completion_calls": 1, "failure_calls": 0,
+      "query_result": "cleanup", "cleanup_calls": 0
+    }]
+  },
+  "provenance": {
+    "issue": "https://github.com/durable-workflow/sdk-python/issues/178",
+    "scope": "real worker query delivery at an unrecorded cleanup side-effect boundary; callback execution must remain workflow-task-owned"
+  }
+}
