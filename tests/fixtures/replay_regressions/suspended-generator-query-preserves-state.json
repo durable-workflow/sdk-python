@@ -1,0 +1,46 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "suspended-generator-query-preserves-state",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "sdk.generator-query-task-dispatch",
+    "input": [{
+      "query_task_id": "suspended-generator-query",
+      "query_task_attempt": 1,
+      "lease_owner": "query-worker",
+      "task_queue": "query-authority",
+      "lease_expires_at": "2099-01-01T00:00:00Z",
+      "workflow_id": "pending-generator",
+      "run_id": "pending-generator-run",
+      "workflow_arguments": ["timer"],
+      "query_name": "state",
+      "history_events": [{
+        "event_type": "TimerScheduled",
+        "payload": {
+          "sequence": 1,
+          "timer_id": "pending-generator-timer",
+          "delay_seconds": 1,
+          "fire_at": "2026-10-30T12:00:01Z"
+        }
+      }]
+    }]
+  },
+  "command_sequence": [{
+    "type": "query_task_dispatch", "outcome": "completed",
+    "completion_calls": 1, "failure_calls": 0,
+    "query_result": {"phase": "waiting", "items": ["waiting"]}
+  }],
+  "expected": {
+    "command_sequence": [{
+      "type": "query_task_dispatch", "outcome": "completed",
+      "completion_calls": 1, "failure_calls": 0,
+      "query_result": {"phase": "waiting", "items": ["waiting"]}
+    }]
+  },
+  "provenance": {
+    "issue": "https://github.com/durable-workflow/sdk-python/issues/178",
+    "scope": "real worker query delivery over a pending timer; workflow arguments are encoded by the fixture adapter"
+  }
+}

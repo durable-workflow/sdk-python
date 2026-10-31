@@ -142,6 +142,15 @@ independently of application heartbeats. Existing terminal cancellation remains
 available. See the [cancellation guide](docs/cooperative-cancellation-design.md)
 for immutable context, operation policies, shielded cleanup and recovery.
 
+A suspended replay is not a workflow exit. Python may run `finally` blocks and
+context-manager exits when disposing of that replay. The SDK discards commands
+and `ctx.logger` messages produced only by disposal; queries observe the state
+at the pending command. Actual completion, failure and cooperative cancellation
+run cleanup through the normal history, and cold replay uses its recorded
+results. Put external cleanup in an Activity rather than direct I/O in a
+finalizer, and use `ctx.cancellation_shield()` when that Activity must finish
+after cancellation. The disposal guarantees require SDK 2.12.2 or later.
+
 Both `await activity.context().heartbeat()` and synchronous
 `activity.context().heartbeat_sync()` stop at an explicit Server refusal.
 They raise `ActivityLeaseAuthorityLost` with its original `.reason` for an
