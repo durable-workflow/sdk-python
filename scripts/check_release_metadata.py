@@ -55,6 +55,8 @@ tomllib = _load_toml_parser()
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 VERSION_PATTERN = re.compile(r"2\.(?:0|[1-9][0-9]*)\.(?:0-rc\.[1-9][0-9]*|0|[1-9][0-9]*)")
 BETA_CLASSIFIER = "Development Status :: 4 - Beta"
+SERVER_COMPATIBILITY_PACKAGE_PATH = "durable_workflow/server_compatibility.json"
+SERVER_COMPATIBILITY_SOURCE_PATH = f"src/{SERVER_COMPATIBILITY_PACKAGE_PATH}"
 
 
 class ReleaseMetadataError(RuntimeError):
@@ -129,12 +131,23 @@ def load_source_metadata(source_ref: str) -> SourceMetadata:
     if not isinstance(server_version, str) or VERSION_PATTERN.fullmatch(server_version) is None:
         raise ReleaseMetadataError("supported-server-versions must identify one exact qualified Server release")
     server_compatibility = None
-    if "supported-server-release-baselines" in tool:
+    record_listed = _git("ls-tree", "--name-only", commit, "--", SERVER_COMPATIBILITY_SOURCE_PATH).strip()
+    has_record = record_listed == SERVER_COMPATIBILITY_SOURCE_PATH.encode()
+    if "supported-server-release-baselines" not in tool:
+        if has_record:
+            raise ReleaseMetadataError(
+                "Server compatibility record is present without supported-server-release-baselines in pyproject.toml"
+            )
+    else:
         try:
             baselines = validate_server_release_baselines(server_version, tool["supported-server-release-baselines"])
         except CompatibilityContractError as error:
             raise ReleaseMetadataError(str(error)) from error
-        server_compatibility = _git("show", f"{commit}:src/durable_workflow/server_compatibility.json")
+        if not has_record:
+            raise ReleaseMetadataError(
+                "supported-server-release-baselines requires the packaged Server compatibility record"
+            )
+        server_compatibility = _git("show", f"{commit}:{SERVER_COMPATIBILITY_SOURCE_PATH}")
         expected_compatibility = {
             "supported-server-versions": server_version,
             "supported-server-release-baselines": baselines,
@@ -220,10 +233,15 @@ def verify_built_distributions(dist: Path, source: SourceMetadata) -> None:
         raise ReleaseMetadataError("dist must contain exactly one wheel and one .tar.gz source distribution")
 
     with zipfile.ZipFile(wheels[0]) as archive:
-        if source.server_compatibility is not None:
-            path = "durable_workflow/server_compatibility.json"
-            if archive.namelist().count(path) != 1 or archive.read(path) != source.server_compatibility:
-                raise ReleaseMetadataError("wheel Server compatibility record differs from exact source")
+        wheel_records = archive.namelist().count(SERVER_COMPATIBILITY_PACKAGE_PATH)
+        if source.server_compatibility is None:
+            if wheel_records:
+                raise ReleaseMetadataError("wheel Server compatibility record is absent from exact source")
+        elif (
+            wheel_records != 1
+            or archive.read(SERVER_COMPATIBILITY_PACKAGE_PATH) != source.server_compatibility
+        ):
+            raise ReleaseMetadataError("wheel Server compatibility record differs from exact source")
         metadata_names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
         if len(metadata_names) != 1:
             raise ReleaseMetadataError("wheel must contain exactly one .dist-info/METADATA")
@@ -239,11 +257,14 @@ def verify_built_distributions(dist: Path, source: SourceMetadata) -> None:
     )
 
     with tarfile.open(sdists[0], mode="r:gz") as archive:
-        if source.server_compatibility is not None:
-            compatibility_members = [
-                member for member in archive.getmembers()
-                if member.name.split("/", 1)[-1] == "src/durable_workflow/server_compatibility.json"
-            ]
+        compatibility_members = [
+            member for member in archive.getmembers()
+            if member.name.split("/", 1)[-1] == SERVER_COMPATIBILITY_SOURCE_PATH
+        ]
+        if source.server_compatibility is None:
+            if compatibility_members:
+                raise ReleaseMetadataError("sdist Server compatibility record is absent from exact source")
+        else:
             if len(compatibility_members) != 1 or not compatibility_members[0].isfile():
                 raise ReleaseMetadataError("sdist must contain one Server compatibility record")
             compatibility_file = archive.extractfile(compatibility_members[0])

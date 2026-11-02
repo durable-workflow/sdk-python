@@ -87,36 +87,152 @@ def test_server_baselines_do_not_imply_unlisted_major_support() -> None:
     assert "4" not in baselines
 
 
-@pytest.mark.parametrize("corrupt", [None, "wheel", "sdist"])
-def test_built_packages_must_retain_exact_server_compatibility(tmp_path: Path, corrupt: str | None) -> None:
-    source = replace(source_metadata(), server_compatibility=b'{"supported-server-versions":"2.0.0"}\n')
+COMPATIBILITY_RECORD = b'{"supported-server-versions":"2.0.0"}\n'
+
+
+def write_distributions(
+    dist: Path,
+    source: SourceMetadata,
+    *,
+    wheel_record: bytes | None,
+    sdist_record: bytes | None,
+) -> None:
     headers = (
         f"Name: {source.name}\nVersion: {source.registry_version}\nSummary: {source.summary}\n"
         "Description-Content-Type: text/markdown\n"
         + "".join(f"Classifier: {value}\n" for value in source.classifiers)
         + "\n" + source.readme
     ).encode()
-    with zipfile.ZipFile(tmp_path / "sdk.whl", "w") as archive:
+    with zipfile.ZipFile(dist / "sdk.whl", "w") as archive:
         archive.writestr("sdk.dist-info/METADATA", headers)
-        archive.writestr("durable_workflow/server_compatibility.json",
-                         b"{}\n" if corrupt == "wheel" else source.server_compatibility)
-    with tarfile.open(tmp_path / "sdk.tar.gz", "w:gz") as archive:
-        for path, content in {
-            "sdk/PKG-INFO": headers,
-            "sdk/README.md": source.readme.encode(),
-            "sdk/src/durable_workflow/server_compatibility.json": (
-                b"{}\n" if corrupt == "sdist" else source.server_compatibility
-            ),
-        }.items():
-            assert content is not None
+        if wheel_record is not None:
+            archive.writestr("durable_workflow/server_compatibility.json", wheel_record)
+    members = {"sdk/PKG-INFO": headers, "sdk/README.md": source.readme.encode()}
+    if sdist_record is not None:
+        members["sdk/src/durable_workflow/server_compatibility.json"] = sdist_record
+    with tarfile.open(dist / "sdk.tar.gz", "w:gz") as archive:
+        for path, content in members.items():
             member = tarfile.TarInfo(path)
             member.size = len(content)
             archive.addfile(member, io.BytesIO(content))
-    if corrupt is None:
+
+
+@pytest.mark.parametrize(("wheel_record", "sdist_record", "refusal"), [
+    (COMPATIBILITY_RECORD, COMPATIBILITY_RECORD, None),
+    (b"{}\n", COMPATIBILITY_RECORD, "wheel Server compatibility record differs"),
+    (COMPATIBILITY_RECORD, b"{}\n", "sdist Server compatibility record differs"),
+    (None, COMPATIBILITY_RECORD, "wheel Server compatibility record differs"),
+    (COMPATIBILITY_RECORD, None, "sdist must contain one Server compatibility record"),
+])
+def test_built_packages_must_retain_exact_server_compatibility(
+    tmp_path: Path,
+    wheel_record: bytes | None,
+    sdist_record: bytes | None,
+    refusal: str | None,
+) -> None:
+    source = replace(source_metadata(), server_compatibility=COMPATIBILITY_RECORD)
+    write_distributions(tmp_path, source, wheel_record=wheel_record, sdist_record=sdist_record)
+    if refusal is None:
         check_release_metadata.verify_built_distributions(tmp_path, source)
     else:
-        with pytest.raises(ReleaseMetadataError, match=f"{corrupt} Server compatibility record"):
+        with pytest.raises(ReleaseMetadataError, match=refusal):
             check_release_metadata.verify_built_distributions(tmp_path, source)
+
+
+@pytest.mark.parametrize(("wheel_record", "sdist_record", "refusal"), [
+    (None, None, None),
+    (COMPATIBILITY_RECORD, None, "wheel Server compatibility record is absent from exact source"),
+    (None, COMPATIBILITY_RECORD, "sdist Server compatibility record is absent from exact source"),
+])
+def test_legacy_source_packages_must_not_carry_unverified_server_compatibility(
+    tmp_path: Path,
+    wheel_record: bytes | None,
+    sdist_record: bytes | None,
+    refusal: str | None,
+) -> None:
+    source = source_metadata()
+    assert source.server_compatibility is None
+    write_distributions(tmp_path, source, wheel_record=wheel_record, sdist_record=sdist_record)
+    if refusal is None:
+        check_release_metadata.verify_built_distributions(tmp_path, source)
+    else:
+        with pytest.raises(ReleaseMetadataError, match=refusal):
+            check_release_metadata.verify_built_distributions(tmp_path, source)
+
+
+EXACT_SOURCE_RECORD = (
+    json.dumps({
+        "supported-server-versions": "2.8.0",
+        "supported-server-release-baselines": {"2": "2.8.0", "3": "3.0.0"},
+    }, indent=2) + "\n"
+).encode()
+
+
+@pytest.mark.parametrize(("baselines", "record", "refusal"), [
+    (None, None, None),
+    ('{ "2" = "2.8.0", "3" = "3.0.0" }', EXACT_SOURCE_RECORD, None),
+    (None, EXACT_SOURCE_RECORD, "record is present without supported-server-release-baselines"),
+    ('{ "2" = "2.8.0", "3" = "3.0.0" }', None, "requires the packaged Server compatibility record"),
+    ('{ "2" = "2.8.0", "3" = "3.0.0" }', EXACT_SOURCE_RECORD.replace(b"3.0.0", b"3.1.0"),
+     "packaged Server compatibility record differs from pyproject.toml"),
+    ('{ "2" = "2.8.0", "3" = "3.0.0" }', EXACT_SOURCE_RECORD.rstrip(b"\n"),
+     "packaged Server compatibility record differs from pyproject.toml"),
+    ('{ "2" = "2.8.0" }', EXACT_SOURCE_RECORD, "packaged Server compatibility record differs from pyproject.toml"),
+    ('{ "2" = "2.8.0", "3" = "3.0.0-rc.1" }', EXACT_SOURCE_RECORD, "stable release of its keyed major"),
+    ('{ "3" = "3.0.0" }', EXACT_SOURCE_RECORD, "contradict or omit the legacy baseline"),
+    ('{ "2" = "2.9.0", "3" = "3.0.0" }', EXACT_SOURCE_RECORD, "contradict or omit the legacy baseline"),
+    ("{}", EXACT_SOURCE_RECORD, "non-empty major-to-release map"),
+    ('"3.0.0"', EXACT_SOURCE_RECORD, "non-empty major-to-release map"),
+])
+def test_release_metadata_loader_binds_server_compatibility_to_exact_source(
+    monkeypatch: pytest.MonkeyPatch,
+    baselines: str | None,
+    record: bytes | None,
+    refusal: str | None,
+) -> None:
+    commit = "c" * 40
+    baseline_line = "" if baselines is None else f"supported-server-release-baselines = {baselines}\n"
+    pyproject = f"""
+[project]
+name = "durable-workflow"
+version = "2.12.4"
+description = "Python SDK for Durable Workflow 2.0"
+readme = "README.md"
+classifiers = ["Programming Language :: Python :: 3"]
+
+[tool.durable-workflow]
+product-train = "2.12.4"
+registry-version = "2.12.4"
+supported-server-versions = "2.8.0"
+{baseline_line}worker-protocol-version = "1.20"
+""".encode()
+    record_path = "src/durable_workflow/server_compatibility.json"
+
+    def git(*arguments: str) -> bytes:
+        if arguments[0] == "rev-parse":
+            return f"{commit}\n".encode()
+        if arguments[0] == "ls-tree":
+            assert arguments[1:] == ("--name-only", commit, "--", record_path)
+            return b"" if record is None else f"{record_path}\n".encode()
+        assert arguments[0] == "show"
+        if arguments[1] == f"{commit}:pyproject.toml":
+            return pyproject
+        if arguments[1] == f"{commit}:README.md":
+            return b"# Durable Workflow\n\nBuild durable Python workflows.\n"
+        if arguments[1] == f"{commit}:src/durable_workflow/client.py":
+            return b'PROTOCOL_VERSION = "1.20"\n'
+        assert arguments[1] == f"{commit}:{record_path}"
+        assert record is not None
+        return record
+
+    monkeypatch.setattr(check_release_metadata, "_git", git)
+
+    if refusal is not None:
+        with pytest.raises(ReleaseMetadataError, match=refusal):
+            check_release_metadata.load_source_metadata("HEAD")
+        return
+    source = check_release_metadata.load_source_metadata("HEAD")
+    assert source.server_compatibility == record
 
 
 def pypi_json(source: SourceMetadata, **overrides: object) -> bytes:
@@ -181,6 +297,8 @@ worker-protocol-version = "1.19"
     def git(*arguments: str) -> bytes:
         if arguments[0] == "rev-parse":
             return f"{commit}\n".encode()
+        if arguments[0] == "ls-tree":
+            return b""
         assert arguments[0] == "show"
         if arguments[1].endswith(":pyproject.toml"):
             return pyproject

@@ -39,6 +39,7 @@ def smoke_distribution(artifact: Path, *, repo_root: Path, readme: Path) -> None
     smoke_code = r'''
 import importlib
 import importlib.metadata
+import importlib.resources
 import json
 import os
 import re
@@ -77,6 +78,19 @@ if durable_workflow.__version__ != metadata_version:
 typed_marker = package_file.parent / "py.typed"
 if not typed_marker.is_file():
     raise AssertionError(f"installed package is missing PEP 561 marker: {typed_marker}")
+
+compatibility_name = "server_compatibility.json"
+source_compatibility = repo_root / "src" / "durable_workflow" / compatibility_name
+installed_compatibility = importlib.resources.files("durable_workflow").joinpath(compatibility_name)
+if source_compatibility.is_file() != installed_compatibility.is_file():
+    raise AssertionError("installed Server compatibility record presence differs from the source checkout")
+if source_compatibility.is_file():
+    if installed_compatibility.read_bytes() != source_compatibility.read_bytes():
+        raise AssertionError("installed Server compatibility record differs from the source checkout")
+    record = json.loads(installed_compatibility.read_bytes())
+    baselines = record["supported-server-release-baselines"]
+    if baselines.get(record["supported-server-versions"].split(".", 1)[0]) != record["supported-server-versions"]:
+        raise AssertionError("installed Server compatibility record contradicts its legacy baseline")
 
 missing_exports = [name for name in durable_workflow.__all__ if not hasattr(durable_workflow, name)]
 if missing_exports:
