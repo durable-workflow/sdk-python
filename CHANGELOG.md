@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.3] - 2026-11-02
+
+### Fixed
+
+- Report exceptions with empty or whitespace-only messages using meaningful
+  fallback text, so workflow and activity failures reach callers instead of
+  being rejected as invalid failure reports. Preserve the exception type,
+  stack trace and task identity in ordinary and supervised activity workers.
+- Apply the same blank-message handling to invocable activities, queries and
+  update validators while keeping nonblank diagnostic text unchanged.
+
 ## [2.12.1] - 2026-10-29
 
 ### Fixed

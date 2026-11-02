@@ -44,7 +44,7 @@ from ._activity_lease import activity_lease_renewal_supported, current_activity_
 from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProcessLost, SupervisedCallback
 from ._cancellation_scope_history import CancellationScopeBudget, CancellationScopeDeliveryReceipt
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
-from ._failure_reporting import REQUEST_BYTES, normalize_local_failure
+from ._failure_reporting import REQUEST_BYTES, exception_message, normalize_local_failure
 from ._prepared_local_activity import PreparedAttempt, PreparedCancellationObserved, PreparedLocalRunner
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
 from ._sticky_workflow_cache import CacheKey, StickyWorkflowCache, complete_history
@@ -3240,7 +3240,7 @@ class Worker:
         except NonRetryableError as e:
             log.exception("activity failed (non-retryable)")
             await self._report_activity_task_failure(
-                task_id, attempt_id, "activity failure", message=str(e), failure_type=type(e).__name__,
+                task_id, attempt_id, "activity failure", message=exception_message(e), failure_type=type(e).__name__,
                 failure_class=_exception_class_name(e), failure_code=_exception_code(e),
                 stack_trace=traceback.format_exc(), non_retryable=True,
             )
@@ -3271,7 +3271,8 @@ class Worker:
             raise error
         log.error("activity failed", exc_info=(type(error), error, error.__traceback__))
         await self._report_activity_task_failure(
-            task_id, attempt_id, "activity failure", message=str(error), failure_type=type(error).__name__,
+            task_id, attempt_id, "activity failure", message=exception_message(error),
+            failure_type=type(error).__name__,
             failure_class=_exception_class_name(error), failure_code=_exception_code(error),
             stack_trace="".join(traceback.format_exception(type(error), error, error.__traceback__)),
         )
@@ -3573,7 +3574,7 @@ class Worker:
             )
             return "failed"
         except QueryFailed as e:
-            message = str(e)
+            message = exception_message(e)
             if "unknown query" in message:
                 reason = "rejected_unknown_query"
             elif message.startswith("workflow replay failed before query:"):
@@ -3594,7 +3595,7 @@ class Worker:
             await self._fail_query_task(
                 query_task_id,
                 attempt,
-                str(e) or "query execution failed",
+                exception_message(e, fallback="query execution failed"),
                 reason="query_rejected",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
@@ -3631,7 +3632,7 @@ class Worker:
             await self._fail_query_task(
                 query_task_id,
                 attempt,
-                str(e) or "query result completion was rejected by the server",
+                exception_message(e, fallback="query result completion was rejected by the server"),
                 reason=server_reason if server_reason else "query_result_completion_failed",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
@@ -3667,7 +3668,7 @@ class Worker:
             await self._fail_query_task(
                 query_task_id,
                 attempt,
-                str(e) or "query result completion failed",
+                exception_message(e, fallback="query result completion failed"),
                 reason="query_result_completion_failed",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
@@ -4075,7 +4076,7 @@ class Worker:
             return await self._reject_update_validation_task(
                 task_id,
                 attempt,
-                str(exc) or "update validator rejected the request",
+                exception_message(exc, fallback="update validator rejected the request"),
                 reason="update_validator_rejected",
                 failure_type=exc.exception_type or type(exc).__name__,
                 validation_errors=exc.validation_errors,
@@ -4085,7 +4086,7 @@ class Worker:
             return await self._reject_update_validation_task(
                 task_id,
                 attempt,
-                str(exc),
+                exception_message(exc),
                 reason="update_validation_worker_failed",
                 failure_type=type(exc).__name__,
                 stack_trace=traceback.format_exc(),
@@ -4094,7 +4095,7 @@ class Worker:
             return await self._reject_update_validation_task(
                 task_id,
                 attempt,
-                str(exc) or "update validator rejected the request",
+                exception_message(exc, fallback="update validator rejected the request"),
                 reason="update_validator_rejected",
                 failure_type=type(exc).__name__,
                 stack_trace=traceback.format_exc(),

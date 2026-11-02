@@ -43,6 +43,7 @@ from ._cancellation_scope_history import (
     ScopeBoundary,
 )
 from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
+from ._failure_reporting import exception_message
 from .cancellation import (
     CancellationContext,
     CancellationPolicy,
@@ -3292,7 +3293,7 @@ def _prepare_query_state(
             raise
         except Exception as exc:
             state.outcome.close()
-            raise QueryFailed(str(exc) or f"query {query_name!r} failed") from exc
+            raise QueryFailed(exception_message(exc, fallback=f"query {query_name!r} failed")) from exc
         except BaseException:
             state.outcome.close()
             raise
@@ -3594,7 +3595,7 @@ def _invoke_update_validator(
     except Exception as exc:
         errors = exc.errors if isinstance(exc, InvalidArgument) else None
         raise UpdateRejected(
-            str(exc) or f"update validator {update_name!r} rejected the request",
+            exception_message(exc, fallback=f"update validator {update_name!r} rejected the request"),
             exception_type=type(exc).__name__,
             validation_errors=errors,
         ) from exc
@@ -3614,7 +3615,7 @@ def _accepted_update_payload(
 
 
 def _fail_update_from_exception(update_id: str, prefix: str, exc: Exception) -> FailUpdate:
-    message = str(exc) or type(exc).__name__
+    message = exception_message(exc)
     return FailUpdate(
         update_id=update_id,
         message=f"{prefix}: {message}",
@@ -3628,7 +3629,7 @@ def _exception_class_name(exc: BaseException) -> str:
 
 
 def _fail_workflow_from_exception(exc: BaseException, *, prefix: str | None = None) -> FailWorkflow:
-    message = str(exc) or type(exc).__name__
+    message = exception_message(exc)
     if prefix:
         message = f"{prefix}: {message}"
 
@@ -3645,12 +3646,12 @@ def _fail_workflow_from_exception(exc: BaseException, *, prefix: str | None = No
             "initiating_failure": {
                 "type": type(initiating).__name__,
                 "class": _exception_class_name(initiating),
-                "message": str(initiating) or type(initiating).__name__,
+                "message": exception_message(initiating),
             },
             "compensation_failure": {
                 "type": type(compensation).__name__,
                 "class": _exception_class_name(compensation),
-                "message": str(compensation) or type(compensation).__name__,
+                "message": exception_message(compensation),
                 "activity_type": exc.compensation_activity_type,
                 "registration_order": exc.compensation_registration_order,
             },
