@@ -6,10 +6,32 @@ import ast
 import re
 
 PROTOCOL_VERSION_PATTERN = re.compile(r"(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)")
+STABLE_SERVER_VERSION_PATTERN = re.compile(r"([1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
 
 
 class CompatibilityContractError(ValueError):
     """Shipped runtime compatibility metadata is invalid."""
+
+
+def validate_server_release_baselines(legacy: str, baselines: object) -> dict[str, str]:
+    """Validate the complete additive map before any consumer selects a major."""
+
+    legacy_match = STABLE_SERVER_VERSION_PATTERN.fullmatch(legacy)
+    if legacy_match is None:
+        raise CompatibilityContractError("legacy Server baseline must be one canonical stable release")
+    if not isinstance(baselines, dict) or not baselines:
+        raise CompatibilityContractError("Server release baselines must be a non-empty major-to-release map")
+    validated: dict[str, str] = {}
+    for major, minimum in baselines.items():
+        if not isinstance(major, str) or re.fullmatch(r"[1-9][0-9]*", major) is None:
+            raise CompatibilityContractError("Server baseline major keys must be canonical positive integers")
+        match = STABLE_SERVER_VERSION_PATTERN.fullmatch(minimum) if isinstance(minimum, str) else None
+        if match is None or match.group(1) != major:
+            raise CompatibilityContractError("each Server baseline must be a stable release of its keyed major")
+        validated[major] = minimum
+    if validated.get(legacy_match.group(1)) != legacy:
+        raise CompatibilityContractError("Server release baselines contradict or omit the legacy baseline")
+    return validated
 
 
 def declared_runtime_protocol_version(source: str) -> str:

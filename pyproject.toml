@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "durable-workflow"
-version = "2.12.3"
+version = "2.12.4"
 description = "Python client and worker SDK for Durable Workflow Cloud and self-hosted Server"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -79,9 +79,10 @@ durable-workflow-replay-conformance = "durable_workflow.replay_conformance:main"
 durable-workflow-workflow-updates-conformance = "durable_workflow.workflow_updates_conformance:main"
 
 [tool.durable-workflow]
-product-train = "2.12.3"
-registry-version = "2.12.3"
+product-train = "2.12.4"
+registry-version = "2.12.4"
 supported-server-versions = "2.8.0"
+supported-server-release-baselines = { "2" = "2.8.0", "3" = "3.0.0" }
 worker-protocol-version = "1.20"
 control-plane-version = "2"
 durable-selection = true
@@ -105,6 +106,9 @@ saga-cancellation = "cooperative"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+durable_workflow = ["server_compatibility.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

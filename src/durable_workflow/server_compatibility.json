@@ -1,0 +1,7 @@
+{
+  "supported-server-versions": "2.8.0",
+  "supported-server-release-baselines": {
+    "2": "2.8.0",
+    "3": "3.0.0"
+  }
+}

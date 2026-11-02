@@ -113,8 +113,14 @@ portable between both runtime choices.
 ## Compatibility
 
 Stable `2.x` SDK releases follow semantic versioning and negotiate runtime
-capabilities with Server at startup. Use stable `2.x` SDK and Server channels
-for new applications. The [compatibility guide](https://durable-workflow.com/docs/2.0/compatibility/)
+capabilities with Server at startup. The installed package includes
+`durable_workflow/server_compatibility.json`, matching the release declarations in
+`pyproject.toml`. Its `supported-server-release-baselines` maps each supported
+Server major to its minimum stable release. Readers validate every entry before
+selection and refuse missing majors, malformed entries, or a contradiction with
+the unchanged legacy `supported-server-versions` 2.x baseline. An absent map
+retains legacy reader behavior. This declaration does not replace protocol or
+capability negotiation. The [compatibility guide](https://durable-workflow.com/docs/2.0/compatibility/)
 documents protocol and upgrade guarantees.
 
 ## Worker protocol and cooperative cancellation

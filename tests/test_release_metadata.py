@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
+import tarfile
+import zipfile
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
@@ -9,7 +13,9 @@ import pytest
 from scripts import check_release_metadata
 from scripts.check_release_metadata import ReleaseMetadataError, SourceMetadata
 from scripts.release_compatibility import (
+    CompatibilityContractError,
     declared_runtime_protocol_version,
+    validate_server_release_baselines,
 )
 
 from durable_workflow.client import PROTOCOL_VERSION
@@ -48,10 +54,69 @@ def test_worker_release_identity_matches_supported_server_and_protocol() -> None
     assert release["worker-protocol-version"] == PROTOCOL_VERSION == "1.20"
     assert release["durable-selection"] is True
     assert release["durable-selection-minimum-worker-protocol-version"] == "1.19"
+    baselines = validate_server_release_baselines(
+        release["supported-server-versions"], release["supported-server-release-baselines"]
+    )
+    assert baselines == {"2": release["supported-server-versions"], "3": "3.0.0"}
+    record = (REPO_ROOT / "src/durable_workflow/server_compatibility.json").read_bytes()
+    assert record == (json.dumps({
+        "supported-server-versions": release["supported-server-versions"],
+        "supported-server-release-baselines": baselines,
+    }, indent=2) + "\n").encode()
 
     assert declared_runtime_protocol_version(
         (REPO_ROOT / "src" / "durable_workflow" / "client.py").read_text(encoding="utf-8")
     ) == "1.20"
+
+
+@pytest.mark.parametrize("baselines", [
+    None, {}, [], "3.0.0", {2: "2.8.0"}, {"02": "2.8.0"},
+    {"0": "0.1.0"}, {"2": "2.8.0", "3": 3},
+    {"2": "2.8.0", "3": "3.0.0-rc.1"},
+    {"2": "2.8.0", "3": "3.00.0"},
+    {"2": "2.8.0", "4": "3.0.0"},
+    {"2": "2.9.0", "3": "3.0.0"}, {"3": "3.0.0"},
+])
+def test_server_baselines_refuse_malformed_or_contradictory_maps(baselines: object) -> None:
+    with pytest.raises(CompatibilityContractError):
+        validate_server_release_baselines("2.8.0", baselines)
+
+
+def test_server_baselines_do_not_imply_unlisted_major_support() -> None:
+    baselines = validate_server_release_baselines("2.8.0", {"2": "2.8.0", "3": "3.0.0"})
+    assert "4" not in baselines
+
+
+@pytest.mark.parametrize("corrupt", [None, "wheel", "sdist"])
+def test_built_packages_must_retain_exact_server_compatibility(tmp_path: Path, corrupt: str | None) -> None:
+    source = replace(source_metadata(), server_compatibility=b'{"supported-server-versions":"2.0.0"}\n')
+    headers = (
+        f"Name: {source.name}\nVersion: {source.registry_version}\nSummary: {source.summary}\n"
+        "Description-Content-Type: text/markdown\n"
+        + "".join(f"Classifier: {value}\n" for value in source.classifiers)
+        + "\n" + source.readme
+    ).encode()
+    with zipfile.ZipFile(tmp_path / "sdk.whl", "w") as archive:
+        archive.writestr("sdk.dist-info/METADATA", headers)
+        archive.writestr("durable_workflow/server_compatibility.json",
+                         b"{}\n" if corrupt == "wheel" else source.server_compatibility)
+    with tarfile.open(tmp_path / "sdk.tar.gz", "w:gz") as archive:
+        for path, content in {
+            "sdk/PKG-INFO": headers,
+            "sdk/README.md": source.readme.encode(),
+            "sdk/src/durable_workflow/server_compatibility.json": (
+                b"{}\n" if corrupt == "sdist" else source.server_compatibility
+            ),
+        }.items():
+            assert content is not None
+            member = tarfile.TarInfo(path)
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+    if corrupt is None:
+        check_release_metadata.verify_built_distributions(tmp_path, source)
+    else:
+        with pytest.raises(ReleaseMetadataError, match=f"{corrupt} Server compatibility record"):
+            check_release_metadata.verify_built_distributions(tmp_path, source)
 
 
 def pypi_json(source: SourceMetadata, **overrides: object) -> bytes:

@@ -26,6 +26,7 @@ try:
     from scripts.release_compatibility import (
         CompatibilityContractError,
         declared_runtime_protocol_version,
+        validate_server_release_baselines,
     )
 except ModuleNotFoundError as error:  # pragma: no cover - direct command-line execution
     if error.name != "scripts":
@@ -34,6 +35,7 @@ except ModuleNotFoundError as error:  # pragma: no cover - direct command-line e
     from scripts.release_compatibility import (
         CompatibilityContractError,
         declared_runtime_protocol_version,
+        validate_server_release_baselines,
     )
 
 
@@ -70,6 +72,7 @@ class SourceMetadata:
     summary: str
     classifiers: tuple[str, ...]
     readme: str
+    server_compatibility: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,19 @@ def load_source_metadata(source_ref: str) -> SourceMetadata:
         raise ReleaseMetadataError("registry-version is not the PEP 440 form of project.version")
     if not isinstance(server_version, str) or VERSION_PATTERN.fullmatch(server_version) is None:
         raise ReleaseMetadataError("supported-server-versions must identify one exact qualified Server release")
+    server_compatibility = None
+    if "supported-server-release-baselines" in tool:
+        try:
+            baselines = validate_server_release_baselines(server_version, tool["supported-server-release-baselines"])
+        except CompatibilityContractError as error:
+            raise ReleaseMetadataError(str(error)) from error
+        server_compatibility = _git("show", f"{commit}:src/durable_workflow/server_compatibility.json")
+        expected_compatibility = {
+            "supported-server-versions": server_version,
+            "supported-server-release-baselines": baselines,
+        }
+        if server_compatibility != (json.dumps(expected_compatibility, indent=2) + "\n").encode():
+            raise ReleaseMetadataError("packaged Server compatibility record differs from pyproject.toml")
     if not isinstance(worker_protocol_version, str):
         raise ReleaseMetadataError("worker-protocol-version must be a string")
     try:
@@ -155,6 +171,7 @@ def load_source_metadata(source_ref: str) -> SourceMetadata:
         summary=summary,
         classifiers=tuple(classifiers),
         readme=readme,
+        server_compatibility=server_compatibility,
     )
 
 
@@ -203,6 +220,10 @@ def verify_built_distributions(dist: Path, source: SourceMetadata) -> None:
         raise ReleaseMetadataError("dist must contain exactly one wheel and one .tar.gz source distribution")
 
     with zipfile.ZipFile(wheels[0]) as archive:
+        if source.server_compatibility is not None:
+            path = "durable_workflow/server_compatibility.json"
+            if archive.namelist().count(path) != 1 or archive.read(path) != source.server_compatibility:
+                raise ReleaseMetadataError("wheel Server compatibility record differs from exact source")
         metadata_names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
         if len(metadata_names) != 1:
             raise ReleaseMetadataError("wheel must contain exactly one .dist-info/METADATA")
@@ -218,6 +239,16 @@ def verify_built_distributions(dist: Path, source: SourceMetadata) -> None:
     )
 
     with tarfile.open(sdists[0], mode="r:gz") as archive:
+        if source.server_compatibility is not None:
+            compatibility_members = [
+                member for member in archive.getmembers()
+                if member.name.split("/", 1)[-1] == "src/durable_workflow/server_compatibility.json"
+            ]
+            if len(compatibility_members) != 1 or not compatibility_members[0].isfile():
+                raise ReleaseMetadataError("sdist must contain one Server compatibility record")
+            compatibility_file = archive.extractfile(compatibility_members[0])
+            if compatibility_file is None or compatibility_file.read() != source.server_compatibility:
+                raise ReleaseMetadataError("sdist Server compatibility record differs from exact source")
         pkg_info_members = [
             member
             for member in archive.getmembers()

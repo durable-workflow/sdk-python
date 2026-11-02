@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.4] - 2026-11-02
+
+### Added
+
+- Declare minimum stable Server releases per major, including native Server 3.x,
+  while preserving the legacy 2.x declaration. Include the compatibility record
+  in installed wheels and source distributions and verify it against release
+  source. Worker protocol and capability negotiation remain unchanged.
+
 ## [2.12.3] - 2026-11-02
 
 ### Fixed
