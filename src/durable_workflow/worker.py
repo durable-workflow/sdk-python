@@ -4773,7 +4773,11 @@ class Worker:
 
     def _default_request_stall_seconds(self) -> float:
         client_timeout = getattr(self.client, "timeout", None)
-        request_timeout = float(client_timeout) if _positive_seconds(client_timeout) else 60.0
+        request_timeout = (
+            float(client_timeout)
+            if isinstance(client_timeout, (int, float)) and _positive_seconds(client_timeout)
+            else 60.0
+        )
         poll_deadline = _worker_poll_http_timeout(self._poll_timeout) or 0.0
         return 3.0 * max(request_timeout, poll_deadline)
 

@@ -15,8 +15,9 @@ import pytest
 
 import durable_workflow.worker as worker_module
 from durable_workflow import Worker, WorkerState, WorkerStatus, activity
+from durable_workflow.client import Client
 from durable_workflow.errors import ServerError
-from tests.test_worker import TestWorkflow, echo_activity, mock_client  # noqa: F401 - pytest fixture
+from tests.test_worker import TestWorkflow, compatible_cluster_info, echo_activity
 
 pytestmark = pytest.mark.asyncio
 
@@ -31,6 +32,23 @@ async def eventually(predicate: Callable[[], bool], *, timeout: float = 2.0) -> 
 
 def roles(status: WorkerStatus) -> dict[str, object]:
     return {role.role: role for role in status.roles}
+
+
+@pytest.fixture
+def client() -> AsyncMock:
+    client = AsyncMock(spec=Client)
+    client.get_cluster_info = AsyncMock(return_value=compatible_cluster_info())
+    client.register_worker = AsyncMock(return_value={"worker_id": "w1", "registered": True})
+    client.deregister_worker_registration = AsyncMock(
+        return_value={"worker_id": "w1", "outcome": "deregistered", "recovered_workflow_task_count": 0}
+    )
+    client.heartbeat_worker = AsyncMock(return_value={"worker_id": "w1", "acknowledged": True})
+    client.poll_workflow_task = AsyncMock(return_value=None)
+    client.poll_activity_task = AsyncMock(return_value=None)
+    client.poll_query_task = AsyncMock(return_value=None)
+    client.complete_activity_task = AsyncMock(return_value={"outcome": "completed"})
+    client.fail_activity_task = AsyncMock(return_value={"outcome": "failed"})
+    return client
 
 
 @pytest.fixture(autouse=True)
@@ -57,8 +75,8 @@ async def stop(worker: Worker, run_task: asyncio.Task[object]) -> None:
         await run_task
 
 
-async def test_unstarted_worker_is_neither_ready_nor_live(mock_client: AsyncMock) -> None:
-    worker = make_worker(mock_client, worker_id="w-status")
+async def test_unstarted_worker_is_neither_ready_nor_live(client: AsyncMock) -> None:
+    worker = make_worker(client, worker_id="w-status")
 
     status = worker.status()
 
@@ -72,18 +90,18 @@ async def test_unstarted_worker_is_neither_ready_nor_live(mock_client: AsyncMock
     assert status.registered_age_seconds is None
 
 
-async def test_registering_worker_is_live_but_not_ready(mock_client: AsyncMock) -> None:
+async def test_registering_worker_is_live_but_not_ready(client: AsyncMock) -> None:
     release = asyncio.Event()
 
     async def slow_registration(**_: object) -> dict[str, object]:
         await release.wait()
         return {"worker_id": "w1", "registered": True}
 
-    mock_client.register_worker = AsyncMock(side_effect=slow_registration)
-    worker = make_worker(mock_client)
+    client.register_worker = AsyncMock(side_effect=slow_registration)
+    worker = make_worker(client)
     run_task = asyncio.create_task(worker.run())
     try:
-        await eventually(lambda: mock_client.register_worker.await_count == 1)
+        await eventually(lambda: client.register_worker.await_count == 1)
         status = worker.status()
         assert status.state is WorkerState.STARTING
         assert (status.ready, status.ready_reason) == (False, "registering")
@@ -99,11 +117,11 @@ async def test_registering_worker_is_live_but_not_ready(mock_client: AsyncMock) 
         await stop(worker, run_task)
 
 
-async def test_registered_worker_reports_every_configured_role_ready(mock_client: AsyncMock) -> None:
-    worker = make_worker(mock_client)
+async def test_registered_worker_reports_every_configured_role_ready(client: AsyncMock) -> None:
+    worker = make_worker(client)
     run_task = asyncio.create_task(worker.run())
     try:
-        await eventually(lambda: mock_client.poll_activity_task.await_count >= 3)
+        await eventually(lambda: client.poll_activity_task.await_count >= 3)
         status = worker.status()
 
         assert status.state is WorkerState.REGISTERED
@@ -120,8 +138,8 @@ async def test_registered_worker_reports_every_configured_role_ready(mock_client
         await stop(worker, run_task)
 
 
-async def test_only_configured_roles_are_reported(mock_client: AsyncMock) -> None:
-    worker = make_worker(mock_client, workflows=[])
+async def test_only_configured_roles_are_reported(client: AsyncMock) -> None:
+    worker = make_worker(client, workflows=[])
     run_task = asyncio.create_task(worker.run())
     try:
         await eventually(lambda: worker.status().ready)
@@ -130,18 +148,18 @@ async def test_only_configured_roles_are_reported(mock_client: AsyncMock) -> Non
         await stop(worker, run_task)
 
 
-async def test_empty_and_in_flight_long_polls_stay_ready(mock_client: AsyncMock) -> None:
+async def test_empty_and_in_flight_long_polls_stay_ready(client: AsyncMock) -> None:
     hold = asyncio.Event()
 
     async def long_poll(**_: object) -> None:
         await hold.wait()
         return None
 
-    mock_client.poll_workflow_task = AsyncMock(side_effect=long_poll)
-    worker = make_worker(mock_client)
+    client.poll_workflow_task = AsyncMock(side_effect=long_poll)
+    worker = make_worker(client)
     run_task = asyncio.create_task(worker.run())
     try:
-        await eventually(lambda: mock_client.poll_workflow_task.await_count == 1)
+        await eventually(lambda: client.poll_workflow_task.await_count == 1)
         await asyncio.sleep(0.05)
         status = worker.status()
         workflow_poll = roles(status)["workflow_poll"]
@@ -160,7 +178,7 @@ async def test_empty_and_in_flight_long_polls_stay_ready(mock_client: AsyncMock)
 
 
 async def test_transient_server_loss_is_unready_but_live_and_recovers_without_restart(
-    mock_client: AsyncMock,
+    client: AsyncMock,
 ) -> None:
     outage = threading.Event()
     outage.set()
@@ -171,11 +189,11 @@ async def test_transient_server_loss_is_unready_but_live_and_recovers_without_re
             raise httpx.ConnectError("connection refused")
         return None
 
-    mock_client.poll_activity_task = AsyncMock(side_effect=poll)
-    worker = make_worker(mock_client, workflows=[])
+    client.poll_activity_task = AsyncMock(side_effect=poll)
+    worker = make_worker(client, workflows=[])
     run_task = asyncio.create_task(worker.run())
     try:
-        await eventually(lambda: mock_client.poll_activity_task.await_count >= 2)
+        await eventually(lambda: client.poll_activity_task.await_count >= 2)
         status = worker.status()
         activity_poll = roles(status)["activity_poll"]
         assert status.state is WorkerState.REGISTERED
@@ -190,12 +208,12 @@ async def test_transient_server_loss_is_unready_but_live_and_recovers_without_re
         recovered = roles(worker.status())["activity_poll"]
         assert recovered.consecutive_failures == 0
         assert recovered.last_failure_age_seconds is not None
-        assert mock_client.register_worker.await_count == 1
+        assert client.register_worker.await_count == 1
     finally:
         await stop(worker, run_task)
 
 
-async def test_poll_capacity_backpressure_keeps_the_worker_ready(mock_client: AsyncMock) -> None:
+async def test_poll_capacity_backpressure_keeps_the_worker_ready(client: AsyncMock) -> None:
     refusal = ServerError(
         429,
         {
@@ -208,11 +226,11 @@ async def test_poll_capacity_backpressure_keeps_the_worker_ready(mock_client: As
             "retry_after_seconds": 1,
         },
     )
-    mock_client.poll_activity_task = AsyncMock(side_effect=refusal)
-    worker = make_worker(mock_client, workflows=[])
+    client.poll_activity_task = AsyncMock(side_effect=refusal)
+    worker = make_worker(client, workflows=[])
     run_task = asyncio.create_task(worker.run())
     try:
-        await eventually(lambda: mock_client.poll_activity_task.await_count >= 1)
+        await eventually(lambda: client.poll_activity_task.await_count >= 1)
         status = worker.status()
         assert status.ready, status.ready_reason
         assert roles(status)["activity_poll"].consecutive_failures == 0
@@ -220,7 +238,7 @@ async def test_poll_capacity_backpressure_keeps_the_worker_ready(mock_client: As
         await stop(worker, run_task)
 
 
-async def test_heartbeat_failure_is_unready_until_the_next_heartbeat_succeeds(mock_client: AsyncMock) -> None:
+async def test_heartbeat_failure_is_unready_until_the_next_heartbeat_succeeds(client: AsyncMock) -> None:
     failing = threading.Event()
     failing.set()
 
@@ -229,11 +247,11 @@ async def test_heartbeat_failure_is_unready_until_the_next_heartbeat_succeeds(mo
             raise httpx.ReadTimeout("timed out")
         return {"worker_id": "w1", "acknowledged": True}
 
-    mock_client.heartbeat_worker = AsyncMock(side_effect=heartbeat)
-    worker = make_worker(mock_client, heartbeat_interval=0.02)
+    client.heartbeat_worker = AsyncMock(side_effect=heartbeat)
+    worker = make_worker(client, heartbeat_interval=0.02)
     run_task = asyncio.create_task(worker.run())
     try:
-        await eventually(lambda: mock_client.heartbeat_worker.await_count >= 1)
+        await eventually(lambda: client.heartbeat_worker.await_count >= 1)
         await eventually(lambda: worker.status().ready_reason == "server_unavailable:heartbeat")
         assert worker.status().live
 
@@ -244,9 +262,9 @@ async def test_heartbeat_failure_is_unready_until_the_next_heartbeat_succeeds(mo
         await stop(worker, run_task)
 
 
-async def test_registration_refusal_reports_failed(mock_client: AsyncMock) -> None:
-    mock_client.register_worker = AsyncMock(side_effect=ServerError(403, {"reason": "forbidden"}))
-    worker = make_worker(mock_client)
+async def test_registration_refusal_reports_failed(client: AsyncMock) -> None:
+    client.register_worker = AsyncMock(side_effect=ServerError(403, {"reason": "forbidden"}))
+    worker = make_worker(client)
 
     with pytest.raises(ServerError):
         await worker.run()
@@ -260,11 +278,11 @@ async def test_registration_refusal_reports_failed(mock_client: AsyncMock) -> No
     assert worker._status_tick_task.done()
 
 
-async def test_poller_failure_reports_failed(mock_client: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_poller_failure_reports_failed(client: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
     async def broken_poller() -> None:
         raise RuntimeError("poller bug")
 
-    worker = make_worker(mock_client)
+    worker = make_worker(client)
     monkeypatch.setattr(worker, "_poll_activity_tasks", broken_poller)
 
     with pytest.raises(RuntimeError, match="poller bug"):
@@ -275,7 +293,7 @@ async def test_poller_failure_reports_failed(mock_client: AsyncMock, monkeypatch
     assert (status.ready, status.live, status.live_reason) == (False, False, "failed:runtime")
 
 
-async def test_dead_query_thread_is_neither_live_nor_ready(mock_client: AsyncMock) -> None:
+async def test_dead_query_thread_is_neither_live_nor_ready(client: AsyncMock) -> None:
     class BrokenQueryClient:
         async def __aenter__(self) -> BrokenQueryClient:
             raise RuntimeError("query client unavailable")
@@ -283,7 +301,7 @@ async def test_dead_query_thread_is_neither_live_nor_ready(mock_client: AsyncMoc
         async def __aexit__(self, *_: object) -> None:
             return None
 
-    worker = make_worker(mock_client)
+    worker = make_worker(client)
     worker._can_clone_client_for_query_tasks = lambda: True  # type: ignore[method-assign]
     worker._clone_client_for_query_tasks = lambda: BrokenQueryClient()  # type: ignore[method-assign,return-value]
     run_task = asyncio.create_task(worker.run())
@@ -301,8 +319,8 @@ async def test_dead_query_thread_is_neither_live_nor_ready(mock_client: AsyncMoc
         await stop(worker, run_task)
 
 
-async def test_stalled_event_loop_is_reported_from_another_thread(mock_client: AsyncMock) -> None:
-    worker = make_worker(mock_client)
+async def test_stalled_event_loop_is_reported_from_another_thread(client: AsyncMock) -> None:
+    worker = make_worker(client)
     run_task = asyncio.create_task(worker.run())
     try:
         await eventually(lambda: worker.status().ready)
@@ -324,7 +342,7 @@ async def test_stalled_event_loop_is_reported_from_another_thread(mock_client: A
         await stop(worker, run_task)
 
 
-async def test_long_running_activity_and_drain_states(mock_client: AsyncMock) -> None:
+async def test_long_running_activity_and_drain_states(client: AsyncMock) -> None:
     started = threading.Event()
     release = threading.Event()
 
@@ -352,8 +370,8 @@ async def test_long_running_activity_and_drain_states(mock_client: AsyncMock) ->
             "arguments": None,
         }
 
-    mock_client.poll_activity_task = AsyncMock(side_effect=poll_activity)
-    worker = make_worker(mock_client, workflows=[], activities=[slow_activity], shutdown_timeout=5.0)
+    client.poll_activity_task = AsyncMock(side_effect=poll_activity)
+    worker = make_worker(client, workflows=[], activities=[slow_activity], shutdown_timeout=5.0)
     run_task = asyncio.create_task(worker.run())
     stop_task: asyncio.Task[None] | None = None
     try:
@@ -385,9 +403,9 @@ async def test_long_running_activity_and_drain_states(mock_client: AsyncMock) ->
 
 
 async def test_shutdown_that_cannot_confirm_cleanup_reports_failed(
-    mock_client: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+    client: AsyncMock, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    worker = make_worker(mock_client)
+    worker = make_worker(client)
     run_task = asyncio.create_task(worker.run())
     await eventually(lambda: worker.status().ready)
 
@@ -405,25 +423,25 @@ async def test_shutdown_that_cannot_confirm_cleanup_reports_failed(
     assert (status.ready, status.live, status.live_reason) == (False, False, "failed:shutdown")
 
 
-async def test_status_snapshot_performs_no_server_io(mock_client: AsyncMock) -> None:
-    worker = make_worker(mock_client, workflows=[], activities=[])
+async def test_status_snapshot_performs_no_server_io(client: AsyncMock) -> None:
+    worker = make_worker(client, workflows=[], activities=[])
     run_task = asyncio.create_task(worker.run())
     try:
         await eventually(lambda: worker.status().ready)
-        calls = [(name, getattr(mock_client, name).await_count) for name in (
+        calls = [(name, getattr(client, name).await_count) for name in (
             "register_worker", "heartbeat_worker", "poll_workflow_task", "poll_activity_task", "poll_query_task",
             "get_cluster_info",
         )]
         for _ in range(50):
             worker.status()
         await asyncio.to_thread(worker.status)
-        assert calls == [(name, getattr(mock_client, name).await_count) for name, _ in calls]
+        assert calls == [(name, getattr(client, name).await_count) for name, _ in calls]
     finally:
         await stop(worker, run_task)
 
 
-async def test_status_is_json_serializable(mock_client: AsyncMock) -> None:
-    worker = make_worker(mock_client)
+async def test_status_is_json_serializable(client: AsyncMock) -> None:
+    worker = make_worker(client)
     run_task = asyncio.create_task(worker.run())
     try:
         await eventually(lambda: worker.status().ready)
@@ -438,29 +456,29 @@ async def test_status_is_json_serializable(mock_client: AsyncMock) -> None:
 
 
 @pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan"), True, "5"])
-async def test_status_rejects_invalid_bounds(mock_client: AsyncMock, value: object) -> None:
-    worker = make_worker(mock_client)
+async def test_status_rejects_invalid_bounds(client: AsyncMock, value: object) -> None:
+    worker = make_worker(client)
     with pytest.raises(ValueError, match="event_loop_stall_seconds"):
         worker.status(event_loop_stall_seconds=value)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="request_stall_seconds"):
         worker.status(request_stall_seconds=value)  # type: ignore[arg-type]
 
 
-async def test_default_request_bound_covers_the_long_poll_deadline(mock_client: AsyncMock) -> None:
-    mock_client.timeout = 60.0
-    worker = make_worker(mock_client, poll_timeout=35.0)
+async def test_default_request_bound_covers_the_long_poll_deadline(client: AsyncMock) -> None:
+    client.timeout = 60.0
+    worker = make_worker(client, poll_timeout=35.0)
     assert worker._default_request_stall_seconds() == 180.0
-    mock_client.timeout = 10.0
+    client.timeout = 10.0
     assert worker._default_request_stall_seconds() == 3 * 40.0
 
 
-async def test_run_until_reports_registration_and_stop(mock_client: AsyncMock) -> None:
+async def test_run_until_reports_registration_and_stop(client: AsyncMock) -> None:
     from durable_workflow.client import WorkflowExecution
 
-    mock_client.describe_workflow = AsyncMock(return_value=WorkflowExecution(
+    client.describe_workflow = AsyncMock(return_value=WorkflowExecution(
         workflow_id="wf-1", run_id="run-1", workflow_type="test-wf", status="completed",
     ))
-    worker = make_worker(mock_client)
+    worker = make_worker(client)
     await worker.run_until(workflow_id="wf-1", timeout=2.0)
 
     status = worker.status()
