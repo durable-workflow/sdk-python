@@ -50,6 +50,7 @@ from tests.test_update_signal_condition_replay import (
 )
 from tests.test_wait_condition import SignalCounterUntilFinished
 from tests.test_worker import compatible_cluster_info
+from tests.test_worker_status import RecoveryWorkflow as StatusRecoveryWorkflow
 from tests.test_workflow_identity import IdentityAcrossReplay, IdentityContinueAsNew
 
 FIXTURE_SCHEMA = "durable-workflow.replay-regression/v1"
@@ -394,6 +395,7 @@ WORKFLOWS = [
     WorkflowStreamAuthorWorkflow,
     WorkflowMemoAuthorWorkflow,
     YieldedContinueAfterMetadataWorkflow,
+    StatusRecoveryWorkflow,
 ]
 WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__)): workflow for workflow in WORKFLOWS}
 WORKFLOW_TYPES["tests.replay.condition-identity"] = ConditionIdentityWorkflow
