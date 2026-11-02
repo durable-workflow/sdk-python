@@ -3595,7 +3595,7 @@ class Worker:
             await self._fail_query_task(
                 query_task_id,
                 attempt,
-                str(e) or "query execution failed",
+                exception_message(e, fallback="query execution failed"),
                 reason="query_rejected",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
@@ -3632,7 +3632,7 @@ class Worker:
             await self._fail_query_task(
                 query_task_id,
                 attempt,
-                str(e) or "query result completion was rejected by the server",
+                exception_message(e, fallback="query result completion was rejected by the server"),
                 reason=server_reason if server_reason else "query_result_completion_failed",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
@@ -3668,7 +3668,7 @@ class Worker:
             await self._fail_query_task(
                 query_task_id,
                 attempt,
-                str(e) or "query result completion failed",
+                exception_message(e, fallback="query result completion failed"),
                 reason="query_result_completion_failed",
                 failure_type=type(e).__name__,
                 stack_trace=traceback.format_exc(),
@@ -4076,7 +4076,7 @@ class Worker:
             return await self._reject_update_validation_task(
                 task_id,
                 attempt,
-                str(exc) or "update validator rejected the request",
+                exception_message(exc, fallback="update validator rejected the request"),
                 reason="update_validator_rejected",
                 failure_type=exc.exception_type or type(exc).__name__,
                 validation_errors=exc.validation_errors,
@@ -4086,7 +4086,7 @@ class Worker:
             return await self._reject_update_validation_task(
                 task_id,
                 attempt,
-                str(exc),
+                exception_message(exc),
                 reason="update_validation_worker_failed",
                 failure_type=type(exc).__name__,
                 stack_trace=traceback.format_exc(),
@@ -4095,7 +4095,7 @@ class Worker:
             return await self._reject_update_validation_task(
                 task_id,
                 attempt,
-                str(exc) or "update validator rejected the request",
+                exception_message(exc, fallback="update validator rejected the request"),
                 reason="update_validator_rejected",
                 failure_type=type(exc).__name__,
                 stack_trace=traceback.format_exc(),
