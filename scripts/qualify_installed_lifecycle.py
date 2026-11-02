@@ -116,18 +116,32 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+QUERY_REFUSALS: dict[str, int] = {}
+
+
+def query_result(response: Any) -> Any:
+    """Return the decoded query result from the control-plane response."""
+
+    if isinstance(response, dict) and "query_name" in response and "result" in response:
+        return response["result"]
+    return response
+
+
 async def wait_for_query(client: Client, workflow_id: str, query: str, predicate: Any, timeout: float = 30.0) -> Any:
     deadline = time.monotonic() + timeout
     last: Any = None
     last_error: BaseException | None = None
     while time.monotonic() < deadline:
         try:
-            last = await client.query_workflow(workflow_id, query)
+            last = query_result(await client.query_workflow(workflow_id, query))
             if predicate(last):
                 return last
         except Exception as error:  # queries can race the first workflow task
             last_error = error
-        await asyncio.sleep(0.25)
+            reason = getattr(error, "body", None)
+            key = reason.get("reason") if isinstance(reason, dict) else type(error).__name__
+            QUERY_REFUSALS[str(key)] = QUERY_REFUSALS.get(str(key), 0) + 1
+        await asyncio.sleep(1.0)
     raise TimeoutError(f"query {query} did not reach the expected state; last={last!r} error={last_error!r}")
 
 
@@ -278,6 +292,8 @@ async def run(server_url: str, token: str, namespace: str) -> dict[str, Any]:
                         "traceback": traceback.format_exc(limit=5),
                     }
                 result["seconds"] = round(time.monotonic() - started, 2)
+                result["query_refusals"] = dict(QUERY_REFUSALS)
+                QUERY_REFUSALS.clear()
                 report["scenarios"][name] = result
         finally:
             await worker.stop()
