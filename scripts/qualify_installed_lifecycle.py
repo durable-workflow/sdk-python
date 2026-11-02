@@ -151,8 +151,8 @@ async def scenario_lifecycle(client: Client, queue: str, suffix: str) -> dict[st
         workflow_type="q_order", workflow_id=workflow_id, task_queue=queue, input=["world"],
     )
     state = await wait_for_query(client, workflow_id, "state", lambda s: s.get("stage") == "awaiting_approval")
-    update = await client.update_workflow(workflow_id, "set_note", ["ship it"], wait_for="completed")
-    await client.signal_workflow(workflow_id, "approve", ["qa"])
+    update = await client.update_workflow(workflow_id, "set_note", args=["ship it"], wait_for="completed")
+    await client.signal_workflow(workflow_id, "approve", args=["qa"])
     result = await client.get_result(handle, timeout=60.0)
     expected = {"greeting": "hello, world", "approved_by": "qa", "note": "ship it"}
     description = await client.describe_workflow(workflow_id)
