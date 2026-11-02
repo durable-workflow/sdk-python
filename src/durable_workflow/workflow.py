@@ -43,6 +43,7 @@ from ._cancellation_scope_history import (
     ScopeBoundary,
 )
 from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
+from ._typed_values import TypedValueError, from_payload_value
 from .cancellation import (
     CancellationContext,
     CancellationPolicy,
@@ -582,6 +583,8 @@ class ScheduleActivity:
     heartbeat_timeout: int | None = None
     worker_session: WorkerSessionOptions | None = None
     cancellation_policy: str | CancellationPolicy | None = None
+    # Local decoding only: never encoded into the command or history.
+    result_type: Any = field(default=None, repr=False, compare=False)
     _cancellation_scope_id: str = field(
         default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
     )
@@ -2265,7 +2268,16 @@ class WorkflowContext:
         heartbeat_timeout: int | None = None,
         worker_session: WorkerSessionOptions | None = None,
         cancellation_policy: str | CancellationPolicy | None = None,
+        result_type: Any = None,
     ) -> ScheduleActivity:
+        """Yield an activity request.
+
+        ``result_type`` opts in to decoding the activity's neutral result to
+        that annotation (a dataclass, ``Enum``, ``Optional`` or a list or
+        string-keyed dict of those). It affects only the value delivered to
+        this workflow; history keeps the neutral payload. A result that does
+        not match raises :class:`~durable_workflow.TypedValueError` here.
+        """
         return ScheduleActivity(
             activity_type=activity_type,
             arguments=list(arguments),
@@ -2277,6 +2289,7 @@ class WorkflowContext:
             heartbeat_timeout=heartbeat_timeout,
             worker_session=worker_session,
             cancellation_policy=cancellation_policy,
+            result_type=result_type,
         )
 
     def local_activity(
@@ -7320,6 +7333,16 @@ def _replay_state(
                             continue
                         except StopIteration as stop:
                             return _terminal_state(stop.value, include_pending=False)
+                    if isinstance(cmd, ScheduleActivity) and cmd.result_type is not None:
+                        try:
+                            val = from_payload_value(val, cmd.result_type, "activity result")
+                        except TypedValueError as exc:
+                            try:
+                                _refresh_replay_logging()
+                                advanced_cmd = gen.throw(exc)
+                                continue
+                            except StopIteration as stop:
+                                return _terminal_state(stop.value, include_pending=False)
                     next_value = val
                     continue
                 _set_replaying(False)

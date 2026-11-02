@@ -216,6 +216,7 @@ from .replay_verify import (
     verify_replay,
 )
 from .retry_policy import RetryPolicy, TransportRetryPolicy
+from ._typed_values import TypedValueError
 from .serializer import (
     PayloadSizeWarningConfig,
     PayloadSizeWarningContext,
@@ -279,6 +280,7 @@ __all__ = [
     "AuthCompositionContract",
     "AuthCompositionContractError",
     "NonRetryableError",
+    "TypedValueError",
     "ReplayOutcome",
     "Replayer",
     "Saga",
