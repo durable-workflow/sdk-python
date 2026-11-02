@@ -68,6 +68,7 @@ from .client import (
     WorkflowExecution,
     _protocol_version_from_env,
     _supports_cooperative_cancellation_protocol,
+    _worker_poll_http_timeout,
 )
 from .errors import (
     ActivityCancelled,
@@ -108,6 +109,12 @@ from .retry_policy import _worker_storage_admission_stop
 from .telemetry import ExecutionTelemetry, current_execution_telemetry
 from .telemetry_carrier import identity as observability_identity
 from .worker_session import WorkerSession, WorkerSessionOptions
+from .worker_status import (
+    DEFAULT_EVENT_LOOP_STALL_SECONDS,
+    EVENT_LOOP_TICK_SECONDS,
+    WorkerStatus,
+    _WorkerStatusTracker,
+)
 from .workflow import (
     Command,
     FailWorkflow,
@@ -230,6 +237,16 @@ def _with_storage_admission_retries(
 def _is_storage_admission_error(error: BaseException) -> bool:
     return isinstance(error, ServerError) and error.reason() in (
         "storage_pressure", "storage_admission_unavailable",
+    )
+
+
+def _positive_seconds(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value > 0
+        and value != float("inf")
+        and value == value
     )
 
 
@@ -1209,6 +1226,8 @@ class Worker:
         self._query_thread: threading.Thread | None = None
         self._query_thread_loop: asyncio.AbstractEventLoop | None = None
         self._query_thread_task: asyncio.Task[None] | None = None
+        self._status = _WorkerStatusTracker()
+        self._status_tick_task: asyncio.Task[None] | None = None
         # In-flight slot accounting feeds the periodic heartbeat so operators
         # see free-slot counts without the worker having to re-derive them at
         # shutdown. A workflow reservation covers the multiplexed long poll,
@@ -1514,6 +1533,7 @@ class Worker:
             advertised = ack.get("heartbeat_interval_seconds")
             if isinstance(advertised, int) and advertised > 0:
                 self._heartbeat_interval = float(advertised)
+        self._status.registered()
         log.info("worker %s registered on %s", self.worker_id, self.task_queue)
 
     async def _run_workflow_task(self, task: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -3793,6 +3813,7 @@ class Worker:
                 return
             try:
                 poll_start = time.perf_counter()
+                self._status.request_started("workflow_poll")
                 task = await self.client.poll_workflow_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
@@ -3802,15 +3823,18 @@ class Worker:
                     history_page_size=WORKFLOW_HISTORY_PAGE_SIZE,
                 )
             except asyncio.CancelledError:
+                self._status.request_abandoned("workflow_poll")
                 self._release_workflow_capacity()
                 raise
             except Exception as e:
                 self._release_workflow_capacity()
                 if self._stop.is_set():
+                    self._status.request_abandoned("workflow_poll")
                     return
+                delay = _poll_capacity_delay(e, "workflow_task", self.task_queue)
+                self._record_poll_status("workflow_poll", e, answered=delay is not None)
                 if _is_storage_admission_error(e):
                     raise
-                delay = _poll_capacity_delay(e, "workflow_task", self.task_queue)
                 if delay is not None:
                     self._record_poll_metrics("workflow", "backpressure", time.perf_counter() - poll_start)
                     log.debug("workflow poll capacity backpressure; retrying in %d s", delay)
@@ -3820,6 +3844,7 @@ class Worker:
                 await asyncio.sleep(failures.retry_delay(e, "workflow"))
                 continue
             failures.reset()
+            self._status.request_succeeded("workflow_poll")
             if task is None:
                 self._release_workflow_capacity()
                 self._record_poll_metrics("workflow", "empty", time.perf_counter() - poll_start)
@@ -3905,6 +3930,7 @@ class Worker:
                 return
             try:
                 poll_start = time.perf_counter()
+                self._status.request_started("activity_poll")
                 task = await self.client.poll_activity_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
@@ -3912,15 +3938,18 @@ class Worker:
                     build_id=self.build_id,
                 )
             except asyncio.CancelledError:
+                self._status.request_abandoned("activity_poll")
                 self._act_semaphore.release()
                 raise
             except Exception as e:
                 self._act_semaphore.release()
                 if self._stop.is_set():
+                    self._status.request_abandoned("activity_poll")
                     return
+                delay = _poll_capacity_delay(e, "activity_task", self.task_queue)
+                self._record_poll_status("activity_poll", e, answered=delay is not None)
                 if _is_storage_admission_error(e):
                     raise
-                delay = _poll_capacity_delay(e, "activity_task", self.task_queue)
                 if delay is not None:
                     self._record_poll_metrics("activity", "backpressure", time.perf_counter() - poll_start)
                     log.debug("activity poll capacity backpressure; retrying in %d s", delay)
@@ -3930,6 +3959,7 @@ class Worker:
                 await asyncio.sleep(failures.retry_delay(e, "activity"))
                 continue
             failures.reset()
+            self._status.request_succeeded("activity_poll")
             if task is None:
                 self._act_semaphore.release()
                 self._record_poll_metrics("activity", "empty", time.perf_counter() - poll_start)
@@ -3965,20 +3995,26 @@ class Worker:
         ):
             try:
                 poll_start = time.perf_counter()
+                self._status.request_started("query_poll")
                 task = await client.poll_query_task(
                     worker_id=self.worker_id,
                     task_queue=self.task_queue,
                     timeout=self._poll_timeout,
                     build_id=self.build_id,
                 )
+            except asyncio.CancelledError:
+                self._status.request_abandoned("query_poll")
+                raise
             except Exception as e:
                 if self._stop.is_set() or (
                     query_thread_stop is not None and query_thread_stop.is_set()
                 ):
+                    self._status.request_abandoned("query_poll")
                     return
+                delay = _poll_capacity_delay(e, "query_task", self.task_queue)
+                self._record_poll_status("query_poll", e, answered=delay is not None)
                 if _is_storage_admission_error(e):
                     raise
-                delay = _poll_capacity_delay(e, "query_task", self.task_queue)
                 if delay is not None:
                     self._record_poll_metrics("query", "backpressure", time.perf_counter() - poll_start)
                     log.debug("query poll capacity backpressure; retrying in %d s", delay)
@@ -3988,6 +4024,7 @@ class Worker:
                 await asyncio.sleep(failures.retry_delay(e, "query"))
                 continue
             failures.reset()
+            self._status.request_succeeded("query_poll")
             if task is None:
                 self._record_poll_metrics("query", "empty", time.perf_counter() - poll_start)
                 if self._stop.is_set() or (
@@ -4231,6 +4268,8 @@ class Worker:
                 log.exception("query task poller thread was cancelled unexpectedly")
         except Exception:
             log.exception("query task poller thread stopped unexpectedly")
+        finally:
+            self._status.role_exited("query_poll")
 
     @_with_storage_admission_retries
     async def _query_task_thread_main(self) -> None:
@@ -4276,22 +4315,32 @@ class Worker:
         self._begin_run()
         try:
             await self._register()
+        except BaseException as error:
+            if isinstance(error, Exception):
+                self._status.failed("registration")
+            if self._shutdown_task is None:
+                # run() leaves no shutdown behind a failed registration.
+                self._cancel_status_tick()
+            raise
         finally:
             self._registration_done.set()
 
         try:
             if self._stop.is_set():
                 return
-            loops = [asyncio.create_task(self._heartbeat_loop())]
+            roles: list[tuple[str, Coroutine[Any, Any, None] | None]] = [("heartbeat", self._heartbeat_loop())]
             if self.workflows:
-                loops.append(asyncio.create_task(self._poll_workflow_tasks()))
+                roles.append(("workflow_poll", self._poll_workflow_tasks()))
             if self.activities:
-                loops.append(asyncio.create_task(self._poll_activity_tasks()))
+                roles.append(("activity_poll", self._poll_activity_tasks()))
+            query_thread = False
             if self.workflows and self._query_tasks_supported:
-                if self._can_clone_client_for_query_tasks():
-                    self._start_query_task_thread()
-                else:
-                    loops.append(asyncio.create_task(self._poll_query_tasks()))
+                query_thread = self._can_clone_client_for_query_tasks()
+                roles.append(("query_poll", None if query_thread else self._poll_query_tasks()))
+            self._status.roles_started(role for role, _ in roles)
+            loops = [self._start_status_role(role, loop) for role, loop in roles if loop is not None]
+            if query_thread:
+                self._start_query_task_thread()
             self._poller_tasks.update(loops)
 
             try:
@@ -4302,6 +4351,8 @@ class Worker:
         finally:
             primary_error = sys.exc_info()[1]
             primary_traceback = primary_error.__traceback__ if primary_error is not None else None
+            if isinstance(primary_error, Exception):
+                self._status.failed("runtime")
             try:
                 await self.stop()
             except BaseException as shutdown_error:
@@ -4325,17 +4376,26 @@ class Worker:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._heartbeat_interval)
             if self._stop.is_set():
                 return
+            self._status.request_started("heartbeat")
             try:
                 ack = await self.client.heartbeat_worker(
                     worker_id=self.worker_id,
                     task_slots=self._current_task_slots(),
                     process_metrics=self._current_process_metrics(),
                 )
+            except asyncio.CancelledError:
+                self._status.request_abandoned("heartbeat")
+                raise
             except Exception as e:
+                if self._stop.is_set():
+                    self._status.request_abandoned("heartbeat")
+                else:
+                    self._status.request_failed("heartbeat", e)
                 if _is_storage_admission_error(e) and not self._stop.is_set():
                     raise
                 log.warning("worker heartbeat failed: %s", e)
                 continue
+            self._status.request_succeeded("heartbeat")
             if isinstance(ack, dict):
                 advertised = ack.get("heartbeat_interval_seconds")
                 if isinstance(advertised, int) and advertised > 0:
@@ -4444,18 +4504,27 @@ class Worker:
         try:
             try:
                 await asyncio.wait_for(self._register(), timeout=timeout)
+            except Exception:
+                self._status.failed("registration")
+                raise
             finally:
                 self._registration_done.set()
 
             startup_completed = True
             if self._stop.is_set():
                 raise asyncio.CancelledError
-            background_tasks.append(asyncio.create_task(self._heartbeat_loop()))
+            query_thread = False
             if self.workflows and self._query_tasks_supported:
-                if self._can_clone_client_for_query_tasks():
+                query_thread = self._can_clone_client_for_query_tasks()
+                self._status.roles_started(("heartbeat", "query_poll"))
+            else:
+                self._status.roles_started(("heartbeat",))
+            background_tasks.append(self._start_status_role("heartbeat", self._heartbeat_loop()))
+            if self.workflows and self._query_tasks_supported:
+                if query_thread:
                     self._start_query_task_thread()
                 else:
-                    background_tasks.append(asyncio.create_task(self._poll_query_tasks()))
+                    background_tasks.append(self._start_status_role("query_poll", self._poll_query_tasks()))
             self._poller_tasks.update(background_tasks)
             run_until_loop = asyncio.create_task(
                 self._run_until_loop(
@@ -4644,9 +4713,86 @@ class Worker:
         if self._stop.is_set():
             raise RuntimeError("worker cannot run after stop() has been called")
         self._run_started = True
+        self._status.run_started()
+        self._status_tick_task = asyncio.get_running_loop().create_task(self._status_tick_loop())
         payload_observers = getattr(self.client, "_workflow_payload_observers", None)
         if isinstance(payload_observers, dict):
             payload_observers[self.worker_id] = self._renew_workflow_payload_lease
+
+    def status(
+        self,
+        *,
+        event_loop_stall_seconds: float = DEFAULT_EVENT_LOOP_STALL_SECONDS,
+        request_stall_seconds: float | None = None,
+    ) -> WorkerStatus:
+        """Return a read-only readiness and liveness snapshot of this worker.
+
+        The snapshot performs no network I/O, claims no tasks, renews no leases
+        and does not wait on the worker's event loop, so a health endpoint may
+        call it from any thread, including while the event loop is stalled.
+
+        Readiness follows this worker's own registration: it becomes ready
+        once the Server acknowledges the registration, while every configured
+        poller is running and the latest Server exchange of every role
+        succeeded. A transient Server or network failure makes the worker
+        unready; the next successful exchange of that role restores readiness.
+        Liveness reports local progress: the event loop advanced within
+        ``event_loop_stall_seconds``, no configured poller has exited, and no
+        outstanding Server request is older than ``request_stall_seconds``.
+        Idle long polls and long-running activity handlers keep the worker
+        live. Draining workers stay live but are not ready; stopped and failed
+        workers are neither.
+
+        Args:
+            event_loop_stall_seconds: Maximum age of the event loop's progress
+                tick before the worker is reported not live.
+            request_stall_seconds: Maximum age of one outstanding poll or
+                heartbeat before the worker is reported not live. Defaults to
+                three times the larger of the client request timeout and the
+                poll's absolute HTTP deadline.
+
+        Returns:
+            A :class:`~durable_workflow.WorkerStatus` snapshot.
+        """
+        if not _positive_seconds(event_loop_stall_seconds):
+            raise ValueError("event_loop_stall_seconds must be a positive finite number")
+        if request_stall_seconds is None:
+            request_stall_seconds = self._default_request_stall_seconds()
+        elif not _positive_seconds(request_stall_seconds):
+            raise ValueError("request_stall_seconds must be a positive finite number")
+        namespace = self._registration_namespace if self._registration_worker_id is not None else getattr(
+            self.client, "namespace", None
+        )
+        return self._status.snapshot(
+            worker_id=self.worker_id,
+            namespace=namespace if isinstance(namespace, str) else None,
+            task_queue=self.task_queue,
+            event_loop_stall_seconds=float(event_loop_stall_seconds),
+            request_stall_seconds=float(request_stall_seconds),
+        )
+
+    def _default_request_stall_seconds(self) -> float:
+        client_timeout = getattr(self.client, "timeout", None)
+        request_timeout = float(client_timeout) if _positive_seconds(client_timeout) else 60.0
+        poll_deadline = _worker_poll_http_timeout(self._poll_timeout) or 0.0
+        return 3.0 * max(request_timeout, poll_deadline)
+
+    async def _status_tick_loop(self) -> None:
+        while True:
+            self._status.loop_tick()
+            await asyncio.sleep(EVENT_LOOP_TICK_SECONDS)
+
+    def _start_status_role(self, role: str, loop: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        task = asyncio.create_task(loop)
+        task.add_done_callback(lambda _: self._status.role_exited(role))
+        return task
+
+    def _record_poll_status(self, role: str, error: Exception, *, answered: bool) -> None:
+        # Capacity backpressure is a Server answer for an admitted worker.
+        if answered:
+            self._status.request_succeeded(role)
+        else:
+            self._status.request_failed(role, error)
 
     def worker_session(self, options: WorkerSessionOptions) -> WorkerSession:
         """Return a typed lease handle held by this worker until shutdown."""
@@ -4679,10 +4825,27 @@ class Worker:
         stays within the original shutdown deadline. Unfenced deregistration
         makes one attempt and does not retry an uncertain outcome.
         """
+        self._status.draining()
         self._stop.set()
         if self._shutdown_task is None:
-            self._shutdown_task = asyncio.create_task(self._shutdown())
+            self._shutdown_task = asyncio.create_task(self._shutdown_and_record_status())
         await asyncio.shield(self._shutdown_task)
+
+    async def _shutdown_and_record_status(self) -> None:
+        try:
+            await self._shutdown()
+        except BaseException:
+            self._status.failed("shutdown")
+            raise
+        else:
+            self._status.stopped()
+        finally:
+            self._cancel_status_tick()
+
+    def _cancel_status_tick(self) -> None:
+        tick = self._status_tick_task
+        if tick is not None and not tick.done():
+            tick.cancel()
 
     async def _shutdown(self) -> None:
         if self._run_started and not self._registration_done.is_set():

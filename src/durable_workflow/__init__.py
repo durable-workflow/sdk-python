@@ -225,6 +225,7 @@ from .serializer import (
 )
 from .worker import Worker
 from .worker_session import WorkerSession, WorkerSessionOptions
+from .worker_status import WorkerRoleStatus, WorkerState, WorkerStatus
 from .workflow import (
     ActivityRetryPolicy,
     ChildWorkflowRetryPolicy,
@@ -314,6 +315,9 @@ __all__ = [
     "Worker",
     "WorkerSession",
     "WorkerSessionOptions",
+    "WorkerRoleStatus",
+    "WorkerState",
+    "WorkerStatus",
     "WorkerInterceptor",
     "WorkflowCommandResult",
     "WorkflowExecution",
