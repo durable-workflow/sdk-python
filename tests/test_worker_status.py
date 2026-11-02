@@ -171,8 +171,10 @@ async def test_empty_and_in_flight_long_polls_stay_ready(client: AsyncMock) -> N
         status = worker.status()
         workflow_poll = roles(status)["workflow_poll"]
 
-        assert status.ready and status.live
-        assert workflow_poll.in_flight_seconds is not None and workflow_poll.in_flight_seconds >= 0.04
+        assert status.ready
+        assert status.live
+        assert workflow_poll.in_flight_seconds is not None
+        assert workflow_poll.in_flight_seconds >= 0.04
         assert workflow_poll.overdue is False
         assert workflow_poll.stalled is False
 
@@ -391,7 +393,8 @@ async def test_long_running_activity_and_drain_states(client: AsyncMock) -> None
         await eventually(started.is_set)
         await asyncio.sleep(0.05)
         status = worker.status(request_stall_seconds=0.02)
-        assert status.ready and status.live, (status.ready_reason, status.live_reason)
+        assert status.ready, status.ready_reason
+        assert status.live, status.live_reason
 
         stop_task = asyncio.create_task(worker.stop())
         await eventually(lambda: worker.status().state is WorkerState.DRAINING)
@@ -406,7 +409,8 @@ async def test_long_running_activity_and_drain_states(client: AsyncMock) -> None
         assert stopped.state is WorkerState.STOPPED
         assert (stopped.ready, stopped.ready_reason) == (False, "stopped")
         assert (stopped.live, stopped.live_reason) == (False, "stopped")
-        assert worker._status_tick_task is not None and worker._status_tick_task.done()
+        assert worker._status_tick_task is not None
+        assert worker._status_tick_task.done()
     finally:
         release.set()
         if stop_task is not None:
@@ -460,7 +464,8 @@ async def test_status_is_json_serializable(client: AsyncMock) -> None:
         await eventually(lambda: worker.status().ready)
         payload = json.loads(json.dumps(worker.status().as_dict()))
         assert payload["state"] == "registered"
-        assert payload["ready"] is True and payload["live"] is True
+        assert payload["ready"] is True
+        assert payload["live"] is True
         assert {role["role"] for role in payload["roles"]} == {
             "heartbeat", "workflow_poll", "activity_poll", "query_poll",
         }

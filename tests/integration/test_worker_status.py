@@ -86,7 +86,8 @@ async def test_worker_status_follows_a_real_worker_lifecycle(server_url: str, se
             # A blocked synchronous activity does not affect readiness or liveness.
             await asyncio.sleep(1)
             status = worker.status()
-            assert status.ready and status.live, status.as_dict()
+            assert status.ready, status.as_dict()
+            assert status.live, status.as_dict()
             if "query_poll" in {role.role for role in status.roles}:
                 response = await client.query_workflow(handle.workflow_id, "stage")
                 assert response["result"] == "running_activity"

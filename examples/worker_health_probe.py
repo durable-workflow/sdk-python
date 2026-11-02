@@ -96,7 +96,7 @@ async def main() -> None:
 
         run_task = asyncio.create_task(worker.run())
         try:
-            done, _ = await asyncio.wait(
+            await asyncio.wait(
                 {run_task, asyncio.create_task(shutdown_requested.wait())},
                 return_when=asyncio.FIRST_COMPLETED,
             )

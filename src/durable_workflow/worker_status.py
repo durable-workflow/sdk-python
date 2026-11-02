@@ -350,12 +350,17 @@ def _liveness(
     if loop_age is None or loop_age > event_loop_stall_seconds:
         return False, "event_loop_stalled"
     if state is WorkerState.REGISTERED:
-        for role in roles:
-            if not role.running:
-                return False, f"role_stopped:{role.role}"
-        for role in roles:
-            if role.stalled:
-                return False, f"role_stalled:{role.role}"
+        return _role_liveness(roles)
+    return True, "live"
+
+
+def _role_liveness(roles: tuple[WorkerRoleStatus, ...]) -> tuple[bool, str]:
+    stopped = next((role.role for role in roles if not role.running), None)
+    if stopped is not None:
+        return False, f"role_stopped:{stopped}"
+    stalled = next((role.role for role in roles if role.stalled), None)
+    if stalled is not None:
+        return False, f"role_stalled:{stalled}"
     return True, "live"
 
 

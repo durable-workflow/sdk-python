@@ -22,6 +22,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import pickle
 import random
 import sys
@@ -244,9 +245,8 @@ def _positive_seconds(value: object) -> bool:
     return (
         isinstance(value, (int, float))
         and not isinstance(value, bool)
+        and math.isfinite(value)
         and value > 0
-        and value != float("inf")
-        and value == value
     )
 
 
@@ -4313,34 +4313,12 @@ class Worker:
     async def run(self) -> None:
         """Register the worker and poll until `stop()` is called or the task is cancelled."""
         self._begin_run()
-        try:
-            await self._register()
-        except BaseException as error:
-            if isinstance(error, Exception):
-                self._status.failed("registration")
-            if self._shutdown_task is None:
-                # run() leaves no shutdown behind a failed registration.
-                self._cancel_status_tick()
-            raise
-        finally:
-            self._registration_done.set()
+        await self._register_for_run()
 
         try:
             if self._stop.is_set():
                 return
-            roles: list[tuple[str, Coroutine[Any, Any, None] | None]] = [("heartbeat", self._heartbeat_loop())]
-            if self.workflows:
-                roles.append(("workflow_poll", self._poll_workflow_tasks()))
-            if self.activities:
-                roles.append(("activity_poll", self._poll_activity_tasks()))
-            query_thread = False
-            if self.workflows and self._query_tasks_supported:
-                query_thread = self._can_clone_client_for_query_tasks()
-                roles.append(("query_poll", None if query_thread else self._poll_query_tasks()))
-            self._status.roles_started(role for role, _ in roles)
-            loops = [self._start_status_role(role, loop) for role, loop in roles if loop is not None]
-            if query_thread:
-                self._start_query_task_thread()
+            loops = self._start_run_pollers()
             self._poller_tasks.update(loops)
 
             try:
@@ -4360,6 +4338,35 @@ class Worker:
                     raise primary_error.with_traceback(primary_traceback) from shutdown_error
                 raise
 
+    async def _register_for_run(self) -> None:
+        try:
+            await self._register()
+        except BaseException as error:
+            if isinstance(error, Exception):
+                self._status.failed("registration")
+            if self._shutdown_task is None:
+                # run() leaves no shutdown behind a failed registration.
+                self._cancel_status_tick()
+            raise
+        finally:
+            self._registration_done.set()
+
+    def _start_run_pollers(self) -> list[asyncio.Task[None]]:
+        roles: list[tuple[str, Coroutine[Any, Any, None] | None]] = [("heartbeat", self._heartbeat_loop())]
+        if self.workflows:
+            roles.append(("workflow_poll", self._poll_workflow_tasks()))
+        if self.activities:
+            roles.append(("activity_poll", self._poll_activity_tasks()))
+        query_thread = False
+        if self.workflows and self._query_tasks_supported:
+            query_thread = self._can_clone_client_for_query_tasks()
+            roles.append(("query_poll", None if query_thread else self._poll_query_tasks()))
+        self._status.roles_started(role for role, _ in roles)
+        loops = [self._start_status_role(role, loop) for role, loop in roles if loop is not None]
+        if query_thread:
+            self._start_query_task_thread()
+        return loops
+
     async def _heartbeat_loop(self) -> None:
         """Periodically refresh the server-side worker registration.
 
@@ -4376,30 +4383,35 @@ class Worker:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._heartbeat_interval)
             if self._stop.is_set():
                 return
-            self._status.request_started("heartbeat")
-            try:
-                ack = await self.client.heartbeat_worker(
-                    worker_id=self.worker_id,
-                    task_slots=self._current_task_slots(),
-                    process_metrics=self._current_process_metrics(),
-                )
-            except asyncio.CancelledError:
-                self._status.request_abandoned("heartbeat")
-                raise
-            except Exception as e:
-                if self._stop.is_set():
-                    self._status.request_abandoned("heartbeat")
-                else:
-                    self._status.request_failed("heartbeat", e)
-                if _is_storage_admission_error(e) and not self._stop.is_set():
-                    raise
-                log.warning("worker heartbeat failed: %s", e)
-                continue
-            self._status.request_succeeded("heartbeat")
+            ack = await self._send_heartbeat()
             if isinstance(ack, dict):
                 advertised = ack.get("heartbeat_interval_seconds")
                 if isinstance(advertised, int) and advertised > 0:
                     self._heartbeat_interval = float(advertised)
+
+    async def _send_heartbeat(self) -> Any:
+        """Send one heartbeat; return its acknowledgement, or ``None`` after a logged failure."""
+        self._status.request_started("heartbeat")
+        try:
+            ack = await self.client.heartbeat_worker(
+                worker_id=self.worker_id,
+                task_slots=self._current_task_slots(),
+                process_metrics=self._current_process_metrics(),
+            )
+        except asyncio.CancelledError:
+            self._status.request_abandoned("heartbeat")
+            raise
+        except Exception as e:
+            if self._stop.is_set():
+                self._status.request_abandoned("heartbeat")
+            else:
+                self._status.request_failed("heartbeat", e)
+            if _is_storage_admission_error(e) and not self._stop.is_set():
+                raise
+            log.warning("worker heartbeat failed: %s", e)
+            return None
+        self._status.request_succeeded("heartbeat")
+        return ack
 
     def _current_task_slots(self) -> dict[str, int]:
         return {
@@ -4502,29 +4514,12 @@ class Worker:
 
         self._begin_run()
         try:
-            try:
-                await asyncio.wait_for(self._register(), timeout=timeout)
-            except Exception:
-                self._status.failed("registration")
-                raise
-            finally:
-                self._registration_done.set()
+            await self._register_within(timeout)
 
             startup_completed = True
             if self._stop.is_set():
                 raise asyncio.CancelledError
-            query_thread = False
-            if self.workflows and self._query_tasks_supported:
-                query_thread = self._can_clone_client_for_query_tasks()
-                self._status.roles_started(("heartbeat", "query_poll"))
-            else:
-                self._status.roles_started(("heartbeat",))
-            background_tasks.append(self._start_status_role("heartbeat", self._heartbeat_loop()))
-            if self.workflows and self._query_tasks_supported:
-                if query_thread:
-                    self._start_query_task_thread()
-                else:
-                    background_tasks.append(self._start_status_role("query_poll", self._poll_query_tasks()))
+            background_tasks.extend(self._start_run_until_background())
             self._poller_tasks.update(background_tasks)
             run_until_loop = asyncio.create_task(
                 self._run_until_loop(
@@ -4553,6 +4548,26 @@ class Worker:
                 if primary_error is not None:
                     raise primary_error.with_traceback(primary_traceback) from shutdown_error
                 raise
+
+    async def _register_within(self, timeout: float) -> None:
+        try:
+            await asyncio.wait_for(self._register(), timeout=timeout)
+        except Exception:
+            self._status.failed("registration")
+            raise
+        finally:
+            self._registration_done.set()
+
+    def _start_run_until_background(self) -> list[asyncio.Task[None]]:
+        query_tasks = bool(self.workflows and self._query_tasks_supported)
+        query_thread = query_tasks and self._can_clone_client_for_query_tasks()
+        self._status.roles_started(("heartbeat", "query_poll") if query_tasks else ("heartbeat",))
+        tasks = [self._start_status_role("heartbeat", self._heartbeat_loop())]
+        if query_thread:
+            self._start_query_task_thread()
+        elif query_tasks:
+            tasks.append(self._start_status_role("query_poll", self._poll_query_tasks()))
+        return tasks
 
     async def _run_until_loop(
         self,
