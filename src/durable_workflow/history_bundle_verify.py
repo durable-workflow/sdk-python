@@ -100,6 +100,7 @@ def verify_bundle(bundle: Any, signing_key: str | None = None) -> dict[str, Any]
 
     _check_envelope(bundle, findings)
     _check_workflow(bundle, findings)
+    _check_retained_details(bundle, findings)
     _check_history_events(bundle, findings)
     _check_commands(bundle, findings)
     _check_payload_manifest(bundle, findings)
@@ -340,6 +341,37 @@ def _php_integer_key(key: str) -> bool:
     if len(key) > 20 or not re.fullmatch(r"0|-?[1-9]\d*", key, flags=re.ASCII):
         return False
     return -(2**63) <= int(key) <= 2**63 - 1
+
+
+def _check_retained_details(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -> None:
+    """Fail a run whose details retention cleanup pruned.
+
+    Such a bundle has no history to replay or import, whatever its other
+    fields say. Bundles without ``workflow.details_state`` (older exports) and
+    bundles marked ``retained`` are unaffected.
+    """
+
+    workflow = bundle.get("workflow")
+    if not isinstance(workflow, Mapping) or workflow.get("details_state") != "pruned":
+        return
+
+    pruned_at = _string_or_none(workflow.get("details_pruned_at"))
+    findings.append(
+        _finding(
+            "history.details_pruned",
+            SEVERITY_ERROR,
+            (
+                "Retention cleanup pruned this run's details"
+                f"{'' if pruned_at is None else ' at ' + pruned_at}"
+                "; the bundle has no history to replay or import."
+            ),
+            {
+                "details_pruned_at": pruned_at,
+                "history_complete": bundle.get("history_complete"),
+            },
+            path="workflow.details_state",
+        )
+    )
 
 
 def _check_history_events(bundle: Mapping[str, Any], findings: list[dict[str, Any]]) -> None:
