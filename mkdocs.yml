@@ -79,6 +79,7 @@ nav:
   - Execution telemetry: telemetry.md
   - Sticky execution: guides/sticky-execution.md
   - Separate worker processes: guides/separate-workers.md
+  - Worker readiness and liveness: guides/worker-health.md
   - Query deadlines: query-task-authority.md
   - SDK guide: https://durable-workflow.com/docs/2.0/polyglot/python/
   - PyPI: https://pypi.org/project/durable-workflow/

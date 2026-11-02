@@ -112,6 +112,7 @@ reference_modules = [
     "durable_workflow.sync",
     "durable_workflow.testing",
     "durable_workflow.worker",
+    "durable_workflow.worker_status",
     "durable_workflow.workflow",
     "durable_workflow.workflow_updates_conformance",
 ]

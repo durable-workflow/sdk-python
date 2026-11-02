@@ -9,15 +9,17 @@ including when the worker's event loop itself is stalled.
 Readiness and liveness answer different questions:
 
 - **Ready** means this worker holds a current registration for its own
-  namespace and task queue, every configured poller is running, and the most
-  recent Server exchange of every role succeeded. A transient Server or
-  network outage makes the worker unready without making it unlive, and the
-  next successful exchange of each failed role restores readiness without a
-  restart.
+  namespace and task queue, every configured poller is running, the most
+  recent Server exchange of every role succeeded, and no outstanding request
+  is overdue (unanswered beyond one HTTP attempt deadline). A transient Server
+  or network outage makes the worker unready without making it unlive, and
+  the next successful exchange of each affected role restores readiness
+  without a restart.
 - **Live** means the worker's local machinery is progressing: its event loop
   is advancing, no configured poller has exited, and no outstanding Server
-  request has outlived its bound. An idle long poll or a long-running activity
-  handler is not a liveness failure.
+  request has outlived its stall bound, which exceeds the transport retry
+  budget. An idle long poll, a Server outage within that budget, or a
+  long-running activity handler is not a liveness failure.
 
 Missing observations are reported as unavailable (``None``), never as
 success.
@@ -88,8 +90,11 @@ class WorkerRoleStatus:
     last_failure_type: str | None
     """Exception class name of the most recent failure; never its message."""
 
+    overdue: bool
+    """Whether the outstanding request is unanswered beyond one HTTP attempt deadline."""
+
     stalled: bool
-    """Whether the outstanding request has outlived the snapshot's request bound."""
+    """Whether the outstanding request has outlived the snapshot's stall bound."""
 
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping of this role status."""
@@ -102,6 +107,7 @@ class WorkerRoleStatus:
             "last_failure_age_seconds": self.last_failure_age_seconds,
             "consecutive_failures": self.consecutive_failures,
             "last_failure_type": self.last_failure_type,
+            "overdue": self.overdue,
             "stalled": self.stalled,
         }
 
@@ -275,6 +281,7 @@ class _WorkerStatusTracker:
         namespace: str | None,
         task_queue: str,
         event_loop_stall_seconds: float,
+        request_overdue_seconds: float,
         request_stall_seconds: float,
     ) -> WorkerStatus:
         with self._lock:
@@ -293,6 +300,10 @@ class _WorkerStatusTracker:
                     last_failure_age_seconds=_age(now, progress.last_failure_at),
                     consecutive_failures=progress.consecutive_failures,
                     last_failure_type=progress.last_failure_type,
+                    overdue=(
+                        progress.in_flight_since is not None
+                        and now - progress.in_flight_since > request_overdue_seconds
+                    ),
                     stalled=(
                         progress.in_flight_since is not None
                         and now - progress.in_flight_since > request_stall_seconds
@@ -364,6 +375,6 @@ def _readiness(
     if state is not WorkerState.REGISTERED or not live:
         return False, live_reason
     for role in roles:
-        if role.consecutive_failures:
+        if role.consecutive_failures or role.overdue:
             return False, f"server_unavailable:{role.role}"
     return True, "ready"

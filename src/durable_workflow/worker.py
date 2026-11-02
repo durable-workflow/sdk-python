@@ -4723,6 +4723,7 @@ class Worker:
         self,
         *,
         event_loop_stall_seconds: float = DEFAULT_EVENT_LOOP_STALL_SECONDS,
+        request_overdue_seconds: float | None = None,
         request_stall_seconds: float | None = None,
     ) -> WorkerStatus:
         """Return a read-only readiness and liveness snapshot of this worker.
@@ -4733,29 +4734,38 @@ class Worker:
 
         Readiness follows this worker's own registration: it becomes ready
         once the Server acknowledges the registration, while every configured
-        poller is running and the latest Server exchange of every role
-        succeeded. A transient Server or network failure makes the worker
-        unready; the next successful exchange of that role restores readiness.
-        Liveness reports local progress: the event loop advanced within
+        poller is running, the latest Server exchange of every role succeeded
+        and no outstanding request is older than ``request_overdue_seconds``.
+        A transient Server or network failure makes the worker unready; the
+        next successful exchange of that role restores readiness. Liveness
+        reports local progress: the event loop advanced within
         ``event_loop_stall_seconds``, no configured poller has exited, and no
         outstanding Server request is older than ``request_stall_seconds``.
-        Idle long polls and long-running activity handlers keep the worker
-        live. Draining workers stay live but are not ready; stopped and failed
-        workers are neither.
+        Idle long polls, Server outages within the transport retry budget and
+        long-running activity handlers keep the worker live. Draining workers
+        stay live but are not ready; stopped and failed workers are neither.
 
         Args:
             event_loop_stall_seconds: Maximum age of the event loop's progress
                 tick before the worker is reported not live.
+            request_overdue_seconds: Maximum age of one outstanding poll or
+                heartbeat before the worker is reported not ready. Defaults to
+                one HTTP attempt deadline: the larger of the client request
+                timeout and the poll's absolute HTTP deadline.
             request_stall_seconds: Maximum age of one outstanding poll or
                 heartbeat before the worker is reported not live. Defaults to
-                three times the larger of the client request timeout and the
-                poll's absolute HTTP deadline.
+                twice the client's complete transport retry budget for one
+                such request.
 
         Returns:
             A :class:`~durable_workflow.WorkerStatus` snapshot.
         """
         if not _positive_seconds(event_loop_stall_seconds):
             raise ValueError("event_loop_stall_seconds must be a positive finite number")
+        if request_overdue_seconds is None:
+            request_overdue_seconds = self._request_attempt_deadline_seconds()
+        elif not _positive_seconds(request_overdue_seconds):
+            raise ValueError("request_overdue_seconds must be a positive finite number")
         if request_stall_seconds is None:
             request_stall_seconds = self._default_request_stall_seconds()
         elif not _positive_seconds(request_stall_seconds):
@@ -4768,10 +4778,11 @@ class Worker:
             namespace=namespace if isinstance(namespace, str) else None,
             task_queue=self.task_queue,
             event_loop_stall_seconds=float(event_loop_stall_seconds),
+            request_overdue_seconds=float(request_overdue_seconds),
             request_stall_seconds=float(request_stall_seconds),
         )
 
-    def _default_request_stall_seconds(self) -> float:
+    def _request_attempt_deadline_seconds(self) -> float:
         client_timeout = getattr(self.client, "timeout", None)
         request_timeout = (
             float(client_timeout)
@@ -4779,7 +4790,18 @@ class Worker:
             else 60.0
         )
         poll_deadline = _worker_poll_http_timeout(self._poll_timeout) or 0.0
-        return 3.0 * max(request_timeout, poll_deadline)
+        return max(request_timeout, poll_deadline)
+
+    def _default_request_stall_seconds(self) -> float:
+        # One logical request may retry transport failures; only a request
+        # outliving twice that complete budget indicates a local stall.
+        policy = getattr(self.client, "retry_policy", None)
+        attempts = getattr(policy, "max_attempts", 3)
+        backoff = getattr(policy, "max_backoff_seconds", 5.0)
+        attempts = attempts if isinstance(attempts, int) and attempts >= 1 else 3
+        backoff = float(backoff) if isinstance(backoff, (int, float)) and _positive_seconds(backoff) else 5.0
+        budget = attempts * self._request_attempt_deadline_seconds() + (attempts - 1) * backoff
+        return 2.0 * budget
 
     async def _status_tick_loop(self) -> None:
         while True:

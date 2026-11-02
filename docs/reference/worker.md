@@ -197,4 +197,15 @@ before its reply reaches the SDK. A worker that never receives that reply has
 not begun polling and becomes stale under the Server's heartbeat policy.
 Use the existing workflow handle and queue when bringing up a replacement.
 
+## Readiness and liveness
+
+`Worker.status()` returns a read-only snapshot that separates readiness
+(registered, every configured poller running, latest Server exchange of each
+role succeeded) from liveness (event loop progressing, no poller exited, no
+request outliving its bound). It performs no network I/O and can be called from
+another thread. See [Worker readiness and liveness](../guides/worker-health.md)
+for states, probe configuration and shutdown guidance.
+
 ::: durable_workflow.worker
+
+::: durable_workflow.worker_status

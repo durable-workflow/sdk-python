@@ -166,7 +166,13 @@ async def test_empty_and_in_flight_long_polls_stay_ready(client: AsyncMock) -> N
 
         assert status.ready and status.live
         assert workflow_poll.in_flight_seconds is not None and workflow_poll.in_flight_seconds >= 0.04
+        assert workflow_poll.overdue is False
         assert workflow_poll.stalled is False
+
+        overdue = worker.status(request_overdue_seconds=0.01)
+        assert (overdue.ready, overdue.ready_reason) == (False, "server_unavailable:workflow_poll")
+        assert (overdue.live, overdue.live_reason) == (True, "live")
+        assert roles(overdue)["workflow_poll"].overdue is True
 
         stalled = worker.status(request_stall_seconds=0.01)
         assert (stalled.live, stalled.live_reason) == (False, "role_stalled:workflow_poll")
@@ -460,16 +466,24 @@ async def test_status_rejects_invalid_bounds(client: AsyncMock, value: object) -
     worker = make_worker(client)
     with pytest.raises(ValueError, match="event_loop_stall_seconds"):
         worker.status(event_loop_stall_seconds=value)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="request_overdue_seconds"):
+        worker.status(request_overdue_seconds=value)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="request_stall_seconds"):
         worker.status(request_stall_seconds=value)  # type: ignore[arg-type]
 
 
-async def test_default_request_bound_covers_the_long_poll_deadline(client: AsyncMock) -> None:
+async def test_default_request_bounds_follow_the_attempt_deadline_and_retry_budget(client: AsyncMock) -> None:
+    from durable_workflow.retry_policy import TransportRetryPolicy
+
     client.timeout = 60.0
+    client.retry_policy = TransportRetryPolicy()
     worker = make_worker(client, poll_timeout=35.0)
-    assert worker._default_request_stall_seconds() == 180.0
+    assert worker._request_attempt_deadline_seconds() == 60.0
+    assert worker._default_request_stall_seconds() == 2 * (3 * 60.0 + 2 * 5.0)
     client.timeout = 10.0
-    assert worker._default_request_stall_seconds() == 3 * 40.0
+    assert worker._request_attempt_deadline_seconds() == 40.0
+    client.retry_policy = TransportRetryPolicy(max_attempts=1)
+    assert worker._default_request_stall_seconds() == 2 * 40.0
 
 
 async def test_run_until_reports_registration_and_stop(client: AsyncMock) -> None:
