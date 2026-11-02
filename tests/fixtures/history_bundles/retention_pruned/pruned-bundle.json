@@ -1,0 +1,147 @@
+{
+    "schema": "durable-workflow.v2.history-export",
+    "schema_version": 2,
+    "exported_at": "2026-11-02T21:48:14.974261Z",
+    "dedupe_key": "01m6f3qvzpvz4jth4ag0aczfv8:6:2026-11-02T21:48:14.702328Z:details-pruned:2026-11-02T21:48:14.952676Z",
+    "history_complete": false,
+    "workflow": {
+        "instance_id": "pruned-parity-repro",
+        "run_id": "01m6f3qvzpvz4jth4ag0aczfv8",
+        "run_number": 1,
+        "is_current_run": true,
+        "current_run_id": "01m6f3qvzpvz4jth4ag0aczfv8",
+        "current_run_source": "run_order_fallback",
+        "workflow_type": "test-greeting-workflow",
+        "workflow_class": "Tests\\Fixtures\\V2\\TestGreetingWorkflow",
+        "source_runtime": "embedded",
+        "source_process_class": "application_process",
+        "business_key": null,
+        "visibility_labels": [],
+        "memo": [],
+        "memo_payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNw4A"
+        },
+        "search_attributes": [],
+        "status": "completed",
+        "status_bucket": "completed",
+        "closed_reason": "completed",
+        "archived_at": null,
+        "archive_command_id": null,
+        "archive_reason": null,
+        "compatibility": null,
+        "connection": null,
+        "queue": "default",
+        "last_history_sequence": 6,
+        "started_at": "2026-11-02T21:48:10.415185Z",
+        "closed_at": "2026-11-02T21:48:14.696276Z",
+        "last_progress_at": "2026-11-02T21:48:14.702328Z",
+        "details_state": "pruned",
+        "details_pruned_at": "2026-11-02T21:48:14.952676Z"
+    },
+    "payloads": {
+        "codec": "avro",
+        "arguments": {
+            "available": true,
+            "data": "wwHioz3/VYAiNwwCCgZBZGEA"
+        },
+        "output": {
+            "available": true,
+            "codec": "avro",
+            "data": "wwHioz3/VYAiNw4GEGdyZWV0aW5nChZIZWxsbywgQWRhIRZ3b3JrZmxvd19pZAomcHJ1bmVkLXBhcml0eS1yZXBybwxydW5faWQKNDAxbTZmM3F2enB2ejRqdGg0YWcwYWN6ZnY4AA=="
+        }
+    },
+    "summary": null,
+    "selected_run": {
+        "waits_projection_source": "workflow_run_waits",
+        "timeline_projection_source": "workflow_run_timeline_entries",
+        "timers_projection_source": "workflow_run_timer_entries",
+        "timers_projection_rebuild_reasons": [],
+        "lineage_projection_source": "workflow_run_lineage_entries"
+    },
+    "history_events": [],
+    "waits": [],
+    "timeline": [],
+    "linked_intakes_scope": "selected_run",
+    "linked_intakes": [],
+    "commands": [],
+    "signals": [],
+    "updates": [],
+    "tasks": [],
+    "activities": [],
+    "timers": [],
+    "failures": [],
+    "links": {
+        "projection_source": "workflow_run_lineage_entries",
+        "parents": [],
+        "children": []
+    },
+    "redaction": {
+        "applied": false,
+        "policy": null,
+        "paths": []
+    },
+    "codec_schemas": {
+        "avro": {
+            "encoding": "base64-avro-single-object",
+            "framing": "single_object",
+            "magic_hex": "c301",
+            "current_fingerprint": "e2a33dff55802237",
+            "writer_schemas": {
+                "e2a33dff55802237": {
+                    "schema": "{\"type\":\"record\",\"name\":\"Value\",\"namespace\":\"durable_workflow.protocol\",\"fields\":[{\"name\":\"value\",\"type\":[\"null\",{\"type\":\"record\",\"name\":\"BooleanValue\",\"fields\":[{\"name\":\"boolean\",\"type\":\"boolean\"}]},{\"type\":\"record\",\"name\":\"LongValue\",\"fields\":[{\"name\":\"long\",\"type\":\"long\"}]},{\"type\":\"record\",\"name\":\"DoubleValue\",\"fields\":[{\"name\":\"double\",\"type\":\"double\"}]},{\"type\":\"record\",\"name\":\"BytesValue\",\"fields\":[{\"name\":\"bytes\",\"type\":\"bytes\"}]},{\"type\":\"record\",\"name\":\"StringValue\",\"fields\":[{\"name\":\"string\",\"type\":\"string\"}]},{\"type\":\"record\",\"name\":\"ArrayValue\",\"fields\":[{\"name\":\"items\",\"type\":{\"type\":\"array\",\"items\":\"Value\"}}]},{\"type\":\"record\",\"name\":\"MapValue\",\"fields\":[{\"name\":\"entries\",\"type\":{\"type\":\"map\",\"values\":\"Value\"}}]}]}]}",
+                    "fingerprint": "crc64-avro:e2a33dff55802237"
+                }
+            }
+        }
+    },
+    "payload_manifest": {
+        "version": 1,
+        "entries": [
+            {
+                "path": "workflow.memo_payload",
+                "codec": "avro",
+                "available": true,
+                "redacted": false,
+                "encoding": "base64-avro-single-object",
+                "avro_framing": "single_object",
+                "avro_prefix_hex": "c301",
+                "writer_schema": "{\"type\":\"record\",\"name\":\"Value\",\"namespace\":\"durable_workflow.protocol\",\"fields\":[{\"name\":\"value\",\"type\":[\"null\",{\"type\":\"record\",\"name\":\"BooleanValue\",\"fields\":[{\"name\":\"boolean\",\"type\":\"boolean\"}]},{\"type\":\"record\",\"name\":\"LongValue\",\"fields\":[{\"name\":\"long\",\"type\":\"long\"}]},{\"type\":\"record\",\"name\":\"DoubleValue\",\"fields\":[{\"name\":\"double\",\"type\":\"double\"}]},{\"type\":\"record\",\"name\":\"BytesValue\",\"fields\":[{\"name\":\"bytes\",\"type\":\"bytes\"}]},{\"type\":\"record\",\"name\":\"StringValue\",\"fields\":[{\"name\":\"string\",\"type\":\"string\"}]},{\"type\":\"record\",\"name\":\"ArrayValue\",\"fields\":[{\"name\":\"items\",\"type\":{\"type\":\"array\",\"items\":\"Value\"}}]},{\"type\":\"record\",\"name\":\"MapValue\",\"fields\":[{\"name\":\"entries\",\"type\":{\"type\":\"map\",\"values\":\"Value\"}}]}]}]}",
+                "writer_schema_fingerprint": "crc64-avro:e2a33dff55802237",
+                "diagnostic": null
+            },
+            {
+                "path": "payloads.arguments.data",
+                "codec": "avro",
+                "available": true,
+                "redacted": false,
+                "encoding": "base64-avro-single-object",
+                "avro_framing": "single_object",
+                "avro_prefix_hex": "c301",
+                "writer_schema": "{\"type\":\"record\",\"name\":\"Value\",\"namespace\":\"durable_workflow.protocol\",\"fields\":[{\"name\":\"value\",\"type\":[\"null\",{\"type\":\"record\",\"name\":\"BooleanValue\",\"fields\":[{\"name\":\"boolean\",\"type\":\"boolean\"}]},{\"type\":\"record\",\"name\":\"LongValue\",\"fields\":[{\"name\":\"long\",\"type\":\"long\"}]},{\"type\":\"record\",\"name\":\"DoubleValue\",\"fields\":[{\"name\":\"double\",\"type\":\"double\"}]},{\"type\":\"record\",\"name\":\"BytesValue\",\"fields\":[{\"name\":\"bytes\",\"type\":\"bytes\"}]},{\"type\":\"record\",\"name\":\"StringValue\",\"fields\":[{\"name\":\"string\",\"type\":\"string\"}]},{\"type\":\"record\",\"name\":\"ArrayValue\",\"fields\":[{\"name\":\"items\",\"type\":{\"type\":\"array\",\"items\":\"Value\"}}]},{\"type\":\"record\",\"name\":\"MapValue\",\"fields\":[{\"name\":\"entries\",\"type\":{\"type\":\"map\",\"values\":\"Value\"}}]}]}]}",
+                "writer_schema_fingerprint": "crc64-avro:e2a33dff55802237",
+                "diagnostic": null
+            },
+            {
+                "path": "payloads.output.data",
+                "codec": "avro",
+                "available": true,
+                "redacted": false,
+                "encoding": "base64-avro-single-object",
+                "avro_framing": "single_object",
+                "avro_prefix_hex": "c301",
+                "writer_schema": "{\"type\":\"record\",\"name\":\"Value\",\"namespace\":\"durable_workflow.protocol\",\"fields\":[{\"name\":\"value\",\"type\":[\"null\",{\"type\":\"record\",\"name\":\"BooleanValue\",\"fields\":[{\"name\":\"boolean\",\"type\":\"boolean\"}]},{\"type\":\"record\",\"name\":\"LongValue\",\"fields\":[{\"name\":\"long\",\"type\":\"long\"}]},{\"type\":\"record\",\"name\":\"DoubleValue\",\"fields\":[{\"name\":\"double\",\"type\":\"double\"}]},{\"type\":\"record\",\"name\":\"BytesValue\",\"fields\":[{\"name\":\"bytes\",\"type\":\"bytes\"}]},{\"type\":\"record\",\"name\":\"StringValue\",\"fields\":[{\"name\":\"string\",\"type\":\"string\"}]},{\"type\":\"record\",\"name\":\"ArrayValue\",\"fields\":[{\"name\":\"items\",\"type\":{\"type\":\"array\",\"items\":\"Value\"}}]},{\"type\":\"record\",\"name\":\"MapValue\",\"fields\":[{\"name\":\"entries\",\"type\":{\"type\":\"map\",\"values\":\"Value\"}}]}]}]}",
+                "writer_schema_fingerprint": "crc64-avro:e2a33dff55802237",
+                "diagnostic": null
+            }
+        ]
+    },
+    "integrity": {
+        "canonicalization": "json-recursive-ksort-v1",
+        "checksum_algorithm": "sha256",
+        "checksum": "8fa57d07aa2835e1210f3d5a840a2d46e63b4d918e15689dd8818f9c7b1101ac",
+        "signature_algorithm": null,
+        "signature": null,
+        "key_id": null
+    }
+}

@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another thread. Adds `WorkerState` and `WorkerRoleStatus`, a runnable probe
   example and a Kubernetes guide. Existing worker behavior is unchanged.
 
+### Fixed
+
+- History-bundle verification and bundle simulation now fail a
+  retention-pruned export (`workflow.details_state: "pruned"`) with the
+  `history.details_pruned` error, matching PHP Core, instead of reporting it
+  as `ok`. Retained bundles and older exports without the marker are
+  unchanged.
+
 ## [2.12.4] - 2026-11-02
 
 ### Added

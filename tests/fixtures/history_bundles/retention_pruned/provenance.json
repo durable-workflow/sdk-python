@@ -1,0 +1,31 @@
+{
+  "fixture": "pruned-bundle.json",
+  "file_sha256": "57f12ffb97c8d3fd60648cb70378f024a3a66c841cb222713da534cb552ddbbf",
+  "canonical_checksum": "8fa57d07aa2835e1210f3d5a840a2d46e63b4d918e15689dd8818f9c7b1101ac",
+  "producer": "PHP Core HistoryExport::forRun after WorkflowRunRetentionCleanup::pruneRun",
+  "producer_source": "durable-workflow/workflow PR #980 head 2e562997; merged as 05ffc5794f8d554c4fb10c29a62da60e1a9e946c with no file changes from that head",
+  "runtime": "PHP 8.4, PostgreSQL 17, Redis 7; a real TestGreetingWorkflow run completed (workflow, activity, workflow), was pruned, then exported",
+  "original_record": "https://github.com/durable-workflow/sdk-python/issues/228",
+  "php_corpus_scenario": {
+    "path": "tests/Fixtures/V2/ReplayRegression/retention-pruned-run-export.json",
+    "commit": "05ffc5794f8d554c4fb10c29a62da60e1a9e946c",
+    "sha256": "7016af05eaa0b23ea1733645da25298260cb6370f9d9a166e34678e4d0a24380",
+    "note": "The PHP corpus entry is a scenario descriptor that generates pruned exports at test time; it carries no bundle bytes. This file holds the exact bundle that scenario's exporter produced."
+  },
+  "expected_php_verification": {
+    "status": "failed",
+    "findings": [
+      {
+        "rule": "history.details_pruned",
+        "severity": "error",
+        "message": "Retention cleanup pruned this run's details at 2026-11-02T21:48:14.952676Z; the bundle has no history to replay or import.",
+        "path": "workflow.details_state",
+        "context": {
+          "details_pruned_at": "2026-11-02T21:48:14.952676Z",
+          "history_complete": false
+        }
+      }
+    ]
+  },
+  "note": "Test data only. Never regenerate or normalize this file in place; tests mutate parsed copies."
+}
