@@ -110,9 +110,9 @@ def blank_workflow_task(**fields: Any) -> dict[str, Any]:
 
 @pytest.mark.parametrize("message", ["", " \t\n", "  original failure  "])
 async def test_query_failure_reports_a_nonempty_message(
-    mock_client: AsyncMock, message: str,  # noqa: F811
+    mock_client: AsyncMock, message: str, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
-    BlankQueryAndValidatorWorkflow.message = message
+    monkeypatch.setattr(BlankQueryAndValidatorWorkflow, "message", message)
     worker = Worker(mock_client, task_queue="q1", workflows=[BlankQueryAndValidatorWorkflow])
     query = blank_workflow_task(
         query_task_id="qt-blank", query_task_attempt=3, query_name="status",
@@ -131,9 +131,9 @@ async def test_query_failure_reports_a_nonempty_message(
 
 @pytest.mark.parametrize("message", ["", " \t\n", "  original failure  "])
 async def test_update_validator_rejection_reports_a_nonempty_message(
-    mock_client: AsyncMock, message: str,  # noqa: F811
+    mock_client: AsyncMock, message: str, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
-    BlankQueryAndValidatorWorkflow.message = message
+    monkeypatch.setattr(BlankQueryAndValidatorWorkflow, "message", message)
     worker = Worker(
         mock_client, task_queue="q1", workflows=[BlankQueryAndValidatorWorkflow], worker_id="validator",
     )
