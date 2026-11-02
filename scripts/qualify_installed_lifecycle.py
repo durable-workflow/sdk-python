@@ -275,6 +275,15 @@ async def run(server_url: str, token: str, namespace: str) -> dict[str, Any]:
         )
         run_task = asyncio.create_task(worker.run())
         try:
+            # Server snapshots a run's declared update contract at start, so
+            # start workflows only after this worker's registration is
+            # acknowledged. 2.12.x has no public readiness API (see #168).
+            registration_deadline = time.monotonic() + 30.0
+            while not getattr(worker, "_registered", False) and not run_task.done():
+                if time.monotonic() > registration_deadline:
+                    raise TimeoutError("worker registration was not acknowledged within 30s")
+                await asyncio.sleep(0.05)
+            report["worker_registered_at_utc"] = utc_now()
             for name, scenario in (
                 ("lifecycle", scenario_lifecycle),
                 ("cancellation", scenario_cancellation),
