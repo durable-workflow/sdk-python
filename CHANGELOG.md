@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Worker.status()` returns a read-only `WorkerStatus` snapshot for health
+  endpoints and orchestrator probes. Readiness requires this worker's own
+  acknowledged registration, running pollers and a successful latest Server
+  exchange per role; liveness reports event-loop progress, exited pollers and
+  stalled requests. Snapshots perform no network I/O and can be read from
+  another thread. Adds `WorkerState` and `WorkerRoleStatus`, a runnable probe
+  example and a Kubernetes guide. Existing worker behavior is unchanged.
+
 ### Fixed
 
 - History-bundle verification and bundle simulation now fail a
