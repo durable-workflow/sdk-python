@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "worker-status-outage-recovery-cold-history",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.worker-status.recovery",
+    "input": [
+      "042"
+    ],
+    "run_id": "status-run",
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "reserve"
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "reserve",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4ECHNsb3QEDgpzdGF0ZQoIaGVsZAA="
+        }
+      }
+    }
+  ],
+  "expected": {
+    "command_type": "CompleteWorkflow",
+    "result": {
+      "order": "042",
+      "reserved": {
+        "slot": 7,
+        "state": "held"
+      },
+      "run": "status-run"
+    }
+  }
+}

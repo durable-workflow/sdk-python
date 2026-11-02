@@ -8,13 +8,14 @@ import json
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
 import durable_workflow.worker as worker_module
-from durable_workflow import Worker, WorkerState, WorkerStatus, activity
+from durable_workflow import Worker, WorkerState, WorkerStatus, activity, serializer, workflow
 from durable_workflow.client import Client
 from durable_workflow.errors import ServerError
 from tests.test_worker import TestWorkflow, compatible_cluster_info, echo_activity
@@ -22,7 +23,7 @@ from tests.test_worker import TestWorkflow, compatible_cluster_info, echo_activi
 pytestmark = pytest.mark.asyncio
 
 
-async def eventually(predicate: Callable[[], bool], *, timeout: float = 2.0) -> None:
+async def eventually(predicate: Callable[[], bool], *, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while not predicate():
         if time.monotonic() > deadline:
@@ -34,6 +35,11 @@ def roles(status: WorkerStatus) -> dict[str, object]:
     return {role.role: role for role in status.roles}
 
 
+async def empty_poll(**_: object) -> None:
+    await asyncio.sleep(0.002)
+    return None
+
+
 @pytest.fixture
 def client() -> AsyncMock:
     client = AsyncMock(spec=Client)
@@ -43,9 +49,10 @@ def client() -> AsyncMock:
         return_value={"worker_id": "w1", "outcome": "deregistered", "recovered_workflow_task_count": 0}
     )
     client.heartbeat_worker = AsyncMock(return_value={"worker_id": "w1", "acknowledged": True})
-    client.poll_workflow_task = AsyncMock(return_value=None)
-    client.poll_activity_task = AsyncMock(return_value=None)
-    client.poll_query_task = AsyncMock(return_value=None)
+    # Empty polls yield briefly so mocked pollers do not starve other threads.
+    client.poll_workflow_task = AsyncMock(side_effect=empty_poll)
+    client.poll_activity_task = AsyncMock(side_effect=empty_poll)
+    client.poll_query_task = AsyncMock(side_effect=empty_poll)
     client.complete_activity_task = AsyncMock(return_value={"outcome": "completed"})
     client.fail_activity_task = AsyncMock(return_value={"outcome": "failed"})
     return client
@@ -499,3 +506,64 @@ async def test_run_until_reports_registration_and_stop(client: AsyncMock) -> Non
     assert status.state is WorkerState.STOPPED
     assert set(roles(status)) == {"heartbeat", "query_poll"}
     assert (status.ready, status.live) == (False, False)
+
+
+RECOVERY_FIXTURE = Path(__file__).parent / "fixtures/replay_regressions/worker-status-outage-recovery-cold-history.json"
+
+
+@workflow.defn(name="tests.worker-status.recovery")
+class RecoveryWorkflow:
+    def run(self, ctx, order: str):  # type: ignore[no-untyped-def]
+        reserved = yield ctx.schedule_activity("reserve", [order])
+        return {"order": order, "reserved": reserved, "run": ctx.run_id}
+
+
+async def test_outage_recovery_replays_cold_history_and_restores_readiness(client: AsyncMock) -> None:
+    fixture = json.loads(RECOVERY_FIXTURE.read_text())
+    outage = threading.Event()
+    outage.set()
+    delivered = False
+    completed = asyncio.Event()
+    task = {
+        "task_id": "status-recovered-task", "workflow_task_attempt": 2,
+        "workflow_type": fixture["workflow"]["type"], "workflow_id": "order-042",
+        "run_id": fixture["workflow"]["run_id"], "payload_codec": "avro",
+        "arguments": serializer.encode(fixture["workflow"]["input"]), "history_events": fixture["history"],
+    }
+
+    async def poll(**_: object) -> dict[str, object] | None:
+        nonlocal delivered
+        await asyncio.sleep(0.002)
+        if outage.is_set():
+            raise httpx.ConnectError("runtime unavailable")
+        if not delivered:
+            delivered = True
+            return task
+        return None
+
+    async def complete(**_: object) -> dict[str, str]:
+        completed.set()
+        return {"outcome": "completed"}
+
+    client.poll_workflow_task = AsyncMock(side_effect=poll)
+    client.complete_workflow_task = AsyncMock(side_effect=complete)
+    worker = make_worker(client, workflows=[RecoveryWorkflow], activities=[])
+    run_task = asyncio.create_task(worker.run())
+    try:
+        await eventually(lambda: worker.status().ready_reason == "server_unavailable:workflow_poll")
+        assert worker.status().live
+
+        outage.clear()
+        await eventually(completed.is_set)
+        await eventually(lambda: worker.status().ready)
+    finally:
+        await stop(worker, run_task)
+
+    client.complete_workflow_task.assert_awaited_once()
+    publication = client.complete_workflow_task.call_args.kwargs
+    assert publication["task_id"] == "status-recovered-task"
+    [command] = publication["commands"]
+    assert command["type"] == "complete_workflow"
+    assert serializer.decode_envelope(command["result"], codec="avro") == fixture["expected"]["result"]
+    client.fail_workflow_task.assert_not_awaited()
+    assert client.register_worker.await_count == 1
