@@ -2205,13 +2205,15 @@ class WorkflowContext:
         return self._cancellation_context
 
     def _observe_cancellation_replay_time(self, event: Mapping[str, Any] | None) -> None:
-        timestamp = event.get("timestamp") if event is not None else None
         payload = event.get("payload") if event is not None else None
-        # A step reused by redrive keeps the time it was first recorded.
-        if timestamp is None and isinstance(payload, Mapping) and isinstance(payload.get("reused_recorded_at"), str):
-            timestamp = payload["reused_recorded_at"]
-        if timestamp is None and event is not None:
-            timestamp = event.get("recorded_at")
+        # A step reused by redrive keeps the time it was first recorded, as in
+        # Core's RedriveReplayClock::recordedAt; it overrides the event's own time.
+        if isinstance(payload, Mapping) and isinstance(payload.get("reused_recorded_at"), str):
+            timestamp: Any = payload["reused_recorded_at"]
+        else:
+            timestamp = event.get("timestamp") if event is not None else None
+            if timestamp is None and event is not None:
+                timestamp = event.get("recorded_at")
         self._cancellation_replay_time_available = False
         if not isinstance(timestamp, str):
             return
