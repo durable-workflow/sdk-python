@@ -124,7 +124,8 @@ class Greeting:
 
 @pytest.mark.parametrize("authored", [
     {"Stage": Greeting()},  # Was accepted through json default=repr.
-    {"Stage": ("greeting",)},  # Was accepted as a list.
+    {"Stage": {"greeting"}},
+    {"Stage": ("greeting", 1)},
     {"Stage": {"value": "greeting"}},
     {"Stage": ["greeting", 1]},
     {"Stage": b"greeting"},
@@ -146,7 +147,7 @@ def test_unsupported_authored_value_with_a_colliding_recorded_form_fails_closed(
     # Each authored value below collapsed onto its recorded form before.
     for authored, stored in [
         ({"Stage": Greeting()}, {"Stage": "greeting"}),
-        ({"Tags": ("a", "b")}, {"Tags": ["a", "b"]}),
+        ({"Tags": ("a", 1)}, {"Tags": ["a", "1"]}),
         ({7: "greeting"}, {"7": "greeting"}),
     ]:
         refused(authoring(authored), recorded(fixture, stored), "invalid")
@@ -202,3 +203,26 @@ def test_history_without_types_keeps_value_only_identity(fixture: str) -> None:
     history = recorded(fixture, {"Stage": "greeting"})
     assert replays(RedriveVisibilityWorkflow, history) == replays(RedriveVisibilityWorkflow, redriven(fixture))
     refused(RedriveChangedStageWorkflow, history, "search_attribute_value_mismatch")
+
+
+@pytest.mark.parametrize("authored", [("a", " b "), ["a", "b"]])
+def test_authored_string_tuple_replays_as_its_wire_list(fixture: str, authored: Any) -> None:
+    # A tuple of strings is sent as the same JSON list the Server records.
+    history = recorded(fixture, {"Tags": ["a", "b"]}, {"Tags": "keyword_list"})
+    commands = replays(authoring({"Tags": authored}), history)
+    assert [type(command).__name__ for command in commands] == ["ScheduleActivity"]
+
+
+@pytest.mark.parametrize("authored", [("a", 1), ("a", None), ("a", ("b",)), ("a", "c")])
+def test_authored_tuple_keeps_the_strict_list_rules(fixture: str, authored: Any) -> None:
+    history = recorded(fixture, {"Tags": ["a", "b"]}, {"Tags": "keyword_list"})
+    refused(authoring({"Tags": authored}), history, "search_attribute_value_mismatch")
+
+
+def test_recorded_history_never_treats_a_non_list_as_a_list(fixture: str) -> None:
+    # Only the authored side is normalized; recorded JSON has no tuples.
+    from durable_workflow.workflow import _canonical_search_attributes
+
+    with pytest.raises(ValueError):
+        _canonical_search_attributes({"Tags": ("a", "b")})
+    assert _canonical_search_attributes({"Tags": ("a", "b")}, authored=True) == {"Tags": ("list", ("a", "b"))}

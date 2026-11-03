@@ -1404,11 +1404,12 @@ _SEARCH_ATTRIBUTE_TYPES = frozenset({"string", "keyword", "keyword_list", "int",
 _INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 
 
-def _canonical_search_attributes(attributes: Any) -> dict[str, tuple[str, Any]]:
+def _canonical_search_attributes(attributes: Any, *, authored: bool = False) -> dict[str, tuple[str, Any]]:
     """Return the type-tagged canonical form of a search-attribute update.
 
     Raises ValueError for any value Core's UpsertSearchAttributesCall rejects.
-    The type tag keeps distinct values distinct (1, 1.0, True and "1").
+    The type tag keeps distinct values distinct (1, 1.0, True and "1"). An
+    authored tuple is sent as the same JSON list, so it is checked as a list.
     """
     if not isinstance(attributes, Mapping) or not attributes:
         raise ValueError("search attributes must be a non-empty object")
@@ -1416,6 +1417,8 @@ def _canonical_search_attributes(attributes: Any) -> dict[str, tuple[str, Any]]:
     for key, value in attributes.items():
         if not isinstance(key, str) or _SEARCH_ATTRIBUTE_KEY_PATTERN.fullmatch(key) is None:
             raise ValueError(f"search attribute key {key!r} is not 1-64 URL-safe characters")
+        if authored and type(value) is tuple:
+            value = list(value)
         if value is None:
             canonical[key] = ("null", None)
         elif isinstance(value, bool):
@@ -4411,7 +4414,7 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
             return "Recorded memo entries differ from the current workflow memo update."
     elif isinstance(command, UpsertSearchAttributes) and "search_attributes" in step.details:
         try:
-            authored_attributes = _canonical_search_attributes(command.attributes)
+            authored_attributes = _canonical_search_attributes(command.attributes, authored=True)
         except ValueError as exc:
             return f"search_attribute_value_mismatch: the current search attribute update is invalid: {exc}"
         try:
