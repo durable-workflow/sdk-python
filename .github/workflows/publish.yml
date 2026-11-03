@@ -147,6 +147,10 @@ jobs:
           path: dist-handoff.tar
 
   publish:
+    # The only job that can mint a PyPI OIDC token. It runs no project code,
+    # no build and no install: it downloads the build job's artifact, checks
+    # its digest, extracts it and uploads it. Verification and the GitHub
+    # Release run in later jobs without id-token.
     needs: build
     runs-on: ubuntu-latest
     if: >-
@@ -156,15 +160,8 @@ jobs:
     environment: pypi
     permissions:
       actions: read
-      contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-          ref: ${{ github.sha }}
-
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           artifact-ids: ${{ needs.build.outputs.artifact-id }}
@@ -225,6 +222,20 @@ jobs:
           print-hash: true
           skip-existing: true
 
+  verify:
+    # Post-publish checks run after publication, with read-only contents and no
+    # OIDC, and fail the workflow on any mismatch.
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
       - name: Verify exact PyPI JSON with an advisory rendered-page audit
         env:
           RELEASE_SOURCE_SHA: ${{ needs.build.outputs.release_commit }}
@@ -245,8 +256,17 @@ jobs:
           --attempts 30
           --interval-seconds 10
 
+  github-release:
+    # Creates the source GitHub Release only after verification passes. It
+    # runs only the preinstalled GitHub CLI: no checkout and no project code.
+    needs: [build, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: Create the source GitHub Release
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
         run: |
