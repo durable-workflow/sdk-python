@@ -297,8 +297,18 @@ def _drop(event_type: str) -> Any:
     _move_schedule_after_fired,
     _drop("TimerScheduled"),
     _drop("TimerFired"),
+    lambda history: _schedule(history)["payload"].__setitem__("workflow_run_id", "bogus-run"),
+    lambda history: _schedule(history)["payload"].__setitem__("workflow_run_id", "01JBREDRIVESUCCESSORRUN0000"),
+    lambda history: _schedule(history)["payload"].__setitem__("timer_kind", "condition_timeout"),
+    lambda history: _schedule(history)["payload"].__setitem__("cancellation_scope_id", "scope-one"),
+    lambda history: _schedule(history)["payload"].__setitem__("cancellation_cleanup", {"scope_id": "scope-one"}),
+    lambda history: _schedule(history)["payload"].__setitem__("parallel_group_id", "group-one"),
+    lambda history: _schedule(history)["payload"].__setitem__("condition_wait_id", "wait-one"),
+    lambda history: _schedule(history)["payload"].__setitem__("signal_wait_id", "wait-one"),
 ], ids=["schedule-reused-from", "schedule-reused-at", "other-timer-id", "blank-timer-id", "other-step",
-        "schedule-after-start", "schedule-after-fired", "no-schedule", "no-fired-timer"])
+        "schedule-after-start", "schedule-after-fired", "no-schedule", "no-fired-timer", "bogus-run",
+        "successor-run", "timer-kind", "cancellation-scope", "cancellation-cleanup", "parallel-group",
+        "condition-wait", "signal-wait"])
 def test_only_core_shaped_copied_timer_schedules_are_accepted(name: str, change: Any) -> None:
     with pytest.raises(AssertionError):
         check(name, changed(name, change))
@@ -439,3 +449,14 @@ def test_a_delivery_to_a_later_step_the_successor_recorded_is_accepted() -> None
         _renumber(history)
 
     check(CANCELLATION, changed(CANCELLATION, later))
+
+
+@pytest.mark.parametrize("name", ["redrive-successor-reused-timer", CANCELLATION])
+@pytest.mark.parametrize("change", [
+    lambda history: _schedule(history)["payload"].__setitem__("workflow_run_id", "01JBREDRIVESOURCERUN000000"),
+    lambda history: _schedule(history)["payload"].__setitem__("timer_kind", None),
+    lambda history: _schedule(history)["payload"].__setitem__("cancellation_scope_id", None),
+], ids=["source-run", "null-timer-kind", "null-scope"])
+def test_a_plain_copied_schedule_may_name_the_source_run(name: str, change: Any) -> None:
+    # Core copies the source run's schedule payload; a null key is plain.
+    check(name, changed(name, change))

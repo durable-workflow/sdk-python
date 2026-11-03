@@ -495,18 +495,34 @@ REDRIVE_SUCCESSOR_STEP_EVENTS = frozenset({
 })
 
 
+# Core FailedRunRedrivePlan::isPlainTimer: redrive copies only plain timers.
+_NON_PLAIN_TIMER_KEYS = (
+    "timer_kind", "cancellation_cleanup", "cancellation_scope_id", "parallel_group_id", "condition_wait_id",
+    "signal_wait_id",
+)
+
+
 def _copied_timer_schedule(history: list[dict[str, Any]], index: int, started: dict[str, Any]) -> bool:
     """Core's copy of a reused timer's schedule (FailedRunRedrivePlan.php:437-455).
 
     Accepted in the reused prefix only when it carries neither reuse key, is
-    recorded at the successor start, and is directly followed by the reused
-    TimerFired for the same non-blank timer_id and the same step.
+    recorded at the successor start, is a plain timer (Core isPlainTimer,
+    FailedRunRedrivePlan.php:497), keeps the source run if it names one, and
+    is directly followed by the reused TimerFired for the same non-blank
+    timer_id and the same step.
     """
     event = history[index]
     payload = event.get("payload") or {}
+    source = (started.get("payload") or {}).get("continued_from_run_id")
     if event.get("event_type") != "TimerScheduled" or "reused_from_run_id" in payload or (
         "reused_recorded_at" in payload
     ) or event.get("recorded_at") != started.get("recorded_at") or index + 1 >= len(history):
+        return False
+    # The copy is the source run's schedule payload: any run it names is the
+    # source, never the successor or another run.
+    if "workflow_run_id" in payload and payload["workflow_run_id"] != source:
+        return False
+    if any(payload.get(key) is not None for key in _NON_PLAIN_TIMER_KEYS):
         return False
     fired = history[index + 1]
     fired_payload = fired.get("payload") or {}
