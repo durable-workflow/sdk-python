@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Workflow 2.19 redrive reuse of `MemoUpserted`, `SearchAttributesUpserted`, `SignalWaitOpened`, `SignalReceived` and `SignalApplied` is qualified for replay. None of these events is a replay clock source in this SDK: `ctx.now()` stays the persisted start time, which on a redriven run is the failed run's start, and the cancellation budget does not move on an upsert. Regression fixtures shaped like Core's redrive successor histories prove it, along with unchanged signal and memo values and no repeated upserts. (#235)
+
 ## [2.13.1] - 2026-11-03
 
 ### Fixed
