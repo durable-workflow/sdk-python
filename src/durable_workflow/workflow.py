@@ -3988,12 +3988,13 @@ def _reorder_completed_parallel_groups(
 
 
 # The events that claim a workflow sequence, by durable command kind: Core's
-# WorkflowStepHistory step events plus each command's other lifecycle rows,
-# which carry the same sequence. Events that only point at a step's sequence
-# claim nothing and are not listed: signal receipts, update records, failure
-# handling, selection records, and cooperative or scope cancellation requests,
-# preparations and deliveries. As in sdk-php, a collision is refused when it
-# involves an upsert: an upsert is the only command at its sequence.
+# WorkflowStepHistory step events and cancellation deliveries, plus each
+# command's other lifecycle rows, which carry the same sequence. Events that
+# only point at a step's sequence claim nothing and are not listed: signal
+# receipts, update records, failure handling, selection records, and
+# cooperative or scope cancellation requests and preparations. As in sdk-php,
+# a collision is refused when it involves an upsert: an upsert is the only
+# command at its sequence.
 _DURABLE_COMMAND_KINDS: dict[str, str] = {
     **dict.fromkeys(("ActivityScheduled", "ActivityStarted", "ActivityHeartbeatRecorded", "ActivityRetryScheduled",
                      "ActivityCompleted", "ActivityFailed", "ActivityTimedOut", "ActivityCancelled",
@@ -4009,6 +4010,9 @@ _DURABLE_COMMAND_KINDS: dict[str, str] = {
     **dict.fromkeys(("ServiceOperationScheduled", "ServiceCallStarted", "ServiceCallCompleted", "ServiceCallFailed",
                      "ServiceCallCancelled"), "service_call"),
     "CancellationScopeOpened": "cancellation_scope",
+    # A delivered cancellation consumes the call it interrupts, scheduled or
+    # not, and its sequence_span reserves the whole interrupted range.
+    **dict.fromkeys(("CooperativeCancellationDelivered", "CancellationScopeDelivered"), "cancellation_delivery"),
     "WorkflowContinuedAsNew": "continue_as_new",
     "SideEffectRecorded": "side_effect",
     "VersionMarkerRecorded": "version_marker",
@@ -4016,6 +4020,24 @@ _DURABLE_COMMAND_KINDS: dict[str, str] = {
     "SearchAttributesUpserted": "search_attributes",
 }
 _UPSERT_COMMAND_KINDS = frozenset({"memo", "search_attributes"})
+
+
+def _durable_command_claimed_range(event_type: str | None, payload: Mapping[str, Any], sequence: int) -> range:
+    """The workflow sequences one recorded event claims.
+
+    A cancellation delivery claims sequence through sequence + sequence_span
+    - 1, inclusive, as Core's WorkflowStepHistory::nextSequenceFromEvents
+    reads it: an integer or numeric-string span, 1 when absent, and any span
+    below 2 claims only the sequence itself.
+    """
+    if _DURABLE_COMMAND_KINDS.get(event_type or "") != "cancellation_delivery":
+        return range(sequence, sequence + 1)
+    span = payload.get("sequence_span")
+    if isinstance(span, str) and span.isdigit():
+        span = int(span)
+    if type(span) is not int or span < 2:
+        return range(sequence, sequence + 1)
+    return range(sequence, sequence + span)
 
 
 def _durable_command_kinds_compatible(kinds: frozenset[str]) -> bool:
@@ -4756,6 +4778,8 @@ def _replay_state(
     selected_condition_wait_ids_by_sequence: dict[int, str] = {}
     command_kinds_by_sequence: dict[int, frozenset[str]] = {}
     search_attribute_sequences: set[int] = set()
+    upsert_sequences: set[int] = set()
+    delivery_ranges: list[range] = []
 
     for event in events:
         event_type = _history_event_type(event)
@@ -4788,6 +4812,23 @@ def _replay_state(
             search_attribute_sequences.add(sequence)
         command_kind = _DURABLE_COMMAND_KINDS.get(event_type or "")
         if command_kind is not None:
+            claimed = _durable_command_claimed_range(event_type, payload, sequence)
+            # A delivery span claims its whole range; an upsert anywhere inside
+            # it collides, whichever of the two was recorded first.
+            if command_kind in _UPSERT_COMMAND_KINDS:
+                inside = next((sequence for delivery in delivery_ranges if sequence in delivery), None)
+            elif command_kind == "cancellation_delivery":
+                inside = next((upsert for upsert in sorted(upsert_sequences) if upsert in claimed), None)
+            else:
+                inside = None
+            if inside is not None:
+                raise NonDeterministicReplayError(
+                    inside,
+                    "one durable command per workflow sequence",
+                    [*event_types_by_sequence.get(inside, []), event_type or "<unknown>"],
+                    detail=f"durable_command_sequence_collision: {event_type} and an upsert claim workflow "
+                    f"sequence {inside} inside a cancellation delivery span.",
+                )
             kinds = command_kinds_by_sequence.get(sequence, frozenset()) | {command_kind}
             if not _durable_command_kinds_compatible(kinds):
                 raise NonDeterministicReplayError(
@@ -4798,6 +4839,10 @@ def _replay_state(
                     f"already recorded by a {', '.join(sorted(kinds - {command_kind}))} command.",
                 )
             command_kinds_by_sequence[sequence] = kinds
+            if command_kind in _UPSERT_COMMAND_KINDS:
+                upsert_sequences.add(sequence)
+            elif command_kind == "cancellation_delivery":
+                delivery_ranges.append(claimed)
         if event_type is not None:
             event_types_by_sequence.setdefault(sequence, []).append(event_type)
         try:

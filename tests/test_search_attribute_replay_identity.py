@@ -20,6 +20,7 @@ from tests.test_replay_clock import (
     RedriveChangedStageWorkflow,
     RedriveVisibilityWorkflow,
     only_event,
+    redrive_fixture,
     redriven,
 )
 
@@ -351,7 +352,8 @@ def test_collisions_are_refused_when_they_involve_an_upsert() -> None:
     assert {"ActivityHeartbeatRecorded", "ActivityRetryScheduled"} <= set(lifecycle["activity"])
     assert _DURABLE_COMMAND_KINDS["CancellationScopeOpened"] == "cancellation_scope"
     assert "SignalReceived" not in _DURABLE_COMMAND_KINDS
-    assert "CooperativeCancellationDelivered" not in _DURABLE_COMMAND_KINDS
+    assert _DURABLE_COMMAND_KINDS["CooperativeCancellationDelivered"] == "cancellation_delivery"
+    assert "CooperativeCancellationRequested" not in _DURABLE_COMMAND_KINDS
 
 
 # Every event that claims a workflow sequence, by command kind. Fixed here so
@@ -372,6 +374,7 @@ EXPECTED_CLAIMS = {
     **dict.fromkeys(("ServiceOperationScheduled", "ServiceCallStarted", "ServiceCallCompleted", "ServiceCallFailed",
                      "ServiceCallCancelled"), "service_call"),
     "CancellationScopeOpened": "cancellation_scope",
+    **dict.fromkeys(("CooperativeCancellationDelivered", "CancellationScopeDelivered"), "cancellation_delivery"),
     "WorkflowContinuedAsNew": "continue_as_new",
     "SideEffectRecorded": "side_effect",
     "VersionMarkerRecorded": "version_marker",
@@ -391,7 +394,11 @@ def test_claim_table_is_exact() -> None:
     assert _DURABLE_COMMAND_KINDS == EXPECTED_CLAIMS
 
 
-@pytest.mark.parametrize("event_type", sorted(set(EXPECTED_CLAIMS) - {"SearchAttributesUpserted"}))
+# Deliveries need a valid cancellation history to reach the classifier; they
+# have their own tests below.
+@pytest.mark.parametrize("event_type", sorted(set(EXPECTED_CLAIMS) - {
+    "SearchAttributesUpserted", "CooperativeCancellationDelivered", "CancellationScopeDelivered",
+}))
 @pytest.mark.parametrize("order", ["after_upsert", "before_upsert"])
 def test_every_claimed_kind_collides_with_an_upsert_without_its_opener(
     fixture: str, event_type: str, order: str,
@@ -425,10 +432,117 @@ def test_newly_claimed_kinds_are_claimed() -> None:
 
 
 @pytest.mark.parametrize("event_type", [
-    "SignalReceived", "UpdateApplied", "UpdateCompleted", "FailureHandled", "CooperativeCancellationDelivered",
-    "CancellationScopeDelivered", "CancellationScopeDeliveryPrepared", "SelectionResolved",
+    "SignalReceived", "UpdateApplied", "UpdateCompleted", "FailureHandled", "CooperativeCancellationRequested",
+    "CancellationScopeRequested", "CancellationScopeDeliveryPrepared", "SelectionResolved",
 ])
 def test_pointer_records_claim_no_sequence(event_type: str) -> None:
     from durable_workflow.workflow import _DURABLE_COMMAND_KINDS
 
     assert event_type not in _DURABLE_COMMAND_KINDS
+
+
+
+# Cancellation deliveries are durable command positions (Core
+# WorkflowStepHistory::nextSequenceFromEvents). A delivery claims its sequence
+# and, with sequence_span, every sequence through sequence + span - 1.
+DELIVERY_FIXTURE = "redrive-reused-upserts-cancellation-clock"
+
+
+def _cooperative(fixture: str, sequence: int, span: int, order: str, drop_memo: bool = False) -> list[dict[str, Any]]:
+    """The fixture's history with the cancellation of the cleanup fixture,
+    delivered at ``sequence`` for ``span`` calls, and no scheduled opener."""
+    source = redriven(DELIVERY_FIXTURE)
+    request, delivery = deepcopy(source[-2]), deepcopy(source[-1])
+    assert request["event_type"] == "CooperativeCancellationRequested"
+    delivery["payload"].update(sequence=sequence, call_kind="parallel" if span > 1 else "activity")
+    if span > 1:
+        delivery["payload"]["sequence_span"] = span
+    history = deepcopy(redriven(fixture))
+    if drop_memo:
+        history.remove(only_event(history, "MemoUpserted"))
+    upsert = only_event(history, "SearchAttributesUpserted")
+    at = history.index(upsert) + (1 if order == "after_upsert" else 0)
+    history[at:at] = [request, delivery]
+    for number, event in enumerate(history, start=1):
+        event["sequence"] = number
+    return history
+
+
+def refused_with_cancellation(history: list[dict[str, Any]], sequence: int) -> None:
+    workflow = redrive_fixture(DELIVERY_FIXTURE)["workflow"]
+    with pytest.raises(NonDeterministicReplayError, match="durable_command_sequence_collision:") as error:
+        replay(RedriveVisibilityWorkflow, history, ["Taylor"], run_id=workflow["run_id"],
+               workflow_id=workflow["workflow_id"], payload_codec="avro")
+    assert error.value.workflow_sequence == sequence
+
+
+@pytest.mark.parametrize("order", ["after_upsert", "before_upsert"])
+def test_a_single_call_delivery_at_an_upsert_sequence_collides(fixture: str, order: str) -> None:
+    refused_with_cancellation(_cooperative(fixture, 2, 1, order), 2)
+
+
+@pytest.mark.parametrize("order", ["after_upsert", "before_upsert"])
+@pytest.mark.parametrize(("base", "span"), [(1, 3), (1, 2), (2, 2)])
+def test_a_delivery_span_claims_every_sequence_it_covers(fixture: str, order: str, base: int, span: int) -> None:
+    # The upsert at 2 is interior to 1..3, the end of 1..2, or the base of 2..3.
+    # The memo at 1 is removed so the upsert is the only one inside the span.
+    refused_with_cancellation(_cooperative(fixture, base, span, order, drop_memo=True), 2)
+
+
+def test_a_delivery_span_ending_before_the_upsert_does_not_collide(fixture: str) -> None:
+    # Span 1..1 does not reach the upsert at 2; the classifier stays quiet and
+    # replay is refused, if at all, for an unrelated reason.
+    history = _cooperative(fixture, 1, 1, "after_upsert", drop_memo=True)
+    workflow = redrive_fixture(DELIVERY_FIXTURE)["workflow"]
+    try:
+        replay(RedriveVisibilityWorkflow, history, ["Taylor"], run_id=workflow["run_id"],
+               workflow_id=workflow["workflow_id"], payload_codec="avro")
+    except NonDeterministicReplayError as error:
+        assert "durable_command_sequence_collision" not in str(error)
+
+
+@pytest.mark.parametrize(("payload", "claimed"), [
+    ({"sequence": 3}, [3]),
+    ({"sequence": 3, "sequence_span": 1}, [3]),
+    ({"sequence": 3, "sequence_span": 3}, [3, 4, 5]),
+    ({"sequence": 3, "sequence_span": "2"}, [3, 4]),
+    ({"sequence": 3, "sequence_span": 0}, [3]),
+    ({"sequence": 3, "sequence_span": -2}, [3]),
+    ({"sequence": 3, "sequence_span": None}, [3]),
+])
+@pytest.mark.parametrize("event_type", ["CooperativeCancellationDelivered", "CancellationScopeDelivered"])
+def test_delivery_claimed_range_matches_core(event_type: str, payload: dict[str, Any], claimed: list[int]) -> None:
+    from durable_workflow.workflow import _durable_command_claimed_range
+
+    assert list(_durable_command_claimed_range(event_type, payload, payload["sequence"])) == claimed
+    assert list(_durable_command_claimed_range("ActivityScheduled", payload, payload["sequence"])) == [3]
+
+
+def _scope_delivery_with_upsert(order: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    from tests.test_committed_cancellation_scope_history import fixture as scope_fixture
+
+    value = scope_fixture("committed-scope-delivery.json", "unshielded")
+    history = value["history"]
+    delivered = next(event for event in history if event["event_type"] == "CancellationScopeDelivered")
+    upsert = {"id": "upsert-event", "namespace": history[0]["namespace"], "event_type": "SearchAttributesUpserted",
+              "timestamp": delivered.get("timestamp"), "payload": {
+                  "sequence": delivered["payload"]["sequence"], "attributes": {"Stage": "greeting"},
+                  "attribute_types": {"Stage": "keyword"}, "merged": {"Stage": "greeting"}}}
+    at = history.index(delivered) + (1 if order == "after_delivery" else 0)
+    history.insert(at, upsert)
+    for number, event in enumerate(history, start=1):
+        event["sequence"] = number
+    return history, value["task"]
+
+
+@pytest.mark.parametrize("order", ["after_delivery", "before_delivery"])
+def test_a_scope_delivery_at_an_upsert_sequence_collides(order: str) -> None:
+    # A valid committed scope delivery with no scheduled timer opener, replayed
+    # with scope delivery enabled; an upsert at its sequence collides.
+    history, task = _scope_delivery_with_upsert(order)
+    sequence = next(event for event in history if event["event_type"] == "CancellationScopeDelivered")[
+        "payload"]["sequence"]
+    with pytest.raises(NonDeterministicReplayError, match="durable_command_sequence_collision:") as error:
+        replay(RedriveVisibilityWorkflow, history, [], workflow_id=task["workflow_id"], run_id=task["run_id"],
+               payload_codec="avro", allow_cancellation_scope_authoring=True, allow_cancellation_scope_delivery=True)
+    assert error.value.workflow_sequence == sequence
