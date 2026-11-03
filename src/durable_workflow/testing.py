@@ -405,7 +405,13 @@ class WorkflowEnvironment:
                 history.append(
                     {
                         "event_type": "SearchAttributesUpserted",
-                        "payload": {"attributes": json.loads(json.dumps(cmd.attributes))},
+                        "payload": {
+                            # Every recorded event but a signal is a step.
+                            "sequence": 1 + sum(
+                                event["event_type"] != "SignalReceived" for event in history
+                            ),
+                            "attributes": json.loads(json.dumps(cmd.attributes)),
+                        },
                     }
                 )
             elif isinstance(cmd, RecordVersionMarker):

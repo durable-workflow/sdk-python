@@ -3823,6 +3823,13 @@ def _workflow_sequence(payload: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _positive_workflow_sequence(payload: Mapping[str, Any]) -> bool:
+    value = payload.get("sequence") or payload.get("workflow_sequence")
+    if isinstance(value, str) and value.isdigit():
+        value = int(value)
+    return type(value) is int and value > 0
+
+
 def _parallel_group_integer(payload: Mapping[str, Any], key: str) -> int | None:
     value = payload.get(key)
     if isinstance(value, bool):
@@ -3975,6 +3982,34 @@ def _reorder_completed_parallel_groups(
             ordered_steps[target_slot] = step
 
     return ordered_results, ordered_steps
+
+
+# The events one durable command writes, by command kind. Two kinds may share
+# a workflow sequence only where one command writes both: a condition or
+# signal wait with its own timeout timer. Events that only refer to another
+# step's sequence (signals, updates, cancellation and scope records) are not
+# command records and are not listed.
+_DURABLE_COMMAND_KINDS: dict[str, str] = {
+    **dict.fromkeys(("ActivityScheduled", "ActivityStarted", "ActivityCompleted", "ActivityFailed",
+                     "ActivityTimedOut", "ActivityCancelled"), "activity"),
+    **dict.fromkeys(("TimerScheduled", "TimerFired", "TimerCancelled"), "timer"),
+    **dict.fromkeys(("ChildWorkflowScheduled", "ChildRunStarted", "ChildRunCompleted", "ChildRunFailed",
+                     "ChildRunCancelled", "ChildRunTerminated"), "child"),
+    **dict.fromkeys(("ConditionWaitOpened", "ConditionWaitSatisfied", "ConditionWaitTimedOut",
+                     "ConditionWaitCancelled"), "condition"),
+    **dict.fromkeys(("SignalWaitOpened", "SignalApplied", "SignalWaitTimedOut", "SignalWaitCancelled"), "signal"),
+    **dict.fromkeys(("ServiceCallStarted", "ServiceCallCompleted", "ServiceCallFailed", "ServiceCallCancelled"),
+                    "service_call"),
+    "SideEffectRecorded": "side_effect",
+    "VersionMarkerRecorded": "version_marker",
+    "MemoUpserted": "memo",
+    "SearchAttributesUpserted": "search_attributes",
+}
+_SHARED_SEQUENCE_COMMAND_KINDS = (frozenset({"condition", "timer"}), frozenset({"signal", "timer"}))
+
+
+def _durable_command_kinds_compatible(kinds: frozenset[str]) -> bool:
+    return len(kinds) == 1 or kinds in _SHARED_SEQUENCE_COMMAND_KINDS
 
 
 def _internal_timeout_timer_kind(
@@ -4709,6 +4744,8 @@ def _replay_state(
     resolved_sequences: set[int] = set()
     condition_wait_ids_by_sequence: dict[int, str] = {}
     selected_condition_wait_ids_by_sequence: dict[int, str] = {}
+    command_kinds_by_sequence: dict[int, frozenset[str]] = {}
+    search_attribute_sequences: set[int] = set()
 
     for event in events:
         event_type = _history_event_type(event)
@@ -4716,8 +4753,39 @@ def _replay_state(
         if not isinstance(payload, Mapping):
             payload = {}
         sequence = _workflow_sequence(payload)
+        if event_type == "SearchAttributesUpserted" and not _positive_workflow_sequence(payload):
+            # Never bind an upsert to a guessed step.
+            raise NonDeterministicReplayError(
+                len(event_types_by_sequence) + 1,
+                "search attributes upsert with its workflow sequence",
+                ["SearchAttributesUpserted"],
+                detail="search_attribute_update_missing_sequence: SearchAttributesUpserted history has no "
+                "positive workflow sequence.",
+            )
         if sequence is None:
             continue
+        if event_type == "SearchAttributesUpserted":
+            if sequence in search_attribute_sequences:
+                raise NonDeterministicReplayError(
+                    sequence,
+                    "one SearchAttributesUpserted event",
+                    ["SearchAttributesUpserted", "SearchAttributesUpserted"],
+                    detail="duplicate_search_attribute_update: a workflow sequence records two search "
+                    "attribute updates.",
+                )
+            search_attribute_sequences.add(sequence)
+        command_kind = _DURABLE_COMMAND_KINDS.get(event_type or "")
+        if command_kind is not None:
+            kinds = command_kinds_by_sequence.get(sequence, frozenset()) | {command_kind}
+            if not _durable_command_kinds_compatible(kinds):
+                raise NonDeterministicReplayError(
+                    sequence,
+                    "one durable command per workflow sequence",
+                    [*event_types_by_sequence.get(sequence, []), event_type or "<unknown>"],
+                    detail=f"durable_command_sequence_collision: {event_type} claims a workflow sequence "
+                    f"already recorded by a {', '.join(sorted(kinds - {command_kind}))} command.",
+                )
+            command_kinds_by_sequence[sequence] = kinds
         if event_type is not None:
             event_types_by_sequence.setdefault(sequence, []).append(event_type)
         try:
@@ -5588,7 +5656,8 @@ def _replay_state(
         elif etype == "SearchAttributesUpserted":
             # The recorded values are this step's replay identity; without
             # them the step cannot be checked, so replay is refused.
-            upsert_sequence = _workflow_sequence(payload) or len(recorded_steps) + 1
+            # The first pass refused an upsert without a positive sequence.
+            upsert_sequence = cast(int, _workflow_sequence(payload))
             if "attributes" not in payload:
                 raise NonDeterministicReplayError(
                     upsert_sequence,

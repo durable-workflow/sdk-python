@@ -2072,7 +2072,8 @@ class TestSearchAttributeUpsert:
 
     def test_with_upsert_in_history(self) -> None:
         history = [
-            {"event_type": "SearchAttributesUpserted", "payload": {"attributes": {"status": "processing"}}},
+            {"event_type": "SearchAttributesUpserted",
+             "payload": {"sequence": 1, "attributes": {"status": "processing"}}},
             {"event_type": "ActivityCompleted", "payload": {"result": _avro("result")}},
         ]
         outcome = replay(SearchAttrWorkflow, history, [])

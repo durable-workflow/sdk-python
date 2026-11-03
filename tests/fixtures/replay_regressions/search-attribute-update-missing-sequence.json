@@ -1,0 +1,64 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "search-attribute-update-missing-sequence",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.redrive-visibility",
+    "input": [
+      "Taylor"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-03T00:00:00+00:00",
+      "payload": {}
+    },
+    {
+      "sequence": 2,
+      "event_type": "MemoUpserted",
+      "recorded_at": "2026-11-03T00:00:00+00:00",
+      "payload": {
+        "sequence": 1,
+        "entries": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4EEGN1c3RvbWVyCgxUYXlsb3IKc3RhZ2UKEGdyZWV0aW5nAA=="
+        },
+        "merged": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4EEGN1c3RvbWVyCgxUYXlsb3IKc3RhZ2UKEGdyZWV0aW5nAA=="
+        }
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "SearchAttributesUpserted",
+      "recorded_at": "2026-11-03T00:00:00+00:00",
+      "payload": {
+        "attributes": {
+          "Stage": "greeting"
+        },
+        "attribute_types": {
+          "Stage": "keyword"
+        },
+        "merged": {
+          "Stage": "greeting"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": []
+  },
+  "expected_replay_error": {
+    "type": "NonDeterministicReplayError",
+    "message_contains": "search_attribute_update_missing_sequence",
+    "workflow_sequence": 2
+  }
+}

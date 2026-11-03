@@ -256,3 +256,79 @@ def test_missing_recorded_attributes_are_refused(fixture: str, workflow_cls: typ
     del only_event(history, "SearchAttributesUpserted")["payload"]["attributes"]
     refused(workflow_cls, history, "search_attribute_update_missing: SearchAttributesUpserted history is missing "
             "its attributes")
+
+
+# Durable command sequences. A recorded upsert must carry its own sequence,
+# a sequence records at most one upsert, and two durable command kinds never
+# share a sequence (only a wait and its own timeout timer do).
+def refused_at(workflow_cls: type, history: list[dict[str, Any]], reason: str, sequence: int) -> None:
+    with pytest.raises(NonDeterministicReplayError, match=f"{reason}:") as error:
+        replays(workflow_cls, history)
+    assert error.value.workflow_sequence == sequence
+
+
+def _with(fixture: str, change: Any) -> list[dict[str, Any]]:
+    history = deepcopy(redriven(fixture))
+    change(history)
+    return history
+
+
+def _append(history: list[dict[str, Any]], event_type: str, payload: dict[str, Any]) -> None:
+    history.append({"sequence": len(history) + 1, "event_type": event_type,
+                    "recorded_at": "2026-11-03T00:05:01+00:00", "payload": payload})
+
+
+@pytest.mark.parametrize("missing", [None, 0, -1, "", "two", "-1", True, 1.0, [1]])
+def test_search_attribute_update_without_a_sequence_is_refused(fixture: str, missing: Any) -> None:
+    def change(history: list[dict[str, Any]]) -> None:
+        payload = only_event(history, "SearchAttributesUpserted")["payload"]
+        if missing is None:
+            del payload["sequence"]
+        else:
+            payload["sequence"] = missing
+
+    refused_at(RedriveVisibilityWorkflow, _with(fixture, change), "search_attribute_update_missing_sequence", 2)
+
+
+def test_duplicate_search_attribute_update_is_refused(fixture: str) -> None:
+    def change(history: list[dict[str, Any]]) -> None:
+        duplicate = deepcopy(only_event(history, "SearchAttributesUpserted"))
+        _append(history, "SearchAttributesUpserted", duplicate["payload"])
+
+    refused_at(RedriveVisibilityWorkflow, _with(fixture, change), "duplicate_search_attribute_update", 2)
+
+
+@pytest.mark.parametrize(("event_type", "payload", "sequence"), [
+    ("ActivityScheduled", {"sequence": 2, "activity_type": "tests.redrive.first"}, 2),
+    ("ActivityCompleted", {"sequence": 1, "activity_type": "tests.redrive.first"}, 1),
+    ("TimerScheduled", {"sequence": 2, "delay_seconds": 5}, 2),
+    ("SideEffectRecorded", {"sequence": 1}, 1),
+    ("VersionMarkerRecorded", {"sequence": 2, "change_id": "change", "version": 1}, 2),
+    ("ConditionWaitOpened", {"sequence": 2, "condition_wait_id": "wait"}, 2),
+    ("SignalWaitOpened", {"sequence": 1, "signal_name": "approve", "signal_wait_id": "wait"}, 1),
+    ("MemoUpserted", {"sequence": 2}, 2),
+])
+def test_two_durable_commands_at_one_sequence_are_refused(
+    fixture: str, event_type: str, payload: dict[str, Any], sequence: int,
+) -> None:
+    history = _with(fixture, lambda history: _append(history, event_type, payload))
+    refused_at(RedriveVisibilityWorkflow, history, "durable_command_sequence_collision", sequence)
+
+
+def test_a_search_attribute_update_cannot_take_an_earlier_step(fixture: str) -> None:
+    # The upsert moved onto the memo's step 1: a collision, not an overwrite.
+    history = _with(fixture, lambda history: only_event(history, "SearchAttributesUpserted")["payload"].__setitem__(
+        "sequence", 1))
+    refused_at(RedriveVisibilityWorkflow, history, "durable_command_sequence_collision", 1)
+
+
+def test_only_a_wait_and_its_timeout_timer_share_a_sequence() -> None:
+    from durable_workflow.workflow import _DURABLE_COMMAND_KINDS, _durable_command_kinds_compatible
+
+    kinds = set(_DURABLE_COMMAND_KINDS.values())
+    shared = {
+        frozenset({left, right}) for left in kinds for right in kinds
+        if left != right and _durable_command_kinds_compatible(frozenset({left, right}))
+    }
+    assert shared == {frozenset({"condition", "timer"}), frozenset({"signal", "timer"})}
+    assert not _durable_command_kinds_compatible(frozenset({"condition", "signal", "timer"}))
