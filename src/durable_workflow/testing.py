@@ -400,8 +400,19 @@ class WorkflowEnvironment:
                     }
                 )
             elif isinstance(cmd, UpsertSearchAttributes):
+                # Record the JSON wire form, as the Server does; replay
+                # checks the workflow's update against it.
                 history.append(
-                    {"event_type": "SearchAttributesUpserted", "payload": {}}
+                    {
+                        "event_type": "SearchAttributesUpserted",
+                        "payload": {
+                            # Every recorded event but a signal is a step.
+                            "sequence": 1 + sum(
+                                event["event_type"] != "SignalReceived" for event in history
+                            ),
+                            "attributes": json.loads(json.dumps(cmd.attributes)),
+                        },
+                    }
                 )
             elif isinstance(cmd, RecordVersionMarker):
                 history.append(

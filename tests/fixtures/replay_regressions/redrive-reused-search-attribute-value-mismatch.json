@@ -1,0 +1,83 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-reused-search-attribute-value-mismatch",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.redrive-visibility-changed-stage",
+    "input": [
+      "Taylor"
+    ],
+    "payload_codec": "avro",
+    "workflow_id": "regression-corpus-redrive-visibility",
+    "run_id": "01JBREDRIVESUCCESSORRUN0000"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "workflow_type": "tests.replay.redrive-visibility-changed-stage",
+        "workflow_instance_id": "regression-corpus-redrive-visibility",
+        "workflow_run_id": "01JBREDRIVESUCCESSORRUN0000",
+        "workflow_command_id": "01JBREDRIVECOMMAND00000000",
+        "continued_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "resume_step_sequence": 3,
+        "recovery_kind": "redrive",
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "replayed_started_at": "2026-11-03T00:00:00+00:00",
+        "workflow_link_id": "01JBREDRIVELINK00000000000"
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "MemoUpserted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 1,
+        "entries": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4EEGN1c3RvbWVyCgxUYXlsb3IKc3RhZ2UKEGdyZWV0aW5nAA=="
+        },
+        "merged": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4EEGN1c3RvbWVyCgxUYXlsb3IKc3RhZ2UKEGdyZWV0aW5nAA=="
+        },
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "SearchAttributesUpserted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 2,
+        "attributes": {
+          "Stage": "greeting"
+        },
+        "attribute_types": {
+          "Stage": "keyword"
+        },
+        "merged": {
+          "Stage": "greeting"
+        },
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": []
+  },
+  "expected_replay_error": {
+    "type": "NonDeterministicReplayError",
+    "message_contains": "search_attribute_value_mismatch",
+    "workflow_sequence": 2
+  }
+}

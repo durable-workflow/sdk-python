@@ -674,15 +674,25 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
-# Keys Core adds only to runs created by redrive (workflow#864). The SDK reads
-# replayed_started_at for the start clock and reused_recorded_at for step time.
+# Keys Core adds only to runs created by redrive (workflow#864, #1001, #1002).
+# The SDK reads replayed_started_at for the start clock and reused_recorded_at
+# for the cancellation step time. Upserts and signal-wait events are not clock
+# sources here (test_replay_clock.py proves it), so their reuse keys are inert.
 REDRIVE_HISTORY_EVENT_PAYLOAD_KEYS = {
     "WorkflowStarted": ("resume_step_sequence", "recovery_kind", "replayed_started_at"),
     "ActivityCompleted": ("reused_from_run_id", "reused_activity_execution_id", "reused_recorded_at"),
     "TimerFired": ("reused_from_run_id", "reused_recorded_at"),
     "SideEffectRecorded": ("reused_from_run_id", "reused_recorded_at"),
     "VersionMarkerRecorded": ("reused_from_run_id", "reused_recorded_at"),
+    "MemoUpserted": ("reused_from_run_id", "reused_recorded_at"),
+    "SearchAttributesUpserted": ("reused_from_run_id", "reused_recorded_at"),
+    "SignalWaitOpened": ("reused_from_run_id", "reused_recorded_at"),
+    "SignalReceived": ("reused_from_run_id", "reused_recorded_at"),
+    "SignalApplied": ("reused_from_run_id", "reused_recorded_at"),
 }
+
+# The SDK authors no signal waits, so these reused events are preserved only.
+REDRIVE_PRESERVED_ONLY_HISTORY_EVENTS = frozenset({"SignalWaitOpened", "SignalApplied"})
 
 for _event_type, _keys in REDRIVE_HISTORY_EVENT_PAYLOAD_KEYS.items():
     DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS[_event_type] = (
@@ -705,6 +715,7 @@ SDK_INTERPRETED_HISTORY_EVENTS = frozenset(
         "VersionMarkerRecorded",
         "ChildRunCompleted",
         "ChildRunFailed",
+        "MemoUpserted",
         "SearchAttributesUpserted",
     }
 )
@@ -761,5 +772,7 @@ def test_php_history_fixture_key_expectations_match_documented_contract() -> Non
 
 def test_redrive_payload_keys_are_documented_on_the_interpreted_events() -> None:
     for event_type, keys in REDRIVE_HISTORY_EVENT_PAYLOAD_KEYS.items():
-        assert event_type in SDK_INTERPRETED_HISTORY_EVENTS, event_type
+        expected = (SDK_PRESERVED_ONLY_HISTORY_EVENTS if event_type in REDRIVE_PRESERVED_ONLY_HISTORY_EVENTS
+                    else SDK_INTERPRETED_HISTORY_EVENTS)
+        assert event_type in expected, event_type
         assert set(keys) <= set(DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS[event_type]), event_type

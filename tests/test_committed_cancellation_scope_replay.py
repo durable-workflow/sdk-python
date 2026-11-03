@@ -277,3 +277,99 @@ def test_committed_scope_delivery_cannot_move_or_replace_the_authored_boundary(c
 
     with pytest.raises((NonDeterministicReplayError, LocalActivityExecutionAborted)):
         run(Probe, value)
+
+
+def _scoped_cleanup_probe() -> type:
+    class Probe:
+        def run(self, ctx: workflow.WorkflowContext):  # type: ignore[no-untyped-def]
+            def inner():  # type: ignore[no-untyped-def]
+                try:
+                    yield ctx.start_timer(10)
+                except WorkflowCancelled as error:
+                    with ctx.cancellation_shield():
+                        yield ctx.start_timer(1)
+                    return error.context
+
+            def outer():  # type: ignore[no-untyped-def]
+                return (yield from ctx.cancellation_scope(inner))
+
+            cancellation = yield from ctx.cancellation_scope(outer)
+            yield ctx.start_timer(1)
+            return {"request": cancellation.request_id, "remaining": cancellation.remaining()}
+
+    return Probe
+
+
+def _with_delivery_span(value: dict[str, Any], span: Any) -> dict[str, Any]:
+    for event in value["history"]:
+        if event["event_type"] in {"CancellationScopeDeliveryPrepared", "CancellationScopeDelivered"}:
+            event["payload"]["sequence_span"] = span
+    return value
+
+
+def _scoped_cleanup_outcomes(span: Any) -> list[Any]:
+    """Replay the cleanup timer path (whose scope parser applies the cleanup
+    lower bound, delivery sequence + span) through to completion."""
+    probe = _scoped_cleanup_probe()
+    value = _with_delivery_span(cleanup_timer_history(), span)
+    outcomes: list[Any] = [run(probe, value).commands]
+    append_cleanup_event(value, "TimerFired", {
+        "sequence": 4, "timer_id": "cleanup-timer", "delay_seconds": 1,
+        "cancellation_scope_id": value["history"][-1]["payload"]["cancellation_scope_id"],
+    }, "2026-10-04T00:00:09.123456Z")
+    outcomes.append(workflow.commands_to_server_commands(run(probe, value).commands, "queue"))
+    append_cleanup_event(value, "TimerScheduled", {
+        "sequence": 5, "timer_id": "parent-timer", "delay_seconds": 1, "fire_at": "2026-10-04T00:00:10.123456Z",
+    }, "2026-10-04T00:00:09.123456Z")
+    append_cleanup_event(value, "TimerFired", {
+        "sequence": 5, "timer_id": "parent-timer", "delay_seconds": 1,
+    }, "2026-10-04T00:00:10.123456Z")
+    outcomes.append(run(probe, value).commands)
+    return outcomes
+
+
+def test_a_null_scope_delivery_span_replays_the_cleanup_path_exactly_like_one() -> None:
+    one = _scoped_cleanup_outcomes(1)
+    assert one[0] == [] and one[1] == [{"type": "start_timer", "delay_seconds": 1}]
+    assert isinstance(one[2][0], workflow.CompleteWorkflow)
+    assert _scoped_cleanup_outcomes(None) == one
+
+
+def _cleanup_at(sequence: int, span: Any) -> Any:
+    value = _with_delivery_span(cleanup_timer_history(), span)
+    value["history"][-1]["payload"]["sequence"] = sequence
+    try:
+        return run(_scoped_cleanup_probe(), value).commands
+    except (LocalActivityExecutionAborted, NonDeterministicReplayError) as error:
+        return type(error).__name__, str(error).split(" Keep ")[0]
+
+
+def test_a_null_scope_delivery_span_has_the_same_cleanup_lower_bound_as_one() -> None:
+    delivered = next(event for event in cleanup_timer_history()["history"]
+                     if event["event_type"] == "CancellationScopeDelivered")["payload"]["sequence"]
+    # The cleanup timer may not reuse the delivered call's sequence.
+    below = _cleanup_at(delivered, 1)
+    assert isinstance(below, tuple) and "changes its original delivery or authority ceiling" in below[1]
+    assert _cleanup_at(delivered, None) == below
+    assert _cleanup_at(delivered + 1, None) == _cleanup_at(delivered + 1, 1) == []
+
+
+@pytest.mark.parametrize("span", [0, False, -1, "1", 1.0, ""])
+def test_a_malformed_scope_delivery_span_is_still_refused(span: Any) -> None:
+    value = _with_delivery_span(cleanup_timer_history(), span)
+    with pytest.raises(NonDeterministicReplayError, match="durable_command_sequence_invalid:"):
+        run(_scoped_cleanup_probe(), value)
+
+
+@pytest.mark.parametrize("span", [0, False, -1, "1", 1.0, ""])
+def test_the_cleanup_lower_bound_refuses_a_malformed_span_on_its_own(span: Any) -> None:
+    # Called directly, without the replay-level span check, the scope parser
+    # still refuses rather than reading a falsy span as one call.
+    from durable_workflow._cancellation_scope_history import _cleanup_operation
+
+    value = _with_delivery_span(cleanup_timer_history(), span)
+    history = value["history"]
+    with pytest.raises(ValueError, match="without a canonical sequence span"):
+        _cleanup_operation(history[-1], history[:-1])
+    _with_delivery_span(value, None)
+    assert _cleanup_operation(history[-1], history[:-1]) is True

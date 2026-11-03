@@ -1393,6 +1393,130 @@ def _memo_replay_identity(value: Mapping[str, Any]) -> str:
     return serializer.encode(_canonical_memo_entries(value), size_warning=None)
 
 
+# Core's UpsertSearchAttributesCall, which the Server applies before storing
+# SearchAttributesUpserted. Replay compares the canonical forms exactly and
+# refuses anything outside this portable value domain.
+_SEARCH_ATTRIBUTE_KEY_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+_SEARCH_ATTRIBUTE_TRIM = " \t\n\r\0\x0b"
+_SEARCH_ATTRIBUTE_MAX_STRING_LENGTH = 2048
+_SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH = 255
+_SEARCH_ATTRIBUTE_TYPES = frozenset({"string", "keyword", "keyword_list", "int", "float", "bool", "datetime"})
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+
+
+def _json_type_name(value: Any) -> str:
+    """A diagnostic-safe name for a value's JSON type; never the value itself."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list | tuple):
+        return "array"
+    if isinstance(value, Mapping):
+        return "object"
+    return "unsupported value"
+
+
+def _canonical_search_attributes(attributes: Any, *, authored: bool = False) -> dict[str, tuple[str, Any]]:
+    """Return the type-tagged canonical form of a search-attribute update.
+
+    Raises ValueError for any value Core's UpsertSearchAttributesCall rejects.
+    The type tag keeps distinct values distinct (1, 1.0, True and "1"). An
+    authored tuple is sent as the same JSON list, so it is checked as a list.
+    """
+    if not isinstance(attributes, Mapping) or not attributes:
+        raise ValueError("search attributes must be a non-empty object")
+    canonical: dict[str, tuple[str, Any]] = {}
+    for key, value in attributes.items():
+        if not isinstance(key, str) or _SEARCH_ATTRIBUTE_KEY_PATTERN.fullmatch(key) is None:
+            # Name only the type: an invalid key may carry arbitrary data.
+            raise ValueError(f"a search attribute key ({_json_type_name(key)}) is not 1-64 URL-safe characters")
+        if authored and type(value) is tuple:
+            value = list(value)
+        if value is None:
+            canonical[key] = ("null", None)
+        elif isinstance(value, bool):
+            canonical[key] = ("bool", value)
+        elif isinstance(value, int):
+            if not _INT64_MIN <= value <= _INT64_MAX:
+                raise ValueError(f"search attribute [{key}] integer is outside the 64-bit range")
+            canonical[key] = ("int", value)
+        elif isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValueError(f"search attribute [{key}] must be a finite number")
+            canonical[key] = ("float", value)
+        elif isinstance(value, str):
+            trimmed = value.strip(_SEARCH_ATTRIBUTE_TRIM)
+            if len(trimmed) > _SEARCH_ATTRIBUTE_MAX_STRING_LENGTH:
+                raise ValueError(f"search attribute [{key}] exceeds {_SEARCH_ATTRIBUTE_MAX_STRING_LENGTH} characters")
+            canonical[key] = ("string", trimmed) if trimmed else ("null", None)
+        elif type(value) is list or isinstance(value, Mapping) and not value:
+            # PHP decodes an empty JSON object as an empty list.
+            items: list[str] = []
+            for item in value:
+                if not isinstance(item, str):
+                    raise ValueError(f"search attribute [{key}] list values must contain only strings")
+                trimmed = item.strip(_SEARCH_ATTRIBUTE_TRIM)
+                if len(trimmed) > _SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH:
+                    raise ValueError(
+                        f"search attribute [{key}] list values exceed {_SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH} characters"
+                    )
+                items.append(trimmed)
+            canonical[key] = ("list", tuple(items))
+        else:
+            raise ValueError(f"search attribute [{key}] must be a string, number, boolean, string list or null")
+    return canonical
+
+
+def _search_attribute_type_choices(value: Any) -> frozenset[str]:
+    """Every type a Server can record for one value of this SDK's untyped upsert.
+
+    The SDK declares no types, but native Server 3.0.x resolves each key as
+    registered, then declared, then inferred from the raw value
+    (rust/src/runtime/search_attribute_upserts.rs:254-289, recorded at :856),
+    and the PHP Server fills registered types into the command the same way
+    (SearchAttributeValueValidator.php:93, WorkerController.php:2734). The SDK
+    cannot see the namespace registry, so this returns the union of the
+    inferred type and every registered type the Server accepts for the value.
+    Any string is treated as possibly registered datetime. The check refuses
+    only a recorded type that cannot hold the value at all.
+    """
+    if isinstance(value, bool):
+        return frozenset({"bool"})
+    if isinstance(value, int):
+        return frozenset({"int", "float"})
+    if isinstance(value, float):
+        return frozenset({"float"})
+    if isinstance(value, str):
+        return frozenset({"keyword", "string", "datetime"})
+    return frozenset({"keyword_list"})
+
+
+def _search_attribute_types_mismatch(recorded: Any, authored: Mapping[str, Any]) -> str | None:
+    if isinstance(recorded, list) and not recorded:
+        recorded = {}  # PHP serializes an empty map as a JSON list.
+    if not isinstance(recorded, Mapping):
+        return "recorded attribute_types is not an object"
+    # A null value has no type. Both Servers type every other raw value,
+    # including a blank string that is stored as null.
+    typed = {key for key, value in authored.items() if value is not None}
+    if not all(isinstance(key, str) for key in recorded) or set(recorded) != typed:
+        return "recorded attribute_types names different keys from the current update"
+    for key in sorted(recorded):
+        kind = recorded[key]
+        if not isinstance(kind, str) or kind not in _SEARCH_ATTRIBUTE_TYPES:
+            return f"recorded attribute type for [{key}] is not a search attribute type"
+        if kind not in _search_attribute_type_choices(authored[key]):
+            return f"recorded attribute type {kind!r} for [{key}] cannot hold the current value"
+    return None
+
+
 def _canonical_memo_entries(entries: Mapping[str, Any], *, require_entries: bool = True) -> dict[str, Any]:
     if require_entries and not entries:
         raise ValueError("workflow memo updates require at least one entry")
@@ -3719,6 +3843,16 @@ def _workflow_sequence(payload: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _durable_command_sequence_problem(payload: Mapping[str, Any]) -> str | None:
+    """The sdk-rust reason when a durable command record has no usable sequence."""
+    value = payload.get("sequence")
+    if value is None:
+        return "durable_command_sequence_missing"
+    if type(value) is not int or value <= 0:
+        return "durable_command_sequence_invalid"
+    return None
+
+
 def _parallel_group_integer(payload: Mapping[str, Any], key: str) -> int | None:
     value = payload.get(key)
     if isinstance(value, bool):
@@ -3871,6 +4005,93 @@ def _reorder_completed_parallel_groups(
             ordered_steps[target_slot] = step
 
     return ordered_results, ordered_steps
+
+
+# The events that claim a workflow sequence, by durable command kind: Core's
+# WorkflowStepHistory step events and cancellation deliveries, plus each
+# command's other lifecycle rows, which carry the same sequence. Events that
+# only point at a step's sequence claim nothing and are not listed: signal
+# receipts, update records, failure handling, selection records, and
+# cooperative or scope cancellation requests and preparations. As in sdk-php,
+# a collision is refused when it involves an upsert: an upsert is the only
+# command at its sequence.
+_DURABLE_COMMAND_KINDS: dict[str, str] = {
+    **dict.fromkeys(("ActivityScheduled", "ActivityStarted", "ActivityHeartbeatRecorded", "ActivityRetryScheduled",
+                     "ActivityCompleted", "ActivityFailed", "ActivityTimedOut", "ActivityCancelled",
+                     "ActivityCancellationAcknowledged"), "activity"),
+    **dict.fromkeys(("TimerScheduled", "TimerFired", "TimerCancelled"), "timer"),
+    **dict.fromkeys(("ChildWorkflowScheduled", "ChildRunStarted", "ChildRunCompleted", "ChildRunFailed",
+                     "ChildRunCancelled", "ChildRunTerminated", "ChildCancellationRequested",
+                     "ChildCancellationResolved"), "child"),
+    **dict.fromkeys(("ConditionWaitOpened", "ConditionWaitSatisfied", "ConditionWaitTimedOut",
+                     "ConditionWaitCancelled"), "condition"),
+    **dict.fromkeys(("SignalWaitOpened", "SignalApplied", "SignalWaitReceived", "SignalWaitTimedOut",
+                     "SignalWaitCancelled"), "signal"),
+    **dict.fromkeys(("ServiceOperationScheduled", "ServiceCallStarted", "ServiceCallCompleted", "ServiceCallFailed",
+                     "ServiceCallCancelled"), "service_call"),
+    "CancellationScopeOpened": "cancellation_scope",
+    # A delivered cancellation consumes the call it interrupts, scheduled or
+    # not, and its sequence_span reserves the whole interrupted range.
+    **dict.fromkeys(("CooperativeCancellationDelivered", "CancellationScopeDelivered"), "cancellation_delivery"),
+    "WorkflowContinuedAsNew": "continue_as_new",
+    "SideEffectRecorded": "side_effect",
+    "VersionMarkerRecorded": "version_marker",
+    "MemoUpserted": "memo",
+    "SearchAttributesUpserted": "search_attributes",
+}
+_UPSERT_COMMAND_KINDS = frozenset({"memo", "search_attributes"})
+
+
+def _delivery_sequence_span(payload: Mapping[str, Any]) -> int:
+    """A cancellation delivery's sequence_span under the producer contract.
+
+    Absent or null means 1, as Core reads it
+    (WorkflowStepHistory.php:270, `intValue($payload['sequence_span'] ?? null) ?? 1`).
+    Otherwise it must be a positive JSON integer; zero, negative, bool,
+    float, string and every other value are malformed and raise ValueError,
+    so a malformed span never shrinks the claimed range.
+    """
+    span = payload.get("sequence_span")
+    if span is None:
+        return 1
+    if type(span) is not int or span <= 0:
+        # Name only the JSON type: the span may carry arbitrary history data.
+        raise ValueError(f"sequence_span must be a positive integer (got {_json_type_name(span)})")
+    return span
+
+
+def _assert_delivery_spans(events: Iterable[Mapping[str, Any]]) -> None:
+    for event in events:
+        if _DURABLE_COMMAND_KINDS.get(_history_event_type(event) or "") != "cancellation_delivery":
+            continue
+        raw = event.get("payload")
+        payload: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+        try:
+            _delivery_sequence_span(payload)
+        except ValueError as error:
+            raise NonDeterministicReplayError(
+                _workflow_sequence(payload) or 0,
+                "cancellation delivery with a canonical sequence span",
+                [str(_history_event_type(event))],
+                detail=f"durable_command_sequence_invalid: {error}.",
+            ) from error
+
+
+def _durable_command_claimed_range(event_type: str | None, payload: Mapping[str, Any], sequence: int) -> range:
+    """The workflow sequences one recorded event claims.
+
+    A cancellation delivery claims sequence through sequence + sequence_span
+    - 1, inclusive, as Core's WorkflowStepHistory::nextSequenceFromEvents
+    extends it. Its span follows the producer contract
+    (_delivery_sequence_span), which replay checks before any parsing.
+    """
+    if _DURABLE_COMMAND_KINDS.get(event_type or "") != "cancellation_delivery":
+        return range(sequence, sequence + 1)
+    return range(sequence, sequence + _delivery_sequence_span(payload))
+
+
+def _durable_command_kinds_compatible(kinds: frozenset[str]) -> bool:
+    return len(kinds) == 1 or not kinds & _UPSERT_COMMAND_KINDS
 
 
 def _internal_timeout_timer_kind(
@@ -4309,6 +4530,28 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
         recorded = step.details.get("entries_identity")
         if isinstance(recorded, str) and recorded != _memo_replay_identity(command.entries):
             return "Recorded memo entries differ from the current workflow memo update."
+    elif isinstance(command, UpsertSearchAttributes):
+        if "search_attributes" not in step.details:
+            return "search_attribute_update_missing: SearchAttributesUpserted history is missing its attributes."
+        try:
+            authored_attributes = _canonical_search_attributes(command.attributes, authored=True)
+        except ValueError as exc:
+            return f"search_attribute_value_mismatch: the current search attribute update is invalid: {exc}"
+        try:
+            recorded_attributes = _canonical_search_attributes(step.details["search_attributes"])
+        except ValueError as exc:
+            return f"search_attribute_value_mismatch: SearchAttributesUpserted history has invalid attributes: {exc}"
+        if recorded_attributes != authored_attributes:
+            return (
+                "search_attribute_value_mismatch: Recorded search attributes differ from the current "
+                "workflow search attribute update."
+            )
+        # Events recorded before attribute_types existed keep value-only
+        # compatibility, as in Core's SearchAttributeReplayIdentity.
+        if "search_attribute_types" in step.details:
+            problem = _search_attribute_types_mismatch(step.details["search_attribute_types"], command.attributes)
+            if problem is not None:
+                return f"search_attribute_type_mismatch: {problem}."
     return None
 
 
@@ -4501,6 +4744,9 @@ def _replay_state(
             ) from exception
 
     events = list(history_events)
+    # A malformed delivery span refuses replay before any history parser can
+    # read it more permissively.
+    _assert_delivery_spans(events)
     _assert_cancellation_scope_replay_supported(
         events, allow_authoring=allow_cancellation_scope_authoring, allow_delivery=allow_cancellation_scope_delivery,
     )
@@ -4583,6 +4829,10 @@ def _replay_state(
     resolved_sequences: set[int] = set()
     condition_wait_ids_by_sequence: dict[int, str] = {}
     selected_condition_wait_ids_by_sequence: dict[int, str] = {}
+    command_kinds_by_sequence: dict[int, frozenset[str]] = {}
+    search_attribute_sequences: set[int] = set()
+    upsert_sequences: set[int] = set()
+    delivery_ranges: list[range] = []
 
     for event in events:
         event_type = _history_event_type(event)
@@ -4590,8 +4840,62 @@ def _replay_state(
         if not isinstance(payload, Mapping):
             payload = {}
         sequence = _workflow_sequence(payload)
+        if event_type == "SearchAttributesUpserted":
+            # Never bind an upsert to a guessed step.
+            sequence_problem = _durable_command_sequence_problem(payload)
+            if sequence_problem is not None:
+                raise NonDeterministicReplayError(
+                    len(event_types_by_sequence) + 1,
+                    "search attributes upsert with its workflow sequence",
+                    ["SearchAttributesUpserted"],
+                    detail=f"{sequence_problem}: SearchAttributesUpserted history needs a positive integer "
+                    "workflow sequence.",
+                )
         if sequence is None:
             continue
+        if event_type == "SearchAttributesUpserted":
+            if sequence in search_attribute_sequences:
+                raise NonDeterministicReplayError(
+                    sequence,
+                    "one SearchAttributesUpserted event",
+                    ["SearchAttributesUpserted", "SearchAttributesUpserted"],
+                    detail="duplicate_search_attribute_update: a workflow sequence records two search "
+                    "attribute updates.",
+                )
+            search_attribute_sequences.add(sequence)
+        command_kind = _DURABLE_COMMAND_KINDS.get(event_type or "")
+        if command_kind is not None:
+            claimed = _durable_command_claimed_range(event_type, payload, sequence)
+            # A delivery span claims its whole range; an upsert anywhere inside
+            # it collides, whichever of the two was recorded first.
+            if command_kind in _UPSERT_COMMAND_KINDS:
+                inside = next((sequence for delivery in delivery_ranges if sequence in delivery), None)
+            elif command_kind == "cancellation_delivery":
+                inside = next((upsert for upsert in sorted(upsert_sequences) if upsert in claimed), None)
+            else:
+                inside = None
+            if inside is not None:
+                raise NonDeterministicReplayError(
+                    inside,
+                    "one durable command per workflow sequence",
+                    [*event_types_by_sequence.get(inside, []), event_type or "<unknown>"],
+                    detail=f"durable_command_sequence_collision: {event_type} and an upsert claim workflow "
+                    f"sequence {inside} inside a cancellation delivery span.",
+                )
+            kinds = command_kinds_by_sequence.get(sequence, frozenset()) | {command_kind}
+            if not _durable_command_kinds_compatible(kinds):
+                raise NonDeterministicReplayError(
+                    sequence,
+                    "one durable command per workflow sequence",
+                    [*event_types_by_sequence.get(sequence, []), event_type or "<unknown>"],
+                    detail=f"durable_command_sequence_collision: {event_type} claims a workflow sequence "
+                    f"already recorded by a {', '.join(sorted(kinds - {command_kind}))} command.",
+                )
+            command_kinds_by_sequence[sequence] = kinds
+            if command_kind in _UPSERT_COMMAND_KINDS:
+                upsert_sequences.add(sequence)
+            elif command_kind == "cancellation_delivery":
+                delivery_ranges.append(claimed)
         if event_type is not None:
             event_types_by_sequence.setdefault(sequence, []).append(event_type)
         try:
@@ -5460,6 +5764,32 @@ def _replay_state(
             memo_sequences_added.add(sequence)
             _append_resolved_result(None, "memo upsert", ev)
         elif etype == "SearchAttributesUpserted":
+            # The recorded values are this step's replay identity; without
+            # them the step cannot be checked, so replay is refused.
+            # The first pass refused an upsert without a positive integer sequence.
+            upsert_sequence = cast(int, _workflow_sequence(payload))
+            if "attributes" not in payload:
+                raise NonDeterministicReplayError(
+                    upsert_sequence,
+                    "search attributes upsert with recorded attributes",
+                    ["SearchAttributesUpserted"],
+                    detail="search_attribute_update_missing: SearchAttributesUpserted history is missing its "
+                    "attributes.",
+                )
+            try:
+                _canonical_search_attributes(payload["attributes"])
+            except ValueError as exc:
+                raise NonDeterministicReplayError(
+                    upsert_sequence,
+                    "search attributes upsert with canonical attributes",
+                    ["SearchAttributesUpserted"],
+                    detail=f"search_attribute_value_mismatch: SearchAttributesUpserted history has invalid "
+                    f"attributes: {exc}",
+                ) from exc
+            upsert_details = details_by_sequence.setdefault(upsert_sequence, {})
+            upsert_details["search_attributes"] = payload["attributes"]
+            if "attribute_types" in payload:
+                upsert_details["search_attribute_types"] = payload["attribute_types"]
             _append_resolved_result(None, "search attributes upsert", ev)
         elif etype == "SignalReceived":
             signal_name = payload.get("signal_name")

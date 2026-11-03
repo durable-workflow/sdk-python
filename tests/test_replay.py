@@ -1211,7 +1211,8 @@ class TestContinueAsNew:
         replayed = replay(
             workflow_cls,
             [
-                {"event_type": "SearchAttributesUpserted", "payload": {"sequence": 1}},
+                {"event_type": "SearchAttributesUpserted",
+                 "payload": {"sequence": 1, "attributes": {"stage": "continued"}}},
                 {
                     "event_type": "MemoUpserted",
                     "payload": {"sequence": 2, "entries": entries, "merged": merged},
@@ -1623,7 +1624,8 @@ class PolyglotHistoryContractWorkflow:
         yield ctx.wait_condition(lambda: self.approved_by is not None, key="approval", timeout=30)
         side_effect = yield ctx.side_effect(lambda: {"side_effect": "unstable"})
         child = yield ctx.start_child_workflow("tests.polyglot.child", [])
-        yield ctx.upsert_search_attributes({"status": "processing"})
+        # The PHP-emitted fixture records {"status": "done"}; replay enforces it.
+        yield ctx.upsert_search_attributes({"status": "done"})
 
         return {
             "activity": activity,
@@ -2070,7 +2072,8 @@ class TestSearchAttributeUpsert:
 
     def test_with_upsert_in_history(self) -> None:
         history = [
-            {"event_type": "SearchAttributesUpserted", "payload": {}},
+            {"event_type": "SearchAttributesUpserted",
+             "payload": {"sequence": 1, "attributes": {"status": "processing"}}},
             {"event_type": "ActivityCompleted", "payload": {"result": _avro("result")}},
         ]
         outcome = replay(SearchAttrWorkflow, history, [])

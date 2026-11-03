@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from durable_workflow import CancellationContext, serializer
+from durable_workflow import CancellationContext, serializer, workflow
 from durable_workflow.errors import ActivityFailed, DurableOperationCancelled, WorkflowCancelled
 from durable_workflow.workflow import (
     CompleteWorkflow,
@@ -282,3 +282,48 @@ def test_a_reused_step_keeps_its_original_time_for_the_remaining_budget() -> Non
     events = history() + [{**reused, "timestamp": "2026-10-01T00:00:29Z"}]
     # Redrive recorded the step again at 00:29; its workflow time stays 00:12.
     assert replay(Cleanup, events, [], run_id="run-1").commands == [CompleteWorkflow(18.123456)]
+
+
+
+@pytest.mark.parametrize("later", ["2026-10-01T00:00:12Z", "2026-10-01T00:00:29Z"])
+def test_upsert_and_signal_events_during_cleanup_do_not_move_the_remaining_budget(later: str) -> None:
+    # An ordinary run: the cancellation is delivered, then cleanup upserts and
+    # receives a signal. None of these events is a clock source, so the budget
+    # stays at the delivery time whatever time they carry. (Reused events
+    # always precede a redrive successor's cancellation; see test_replay_clock.)
+    @workflow.defn(name="tests.cancellation.cleanup-upserts-signal")
+    class Cleanup:
+        def __init__(self) -> None:
+            self.approved_by: str | None = None
+
+        @workflow.signal("approve")
+        def approve(self, approved_by: str) -> None:
+            self.approved_by = approved_by
+
+        def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+            try:
+                yield ctx.start_timer(60)
+            except WorkflowCancelled as error:
+                assert error.context is not None
+                observed = [error.context.remaining()]
+                with ctx.cancellation_shield():
+                    yield ctx.upsert_memo({"stage": "cleanup"})
+                    observed.append(error.context.remaining())
+                    yield ctx.upsert_search_attributes({"Stage": "cleanup"})
+                    observed.append(error.context.remaining())
+                return [observed, self.approved_by]
+
+    memo = serializer.envelope({"stage": "cleanup"}, codec="avro")
+    events = history() + [{**event, "timestamp": later} for event in [
+        {"event_type": "SignalReceived", "payload": {
+            "signal_name": "approve", "arguments": serializer.envelope(["Grace"], codec="avro"),
+            "payload_codec": "avro",
+        }},
+        {"event_type": "MemoUpserted", "payload": {"sequence": 2, "entries": memo, "merged": memo}},
+        {"event_type": "SearchAttributesUpserted", "payload": {
+            "sequence": 3, "attributes": {"Stage": "cleanup"}, "merged": {"Stage": "cleanup"},
+        }},
+    ]]
+    assert replay(Cleanup, events, [], run_id="run-1").commands == [
+        CompleteWorkflow([[22.123456] * 3, "Grace"]),
+    ]
