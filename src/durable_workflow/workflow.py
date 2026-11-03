@@ -4415,7 +4415,7 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
             return "Recorded memo entries differ from the current workflow memo update."
     elif isinstance(command, UpsertSearchAttributes):
         if "search_attributes" not in step.details:
-            return "search_attribute_value_mismatch: SearchAttributesUpserted history is missing its attributes."
+            return "search_attribute_update_missing: SearchAttributesUpserted history is missing its attributes."
         try:
             authored_attributes = _canonical_search_attributes(command.attributes, authored=True)
         except ValueError as exc:
@@ -5589,9 +5589,15 @@ def _replay_state(
             # The recorded values are this step's replay identity; without
             # them the step cannot be checked, so replay is refused.
             upsert_sequence = _workflow_sequence(payload) or len(recorded_steps) + 1
+            if "attributes" not in payload:
+                raise NonDeterministicReplayError(
+                    upsert_sequence,
+                    "search attributes upsert with recorded attributes",
+                    ["SearchAttributesUpserted"],
+                    detail="search_attribute_update_missing: SearchAttributesUpserted history is missing its "
+                    "attributes.",
+                )
             try:
-                if "attributes" not in payload:
-                    raise ValueError("the attributes field is missing")
                 _canonical_search_attributes(payload["attributes"])
             except ValueError as exc:
                 raise NonDeterministicReplayError(

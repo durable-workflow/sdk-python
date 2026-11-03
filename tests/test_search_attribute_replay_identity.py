@@ -254,5 +254,5 @@ def test_malformed_recorded_type_values_are_refused_not_raised(fixture: str, typ
 def test_missing_recorded_attributes_are_refused(fixture: str, workflow_cls: type) -> None:
     history = deepcopy(redriven(fixture))
     del only_event(history, "SearchAttributesUpserted")["payload"]["attributes"]
-    refused(workflow_cls, history, "search_attribute_value_mismatch: SearchAttributesUpserted history has invalid "
-            "attributes: the attributes field is missing")
+    refused(workflow_cls, history, "search_attribute_update_missing: SearchAttributesUpserted history is missing "
+            "its attributes")
