@@ -453,6 +453,25 @@ REDRIVE_START_IDENTITY = (
     "workflow_type", "workflow_instance_id", "workflow_run_id", "workflow_command_id", "workflow_link_id",
     "continued_from_run_id", "replayed_started_at",
 )
+REDRIVE_START_DEADLINES = ("execution_deadline_at", "run_deadline_at")
+REDRIVE_START_KEYS = (*REDRIVE_START_IDENTITY, "recovery_kind", "resume_step_sequence", *REDRIVE_START_DEADLINES)
+
+# The identity Core writes on each event kind these fixtures use. Every field
+# is required and non-blank; an event kind not listed here is refused.
+REDRIVE_EVENT_IDENTITY: dict[str, tuple[str, ...]] = {
+    "MemoUpserted": ("sequence",),
+    "SearchAttributesUpserted": ("sequence",),
+    "SignalWaitOpened": ("sequence", "signal_name", "signal_wait_id"),
+    "SignalReceived": (
+        "workflow_command_id", "signal_id", "workflow_instance_id", "workflow_run_id", "signal_name", "signal_wait_id",
+    ),
+    "SignalApplied": ("workflow_command_id", "signal_id", "signal_name", "signal_wait_id", "sequence"),
+    "CooperativeCancellationRequested": ("workflow_command_id", "workflow_instance_id", "workflow_run_id"),
+    "CooperativeCancellationDelivered": ("workflow_command_id", "workflow_run_id", "sequence"),
+}
+# The events one reused workflow step writes, in order. SignalReceived belongs
+# to its wait and has no step of its own.
+REDRIVE_STEP_SHAPES = {("MemoUpserted",), ("SearchAttributesUpserted",), ("SignalWaitOpened", "SignalApplied")}
 
 
 def check_redrive_successor(history: list[dict[str, Any]], workflow: dict[str, Any]) -> None:
@@ -462,54 +481,96 @@ def check_redrive_successor(history: list[dict[str, Any]], workflow: dict[str, A
         if not condition:
             raise AssertionError(message)
 
+    def present(payload: dict[str, Any], key: str) -> bool:
+        value = payload.get(key)
+        return type(value) is int and value > 0 if key == "sequence" else isinstance(value, str) and bool(value.strip())
+
     require(bool(history) and history[0].get("event_type") == "WorkflowStarted",
             "history must open with WorkflowStarted")
     started = history[0]
+    require(started.get("sequence") == 1, "history order")
     start = started["payload"]
-    require(start.get("recovery_kind") == "redrive", "recovery_kind")
+    for key in REDRIVE_START_KEYS:
+        require(key in start, f"WorkflowStarted lacks {key}")
+    require(start["recovery_kind"] == "redrive", "recovery_kind")
     for key in REDRIVE_START_IDENTITY:
-        require(isinstance(start.get(key), str) and bool(start[key].strip()), key)
+        require(isinstance(start[key], str) and bool(start[key].strip()), key)
+    for key in REDRIVE_START_DEADLINES:
+        deadline = start[key]
+        if deadline is not None:
+            require(isinstance(deadline, str) and datetime.fromisoformat(deadline).tzinfo is not None, key)
     # The start binds the fixture's workflow type, instance and successor run.
     require(start["workflow_type"] == workflow.get("type"), "workflow_type must be the fixture workflow")
     require(start["workflow_instance_id"] == workflow.get("workflow_id"), "workflow_instance_id must be the fixture's")
     require(start["workflow_run_id"] == workflow.get("run_id"), "workflow_run_id must be the fixture's")
-    source = start["continued_from_run_id"]
-    require(start["workflow_run_id"] != source, "the successor is a new run")
+    instance, run, source = start["workflow_instance_id"], start["workflow_run_id"], start["continued_from_run_id"]
+    require(run != source, "the successor is a new run")
     started_at = datetime.fromisoformat(started["recorded_at"])
     require(datetime.fromisoformat(start["replayed_started_at"]) <= started_at, "replayed_started_at")
+
     prefix = True
-    last_reused_step = 0
+    steps: list[tuple[int, list[str]]] = []
+    signals: dict[str, dict[str, Any]] = {}
+    cancellations: dict[str, dict[str, Any]] = {}
     for index, event in enumerate(history[1:], start=2):
         require(event.get("sequence") == index, "history order")
+        kind = event.get("event_type")
+        require(kind in REDRIVE_EVENT_IDENTITY, f"unexpected event {kind}")
         payload = event["payload"]
-        require(payload.get("workflow_instance_id", start["workflow_instance_id"]) == start["workflow_instance_id"],
-                "event belongs to another workflow instance")
-        if "reused_from_run_id" in payload or "reused_recorded_at" in payload:
+        for key in REDRIVE_EVENT_IDENTITY[kind]:
+            require(present(payload, key), f"{kind} lacks {key}")
+        if kind == "SignalReceived":
+            require("sequence" not in payload, "SignalReceived has no step sequence")
+        if "workflow_instance_id" in payload:
+            require(payload["workflow_instance_id"] == instance, "event belongs to another workflow instance")
+        reused = "reused_from_run_id" in payload or "reused_recorded_at" in payload
+        if reused:
             require(prefix, "reused events must directly follow WorkflowStarted")
             for key in ("reused_from_run_id", "reused_recorded_at"):
-                require(isinstance(payload.get(key), str) and bool(payload[key]), f"reused event lacks {key}")
+                require(present(payload, key), f"reused event lacks {key}")
             require(payload["reused_from_run_id"] == source, "reused_from_run_id must match continued_from_run_id")
             # A reused event keeps the run it was first recorded in.
-            require(payload.get("workflow_run_id", source) == source, "reused event belongs to another run")
+            if "workflow_run_id" in payload:
+                require(payload["workflow_run_id"] == source, "reused event belongs to another run")
             require(event["recorded_at"] == started["recorded_at"], "reused events are recorded with the start")
             require(datetime.fromisoformat(payload["reused_recorded_at"]) <= started_at, "reused_recorded_at")
-            # SignalReceived has no step of its own; it belongs to its wait.
-            step = payload.get("sequence")
-            if event["event_type"] != "SignalReceived" and isinstance(step, int):
-                last_reused_step = max(last_reused_step, step)
+            if kind != "SignalReceived":
+                if steps and steps[-1][0] == payload["sequence"]:
+                    steps[-1][1].append(kind)
+                else:
+                    steps.append((payload["sequence"], [kind]))
         else:
             prefix = False
-            require(payload.get("workflow_run_id", start["workflow_run_id"]) == start["workflow_run_id"],
-                    "successor event belongs to another run")
+            if "workflow_run_id" in payload:
+                require(payload["workflow_run_id"] == run, "successor event belongs to another run")
             require(datetime.fromisoformat(event["recorded_at"]) >= started_at,
                     "successor event predates the successor start")
-    require(last_reused_step > 0, "no reused workflow step")
+        if kind.startswith("Signal"):
+            if kind != "SignalWaitOpened":
+                require(payload["signal_wait_id"] in signals, "signal event has no opened wait")
+            wait = signals.setdefault(payload["signal_wait_id"], {})
+            for key in ("signal_name", "workflow_command_id", "signal_id"):
+                if key in payload:
+                    require(wait.setdefault(key, payload[key]) == payload[key], f"signal events disagree on {key}")
+        if kind.startswith("CooperativeCancellation"):
+            command = cancellations.setdefault(kind, payload["workflow_command_id"])
+            require(command == payload["workflow_command_id"], "duplicate cancellation event")
+    if cancellations:
+        require(len(set(cancellations.values())) == 1, "cancellation events disagree on workflow_command_id")
+    # The reused steps are the contiguous prefix 1..resume-1, in order, one
+    # whole step each.
+    require(bool(steps), "no reused workflow step")
+    require([sequence for sequence, _ in steps] == list(range(1, len(steps) + 1)),
+            "reused steps must be the contiguous prefix from 1")
+    for sequence, kinds in steps:
+        require(tuple(kinds) in REDRIVE_STEP_SHAPES, f"reused step {sequence} is not one whole step")
     resume = start.get("resume_step_sequence")
-    require(type(resume) is int and resume == last_reused_step + 1,
+    require(type(resume) is int and resume == len(steps) + 1,
             "resume_step_sequence must follow the last reused step")
 
 
 REDRIVE_SUCCESSOR_FIXTURES = {
+    "redrive-reused-search-attribute-update-missing": 3,
     "redrive-reused-upserts-clock": 3,
     "redrive-reused-signal-wait-clock": 2,
     "redrive-reused-upserts-cancellation-clock": 3,
@@ -591,8 +652,8 @@ def _last_reused(history: list[dict[str, Any]]) -> dict[str, Any]:
     (lambda history: [history[1]["payload"].pop(key) for key in ("reused_from_run_id", "reused_recorded_at")],
      "directly follow"),
     (lambda history: history.append({"sequence": len(history) + 1, "event_type": "ActivityScheduled",
-                                     "recorded_at": "2026-11-03T00:04:59+00:00", "payload": {"sequence": 3}}),
-     "predates"),
+                                     "recorded_at": "2026-11-03T00:05:01+00:00", "payload": {"sequence": 3}}),
+     "unexpected event"),
     (lambda history: history[1].__setitem__("sequence", 9), "history order"),
 ])
 def test_successor_check_rejects_an_invalid_envelope_or_order(change: Any, message: str) -> None:
@@ -626,8 +687,118 @@ def _event(history: list[dict[str, Any]], event_type: str) -> dict[str, Any]:
      lambda history: _event(history, "CooperativeCancellationRequested")["payload"].__setitem__(
          "workflow_instance_id", "other"),
      "another workflow instance"),
+    ("redrive-reused-upserts-cancellation-clock",
+     lambda history: _event(history, "CooperativeCancellationRequested").__setitem__(
+         "recorded_at", "2026-11-03T00:04:59+00:00"),
+     "predates"),
+    ("redrive-reused-upserts-cancellation-clock",
+     lambda history: _event(history, "CooperativeCancellationDelivered")["payload"].__setitem__(
+         "workflow_command_id", "other-cancel"),
+     "disagree on workflow_command_id"),
+    ("redrive-reused-signal-wait-clock",
+     lambda history: _event(history, "SignalApplied")["payload"].__setitem__("signal_wait_id", "other-wait"),
+     "no opened wait"),
+    ("redrive-reused-signal-wait-clock",
+     lambda history: _event(history, "SignalApplied")["payload"].__setitem__("signal_id", "other-signal"),
+     "disagree on signal_id"),
 ])
 def test_successor_check_binds_every_event_to_the_run_and_instance(fixture: str, change: Any, message: str) -> None:
     check_redrive_successor(redriven(fixture), redrive_fixture(fixture)["workflow"])
     with pytest.raises(AssertionError, match=message):
         check_redrive_successor(_broken(fixture, change), redrive_fixture(fixture)["workflow"])
+
+
+def _check_fixture(fixture: str, history: list[dict[str, Any]]) -> None:
+    check_redrive_successor(history, redrive_fixture(fixture)["workflow"])
+
+
+@pytest.mark.parametrize("fixture", REDRIVE_SUCCESSOR_FIXTURES)
+@pytest.mark.parametrize("key", REDRIVE_START_KEYS)
+def test_successor_check_requires_every_envelope_field(fixture: str, key: str) -> None:
+    with pytest.raises(AssertionError, match=f"lacks {key}"):
+        _check_fixture(fixture, _broken(fixture, _drop_start(key)))
+
+
+@pytest.mark.parametrize("key", REDRIVE_START_DEADLINES)
+@pytest.mark.parametrize("value", ["", "not-a-time", "2026-11-03T00:00:00", 5, True, []])
+def test_successor_check_requires_a_null_or_valid_deadline(key: str, value: Any) -> None:
+    fixture = "redrive-reused-upserts-clock"
+    with pytest.raises((AssertionError, ValueError, TypeError)):
+        _check_fixture(fixture, _broken(fixture, _set_start(key, value)))
+    _check_fixture(fixture, _broken(fixture, _set_start(key, "2026-11-04T00:00:00+00:00")))
+
+
+def _event_identity_cases() -> list[tuple[str, int, str]]:
+    cases = []
+    for fixture in REDRIVE_SUCCESSOR_FIXTURES:
+        for index, event in enumerate(redriven(fixture)[1:], start=1):
+            for key in REDRIVE_EVENT_IDENTITY[event["event_type"]]:
+                cases.append((fixture, index, key))
+    return cases
+
+
+EVENT_IDENTITY_CASES = _event_identity_cases()
+
+
+@pytest.mark.parametrize(("fixture", "index", "key"), EVENT_IDENTITY_CASES)
+@pytest.mark.parametrize("mode", ["deleted", "blank"])
+def test_successor_check_requires_every_event_identity_field(fixture: str, index: int, key: str, mode: str) -> None:
+    def change(history: list[dict[str, Any]]) -> None:
+        payload = history[index]["payload"]
+        if mode == "deleted":
+            del payload[key]
+        else:
+            payload[key] = 0 if key == "sequence" else " "
+
+    with pytest.raises(AssertionError, match=f"lacks {key}"):
+        _check_fixture(fixture, _broken(fixture, change))
+
+
+@pytest.mark.parametrize("fixture", REDRIVE_SUCCESSOR_FIXTURES)
+@pytest.mark.parametrize("field", ["sequence", "event_type"])
+def test_successor_check_requires_every_event_id(fixture: str, field: str) -> None:
+    for index in range(1, len(redriven(fixture))):
+        with pytest.raises(AssertionError, match="history order|unexpected event"):
+            _check_fixture(fixture, _broken(fixture, lambda history, i=index: history[i].pop(field)))
+
+
+def _upsert(history: list[dict[str, Any]], event_type: str) -> dict[str, Any]:
+    return _event(history, event_type)["payload"]
+
+
+@pytest.mark.parametrize(("fixture", "change", "message"), [
+    # Missing step: the reused prefix skips step 2.
+    ("redrive-reused-upserts-clock", lambda history: (
+        _upsert(history, "SearchAttributesUpserted").__setitem__("sequence", 3),
+        history[0]["payload"].__setitem__("resume_step_sequence", 4)), "contiguous prefix"),
+    # Prefix does not start at 1.
+    ("redrive-reused-upserts-clock", lambda history: (
+        _upsert(history, "MemoUpserted").__setitem__("sequence", 2),
+        _upsert(history, "SearchAttributesUpserted").__setitem__("sequence", 3),
+        history[0]["payload"].__setitem__("resume_step_sequence", 4)), "contiguous prefix"),
+    # Duplicate step: both upserts claim step 1.
+    ("redrive-reused-upserts-clock", lambda history: (
+        _upsert(history, "SearchAttributesUpserted").__setitem__("sequence", 1),
+        history[0]["payload"].__setitem__("resume_step_sequence", 2)), "one whole step"),
+    # Duplicate event: the memo step written twice.
+    ("redrive-reused-upserts-clock", lambda history: (
+        history.insert(2, {**deepcopy(history[1]), "sequence": 3}),
+        history[3].__setitem__("sequence", 4)), "one whole step"),
+    # Descending: the steps appear in reverse order.
+    ("redrive-reused-upserts-clock", lambda history: (
+        _upsert(history, "MemoUpserted").__setitem__("sequence", 2),
+        _upsert(history, "SearchAttributesUpserted").__setitem__("sequence", 1)), "contiguous prefix"),
+    # SignalReceived given a step of its own.
+    ("redrive-reused-signal-wait-clock",
+     lambda history: _event(history, "SignalReceived")["payload"].__setitem__("sequence", 1), "no step sequence"),
+    ("redrive-reused-signal-wait-clock", lambda history: (
+        _event(history, "SignalReceived")["payload"].__setitem__("sequence", 2),
+        history[0]["payload"].__setitem__("resume_step_sequence", 3)), "no step sequence"),
+    # A signal wait split across two steps.
+    ("redrive-reused-signal-wait-clock", lambda history: (
+        _event(history, "SignalApplied")["payload"].__setitem__("sequence", 2),
+        history[0]["payload"].__setitem__("resume_step_sequence", 3)), "one whole step"),
+])
+def test_successor_check_requires_contiguous_whole_reused_steps(fixture: str, change: Any, message: str) -> None:
+    with pytest.raises(AssertionError, match=message):
+        _check_fixture(fixture, _broken(fixture, change))

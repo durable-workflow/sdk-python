@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Workflow 2.19 redrive reuse of `MemoUpserted`, `SearchAttributesUpserted`, `SignalWaitOpened`, `SignalReceived` and `SignalApplied` is qualified for replay. None of these events is a replay clock source in this SDK. `ctx.now()` stays the persisted start time, which on a redriven run is the failed run's start. The cancellation budget does not move on an upsert or a signal. Regression fixtures shaped like Core's redrive successor histories prove it. (#235)
+- Replay of Workflow 2.19 redrive reuse is qualified for `MemoUpserted` and for `SearchAttributesUpserted` value identity. Neither event is a replay clock source: `ctx.now()` stays the persisted start time, which on a redriven run is the failed run's start, and the cancellation budget does not move on an upsert. Search-attribute type identity is not qualified, because the Server records namespace-registered types the SDK cannot see. Signal waits (`SignalWaitOpened`, `SignalReceived`, `SignalApplied`) are not qualified for Python: the SDK has no signal-wait primitive. Replaying such reused events through a signal handler applies the signal once and takes no time from them, but that does not qualify signal waits. (#235)
 
 ## [2.13.1] - 2026-11-03
 
