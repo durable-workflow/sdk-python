@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A run created by redrive now replays from the failed run's start time. `ctx.now()` and `ctx.uuid7()` read `WorkflowStarted.replayed_started_at` when `recovery_kind` is `redrive`, as Core does, so workflow code before the failed step sees the same clock as the failed run. An invalid value is refused rather than ignored. The cancellation clock prefers a reused step's `reused_recorded_at`. (#232)
+
 ## [2.13.0] - 2026-11-03
 
 ### Added

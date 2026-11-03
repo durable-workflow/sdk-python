@@ -2206,6 +2206,10 @@ class WorkflowContext:
 
     def _observe_cancellation_replay_time(self, event: Mapping[str, Any] | None) -> None:
         timestamp = event.get("timestamp") if event is not None else None
+        payload = event.get("payload") if event is not None else None
+        # A step reused by redrive keeps the time it was first recorded.
+        if timestamp is None and isinstance(payload, Mapping) and isinstance(payload.get("reused_recorded_at"), str):
+            timestamp = payload["reused_recorded_at"]
         if timestamp is None and event is not None:
             timestamp = event.get("recorded_at")
         self._cancellation_replay_time_available = False
@@ -4680,6 +4684,10 @@ def _replay_state(
             explicit_time = "timestamp" in start_payload
             ts = start_payload.get("timestamp") if explicit_time else ev.get("recorded_at")
             clock_source = "payload.timestamp" if explicit_time else "recorded_at"
+            # A redriven run replays from the failed run's start time, as Core does.
+            if start_payload.get("recovery_kind") == "redrive" and "replayed_started_at" in start_payload:
+                ts = start_payload.get("replayed_started_at")
+                clock_source = "payload.replayed_started_at"
             replay_clock_error = f"Workflow replay clock unavailable: invalid or missing WorkflowStarted.{clock_source}"
             if isinstance(ts, str):
                 with contextlib.suppress(ValueError):
