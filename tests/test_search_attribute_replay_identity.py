@@ -501,21 +501,72 @@ def test_a_delivery_span_ending_before_the_upsert_does_not_collide(fixture: str)
         assert "durable_command_sequence_collision" not in str(error)
 
 
-@pytest.mark.parametrize(("payload", "claimed"), [
-    ({"sequence": 3}, [3]),
-    ({"sequence": 3, "sequence_span": 1}, [3]),
-    ({"sequence": 3, "sequence_span": 3}, [3, 4, 5]),
-    ({"sequence": 3, "sequence_span": "2"}, [3, 4]),
-    ({"sequence": 3, "sequence_span": 0}, [3]),
-    ({"sequence": 3, "sequence_span": -2}, [3]),
-    ({"sequence": 3, "sequence_span": None}, [3]),
+@pytest.mark.parametrize(("span", "claimed"), [
+    (..., [3]),  # Absent means 1.
+    (1, [3]),
+    (3, [3, 4, 5]),
 ])
 @pytest.mark.parametrize("event_type", ["CooperativeCancellationDelivered", "CancellationScopeDelivered"])
-def test_delivery_claimed_range_matches_core(event_type: str, payload: dict[str, Any], claimed: list[int]) -> None:
+def test_a_valid_delivery_span_claims_its_inclusive_range(event_type: str, span: Any, claimed: list[int]) -> None:
     from durable_workflow.workflow import _durable_command_claimed_range
 
-    assert list(_durable_command_claimed_range(event_type, payload, payload["sequence"])) == claimed
-    assert list(_durable_command_claimed_range("ActivityScheduled", payload, payload["sequence"])) == [3]
+    payload: dict[str, Any] = {"sequence": 3}
+    if span is not ...:
+        payload["sequence_span"] = span
+    assert list(_durable_command_claimed_range(event_type, payload, 3)) == claimed
+    assert list(_durable_command_claimed_range("ActivityScheduled", payload, 3)) == [3]
+
+
+MALFORMED_SPANS = [0, -1, "2", "3", 2.0, 3.0, True, False, None, [3], {"span": 3}]
+
+
+@pytest.mark.parametrize("span", MALFORMED_SPANS)
+@pytest.mark.parametrize("event_type", ["CooperativeCancellationDelivered", "CancellationScopeDelivered"])
+def test_a_malformed_delivery_span_is_refused_not_narrowed(event_type: str, span: Any) -> None:
+    from durable_workflow.workflow import _delivery_sequence_span, _durable_command_claimed_range
+
+    payload = {"sequence": 3, "sequence_span": span}
+    with pytest.raises(ValueError, match="sequence_span must be a positive integer"):
+        _delivery_sequence_span(payload)
+    with pytest.raises(ValueError):
+        _durable_command_claimed_range(event_type, payload, 3)
+
+
+@pytest.mark.parametrize("span", MALFORMED_SPANS)
+@pytest.mark.parametrize("order", ["after_upsert", "before_upsert"])
+def test_a_malformed_delivery_span_refuses_replay(fixture: str, order: str, span: Any) -> None:
+    # The upsert at 2 would be interior to an intended 1..3 span; a malformed
+    # span refuses replay rather than claiming only the base.
+    history = _cooperative(fixture, 1, 3, order, drop_memo=True)
+    next(event for event in history if event["event_type"] == "CooperativeCancellationDelivered")[
+        "payload"]["sequence_span"] = span
+    workflow = redrive_fixture(DELIVERY_FIXTURE)["workflow"]
+    with pytest.raises(NonDeterministicReplayError, match="durable_command_sequence_invalid:"):
+        replay(RedriveVisibilityWorkflow, history, ["Taylor"], run_id=workflow["run_id"],
+               workflow_id=workflow["workflow_id"], payload_codec="avro")
+
+
+@pytest.mark.parametrize("span", MALFORMED_SPANS)
+def test_a_malformed_scope_delivery_span_refuses_replay(span: Any) -> None:
+    history, task = _scope_delivery_with_upsert("after_delivery")
+    next(event for event in history if event["event_type"] == "CancellationScopeDelivered")[
+        "payload"]["sequence_span"] = span
+    with pytest.raises(NonDeterministicReplayError, match="durable_command_sequence_invalid:"):
+        replay(RedriveVisibilityWorkflow, history, [], workflow_id=task["workflow_id"], run_id=task["run_id"],
+               payload_codec="avro", allow_cancellation_scope_authoring=True, allow_cancellation_scope_delivery=True)
+
+
+def test_an_absent_delivery_span_claims_one_sequence(fixture: str) -> None:
+    # Absent means 1: a delivery at 1 without a span does not reach the upsert at 2.
+    history = _cooperative(fixture, 1, 1, "after_upsert", drop_memo=True)
+    assert "sequence_span" not in next(
+        event for event in history if event["event_type"] == "CooperativeCancellationDelivered")["payload"]
+    workflow = redrive_fixture(DELIVERY_FIXTURE)["workflow"]
+    try:
+        replay(RedriveVisibilityWorkflow, history, ["Taylor"], run_id=workflow["run_id"],
+               workflow_id=workflow["workflow_id"], payload_codec="avro")
+    except NonDeterministicReplayError as error:
+        assert "durable_command_sequence" not in str(error)
 
 
 def _scope_delivery_with_upsert(order: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:

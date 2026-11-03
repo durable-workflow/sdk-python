@@ -4022,22 +4022,49 @@ _DURABLE_COMMAND_KINDS: dict[str, str] = {
 _UPSERT_COMMAND_KINDS = frozenset({"memo", "search_attributes"})
 
 
+def _delivery_sequence_span(payload: Mapping[str, Any]) -> int:
+    """A cancellation delivery's sequence_span under the producer contract.
+
+    Absent means 1. When present it must be a positive JSON integer; zero,
+    negative, bool, float, string, null and every other value are malformed
+    and raise ValueError, so a malformed span never shrinks the claimed range.
+    """
+    if "sequence_span" not in payload:
+        return 1
+    span = payload["sequence_span"]
+    if type(span) is not int or span <= 0:
+        raise ValueError(f"sequence_span must be a positive integer, not {span!r}")
+    return span
+
+
+def _assert_delivery_spans(events: Iterable[Mapping[str, Any]]) -> None:
+    for event in events:
+        if _DURABLE_COMMAND_KINDS.get(_history_event_type(event) or "") != "cancellation_delivery":
+            continue
+        raw = event.get("payload")
+        payload: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+        try:
+            _delivery_sequence_span(payload)
+        except ValueError as error:
+            raise NonDeterministicReplayError(
+                _workflow_sequence(payload) or 0,
+                "cancellation delivery with a canonical sequence span",
+                [str(_history_event_type(event))],
+                detail=f"durable_command_sequence_invalid: {error}.",
+            ) from error
+
+
 def _durable_command_claimed_range(event_type: str | None, payload: Mapping[str, Any], sequence: int) -> range:
     """The workflow sequences one recorded event claims.
 
     A cancellation delivery claims sequence through sequence + sequence_span
     - 1, inclusive, as Core's WorkflowStepHistory::nextSequenceFromEvents
-    reads it: an integer or numeric-string span, 1 when absent, and any span
-    below 2 claims only the sequence itself.
+    extends it. Its span follows the producer contract
+    (_delivery_sequence_span), which replay checks before any parsing.
     """
     if _DURABLE_COMMAND_KINDS.get(event_type or "") != "cancellation_delivery":
         return range(sequence, sequence + 1)
-    span = payload.get("sequence_span")
-    if isinstance(span, str) and span.isdigit():
-        span = int(span)
-    if type(span) is not int or span < 2:
-        return range(sequence, sequence + 1)
-    return range(sequence, sequence + span)
+    return range(sequence, sequence + _delivery_sequence_span(payload))
 
 
 def _durable_command_kinds_compatible(kinds: frozenset[str]) -> bool:
@@ -4694,6 +4721,9 @@ def _replay_state(
             ) from exception
 
     events = list(history_events)
+    # A malformed delivery span refuses replay before any history parser can
+    # read it more permissively.
+    _assert_delivery_spans(events)
     _assert_cancellation_scope_replay_supported(
         events, allow_authoring=allow_cancellation_scope_authoring, allow_delivery=allow_cancellation_scope_delivery,
     )
