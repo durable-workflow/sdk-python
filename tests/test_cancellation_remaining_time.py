@@ -265,24 +265,10 @@ def test_inline_local_result_persistence_preserves_the_first_execution_budget() 
     assert calls == ["once"]
 
 
-def test_a_reused_step_keeps_its_original_time_for_the_remaining_budget() -> None:
-    class Cleanup:
-        def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
-            try:
-                yield ctx.start_timer(60)
-            except WorkflowCancelled as error:
-                assert error.context is not None
-                with ctx.cancellation_shield():
-                    yield ctx.schedule_activity("cleanup", [])
-                return error.context.remaining()
-
-    reused = completed_activity(2, "cleanup", "cleaned")
-    reused["payload"] = {**reused["payload"], "reused_from_run_id": "failed-run",
-                         "reused_recorded_at": "2026-10-01T00:00:12Z"}
-    events = history() + [{**reused, "timestamp": "2026-10-01T00:00:29Z"}]
-    # Redrive recorded the step again at 00:29; its workflow time stays 00:12.
-    assert replay(Cleanup, events, [], run_id="run-1").commands == [CompleteWorkflow(18.123456)]
-
+# test_a_reused_step_keeps_its_original_time_for_the_remaining_budget (2.13.1,
+# #233) was removed by #237. It delivered the cancellation before a "reused"
+# step whose reused_recorded_at followed the delivery, a history redrive cannot
+# write. Valid successor evidence is in tests/test_redrive_successor_evidence.py.
 
 
 @pytest.mark.parametrize("later", ["2026-10-01T00:00:12Z", "2026-10-01T00:00:29Z"])

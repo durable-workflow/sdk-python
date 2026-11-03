@@ -12,6 +12,7 @@ import pytest
 from durable_workflow import serializer, workflow
 from durable_workflow.errors import NonDeterministicReplayError, WorkflowCancelled
 from durable_workflow.workflow import CompleteWorkflow, WorkflowContext, query_state, replay
+from tests.redrive_fixture_registry import VALID_SUCCESSORS
 
 
 @workflow.defn(name="tests.replay.persisted-clock")
@@ -468,10 +469,83 @@ REDRIVE_EVENT_IDENTITY: dict[str, tuple[str, ...]] = {
     "SignalApplied": ("workflow_command_id", "signal_id", "signal_name", "signal_wait_id", "sequence"),
     "CooperativeCancellationRequested": ("workflow_command_id", "workflow_instance_id", "workflow_run_id"),
     "CooperativeCancellationDelivered": ("workflow_command_id", "workflow_run_id", "sequence"),
+    # Core FailedRunRedrivePlan::successorEvents (workflow 28893f97) writes a
+    # reused activity as one ActivityCompleted with a new execution id, and a
+    # reused timer as a copied TimerScheduled (new timer_id, no reuse keys)
+    # followed by the reused TimerFired.
+    "ActivityScheduled": ("sequence", "activity_type", "activity_execution_id"),
+    "ActivityCompleted": ("sequence", "activity_type", "activity_execution_id"),
+    "TimerScheduled": ("sequence", "timer_id"),
+    "TimerFired": ("sequence", "timer_id"),
+    "SideEffectRecorded": ("sequence",),
+    "VersionMarkerRecorded": ("sequence", "change_id"),
 }
 # The events one reused workflow step writes, in order. SignalReceived belongs
-# to its wait and has no step of its own.
-REDRIVE_STEP_SHAPES = {("MemoUpserted",), ("SearchAttributesUpserted",), ("SignalWaitOpened", "SignalApplied")}
+# to its wait and has no step of its own, and a copied TimerScheduled is not a
+# reused event.
+REDRIVE_STEP_SHAPES = {
+    ("MemoUpserted",), ("SearchAttributesUpserted",), ("SignalWaitOpened", "SignalApplied"),
+    ("ActivityCompleted",), ("TimerFired",), ("SideEffectRecorded",), ("VersionMarkerRecorded",),
+}
+# Successor events that occupy a workflow step of their own.
+REDRIVE_SUCCESSOR_STEP_EVENTS = frozenset({
+    "MemoUpserted", "SearchAttributesUpserted", "SignalWaitOpened", "SignalApplied", "ActivityScheduled",
+    "ActivityCompleted", "TimerScheduled", "TimerFired", "SideEffectRecorded", "VersionMarkerRecorded",
+    "CooperativeCancellationDelivered",
+})
+
+
+# Core FailedRunRedrivePlan::isPlainTimer: redrive copies only plain timers.
+_NON_PLAIN_TIMER_KEYS = (
+    "timer_kind", "cancellation_cleanup", "cancellation_scope_id", "parallel_group_id", "condition_wait_id",
+    "signal_wait_id",
+)
+
+
+def _copied_timer_schedule(history: list[dict[str, Any]], index: int, started: dict[str, Any]) -> bool:
+    """Core's copy of a reused timer's schedule (FailedRunRedrivePlan.php:437-455).
+
+    Accepted in the reused prefix only when it carries neither reuse key, is
+    recorded at the successor start, is a plain timer (Core isPlainTimer,
+    FailedRunRedrivePlan.php:497), keeps the source run if it names one, and
+    is directly followed by the reused TimerFired for the same non-blank
+    timer_id and the same step.
+    """
+    event = history[index]
+    payload = event.get("payload") or {}
+    source = (started.get("payload") or {}).get("continued_from_run_id")
+    if event.get("event_type") != "TimerScheduled" or "reused_from_run_id" in payload or (
+        "reused_recorded_at" in payload
+    ) or event.get("recorded_at") != started.get("recorded_at") or index + 1 >= len(history):
+        return False
+    # The copy is the source run's schedule payload: any run it names is the
+    # source, never the successor or another run.
+    if "workflow_run_id" in payload and payload["workflow_run_id"] != source:
+        return False
+    if any(payload.get(key) is not None for key in _NON_PLAIN_TIMER_KEYS):
+        return False
+    fired = history[index + 1]
+    fired_payload = fired.get("payload") or {}
+    timer_id = payload.get("timer_id")
+    return (fired.get("event_type") == "TimerFired" and "reused_from_run_id" in fired_payload
+            and isinstance(timer_id, str) and bool(timer_id.strip())
+            and fired_payload.get("timer_id") == timer_id
+            and fired_payload.get("sequence") == payload.get("sequence"))
+
+
+def redrive_time(value: Any) -> datetime:
+    """Parse a history time on every supported Python; 3.10 rejects a trailing Z."""
+    if not isinstance(value, str):
+        raise AssertionError("history time must be a string")
+    parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    if parsed.tzinfo is None:
+        raise AssertionError("history time must carry an offset")
+    return parsed
+
+
+# Events a successor cancellation can be delivered to: a call the successor
+# recorded itself and that waits.
+REDRIVE_CANCELLABLE_EVENTS = frozenset({"ActivityScheduled", "TimerScheduled", "SignalWaitOpened"})
 
 
 def check_redrive_successor(history: list[dict[str, Any]], workflow: dict[str, Any]) -> None:
@@ -498,20 +572,23 @@ def check_redrive_successor(history: list[dict[str, Any]], workflow: dict[str, A
     for key in REDRIVE_START_DEADLINES:
         deadline = start[key]
         if deadline is not None:
-            require(isinstance(deadline, str) and datetime.fromisoformat(deadline).tzinfo is not None, key)
+            require(isinstance(deadline, str) and redrive_time(deadline) is not None, key)
     # The start binds the fixture's workflow type, instance and successor run.
     require(start["workflow_type"] == workflow.get("type"), "workflow_type must be the fixture workflow")
     require(start["workflow_instance_id"] == workflow.get("workflow_id"), "workflow_instance_id must be the fixture's")
     require(start["workflow_run_id"] == workflow.get("run_id"), "workflow_run_id must be the fixture's")
     instance, run, source = start["workflow_instance_id"], start["workflow_run_id"], start["continued_from_run_id"]
     require(run != source, "the successor is a new run")
-    started_at = datetime.fromisoformat(started["recorded_at"])
-    require(datetime.fromisoformat(start["replayed_started_at"]) <= started_at, "replayed_started_at")
+    started_at = redrive_time(started["recorded_at"])
+    require(redrive_time(start["replayed_started_at"]) <= started_at, "replayed_started_at")
 
     prefix = True
     steps: list[tuple[int, list[str]]] = []
     signals: dict[str, dict[str, Any]] = {}
-    cancellations: dict[str, dict[str, Any]] = {}
+    requests: list[tuple[dict[str, Any], set[int]]] = []
+    deliveries: list[tuple[dict[str, Any], set[int]]] = []
+    cancellable_steps: set[int] = set()
+    successor_steps: list[int] = []
     for index, event in enumerate(history[1:], start=2):
         require(event.get("sequence") == index, "history order")
         kind = event.get("event_type")
@@ -524,6 +601,8 @@ def check_redrive_successor(history: list[dict[str, Any]], workflow: dict[str, A
         if "workflow_instance_id" in payload:
             require(payload["workflow_instance_id"] == instance, "event belongs to another workflow instance")
         reused = "reused_from_run_id" in payload or "reused_recorded_at" in payload
+        if prefix and not reused and _copied_timer_schedule(history, index - 1, started):
+            continue
         if reused:
             require(prefix, "reused events must directly follow WorkflowStarted")
             for key in ("reused_from_run_id", "reused_recorded_at"):
@@ -533,7 +612,11 @@ def check_redrive_successor(history: list[dict[str, Any]], workflow: dict[str, A
             if "workflow_run_id" in payload:
                 require(payload["workflow_run_id"] == source, "reused event belongs to another run")
             require(event["recorded_at"] == started["recorded_at"], "reused events are recorded with the start")
-            require(datetime.fromisoformat(payload["reused_recorded_at"]) <= started_at, "reused_recorded_at")
+            require(redrive_time(payload["reused_recorded_at"]) <= started_at, "reused_recorded_at")
+            if kind == "TimerFired":
+                # Core always writes the copied schedule directly before it.
+                require(_copied_timer_schedule(history, index - 2, started),
+                        "reused TimerFired lacks its copied TimerScheduled")
             if kind != "SignalReceived":
                 if steps and steps[-1][0] == payload["sequence"]:
                     steps[-1][1].append(kind)
@@ -543,8 +626,16 @@ def check_redrive_successor(history: list[dict[str, Any]], workflow: dict[str, A
             prefix = False
             if "workflow_run_id" in payload:
                 require(payload["workflow_run_id"] == run, "successor event belongs to another run")
-            require(datetime.fromisoformat(event["recorded_at"]) >= started_at,
+            require(redrive_time(event["recorded_at"]) >= started_at,
                     "successor event predates the successor start")
+            if kind in REDRIVE_SUCCESSOR_STEP_EVENTS:
+                successor_steps.append(payload["sequence"])
+            if kind in REDRIVE_CANCELLABLE_EVENTS:
+                cancellable_steps.add(payload["sequence"])
+            if kind == "CooperativeCancellationRequested":
+                requests.append((event, set(cancellable_steps)))
+            if kind == "CooperativeCancellationDelivered":
+                deliveries.append((event, set(cancellable_steps)))
         if kind.startswith("Signal"):
             if kind != "SignalWaitOpened":
                 require(payload["signal_wait_id"] in signals, "signal event has no opened wait")
@@ -552,11 +643,6 @@ def check_redrive_successor(history: list[dict[str, Any]], workflow: dict[str, A
             for key in ("signal_name", "workflow_command_id", "signal_id"):
                 if key in payload:
                     require(wait.setdefault(key, payload[key]) == payload[key], f"signal events disagree on {key}")
-        if kind.startswith("CooperativeCancellation"):
-            command = cancellations.setdefault(kind, payload["workflow_command_id"])
-            require(command == payload["workflow_command_id"], "duplicate cancellation event")
-    if cancellations:
-        require(len(set(cancellations.values())) == 1, "cancellation events disagree on workflow_command_id")
     # The reused steps are the contiguous prefix 1..resume-1, in order, one
     # whole step each.
     require(bool(steps), "no reused workflow step")
@@ -567,24 +653,58 @@ def check_redrive_successor(history: list[dict[str, Any]], workflow: dict[str, A
     resume = start.get("resume_step_sequence")
     require(type(resume) is int and resume == len(steps) + 1,
             "resume_step_sequence must follow the last reused step")
+    # The successor never records, or delivers to, a step it reused.
+    require(all(step >= resume for step in successor_steps), "successor event reuses a reused step")
+    if requests or deliveries:
+        _check_successor_cancellation(requests, deliveries, instance, run, resume)
 
 
-REDRIVE_SUCCESSOR_FIXTURES = {
-    "redrive-reused-search-attribute-update-missing": 3,
-    "redrive-reused-upserts-clock": 3,
-    "redrive-reused-signal-wait-clock": 2,
-    "redrive-reused-upserts-cancellation-clock": 3,
-    "redrive-reused-search-attribute-value-mismatch": 3,
-    "redrive-reused-search-attribute-type-mismatch": 3,
-}
+def _check_successor_cancellation(
+    requests: list[tuple[dict[str, Any], set[int]]],
+    deliveries: list[tuple[dict[str, Any], set[int]]],
+    instance: str, run: str, resume: Any,
+) -> None:
+    """The successor's own cancellation: one request, then one delivery of it."""
+
+    def require(condition: bool, message: str) -> None:
+        if not condition:
+            raise AssertionError(message)
+
+    require(len(requests) == 1 and len(deliveries) == 1,
+            "a successor cancellation is exactly one request and one delivery")
+    (request, _), (delivery, recorded_steps) = requests[0], deliveries[0]
+    require(request["sequence"] < delivery["sequence"], "the delivery follows its request")
+    require(redrive_time(delivery["recorded_at"]) >= redrive_time(request["recorded_at"]),
+            "the delivery is not earlier than its request")
+    asked, delivered = request["payload"], delivery["payload"]
+    command = asked["workflow_command_id"]
+    require(delivered["workflow_command_id"] == command, "the delivery names its request")
+    context = asked.get("cancellation")
+    require(isinstance(context, dict) and bool(context), "the request carries its cancellation context")
+    require(delivered.get("cancellation") == context, "the delivery carries its request's context")
+    assert isinstance(context, dict)
+    lineage = context.get("lineage")
+    require(context.get("request_id") == command, "the context is this request")
+    require(context.get("root_workflow_run_id") == run and context.get("root_workflow_instance_id") == instance,
+            "successor cancellation must be rooted at the successor run")
+    require(isinstance(lineage, list) and bool(lineage) and isinstance(lineage[-1], dict)
+            and lineage[-1].get("request_id") == command
+            and lineage[-1].get("workflow_run_id") == run
+            and lineage[-1].get("workflow_instance_id") == instance,
+            "successor cancellation must be rooted at the successor run")
+    if context.get("parent_request_id") is None:
+        require(context.get("root_request_id") == command, "a root request is its own root")
+    require(asked.get("cleanup_deadline_at") == context.get("cleanup_deadline_at")
+            and redrive_time(asked["cleanup_deadline_at"]) >= redrive_time(request["recorded_at"]),
+            "the request's cleanup deadline is its context's and follows it")
+    # The interrupted call is the first unreused step (a call not yet
+    # scheduled) or a cancellable call the successor recorded before it.
+    step = delivered["sequence"]
+    require(step == resume or step in recorded_steps,
+            "the delivery targets a successor step the successor reached")
 
 
-def test_every_reused_fixture_is_a_checked_redrive_successor() -> None:
-    reused = sorted(
-        path.stem for path in REDRIVE_FIXTURES.glob("*.json")
-        if "reused_from_run_id" in path.read_text(encoding="utf-8")
-    )
-    assert reused == sorted(REDRIVE_SUCCESSOR_FIXTURES)
+REDRIVE_SUCCESSOR_FIXTURES = VALID_SUCCESSORS
 
 
 @pytest.mark.parametrize(("fixture", "resume"), REDRIVE_SUCCESSOR_FIXTURES.items())
@@ -651,7 +771,7 @@ def _last_reused(history: list[dict[str, Any]]) -> dict[str, Any]:
      "recorded with the start"),
     (lambda history: [history[1]["payload"].pop(key) for key in ("reused_from_run_id", "reused_recorded_at")],
      "directly follow"),
-    (lambda history: history.append({"sequence": len(history) + 1, "event_type": "ActivityScheduled",
+    (lambda history: history.append({"sequence": len(history) + 1, "event_type": "UpdateApplied",
                                      "recorded_at": "2026-11-03T00:05:01+00:00", "payload": {"sequence": 3}}),
      "unexpected event"),
     (lambda history: history[1].__setitem__("sequence", 9), "history order"),
@@ -694,7 +814,7 @@ def _event(history: list[dict[str, Any]], event_type: str) -> dict[str, Any]:
     ("redrive-reused-upserts-cancellation-clock",
      lambda history: _event(history, "CooperativeCancellationDelivered")["payload"].__setitem__(
          "workflow_command_id", "other-cancel"),
-     "disagree on workflow_command_id"),
+     "the delivery names its request"),
     ("redrive-reused-signal-wait-clock",
      lambda history: _event(history, "SignalApplied")["payload"].__setitem__("signal_wait_id", "other-wait"),
      "no opened wait"),
