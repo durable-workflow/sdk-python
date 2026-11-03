@@ -3823,11 +3823,14 @@ def _workflow_sequence(payload: Mapping[str, Any]) -> int | None:
     return None
 
 
-def _positive_workflow_sequence(payload: Mapping[str, Any]) -> bool:
-    value = payload.get("sequence") or payload.get("workflow_sequence")
-    if isinstance(value, str) and value.isdigit():
-        value = int(value)
-    return type(value) is int and value > 0
+def _durable_command_sequence_problem(payload: Mapping[str, Any]) -> str | None:
+    """The sdk-rust reason when a durable command record has no usable sequence."""
+    value = payload.get("sequence")
+    if value is None:
+        return "durable_command_sequence_missing"
+    if type(value) is not int or value <= 0:
+        return "durable_command_sequence_invalid"
+    return None
 
 
 def _parallel_group_integer(payload: Mapping[str, Any], key: str) -> int | None:
@@ -3984,11 +3987,12 @@ def _reorder_completed_parallel_groups(
     return ordered_results, ordered_steps
 
 
-# The events one durable command writes, by command kind. Two kinds may share
-# a workflow sequence only where one command writes both: a condition or
-# signal wait with its own timeout timer. Events that only refer to another
-# step's sequence (signals, updates, cancellation and scope records) are not
-# command records and are not listed.
+# The events that claim a workflow sequence, by durable command kind. Each
+# kind's lifecycle events share their command's sequence (activity, timer,
+# condition wait, signal wait, child run and service call). Events that only
+# point at a step (signals, updates, cancellation and scope records) claim
+# nothing and are not listed. As in sdk-php, a collision is refused when it
+# involves an upsert: an upsert is the only command at its sequence.
 _DURABLE_COMMAND_KINDS: dict[str, str] = {
     **dict.fromkeys(("ActivityScheduled", "ActivityStarted", "ActivityCompleted", "ActivityFailed",
                      "ActivityTimedOut", "ActivityCancelled"), "activity"),
@@ -4005,11 +4009,11 @@ _DURABLE_COMMAND_KINDS: dict[str, str] = {
     "MemoUpserted": "memo",
     "SearchAttributesUpserted": "search_attributes",
 }
-_SHARED_SEQUENCE_COMMAND_KINDS = (frozenset({"condition", "timer"}), frozenset({"signal", "timer"}))
+_UPSERT_COMMAND_KINDS = frozenset({"memo", "search_attributes"})
 
 
 def _durable_command_kinds_compatible(kinds: frozenset[str]) -> bool:
-    return len(kinds) == 1 or kinds in _SHARED_SEQUENCE_COMMAND_KINDS
+    return len(kinds) == 1 or not kinds & _UPSERT_COMMAND_KINDS
 
 
 def _internal_timeout_timer_kind(
@@ -4753,15 +4757,17 @@ def _replay_state(
         if not isinstance(payload, Mapping):
             payload = {}
         sequence = _workflow_sequence(payload)
-        if event_type == "SearchAttributesUpserted" and not _positive_workflow_sequence(payload):
+        if event_type == "SearchAttributesUpserted":
             # Never bind an upsert to a guessed step.
-            raise NonDeterministicReplayError(
-                len(event_types_by_sequence) + 1,
-                "search attributes upsert with its workflow sequence",
-                ["SearchAttributesUpserted"],
-                detail="search_attribute_update_missing_sequence: SearchAttributesUpserted history has no "
-                "positive workflow sequence.",
-            )
+            sequence_problem = _durable_command_sequence_problem(payload)
+            if sequence_problem is not None:
+                raise NonDeterministicReplayError(
+                    len(event_types_by_sequence) + 1,
+                    "search attributes upsert with its workflow sequence",
+                    ["SearchAttributesUpserted"],
+                    detail=f"{sequence_problem}: SearchAttributesUpserted history needs a positive integer "
+                    "workflow sequence.",
+                )
         if sequence is None:
             continue
         if event_type == "SearchAttributesUpserted":
@@ -5656,7 +5662,7 @@ def _replay_state(
         elif etype == "SearchAttributesUpserted":
             # The recorded values are this step's replay identity; without
             # them the step cannot be checked, so replay is refused.
-            # The first pass refused an upsert without a positive sequence.
+            # The first pass refused an upsert without a positive integer sequence.
             upsert_sequence = cast(int, _workflow_sequence(payload))
             if "attributes" not in payload:
                 raise NonDeterministicReplayError(

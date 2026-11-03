@@ -278,16 +278,20 @@ def _append(history: list[dict[str, Any]], event_type: str, payload: dict[str, A
                     "recorded_at": "2026-11-03T00:05:01+00:00", "payload": payload})
 
 
-@pytest.mark.parametrize("missing", [None, 0, -1, "", "two", "-1", True, 1.0, [1]])
-def test_search_attribute_update_without_a_sequence_is_refused(fixture: str, missing: Any) -> None:
+@pytest.mark.parametrize(("value", "reason"), [
+    (..., "durable_command_sequence_missing"),
+    (None, "durable_command_sequence_missing"),
+    *[(value, "durable_command_sequence_invalid") for value in (0, -1, "", "two", "-1", "2", True, 1.0, [1])],
+])
+def test_search_attribute_update_without_a_usable_sequence_is_refused(fixture: str, value: Any, reason: str) -> None:
     def change(history: list[dict[str, Any]]) -> None:
         payload = only_event(history, "SearchAttributesUpserted")["payload"]
-        if missing is None:
+        if value is ...:
             del payload["sequence"]
         else:
-            payload["sequence"] = missing
+            payload["sequence"] = value
 
-    refused_at(RedriveVisibilityWorkflow, _with(fixture, change), "search_attribute_update_missing_sequence", 2)
+    refused_at(RedriveVisibilityWorkflow, _with(fixture, change), reason, 2)
 
 
 def test_duplicate_search_attribute_update_is_refused(fixture: str) -> None:
@@ -322,13 +326,21 @@ def test_a_search_attribute_update_cannot_take_an_earlier_step(fixture: str) -> 
     refused_at(RedriveVisibilityWorkflow, history, "durable_command_sequence_collision", 1)
 
 
-def test_only_a_wait_and_its_timeout_timer_share_a_sequence() -> None:
+def test_collisions_are_refused_when_they_involve_an_upsert() -> None:
     from durable_workflow.workflow import _DURABLE_COMMAND_KINDS, _durable_command_kinds_compatible
 
     kinds = set(_DURABLE_COMMAND_KINDS.values())
-    shared = {
-        frozenset({left, right}) for left in kinds for right in kinds
-        if left != right and _durable_command_kinds_compatible(frozenset({left, right}))
-    }
-    assert shared == {frozenset({"condition", "timer"}), frozenset({"signal", "timer"})}
-    assert not _durable_command_kinds_compatible(frozenset({"condition", "signal", "timer"}))
+    for upsert in ("memo", "search_attributes"):
+        assert _durable_command_kinds_compatible(frozenset({upsert}))
+        for other in kinds - {upsert}:
+            assert not _durable_command_kinds_compatible(frozenset({upsert, other})), other
+    # Lifecycle events of one command, and pairs without an upsert, are not
+    # judged by this rule (sdk-php#246 has the same scope).
+    for kind in kinds - {"memo", "search_attributes"}:
+        assert _durable_command_kinds_compatible(frozenset({kind}))
+    assert _durable_command_kinds_compatible(frozenset({"condition", "timer"}))
+    lifecycle = {kind: sorted(event for event, owner in _DURABLE_COMMAND_KINDS.items() if owner == kind)
+                 for kind in ("activity", "timer", "condition", "signal", "child", "service_call")}
+    assert lifecycle["signal"] == ["SignalApplied", "SignalWaitCancelled", "SignalWaitOpened", "SignalWaitTimedOut"]
+    assert "SignalReceived" not in _DURABLE_COMMAND_KINDS
+    assert "CooperativeCancellationDelivered" not in _DURABLE_COMMAND_KINDS
