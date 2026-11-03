@@ -112,7 +112,9 @@ class CancellationDelivery:
         request_id = _text(payload.get("workflow_command_id"), "workflow_command_id")
         sequence = _positive(payload.get("sequence"), "sequence")
         kind = _text(payload.get("call_kind"), "call_kind")
-        span = _positive(payload.get("sequence_span", 1), "sequence_span", maximum=1000)
+        # Absent and null both mean one call, as Core's WorkflowStepHistory reads it.
+        recorded_span = payload.get("sequence_span")
+        span = _positive(1 if recorded_span is None else recorded_span, "sequence_span", maximum=1000)
         operation = payload.get("operation_sequence")
         operation_span = _positive(payload.get("operation_sequence_span", 1), "operation_sequence_span", maximum=1000)
         if kind not in _CALL_KINDS or (kind != "parallel" and span != 1):

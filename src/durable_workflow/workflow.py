@@ -1404,6 +1404,25 @@ _SEARCH_ATTRIBUTE_TYPES = frozenset({"string", "keyword", "keyword_list", "int",
 _INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 
 
+def _json_type_name(value: Any) -> str:
+    """A diagnostic-safe name for a value's JSON type; never the value itself."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list | tuple):
+        return "array"
+    if isinstance(value, Mapping):
+        return "object"
+    return "unsupported value"
+
+
 def _canonical_search_attributes(attributes: Any, *, authored: bool = False) -> dict[str, tuple[str, Any]]:
     """Return the type-tagged canonical form of a search-attribute update.
 
@@ -1416,7 +1435,8 @@ def _canonical_search_attributes(attributes: Any, *, authored: bool = False) -> 
     canonical: dict[str, tuple[str, Any]] = {}
     for key, value in attributes.items():
         if not isinstance(key, str) or _SEARCH_ATTRIBUTE_KEY_PATTERN.fullmatch(key) is None:
-            raise ValueError(f"search attribute key {key!r} is not 1-64 URL-safe characters")
+            # Name only the type: an invalid key may carry arbitrary data.
+            raise ValueError(f"a search attribute key ({_json_type_name(key)}) is not 1-64 URL-safe characters")
         if authored and type(value) is tuple:
             value = list(value)
         if value is None:
@@ -4025,15 +4045,18 @@ _UPSERT_COMMAND_KINDS = frozenset({"memo", "search_attributes"})
 def _delivery_sequence_span(payload: Mapping[str, Any]) -> int:
     """A cancellation delivery's sequence_span under the producer contract.
 
-    Absent means 1. When present it must be a positive JSON integer; zero,
-    negative, bool, float, string, null and every other value are malformed
-    and raise ValueError, so a malformed span never shrinks the claimed range.
+    Absent or null means 1, as Core reads it
+    (WorkflowStepHistory.php:270, `intValue($payload['sequence_span'] ?? null) ?? 1`).
+    Otherwise it must be a positive JSON integer; zero, negative, bool,
+    float, string and every other value are malformed and raise ValueError,
+    so a malformed span never shrinks the claimed range.
     """
-    if "sequence_span" not in payload:
+    span = payload.get("sequence_span")
+    if span is None:
         return 1
-    span = payload["sequence_span"]
     if type(span) is not int or span <= 0:
-        raise ValueError(f"sequence_span must be a positive integer, not {span!r}")
+        # Name only the JSON type: the span may carry arbitrary history data.
+        raise ValueError(f"sequence_span must be a positive integer (got {_json_type_name(span)})")
     return span
 
 

@@ -503,6 +503,7 @@ def test_a_delivery_span_ending_before_the_upsert_does_not_collide(fixture: str)
 
 @pytest.mark.parametrize(("span", "claimed"), [
     (..., [3]),  # Absent means 1.
+    (None, [3]),  # Null means 1, as in Core (WorkflowStepHistory.php:270).
     (1, [3]),
     (3, [3, 4, 5]),
 ])
@@ -517,7 +518,8 @@ def test_a_valid_delivery_span_claims_its_inclusive_range(event_type: str, span:
     assert list(_durable_command_claimed_range("ActivityScheduled", payload, 3)) == [3]
 
 
-MALFORMED_SPANS = [0, -1, "2", "3", 2.0, 3.0, True, False, None, [3], {"span": 3}]
+SECRET_SPANS = ["sk_live_TESTSECRET123", {"token": "TESTSECRET456"}]
+MALFORMED_SPANS = [0, -1, "2", "3", 2.0, 3.0, True, False, [3], {"span": 3}, *SECRET_SPANS]
 
 
 @pytest.mark.parametrize("span", MALFORMED_SPANS)
@@ -556,11 +558,15 @@ def test_a_malformed_scope_delivery_span_refuses_replay(span: Any) -> None:
                payload_codec="avro", allow_cancellation_scope_authoring=True, allow_cancellation_scope_delivery=True)
 
 
-def test_an_absent_delivery_span_claims_one_sequence(fixture: str) -> None:
-    # Absent means 1: a delivery at 1 without a span does not reach the upsert at 2.
+@pytest.mark.parametrize("span", [..., None])
+def test_an_absent_or_null_delivery_span_claims_one_sequence(fixture: str, span: Any) -> None:
+    # Absent or null means 1: a delivery at 1 does not reach the upsert at 2,
+    # and replay is not refused for the span.
     history = _cooperative(fixture, 1, 1, "after_upsert", drop_memo=True)
-    assert "sequence_span" not in next(
-        event for event in history if event["event_type"] == "CooperativeCancellationDelivered")["payload"]
+    delivered = next(event for event in history if event["event_type"] == "CooperativeCancellationDelivered")
+    assert "sequence_span" not in delivered["payload"]
+    if span is None:
+        delivered["payload"]["sequence_span"] = None
     workflow = redrive_fixture(DELIVERY_FIXTURE)["workflow"]
     try:
         replay(RedriveVisibilityWorkflow, history, ["Taylor"], run_id=workflow["run_id"],
@@ -597,3 +603,73 @@ def test_a_scope_delivery_at_an_upsert_sequence_collides(order: str) -> None:
         replay(RedriveVisibilityWorkflow, history, [], workflow_id=task["workflow_id"], run_id=task["run_id"],
                payload_codec="avro", allow_cancellation_scope_authoring=True, allow_cancellation_scope_delivery=True)
     assert error.value.workflow_sequence == sequence
+
+
+
+# Diagnostics name reasons, keys, types, sequences and event types, never a
+# recorded or authored value.
+SECRETS = ("sk_live_TESTSECRET123", "TESTSECRET456", "sk_live_TESTSECRET789", "TESTSECRET000", "KEYSECRET")
+
+
+def _assert_no_secret(error: BaseException) -> None:
+    rendered = [str(error), repr(error), *(repr(argument) for argument in error.args)]
+    for secret in SECRETS:
+        assert not any(secret in text for text in rendered), (secret, rendered)
+
+
+@pytest.mark.parametrize("span", SECRET_SPANS)
+def test_a_secret_shaped_span_never_reaches_the_diagnostic(fixture: str, span: Any) -> None:
+    from durable_workflow.workflow import _delivery_sequence_span
+
+    with pytest.raises(ValueError) as helper_error:
+        _delivery_sequence_span({"sequence": 1, "sequence_span": span})
+    _assert_no_secret(helper_error.value)
+    assert ("got string" if isinstance(span, str) else "got object") in str(helper_error.value)
+    history = _cooperative(fixture, 1, 3, "after_upsert", drop_memo=True)
+    next(event for event in history if event["event_type"] == "CooperativeCancellationDelivered")[
+        "payload"]["sequence_span"] = span
+    workflow = redrive_fixture(DELIVERY_FIXTURE)["workflow"]
+    with pytest.raises(NonDeterministicReplayError, match="durable_command_sequence_invalid:") as error:
+        replay(RedriveVisibilityWorkflow, history, ["Taylor"], run_id=workflow["run_id"],
+               workflow_id=workflow["workflow_id"], payload_codec="avro")
+    _assert_no_secret(error.value)
+    scope_history, task = _scope_delivery_with_upsert("after_delivery")
+    next(event for event in scope_history if event["event_type"] == "CancellationScopeDelivered")[
+        "payload"]["sequence_span"] = span
+    with pytest.raises(NonDeterministicReplayError, match="durable_command_sequence_invalid:") as scope_error:
+        replay(RedriveVisibilityWorkflow, scope_history, [], workflow_id=task["workflow_id"], run_id=task["run_id"],
+               payload_codec="avro", allow_cancellation_scope_authoring=True, allow_cancellation_scope_delivery=True)
+    _assert_no_secret(scope_error.value)
+
+
+@pytest.mark.parametrize(("authored", "stored", "types", "reason"), [
+    ({"Stage": "sk_live_TESTSECRET789"}, {"Stage": "greeting"}, ..., "search_attribute_value_mismatch"),
+    ({"Stage": "greeting"}, {"Stage": "sk_live_TESTSECRET789"}, ..., "search_attribute_value_mismatch"),
+    ({"Stage": ["TESTSECRET000", 1]}, {"Stage": "greeting"}, ..., "search_attribute_value_mismatch"),
+    ({"Stage": "greeting"}, {"Stage": {"token": "TESTSECRET000"}}, ..., "search_attribute_value_mismatch"),
+    ({"sk_live_KEYSECRET 1": "x"}, {"Stage": "greeting"}, ..., "search_attribute_value_mismatch"),
+    ({"Stage": "greeting"}, {"sk_live_KEYSECRET 1": "x"}, ..., "search_attribute_value_mismatch"),
+    ({"Stage": "greeting"}, {"Stage": "greeting"}, {"Stage": "sk_live_TESTSECRET789"},
+     "search_attribute_type_mismatch"),
+    ({"Stage": "greeting"}, {"Stage": "greeting"}, {"Stage": {"token": "TESTSECRET000"}},
+     "search_attribute_type_mismatch"),
+    ({"Stage": "greeting"}, {"Stage": "greeting"}, "sk_live_TESTSECRET789", "search_attribute_type_mismatch"),
+])
+def test_search_attribute_diagnostics_never_echo_values(
+    fixture: str, authored: dict[str, Any], stored: Any, types: Any, reason: str,
+) -> None:
+    with pytest.raises(NonDeterministicReplayError, match=reason) as error:
+        replays(authoring(authored), recorded(fixture, stored, types))
+    _assert_no_secret(error.value)
+
+
+@pytest.mark.parametrize("change", [
+    lambda payload: payload.__setitem__("sequence", "sk_live_TESTSECRET123"),
+    lambda payload: payload.__setitem__("sequence", {"token": "TESTSECRET456"}),
+])
+def test_sequence_diagnostics_never_echo_values(fixture: str, change: Any) -> None:
+    history = deepcopy(redriven(fixture))
+    change(only_event(history, "SearchAttributesUpserted")["payload"])
+    with pytest.raises(NonDeterministicReplayError, match="durable_command_sequence_invalid") as error:
+        replays(RedriveVisibilityWorkflow, history)
+    _assert_no_secret(error.value)

@@ -125,7 +125,7 @@ def _cleanup_operation(event: dict[str, Any], prefix: Sequence[dict[str, Any]], 
     deadline = scope_timestamp(expected["authority_deadline_at"])
     timestamp = scope_timestamp(event.get("timestamp", event.get("recorded_at")))
     if (snapshot != expected or scope_id != context.scope_id
-        or not _positive(sequence) or sequence < recorded["sequence"] + recorded["sequence_span"]
+        or not _positive(sequence) or sequence < recorded["sequence"] + (recorded["sequence_span"] or 1)
         or not _positive(event.get("sequence")) or delivery["sequence"] >= event["sequence"]
         or timestamp < scope_timestamp(delivery.get("timestamp", delivery.get("recorded_at")))
         or timestamp >= deadline or not local and (
