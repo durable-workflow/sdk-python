@@ -3987,23 +3987,29 @@ def _reorder_completed_parallel_groups(
     return ordered_results, ordered_steps
 
 
-# The events that claim a workflow sequence, by durable command kind. Each
-# kind's lifecycle events share their command's sequence (activity, timer,
-# condition wait, signal wait, child run and service call). Events that only
-# point at a step (signals, updates, cancellation and scope records) claim
-# nothing and are not listed. As in sdk-php, a collision is refused when it
+# The events that claim a workflow sequence, by durable command kind: Core's
+# WorkflowStepHistory step events plus each command's other lifecycle rows,
+# which carry the same sequence. Events that only point at a step's sequence
+# claim nothing and are not listed: signal receipts, update records, failure
+# handling, selection records, and cooperative or scope cancellation requests,
+# preparations and deliveries. As in sdk-php, a collision is refused when it
 # involves an upsert: an upsert is the only command at its sequence.
 _DURABLE_COMMAND_KINDS: dict[str, str] = {
-    **dict.fromkeys(("ActivityScheduled", "ActivityStarted", "ActivityCompleted", "ActivityFailed",
-                     "ActivityTimedOut", "ActivityCancelled"), "activity"),
+    **dict.fromkeys(("ActivityScheduled", "ActivityStarted", "ActivityHeartbeatRecorded", "ActivityRetryScheduled",
+                     "ActivityCompleted", "ActivityFailed", "ActivityTimedOut", "ActivityCancelled",
+                     "ActivityCancellationAcknowledged"), "activity"),
     **dict.fromkeys(("TimerScheduled", "TimerFired", "TimerCancelled"), "timer"),
     **dict.fromkeys(("ChildWorkflowScheduled", "ChildRunStarted", "ChildRunCompleted", "ChildRunFailed",
-                     "ChildRunCancelled", "ChildRunTerminated"), "child"),
+                     "ChildRunCancelled", "ChildRunTerminated", "ChildCancellationRequested",
+                     "ChildCancellationResolved"), "child"),
     **dict.fromkeys(("ConditionWaitOpened", "ConditionWaitSatisfied", "ConditionWaitTimedOut",
                      "ConditionWaitCancelled"), "condition"),
-    **dict.fromkeys(("SignalWaitOpened", "SignalApplied", "SignalWaitTimedOut", "SignalWaitCancelled"), "signal"),
-    **dict.fromkeys(("ServiceCallStarted", "ServiceCallCompleted", "ServiceCallFailed", "ServiceCallCancelled"),
-                    "service_call"),
+    **dict.fromkeys(("SignalWaitOpened", "SignalApplied", "SignalWaitReceived", "SignalWaitTimedOut",
+                     "SignalWaitCancelled"), "signal"),
+    **dict.fromkeys(("ServiceOperationScheduled", "ServiceCallStarted", "ServiceCallCompleted", "ServiceCallFailed",
+                     "ServiceCallCancelled"), "service_call"),
+    "CancellationScopeOpened": "cancellation_scope",
+    "WorkflowContinuedAsNew": "continue_as_new",
     "SideEffectRecorded": "side_effect",
     "VersionMarkerRecorded": "version_marker",
     "MemoUpserted": "memo",

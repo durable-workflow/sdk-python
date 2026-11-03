@@ -49,8 +49,10 @@ def recorded(fixture: str, attributes: Any, attribute_types: Any = ...) -> list[
     return history
 
 
-def replays(workflow_cls: type, history: list[dict[str, Any]]) -> list[Any]:
-    return list(replay(workflow_cls, history, ["Taylor"], run_id="search-attribute-run", payload_codec="avro").commands)
+def replays(workflow_cls: type, history: list[dict[str, Any]], **options: Any) -> list[Any]:
+    return list(replay(
+        workflow_cls, history, ["Taylor"], run_id="search-attribute-run", payload_codec="avro", **options,
+    ).commands)
 
 
 def refused(workflow_cls: type, history: list[dict[str, Any]], reason: str) -> None:
@@ -261,9 +263,11 @@ def test_missing_recorded_attributes_are_refused(fixture: str, workflow_cls: typ
 # Durable command sequences. A recorded upsert must carry its own sequence,
 # a sequence records at most one upsert, and two durable command kinds never
 # share a sequence (only a wait and its own timeout timer do).
-def refused_at(workflow_cls: type, history: list[dict[str, Any]], reason: str, sequence: int) -> None:
+def refused_at(
+    workflow_cls: type, history: list[dict[str, Any]], reason: str, sequence: int, **options: Any,
+) -> None:
     with pytest.raises(NonDeterministicReplayError, match=f"{reason}:") as error:
-        replays(workflow_cls, history)
+        replays(workflow_cls, history, **options)
     assert error.value.workflow_sequence == sequence
 
 
@@ -341,6 +345,90 @@ def test_collisions_are_refused_when_they_involve_an_upsert() -> None:
     assert _durable_command_kinds_compatible(frozenset({"condition", "timer"}))
     lifecycle = {kind: sorted(event for event, owner in _DURABLE_COMMAND_KINDS.items() if owner == kind)
                  for kind in ("activity", "timer", "condition", "signal", "child", "service_call")}
-    assert lifecycle["signal"] == ["SignalApplied", "SignalWaitCancelled", "SignalWaitOpened", "SignalWaitTimedOut"]
+    assert lifecycle["signal"] == [
+        "SignalApplied", "SignalWaitCancelled", "SignalWaitOpened", "SignalWaitReceived", "SignalWaitTimedOut",
+    ]
+    assert {"ActivityHeartbeatRecorded", "ActivityRetryScheduled"} <= set(lifecycle["activity"])
+    assert _DURABLE_COMMAND_KINDS["CancellationScopeOpened"] == "cancellation_scope"
     assert "SignalReceived" not in _DURABLE_COMMAND_KINDS
     assert "CooperativeCancellationDelivered" not in _DURABLE_COMMAND_KINDS
+
+
+# Every event that claims a workflow sequence, by command kind. Fixed here so
+# the table cannot shrink unnoticed; each kind, with its ordinary opener
+# absent, collides with an upsert whichever of the two is recorded first.
+EXPECTED_CLAIMS = {
+    **dict.fromkeys(("ActivityScheduled", "ActivityStarted", "ActivityHeartbeatRecorded", "ActivityRetryScheduled",
+                     "ActivityCompleted", "ActivityFailed", "ActivityTimedOut", "ActivityCancelled",
+                     "ActivityCancellationAcknowledged"), "activity"),
+    **dict.fromkeys(("TimerScheduled", "TimerFired", "TimerCancelled"), "timer"),
+    **dict.fromkeys(("ChildWorkflowScheduled", "ChildRunStarted", "ChildRunCompleted", "ChildRunFailed",
+                     "ChildRunCancelled", "ChildRunTerminated", "ChildCancellationRequested",
+                     "ChildCancellationResolved"), "child"),
+    **dict.fromkeys(("ConditionWaitOpened", "ConditionWaitSatisfied", "ConditionWaitTimedOut",
+                     "ConditionWaitCancelled"), "condition"),
+    **dict.fromkeys(("SignalWaitOpened", "SignalApplied", "SignalWaitReceived", "SignalWaitTimedOut",
+                     "SignalWaitCancelled"), "signal"),
+    **dict.fromkeys(("ServiceOperationScheduled", "ServiceCallStarted", "ServiceCallCompleted", "ServiceCallFailed",
+                     "ServiceCallCancelled"), "service_call"),
+    "CancellationScopeOpened": "cancellation_scope",
+    "WorkflowContinuedAsNew": "continue_as_new",
+    "SideEffectRecorded": "side_effect",
+    "VersionMarkerRecorded": "version_marker",
+    "MemoUpserted": "memo",
+    "SearchAttributesUpserted": "search_attributes",
+}
+NEWLY_CLAIMED = (
+    "ActivityHeartbeatRecorded", "ActivityRetryScheduled", "ActivityCancellationAcknowledged",
+    "ChildCancellationRequested", "ChildCancellationResolved", "ServiceOperationScheduled", "SignalWaitReceived",
+    "CancellationScopeOpened", "WorkflowContinuedAsNew",
+)
+
+
+def test_claim_table_is_exact() -> None:
+    from durable_workflow.workflow import _DURABLE_COMMAND_KINDS
+
+    assert _DURABLE_COMMAND_KINDS == EXPECTED_CLAIMS
+
+
+@pytest.mark.parametrize("event_type", sorted(set(EXPECTED_CLAIMS) - {"SearchAttributesUpserted"}))
+@pytest.mark.parametrize("order", ["after_upsert", "before_upsert"])
+def test_every_claimed_kind_collides_with_an_upsert_without_its_opener(
+    fixture: str, event_type: str, order: str,
+) -> None:
+    scope = event_type == "CancellationScopeOpened"
+
+    def change(history: list[dict[str, Any]]) -> None:
+        upsert = only_event(history, "SearchAttributesUpserted")
+        payload: dict[str, Any] = {"sequence": 2}
+        if scope:
+            # A canonical authored opening, so scope history admits it and
+            # replay reaches the sequence classification.
+            payload.update(schema="durable-workflow.cancellation-scope/v1", workflow_run_id="search-attribute-run",
+                           scope_id="scope-one", parent_scope_id="root", shield_parent=False)
+        claim = {"event_type": event_type, "recorded_at": upsert["recorded_at"], "payload": payload}
+        at = history.index(upsert) + (1 if order == "after_upsert" else 0)
+        history.insert(at, claim)
+        for number, event in enumerate(history, start=1):
+            event["sequence"] = number
+            if scope:
+                event.update(id=f"event-{number}", namespace="tenant")
+
+    options = {"allow_cancellation_scope_authoring": True} if scope else {}
+    refused_at(RedriveVisibilityWorkflow, _with(fixture, change), "durable_command_sequence_collision", 2, **options)
+
+
+def test_newly_claimed_kinds_are_claimed() -> None:
+    from durable_workflow.workflow import _DURABLE_COMMAND_KINDS
+
+    assert set(NEWLY_CLAIMED) <= set(_DURABLE_COMMAND_KINDS)
+
+
+@pytest.mark.parametrize("event_type", [
+    "SignalReceived", "UpdateApplied", "UpdateCompleted", "FailureHandled", "CooperativeCancellationDelivered",
+    "CancellationScopeDelivered", "CancellationScopeDeliveryPrepared", "SelectionResolved",
+])
+def test_pointer_records_claim_no_sequence(event_type: str) -> None:
+    from durable_workflow.workflow import _DURABLE_COMMAND_KINDS
+
+    assert event_type not in _DURABLE_COMMAND_KINDS
