@@ -21,10 +21,17 @@
       "event_type": "WorkflowStarted",
       "recorded_at": "2026-11-03T00:05:00+00:00",
       "payload": {
+        "workflow_type": "tests.replay.redrive-visibility-cleanup",
+        "workflow_instance_id": "regression-corpus-redrive-visibility",
+        "workflow_run_id": "01JBREDRIVESUCCESSORRUN0000",
+        "workflow_command_id": "01JBREDRIVECOMMAND00000000",
         "continued_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "resume_step_sequence": 3,
         "recovery_kind": "redrive",
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
         "replayed_started_at": "2026-11-03T00:00:00+00:00",
-        "resume_step_sequence": 4
+        "workflow_link_id": "01JBREDRIVELINK00000000000"
       }
     },
     {

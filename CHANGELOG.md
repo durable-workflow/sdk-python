@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Replay now enforces the recorded search attributes. A workflow whose `upsert_search_attributes` values differ from its `SearchAttributesUpserted` history fails replay with a `NonDeterministicReplayError` whose detail starts `search_attribute_value_mismatch`, as memo replay already does for memos. Values are compared after the Server's normalization (trimmed strings, an empty string as null). A recorded `attributes` that is not an object is refused. (#235)
+- Replay now enforces the recorded search attributes (Workflow protocol 1.20 replay identity). A workflow whose `upsert_search_attributes` differs from its `SearchAttributesUpserted` history fails replay with a `NonDeterministicReplayError` whose detail starts `search_attribute_value_mismatch`, as memo replay already does for memos. Values are compared as Core's `UpsertSearchAttributesCall` normalizes them (trimmed strings and list items, a blank string as null) and with their types (`1`, `1.0`, `True` and `"1"` differ). Values outside that portable domain, on either side, are refused rather than coerced: non-string or non-portable keys, objects, tuples, maps, non-string list items, non-finite floats and out-of-range integers. When the history records `attribute_types`, a recorded type that cannot hold the current value, or that names different keys, fails with `search_attribute_type_mismatch`. Because the SDK's upsert declares no types, a string may legitimately be recorded as `keyword`, `string` or (RFC 3339) `datetime`, and an integer as `int` or `float`, by the namespace's registered type. History without `attribute_types` keeps value-only identity. (#235)
 
 ### Added
 

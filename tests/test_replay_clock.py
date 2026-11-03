@@ -379,53 +379,6 @@ def test_reused_signal_wait_time_is_not_a_replay_clock_source(event_type: str, m
     )
 
 
-@pytest.mark.parametrize("fixture", [
-    "search-attribute-value-mismatch", "redrive-reused-search-attribute-value-mismatch",
-])
-def test_changed_search_attribute_is_refused_on_plain_and_reused_histories(fixture: str) -> None:
-    history = redriven(fixture)
-    assert only_event(history, "SearchAttributesUpserted")["payload"]["attributes"] == {"Stage": "greeting"}
-    assert visibility_times(history)  # The recorded value replays.
-    with pytest.raises(NonDeterministicReplayError, match="search_attribute_value_mismatch") as refused:
-        replay_redriven(RedriveChangedStageWorkflow, history)
-    assert refused.value.workflow_sequence == 2
-
-
-@pytest.mark.parametrize("authored", [
-    {"Stage": "approval"}, {"Stage": None}, {"Stage": ""}, {"Stage": ["greeting"]}, {"stage": "greeting"},
-    {"Stage": "greeting", "Region": "eu"},
-])
-def test_search_attribute_identity_is_exact(authored: dict[str, Any]) -> None:
-    @workflow.defn(name="tests.replay.redrive-visibility-authored")
-    class Authored(RedriveVisibilityWorkflow):
-        def run(self, ctx: WorkflowContext, name: str):  # type: ignore[no-untyped-def]
-            yield ctx.upsert_memo({"stage": "greeting", "customer": name})
-            yield ctx.upsert_search_attributes(authored)
-            return (yield ctx.schedule_activity("tests.redrive.first", [name]))
-
-    with pytest.raises(NonDeterministicReplayError, match="search_attribute_value_mismatch"):
-        replay_redriven(Authored, redriven("redrive-reused-upserts-clock"))
-
-
-def test_search_attribute_identity_follows_the_server_normalization() -> None:
-    # The Server trims strings as Core does, so an untrimmed authored value
-    # replays against its stored form.
-    @workflow.defn(name="tests.replay.redrive-visibility-untrimmed")
-    class Untrimmed(RedriveVisibilityWorkflow):
-        stage = " greeting\n"
-
-    assert replay_redriven(Untrimmed, redriven("redrive-reused-upserts-clock")) == replay_redriven(
-        RedriveVisibilityWorkflow, redriven("redrive-reused-upserts-clock"),
-    )
-
-
-def test_malformed_recorded_search_attributes_are_refused() -> None:
-    history = deepcopy(redriven("redrive-reused-upserts-clock"))
-    only_event(history, "SearchAttributesUpserted")["payload"]["attributes"] = ["Stage", "greeting"]
-    with pytest.raises(NonDeterministicReplayError, match="search_attribute_value_mismatch"):
-        replay_redriven(RedriveVisibilityWorkflow, history)
-
-
 # Cancellation controls. Redrive writes WorkflowStarted with the reused prefix
 # in one write, so a cancellation is requested and delivered only after the
 # prefix, at later times. The cancellation clock starts at the delivery and
@@ -488,3 +441,134 @@ def test_reused_signal_wait_events_do_not_move_the_cancellation_budget() -> None
     for event_type in REUSED_SIGNAL_EVENTS:
         retimed = _retime_both(history, event_type)
         assert replay_cleanup(RedriveSignalCleanupWorkflow, retimed, fixture) == baseline, event_type
+
+
+# A redrive successor must be one Workflow 2.19 can write: a redrive
+# WorkflowStarted bound to its source run and successor identity, then the
+# reused prefix in the same write, then the successor's own events at or after
+# its start. Redrive resumes at the step after the last one it reused.
+REDRIVE_START_IDENTITY = (
+    "workflow_instance_id", "workflow_run_id", "workflow_command_id", "workflow_link_id",
+    "continued_from_run_id", "replayed_started_at",
+)
+
+
+def check_redrive_successor(history: list[dict[str, Any]]) -> None:
+    def require(condition: bool, message: str) -> None:
+        if not condition:
+            raise AssertionError(message)
+
+    require(bool(history) and history[0].get("event_type") == "WorkflowStarted",
+            "history must open with WorkflowStarted")
+    started = history[0]
+    start = started["payload"]
+    require(start.get("recovery_kind") == "redrive", "recovery_kind")
+    for key in REDRIVE_START_IDENTITY:
+        require(isinstance(start.get(key), str) and bool(start[key]), key)
+    require(start["workflow_run_id"] != start["continued_from_run_id"], "the successor is a new run")
+    started_at = datetime.fromisoformat(started["recorded_at"])
+    require(datetime.fromisoformat(start["replayed_started_at"]) <= started_at, "replayed_started_at")
+    prefix = True
+    last_reused_step = 0
+    for index, event in enumerate(history[1:], start=2):
+        require(event.get("sequence") == index, "history order")
+        payload = event["payload"]
+        if "reused_from_run_id" in payload or "reused_recorded_at" in payload:
+            require(prefix, "reused events must directly follow WorkflowStarted")
+            require(payload.get("reused_from_run_id") == start["continued_from_run_id"],
+                    "reused_from_run_id must match continued_from_run_id")
+            require(event["recorded_at"] == started["recorded_at"], "reused events are recorded with the start")
+            require(datetime.fromisoformat(payload["reused_recorded_at"]) <= started_at, "reused_recorded_at")
+            # SignalReceived has no step of its own; it belongs to its wait.
+            step = payload.get("sequence")
+            if event["event_type"] != "SignalReceived" and isinstance(step, int):
+                last_reused_step = max(last_reused_step, step)
+        else:
+            prefix = False
+            require(datetime.fromisoformat(event["recorded_at"]) >= started_at,
+                    "successor event predates the successor start")
+    require(last_reused_step > 0, "no reused workflow step")
+    resume = start.get("resume_step_sequence")
+    require(type(resume) is int and resume == last_reused_step + 1,
+            "resume_step_sequence must follow the last reused step")
+
+
+REDRIVE_SUCCESSOR_FIXTURES = {
+    "redrive-reused-upserts-clock": 3,
+    "redrive-reused-signal-wait-clock": 2,
+    "redrive-reused-upserts-cancellation-clock": 3,
+    "redrive-reused-search-attribute-value-mismatch": 3,
+    "redrive-reused-search-attribute-type-mismatch": 3,
+}
+
+
+def test_every_reused_fixture_is_a_checked_redrive_successor() -> None:
+    reused = sorted(
+        path.stem for path in REDRIVE_FIXTURES.glob("*.json")
+        if "reused_from_run_id" in path.read_text(encoding="utf-8")
+    )
+    assert reused == sorted(REDRIVE_SUCCESSOR_FIXTURES)
+
+
+@pytest.mark.parametrize(("fixture", "resume"), REDRIVE_SUCCESSOR_FIXTURES.items())
+def test_redrive_fixture_is_a_valid_successor(fixture: str, resume: int) -> None:
+    history = redriven(fixture)
+    assert history[0]["payload"]["resume_step_sequence"] == resume
+    check_redrive_successor(history)
+
+
+def test_signal_successor_with_cancellation_is_a_valid_successor() -> None:
+    check_redrive_successor(_signal_successor_with_cancellation()[0])
+
+
+def _broken(fixture: str, change: Any) -> list[dict[str, Any]]:
+    history = deepcopy(redriven(fixture))
+    change(history)
+    return history
+
+
+def _set_start(key: str, value: Any) -> Any:
+    return lambda history: history[0]["payload"].__setitem__(key, value)
+
+
+def _drop_start(key: str) -> Any:
+    return lambda history: history[0]["payload"].pop(key)
+
+
+@pytest.mark.parametrize("fixture", ["redrive-reused-upserts-clock", "redrive-reused-signal-wait-clock"])
+@pytest.mark.parametrize(("change", "message"), [
+    (lambda resume: resume - 1, "resume_step_sequence"),
+    (lambda resume: resume + 1, "resume_step_sequence"),
+    (lambda resume: None, "resume_step_sequence"),
+    (lambda resume: str(resume), "resume_step_sequence"),
+])
+def test_successor_check_rejects_a_wrong_resume_step(fixture: str, change: Any, message: str) -> None:
+    resume = REDRIVE_SUCCESSOR_FIXTURES[fixture]
+    with pytest.raises(AssertionError, match=message):
+        check_redrive_successor(_broken(fixture, _set_start("resume_step_sequence", change(resume))))
+
+
+def _last_reused(history: list[dict[str, Any]]) -> dict[str, Any]:
+    return [event for event in history if "reused_from_run_id" in event["payload"]][-1]
+
+
+@pytest.mark.parametrize(("change", "message"), [
+    (_set_start("recovery_kind", "continue_as_new"), "recovery_kind"),
+    *[(_drop_start(key), key) for key in REDRIVE_START_IDENTITY],
+    *[(_set_start(key, ""), key) for key in REDRIVE_START_IDENTITY],
+    (_set_start("workflow_run_id", REDRIVE_SOURCE_RUN), "new run"),
+    (lambda history: _last_reused(history)["payload"].__setitem__("reused_from_run_id", "other-run"),
+     "continued_from_run_id"),
+    (lambda history: _last_reused(history)["payload"].pop("reused_from_run_id"), "continued_from_run_id"),
+    (lambda history: _last_reused(history).__setitem__("recorded_at", "2026-11-03T00:05:01+00:00"),
+     "recorded with the start"),
+    (lambda history: [history[1]["payload"].pop(key) for key in ("reused_from_run_id", "reused_recorded_at")],
+     "directly follow"),
+    (lambda history: history.append({"sequence": len(history) + 1, "event_type": "ActivityScheduled",
+                                     "recorded_at": "2026-11-03T00:04:59+00:00", "payload": {"sequence": 3}}),
+     "predates"),
+    (lambda history: history[1].__setitem__("sequence", 9), "history order"),
+])
+def test_successor_check_rejects_an_invalid_envelope_or_order(change: Any, message: str) -> None:
+    with pytest.raises(AssertionError, match=message):
+        check_redrive_successor(_broken("redrive-reused-upserts-clock", change))

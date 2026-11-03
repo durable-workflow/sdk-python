@@ -11,14 +11,15 @@
     "input": [
       "Taylor"
     ],
-    "payload_codec": "avro"
+    "payload_codec": "avro",
+    "workflow_id": "regression-corpus-redrive-signal",
+    "run_id": "01JBREDRIVESUCCESSORRUN0000"
   },
   "redrive_reused_signal_wait": {
     "signal_name": "approve",
     "signal_value": "Grace",
     "redrive_after_minutes": 5,
     "redrive": "accepted",
-    "resume_step_sequence": 3,
     "successor_status": "completed",
     "reused_events": [
       "SignalWaitOpened",
@@ -32,10 +33,17 @@
       "event_type": "WorkflowStarted",
       "recorded_at": "2026-11-03T00:05:00+00:00",
       "payload": {
+        "workflow_type": "tests.replay.redrive-signal",
+        "workflow_instance_id": "regression-corpus-redrive-signal",
+        "workflow_run_id": "01JBREDRIVESUCCESSORRUN0000",
+        "workflow_command_id": "01JBREDRIVECOMMAND00000000",
         "continued_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "resume_step_sequence": 2,
         "recovery_kind": "redrive",
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
         "replayed_started_at": "2026-11-03T00:00:00+00:00",
-        "resume_step_sequence": 3
+        "workflow_link_id": "01JBREDRIVELINK00000000000"
       }
     },
     {
