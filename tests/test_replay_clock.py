@@ -10,7 +10,7 @@ from uuid import UUID
 import pytest
 
 from durable_workflow import serializer, workflow
-from durable_workflow.errors import NonDeterministicReplayError
+from durable_workflow.errors import NonDeterministicReplayError, WorkflowCancelled
 from durable_workflow.workflow import CompleteWorkflow, WorkflowContext, query_state, replay
 
 
@@ -150,13 +150,15 @@ REDRIVE_REPLAYED_START = "2026-11-03T00:00:00+00:00"
 class RedriveVisibilityWorkflow:
     """Python counterpart of Core's TestRedriveVisibilityWorkflow."""
 
+    stage = "greeting"
+
     def __init__(self) -> None:
         self.times: dict[str, str] = {}
 
     def run(self, ctx: WorkflowContext, name: str):  # type: ignore[no-untyped-def]
         yield ctx.upsert_memo({"stage": "greeting", "customer": name})
         self.times["after_memo"] = ctx.now().isoformat()
-        yield ctx.upsert_search_attributes({"Stage": "greeting"})
+        yield ctx.upsert_search_attributes({"Stage": self.stage})
         self.times["after_search_attributes"] = ctx.now().isoformat()
         greeting = yield ctx.schedule_activity("tests.redrive.first", [name])
         return (yield ctx.schedule_activity("tests.redrive.second", [greeting]))
@@ -194,6 +196,37 @@ class RedriveSignalWorkflow:
     @workflow.query("replay_state")
     def replay_state(self) -> dict[str, Any]:
         return {"approved_by": self.approved_by, "time_after_signal": self.time_after_signal}
+
+
+@workflow.defn(name="tests.replay.redrive-visibility-changed-stage")
+class RedriveChangedStageWorkflow(RedriveVisibilityWorkflow):
+    """The visibility workflow after a deploy changed its search attribute."""
+
+    stage = "approval"
+
+
+@workflow.defn(name="tests.replay.redrive-visibility-cleanup")
+class RedriveVisibilityCleanupWorkflow(RedriveVisibilityWorkflow):
+    """Observes the cancellation budget when a cancel reaches the first activity."""
+
+    def run(self, ctx: WorkflowContext, name: str):  # type: ignore[no-untyped-def]
+        try:
+            return (yield from super().run(ctx, name))
+        except WorkflowCancelled as error:
+            assert error.context is not None
+            return {**self.times, "remaining": error.context.remaining()}
+
+
+@workflow.defn(name="tests.replay.redrive-signal-cleanup")
+class RedriveSignalCleanupWorkflow(RedriveSignalWorkflow):
+    """Observes the cancellation budget if a cancel reaches the first activity."""
+
+    def run(self, ctx: WorkflowContext, name: str):  # type: ignore[no-untyped-def]
+        try:
+            return (yield from super().run(ctx, name))
+        except WorkflowCancelled as error:
+            assert error.context is not None
+            return {"approved_by": self.approved_by, "remaining": error.context.remaining()}
 
 
 REUSED_UPSERT_EVENTS = ("MemoUpserted", "SearchAttributesUpserted")
@@ -344,3 +377,114 @@ def test_reused_signal_wait_time_is_not_a_replay_clock_source(event_type: str, m
     assert replay_redriven(RedriveSignalWorkflow, history) == replay_redriven(
         RedriveSignalWorkflow, redriven("redrive-reused-signal-wait-clock"),
     )
+
+
+@pytest.mark.parametrize("fixture", [
+    "search-attribute-value-mismatch", "redrive-reused-search-attribute-value-mismatch",
+])
+def test_changed_search_attribute_is_refused_on_plain_and_reused_histories(fixture: str) -> None:
+    history = redriven(fixture)
+    assert only_event(history, "SearchAttributesUpserted")["payload"]["attributes"] == {"Stage": "greeting"}
+    assert visibility_times(history)  # The recorded value replays.
+    with pytest.raises(NonDeterministicReplayError, match="search_attribute_value_mismatch") as refused:
+        replay_redriven(RedriveChangedStageWorkflow, history)
+    assert refused.value.workflow_sequence == 2
+
+
+@pytest.mark.parametrize("authored", [
+    {"Stage": "approval"}, {"Stage": None}, {"Stage": ""}, {"Stage": ["greeting"]}, {"stage": "greeting"},
+    {"Stage": "greeting", "Region": "eu"},
+])
+def test_search_attribute_identity_is_exact(authored: dict[str, Any]) -> None:
+    @workflow.defn(name="tests.replay.redrive-visibility-authored")
+    class Authored(RedriveVisibilityWorkflow):
+        def run(self, ctx: WorkflowContext, name: str):  # type: ignore[no-untyped-def]
+            yield ctx.upsert_memo({"stage": "greeting", "customer": name})
+            yield ctx.upsert_search_attributes(authored)
+            return (yield ctx.schedule_activity("tests.redrive.first", [name]))
+
+    with pytest.raises(NonDeterministicReplayError, match="search_attribute_value_mismatch"):
+        replay_redriven(Authored, redriven("redrive-reused-upserts-clock"))
+
+
+def test_search_attribute_identity_follows_the_server_normalization() -> None:
+    # The Server trims strings as Core does, so an untrimmed authored value
+    # replays against its stored form.
+    @workflow.defn(name="tests.replay.redrive-visibility-untrimmed")
+    class Untrimmed(RedriveVisibilityWorkflow):
+        stage = " greeting\n"
+
+    assert replay_redriven(Untrimmed, redriven("redrive-reused-upserts-clock")) == replay_redriven(
+        RedriveVisibilityWorkflow, redriven("redrive-reused-upserts-clock"),
+    )
+
+
+def test_malformed_recorded_search_attributes_are_refused() -> None:
+    history = deepcopy(redriven("redrive-reused-upserts-clock"))
+    only_event(history, "SearchAttributesUpserted")["payload"]["attributes"] = ["Stage", "greeting"]
+    with pytest.raises(NonDeterministicReplayError, match="search_attribute_value_mismatch"):
+        replay_redriven(RedriveVisibilityWorkflow, history)
+
+
+# Cancellation controls. Redrive writes WorkflowStarted with the reused prefix
+# in one write, so a cancellation is requested and delivered only after the
+# prefix, at later times. The cancellation clock starts at the delivery and
+# only moves on results consumed after it, so a reused event's time cannot be
+# observed through remaining() in such a history. These controls prove that
+# retiming each reused event changes neither remaining() nor the commands.
+def _retime_both(history: list[dict[str, Any]], event_type: str) -> list[dict[str, Any]]:
+    changed = deepcopy(history)
+    event = only_event(changed, event_type)
+    event["recorded_at"] = "2026-11-03T00:05:01+00:00"
+    event["payload"]["reused_recorded_at"] = "2026-11-02T23:59:30+00:00"
+    return changed
+
+
+def replay_cleanup(workflow_cls: type, history: list[dict[str, Any]], fixture: dict[str, Any]) -> list[Any]:
+    outcome = replay(workflow_cls, history, ["Taylor"], run_id=fixture["workflow"]["run_id"],
+                     workflow_id=fixture["workflow"]["workflow_id"], payload_codec="avro")
+    return list(outcome.commands)
+
+
+def test_reused_upserts_do_not_move_the_cancellation_budget() -> None:
+    fixture = redrive_fixture("redrive-reused-upserts-cancellation-clock")
+    history = fixture["history"]
+    kinds = [event["event_type"] for event in history]
+    assert kinds.index("CooperativeCancellationRequested") > max(kinds.index(kind) for kind in REUSED_UPSERT_EVENTS)
+    expected = [CompleteWorkflow({"after_memo": REDRIVE_REPLAYED_START,
+                                  "after_search_attributes": REDRIVE_REPLAYED_START, "remaining": 26.0})]
+    assert replay_cleanup(RedriveVisibilityCleanupWorkflow, history, fixture) == expected
+    for event_type in REUSED_UPSERT_EVENTS:
+        retimed = _retime_both(history, event_type)
+        assert replay_cleanup(RedriveVisibilityCleanupWorkflow, retimed, fixture) == expected, event_type
+
+
+def _signal_successor_with_cancellation() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    upserts = redrive_fixture("redrive-reused-upserts-cancellation-clock")
+    # The same post-prefix request and delivery, bound to the signal workflow.
+    instance = upserts["workflow"]["workflow_id"]
+    tail = json.loads(json.dumps(upserts["history"][-2:]).replace(instance, "regression-corpus-redrive-signal"))
+    upserts["workflow"]["workflow_id"] = "regression-corpus-redrive-signal"
+    for event in tail:
+        event["sequence"] += 1
+    # The reused signal wait is workflow sequence 1, so the next call is 2.
+    tail[1]["payload"]["sequence"] = 2
+    history = redriven("redrive-reused-signal-wait-clock") + tail
+    return history, upserts
+
+
+def test_reused_signal_wait_events_do_not_move_the_cancellation_budget() -> None:
+    history, fixture = _signal_successor_with_cancellation()
+    kinds = [event["event_type"] for event in history]
+    assert kinds.index("CooperativeCancellationRequested") > max(kinds.index(kind) for kind in REUSED_SIGNAL_EVENTS)
+    RedriveSignalCleanupWorkflow.applied = []
+    baseline = replay_cleanup(RedriveSignalCleanupWorkflow, history, fixture)
+    assert RedriveSignalCleanupWorkflow.applied == ["Grace"]
+    # Limitation: the SDK authors no signal waits, so its counterpart's wait is
+    # not a numbered call and its first activity is call 1. The delivery
+    # recorded at call 2 is therefore not reached and no remaining() is read.
+    # Such a history comes only from a Core-authored workflow.
+    assert [type(command).__name__ for command in baseline] == ["ScheduleActivity"]
+    for event_type in REUSED_SIGNAL_EVENTS:
+        retimed = _retime_both(history, event_type)
+        assert replay_cleanup(RedriveSignalCleanupWorkflow, retimed, fixture) == baseline, event_type

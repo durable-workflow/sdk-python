@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from durable_workflow import CancellationContext, serializer
+from durable_workflow import CancellationContext, serializer, workflow
 from durable_workflow.errors import ActivityFailed, DurableOperationCancelled, WorkflowCancelled
 from durable_workflow.workflow import (
     CompleteWorkflow,
@@ -284,19 +284,22 @@ def test_a_reused_step_keeps_its_original_time_for_the_remaining_budget() -> Non
     assert replay(Cleanup, events, [], run_id="run-1").commands == [CompleteWorkflow(18.123456)]
 
 
-def _reused(event: dict[str, Any], mode: str) -> dict[str, Any]:
-    # Redrive records the reused step again at 00:29; it was first recorded at 00:12.
-    payload = dict(event["payload"])
-    if mode != "plain":
-        payload.update(reused_from_run_id="failed-run", reused_recorded_at="2026-10-01T00:00:12Z")
-    return {**event, "payload": payload, "timestamp": "2026-10-01T00:00:29Z"}
 
-
-@pytest.mark.parametrize("mode", ["plain", "reused"])
-def test_upsert_events_do_not_move_the_remaining_budget(mode: str) -> None:
-    # Core 2.19 reuses upserts on redrive. Upserts are not a clock source here,
-    # reused or not: the budget stays at the delivery time.
+@pytest.mark.parametrize("later", ["2026-10-01T00:00:12Z", "2026-10-01T00:00:29Z"])
+def test_upsert_and_signal_events_during_cleanup_do_not_move_the_remaining_budget(later: str) -> None:
+    # An ordinary run: the cancellation is delivered, then cleanup upserts and
+    # receives a signal. None of these events is a clock source, so the budget
+    # stays at the delivery time whatever time they carry. (Reused events
+    # always precede a redrive successor's cancellation; see test_replay_clock.)
+    @workflow.defn(name="tests.cancellation.cleanup-upserts-signal")
     class Cleanup:
+        def __init__(self) -> None:
+            self.approved_by: str | None = None
+
+        @workflow.signal("approve")
+        def approve(self, approved_by: str) -> None:
+            self.approved_by = approved_by
+
         def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
             try:
                 yield ctx.start_timer(60)
@@ -308,13 +311,19 @@ def test_upsert_events_do_not_move_the_remaining_budget(mode: str) -> None:
                     observed.append(error.context.remaining())
                     yield ctx.upsert_search_attributes({"Stage": "cleanup"})
                     observed.append(error.context.remaining())
-                return observed
+                return [observed, self.approved_by]
 
     memo = serializer.envelope({"stage": "cleanup"}, codec="avro")
-    events = history() + [_reused(event, mode) for event in [
+    events = history() + [{**event, "timestamp": later} for event in [
+        {"event_type": "SignalReceived", "payload": {
+            "signal_name": "approve", "arguments": serializer.envelope(["Grace"], codec="avro"),
+            "payload_codec": "avro",
+        }},
         {"event_type": "MemoUpserted", "payload": {"sequence": 2, "entries": memo, "merged": memo}},
         {"event_type": "SearchAttributesUpserted", "payload": {
             "sequence": 3, "attributes": {"Stage": "cleanup"}, "merged": {"Stage": "cleanup"},
         }},
     ]]
-    assert replay(Cleanup, events, [], run_id="run-1").commands == [CompleteWorkflow([22.123456] * 3)]
+    assert replay(Cleanup, events, [], run_id="run-1").commands == [
+        CompleteWorkflow([[22.123456] * 3, "Grace"]),
+    ]

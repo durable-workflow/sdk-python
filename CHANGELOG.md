@@ -6,9 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Replay now enforces the recorded search attributes. A workflow whose `upsert_search_attributes` values differ from its `SearchAttributesUpserted` history fails replay with a `NonDeterministicReplayError` whose detail starts `search_attribute_value_mismatch`, as memo replay already does for memos. Values are compared after the Server's normalization (trimmed strings, an empty string as null). A recorded `attributes` that is not an object is refused. (#235)
+
 ### Added
 
-- Workflow 2.19 redrive reuse of `MemoUpserted`, `SearchAttributesUpserted`, `SignalWaitOpened`, `SignalReceived` and `SignalApplied` is qualified for replay. None of these events is a replay clock source in this SDK: `ctx.now()` stays the persisted start time, which on a redriven run is the failed run's start, and the cancellation budget does not move on an upsert. Regression fixtures shaped like Core's redrive successor histories prove it, along with unchanged signal and memo values and no repeated upserts. (#235)
+- Workflow 2.19 redrive reuse of `MemoUpserted`, `SearchAttributesUpserted`, `SignalWaitOpened`, `SignalReceived` and `SignalApplied` is qualified for replay. None of these events is a replay clock source in this SDK. `ctx.now()` stays the persisted start time, which on a redriven run is the failed run's start. The cancellation budget does not move on an upsert or a signal. Regression fixtures shaped like Core's redrive successor histories prove it. (#235)
 
 ## [2.13.1] - 2026-11-03
 

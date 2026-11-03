@@ -1,0 +1,147 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-reused-upserts-cancellation-clock",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.redrive-visibility-cleanup",
+    "input": [
+      "Taylor"
+    ],
+    "payload_codec": "avro",
+    "workflow_id": "regression-corpus-redrive-visibility",
+    "run_id": "01JBREDRIVESUCCESSORRUN0000"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "continued_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "recovery_kind": "redrive",
+        "replayed_started_at": "2026-11-03T00:00:00+00:00",
+        "resume_step_sequence": 4
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "MemoUpserted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 1,
+        "entries": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4EEGN1c3RvbWVyCgxUYXlsb3IKc3RhZ2UKEGdyZWV0aW5nAA=="
+        },
+        "merged": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4EEGN1c3RvbWVyCgxUYXlsb3IKc3RhZ2UKEGdyZWV0aW5nAA=="
+        },
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "SearchAttributesUpserted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 2,
+        "attributes": {
+          "Stage": "greeting"
+        },
+        "attribute_types": {
+          "Stage": "keyword"
+        },
+        "merged": {
+          "Stage": "greeting"
+        },
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "CooperativeCancellationRequested",
+      "recorded_at": "2026-11-03T00:05:02+00:00",
+      "payload": {
+        "workflow_command_id": "redrive-cancel-1",
+        "workflow_instance_id": "regression-corpus-redrive-visibility",
+        "workflow_run_id": "01JBREDRIVESUCCESSORRUN0000",
+        "reason": "maintenance",
+        "cleanup_deadline_at": "2026-11-03T00:05:30.000000Z",
+        "cancellation": {
+          "schema": "durable-workflow.cancellation-context/v1",
+          "request_id": "redrive-cancel-1",
+          "root_request_id": "redrive-cancel-1",
+          "root_workflow_instance_id": "regression-corpus-redrive-visibility",
+          "root_workflow_run_id": "01JBREDRIVESUCCESSORRUN0000",
+          "parent_request_id": null,
+          "reason": "maintenance",
+          "requester": {
+            "type": "operator",
+            "id": "operator-1",
+            "label": "Maintainer"
+          },
+          "source": "control_plane",
+          "requested_at": "2026-11-03T00:05:02.000000Z",
+          "cleanup_deadline_at": "2026-11-03T00:05:30.000000Z",
+          "lineage": [
+            {
+              "request_id": "redrive-cancel-1",
+              "workflow_instance_id": "regression-corpus-redrive-visibility",
+              "workflow_run_id": "01JBREDRIVESUCCESSORRUN0000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "sequence": 5,
+      "event_type": "CooperativeCancellationDelivered",
+      "recorded_at": "2026-11-03T00:05:04+00:00",
+      "payload": {
+        "workflow_command_id": "redrive-cancel-1",
+        "workflow_run_id": "01JBREDRIVESUCCESSORRUN0000",
+        "sequence": 3,
+        "call_kind": "activity",
+        "cancellation": {
+          "schema": "durable-workflow.cancellation-context/v1",
+          "request_id": "redrive-cancel-1",
+          "root_request_id": "redrive-cancel-1",
+          "root_workflow_instance_id": "regression-corpus-redrive-visibility",
+          "root_workflow_run_id": "01JBREDRIVESUCCESSORRUN0000",
+          "parent_request_id": null,
+          "reason": "maintenance",
+          "requester": {
+            "type": "operator",
+            "id": "operator-1",
+            "label": "Maintainer"
+          },
+          "source": "control_plane",
+          "requested_at": "2026-11-03T00:05:02.000000Z",
+          "cleanup_deadline_at": "2026-11-03T00:05:30.000000Z",
+          "lineage": [
+            {
+              "request_id": "redrive-cancel-1",
+              "workflow_instance_id": "regression-corpus-redrive-visibility",
+              "workflow_run_id": "01JBREDRIVESUCCESSORRUN0000"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "expected": {
+    "type": "complete_workflow",
+    "result": {
+      "after_memo": "2026-11-03T00:00:00+00:00",
+      "after_search_attributes": "2026-11-03T00:00:00+00:00",
+      "remaining": 26.0
+    }
+  }
+}

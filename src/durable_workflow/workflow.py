@@ -22,6 +22,7 @@ import base64
 import contextlib
 import hashlib
 import inspect
+import json
 import logging
 import math
 import random
@@ -1391,6 +1392,28 @@ def _memo_avro_bytes(value: Any) -> bytes:
 
 def _memo_replay_identity(value: Mapping[str, Any]) -> str:
     return serializer.encode(_canonical_memo_entries(value), size_warning=None)
+
+
+_SEARCH_ATTRIBUTE_TRIM = " \t\n\r\0\x0b"
+
+
+def _canonical_search_attribute_value(value: Any) -> Any:
+    # The Server stores an upsert as Core's UpsertSearchAttributesCall does:
+    # strings and list items trimmed, an empty string as a deletion (null).
+    if isinstance(value, str):
+        trimmed = value.strip(_SEARCH_ATTRIBUTE_TRIM)
+        return trimmed or None
+    if isinstance(value, list | tuple):
+        return [item.strip(_SEARCH_ATTRIBUTE_TRIM) if isinstance(item, str) else item for item in value]
+    if isinstance(value, Mapping) and not value:
+        return []
+    return value
+
+
+def _search_attribute_replay_identity(attributes: Mapping[str, Any]) -> str:
+    """Exact replay identity of an upsert, after the Server's normalization."""
+    canonical = {str(key): _canonical_search_attribute_value(value) for key, value in attributes.items()}
+    return json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=repr)
 
 
 def _canonical_memo_entries(entries: Mapping[str, Any], *, require_entries: bool = True) -> dict[str, Any]:
@@ -4309,6 +4332,13 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
         recorded = step.details.get("entries_identity")
         if isinstance(recorded, str) and recorded != _memo_replay_identity(command.entries):
             return "Recorded memo entries differ from the current workflow memo update."
+    elif isinstance(command, UpsertSearchAttributes):
+        recorded = step.details.get("search_attributes_identity")
+        if isinstance(recorded, str) and recorded != _search_attribute_replay_identity(command.attributes):
+            return (
+                "search_attribute_value_mismatch: Recorded search attributes differ from the current "
+                "workflow search attribute update."
+            )
     return None
 
 
@@ -4600,6 +4630,10 @@ def _replay_state(
             # The sequence-specific history parser below turns malformed memo
             # envelopes into the public non-determinism diagnostic.
             recorded_details = {}
+        if event_type == "SearchAttributesUpserted" and isinstance(payload.get("attributes"), Mapping):
+            recorded_details["search_attributes_identity"] = _search_attribute_replay_identity(
+                payload["attributes"],
+            )
         details_by_sequence.setdefault(sequence, {}).update(recorded_details)
         if event_type in (
             "ActivityScheduled", "ActivityStarted", "ActivityCompleted",
@@ -5460,6 +5494,14 @@ def _replay_state(
             memo_sequences_added.add(sequence)
             _append_resolved_result(None, "memo upsert", ev)
         elif etype == "SearchAttributesUpserted":
+            if "attributes" in payload and not isinstance(payload["attributes"], Mapping):
+                raise NonDeterministicReplayError(
+                    _workflow_sequence(payload) or len(recorded_steps) + 1,
+                    "search attributes upsert with an attributes object",
+                    ["SearchAttributesUpserted"],
+                    detail="search_attribute_value_mismatch: SearchAttributesUpserted history must retain "
+                    "the applied attributes as an object.",
+                )
             _append_resolved_result(None, "search attributes upsert", ev)
         elif etype == "SignalReceived":
             signal_name = payload.get("signal_name")

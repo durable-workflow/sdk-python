@@ -1623,7 +1623,8 @@ class PolyglotHistoryContractWorkflow:
         yield ctx.wait_condition(lambda: self.approved_by is not None, key="approval", timeout=30)
         side_effect = yield ctx.side_effect(lambda: {"side_effect": "unstable"})
         child = yield ctx.start_child_workflow("tests.polyglot.child", [])
-        yield ctx.upsert_search_attributes({"status": "processing"})
+        # The PHP-emitted fixture records {"status": "done"}; replay enforces it.
+        yield ctx.upsert_search_attributes({"status": "done"})
 
         return {
             "activity": activity,
