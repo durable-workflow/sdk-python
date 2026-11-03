@@ -674,6 +674,22 @@ DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Keys Core adds only to runs created by redrive (workflow#864). The SDK reads
+# replayed_started_at for the start clock and reused_recorded_at for step time.
+REDRIVE_HISTORY_EVENT_PAYLOAD_KEYS = {
+    "WorkflowStarted": ("resume_step_sequence", "recovery_kind", "replayed_started_at"),
+    "ActivityCompleted": ("reused_from_run_id", "reused_activity_execution_id", "reused_recorded_at"),
+    "TimerFired": ("reused_from_run_id", "reused_recorded_at"),
+    "SideEffectRecorded": ("reused_from_run_id", "reused_recorded_at"),
+    "VersionMarkerRecorded": ("reused_from_run_id", "reused_recorded_at"),
+}
+
+for _event_type, _keys in REDRIVE_HISTORY_EVENT_PAYLOAD_KEYS.items():
+    DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS[_event_type] = (
+        *DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS[_event_type],
+        *(key for key in _keys if key not in DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS[_event_type]),
+    )
+
 SDK_INTERPRETED_HISTORY_EVENTS = frozenset(
     {
         "WorkflowStarted",
@@ -732,9 +748,18 @@ def test_schedule_history_events_are_preserved_only() -> None:
 
 def test_php_history_fixture_key_expectations_match_documented_contract() -> None:
     for event_type, fixture_keys in PHP_HISTORY_EVENT_EXPECTED_KEYS.items():
-        documented_keys = set(DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS[event_type])
+        # Published PHP fixtures come from ordinary runs, which never carry redrive keys.
+        documented_keys = set(DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS[event_type]) - set(
+            REDRIVE_HISTORY_EVENT_PAYLOAD_KEYS.get(event_type, ())
+        )
         expected_keys = set(fixture_keys)
         tolerated_extra_keys = set(SDK_TOLERATED_FIXTURE_EXTRA_KEYS.get(event_type, frozenset()))
 
         assert expected_keys - documented_keys == tolerated_extra_keys, event_type
         assert documented_keys - expected_keys == set(), event_type
+
+
+def test_redrive_payload_keys_are_documented_on_the_interpreted_events() -> None:
+    for event_type, keys in REDRIVE_HISTORY_EVENT_PAYLOAD_KEYS.items():
+        assert event_type in SDK_INTERPRETED_HISTORY_EVENTS, event_type
+        assert set(keys) <= set(DOCUMENTED_HISTORY_EVENT_PAYLOAD_KEYS[event_type]), event_type

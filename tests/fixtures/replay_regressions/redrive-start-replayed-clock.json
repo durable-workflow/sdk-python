@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-start-replayed-clock",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {"type": "tests.replay.persisted-clock", "input": [], "payload_codec": "avro"},
+  "history": [{"event_type": "WorkflowStarted", "recorded_at": "2026-06-01T10:05:00.000000Z", "payload": {"recovery_kind": "redrive", "replayed_started_at": "2026-06-01T10:00:00.000000Z"}}],
+  "expected": {"type": "complete_workflow", "result": "2026-06-01T10:00:00.000000+00:00"}
+}

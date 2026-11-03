@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 
-from durable_workflow import workflow
+from durable_workflow import serializer, workflow
 from durable_workflow.errors import NonDeterministicReplayError
 from durable_workflow.workflow import CompleteWorkflow, WorkflowContext, replay
 
@@ -91,3 +91,43 @@ def test_missing_replay_time_is_explicit(history: list[dict[str, Any]]) -> None:
 def test_empty_local_authoring_remains_available() -> None:
     assert datetime.fromisoformat(result(PersistedClockWorkflow, [])).tzinfo is not None
     assert UUID(result(PersistedUUID7Workflow, [])).version == 7
+
+
+@workflow.defn(name="tests.replay.redrive-clock")
+class RedriveClockWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        before = ctx.now().isoformat(timespec="microseconds")
+        token = str(ctx.uuid7())
+        recorded = yield ctx.schedule_activity("tests.first", [before])
+        return [before, token, recorded]
+
+
+def redriven_history(**start_payload: Any) -> list[dict[str, Any]]:
+    return [
+        {"event_type": "WorkflowStarted", "recorded_at": "2026-06-01T10:05:00.000000Z", "payload": start_payload},
+        {"event_type": "ActivityCompleted", "recorded_at": "2026-06-01T10:05:00.500000Z",
+         "payload": {"sequence": 1, "activity_type": "tests.first",
+                     "result": serializer.encode("recorded", codec="avro"), "payload_codec": "avro",
+                     "reused_from_run_id": "failed-run",
+                     "reused_recorded_at": "2026-06-01T10:00:01.000000Z"}},
+    ]
+
+
+def test_redriven_run_replays_from_the_failed_run_start_time() -> None:
+    history = redriven_history(recovery_kind="redrive", replayed_started_at="2026-06-01T10:00:00.000000Z")
+    before, token, recorded = result(RedriveClockWorkflow, history)
+    assert before == "2026-06-01T10:00:00.000000+00:00"
+    assert UUID(token).int >> 80 == int(datetime.fromisoformat(before).timestamp() * 1000)
+    assert recorded == "recorded"
+
+
+def test_replayed_start_time_requires_a_redrive_start() -> None:
+    history = redriven_history(replayed_started_at="2026-06-01T10:00:00.000000Z")
+    assert result(RedriveClockWorkflow, history)[0] == "2026-06-01T10:05:00.000000+00:00"
+
+
+@pytest.mark.parametrize("invalid", [None, 123, "", "not-a-time", "2026-06-01T10:00:00"])
+def test_invalid_replayed_start_time_is_refused_without_fallback(invalid: Any) -> None:
+    history = redriven_history(recovery_kind="redrive", replayed_started_at=invalid)
+    with pytest.raises(NonDeterministicReplayError, match="replayed_started_at"):
+        replay(RedriveClockWorkflow, history, [], run_id="redriven-run", payload_codec="avro")
