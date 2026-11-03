@@ -711,7 +711,7 @@ failure; the verifier does not repair or silently coerce those bytes.
 
 A bundle exported after retention cleanup pruned the run's details carries
 `workflow.details_state: "pruned"`, `history_complete: false` and no history
-events. Starting with unreleased SDK source, verification fails it with the
+events. Starting with Python SDK 2.13.0, verification fails it with the
 `history.details_pruned` error, matching PHP Core: such a bundle has no history
 to replay or import, even though its workflow status stays terminal. Bundles
 marked `retained`, and older exports without the field, are unaffected. Pruned

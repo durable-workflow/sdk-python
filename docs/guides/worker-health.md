@@ -5,8 +5,7 @@ application health endpoint or an orchestrator probe. It reports this worker's
 own registration and local progress. A healthy Server, or another worker on the
 same queue, does not make this worker ready.
 
-This API is in unreleased SDK source. Published packages need the release
-that includes it.
+This API is available in Python SDK 2.13.0 and later.
 
 ## Ready versus live
 

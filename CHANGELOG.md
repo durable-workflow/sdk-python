@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-11-03
+
 ### Added
 
 - `Worker.status()` returns a read-only `WorkerStatus` snapshot for health

@@ -31,8 +31,7 @@ execution; selecting a default thread does not enable that protocol.
 
 ## Bounded failure reports
 
-This behavior is available in unreleased SDK source. Published packages still
-need the compatible release before these limits apply.
+This behavior is available in Python SDK 2.11.0 and later.
 
 Failure reports retain at most 62 KiB of UTF-8 message text, 128 KiB of stack
 text and 64 KiB of serialized details and diagnostics. These budgets include
