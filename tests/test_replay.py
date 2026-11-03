@@ -1211,7 +1211,8 @@ class TestContinueAsNew:
         replayed = replay(
             workflow_cls,
             [
-                {"event_type": "SearchAttributesUpserted", "payload": {"sequence": 1}},
+                {"event_type": "SearchAttributesUpserted",
+                 "payload": {"sequence": 1, "attributes": {"stage": "continued"}}},
                 {
                     "event_type": "MemoUpserted",
                     "payload": {"sequence": 2, "entries": entries, "merged": merged},
@@ -2071,7 +2072,7 @@ class TestSearchAttributeUpsert:
 
     def test_with_upsert_in_history(self) -> None:
         history = [
-            {"event_type": "SearchAttributesUpserted", "payload": {}},
+            {"event_type": "SearchAttributesUpserted", "payload": {"attributes": {"status": "processing"}}},
             {"event_type": "ActivityCompleted", "payload": {"result": _avro("result")}},
         ]
         outcome = replay(SearchAttrWorkflow, history, [])

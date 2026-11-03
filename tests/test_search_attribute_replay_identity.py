@@ -87,8 +87,8 @@ def test_value_identity_is_exact(fixture: str, authored: dict[str, Any]) -> None
 
 @pytest.mark.parametrize(("authored", "stored", "types"), [
     ({"Stage": " greeting\n"}, {"Stage": "greeting"}, {"Stage": "string"}),
-    ({"Stage": "greeting", "Old": "  "}, {"Old": None, "Stage": "greeting"}, {"Stage": "keyword"}),
-    ({"Stage": "greeting", "Old": "  "}, {"Old": None, "Stage": "greeting"}, {"Old": "keyword", "Stage": "keyword"}),
+    ({"Stage": "greeting", "Old": "  "}, {"Old": None, "Stage": "greeting"}, {"Old": "string", "Stage": "keyword"}),
+    ({"Stage": "greeting", "Old": ""}, {"Old": None, "Stage": "greeting"}, {"Old": "keyword", "Stage": "keyword"}),
     ({"Tags": [" a ", "b"]}, {"Tags": ["a", "b"]}, {"Tags": "keyword_list"}),
     ({"Tags": []}, {"Tags": []}, {"Tags": "keyword_list"}),
     ({"Count": 3}, {"Count": 3}, {"Count": "int"}),
@@ -99,7 +99,7 @@ def test_server_normalized_history_replays(
     fixture: str, authored: dict[str, Any], stored: dict[str, Any], types: dict[str, str],
 ) -> None:
     # The Server trims strings and list items, stores a blank string as null,
-    # and types the raw value (Core omits a null; the Server keeps a blank).
+    # and types every non-null raw value, including a blank one.
     commands = replays(authoring(authored), recorded(fixture, stored, types))
     assert [type(command).__name__ for command in commands] == ["ScheduleActivity"]
 
@@ -162,7 +162,7 @@ def test_malformed_recorded_values_are_refused(fixture: str, stored: Any) -> Non
 
 
 @pytest.mark.parametrize("types", [
-    {"Stage": "int"}, {"Stage": "float"}, {"Stage": "bool"}, {"Stage": "keyword_list"}, {"Stage": "datetime"},
+    {"Stage": "int"}, {"Stage": "float"}, {"Stage": "bool"}, {"Stage": "keyword_list"},
     {"Stage": "text"}, {"Stage": None}, {}, [], {"Stage": "keyword", "Other": "keyword"}, {"stage": "keyword"},
     "keyword", ["keyword"],
 ])
@@ -178,6 +178,8 @@ def test_recorded_type_mismatch_is_refused(fixture: str, types: Any) -> None:
     ({"Done": True}, {"Done": "int"}),
     ({"Tags": ["a"]}, {"Tags": "keyword"}),
     ({"Gone": None}, {"Gone": "keyword"}),
+    ({"Old": ""}, {}),
+    ({"Old": "  ", "Stage": "greeting"}, {"Stage": "keyword"}),
 ])
 def test_recorded_type_must_hold_the_value(fixture: str, authored: dict[str, Any], types: dict[str, str]) -> None:
     refused(authoring(authored), recorded(fixture, authored, types), "search_attribute_type_mismatch")
@@ -186,14 +188,25 @@ def test_recorded_type_must_hold_the_value(fixture: str, authored: dict[str, Any
 @pytest.mark.parametrize(("authored", "types"), [
     ({"Stage": "greeting"}, {"Stage": "string"}),
     ({"At": "2026-11-03T00:00:00Z"}, {"At": "datetime"}),
+    ({"At": "2026-11-03"}, {"At": "datetime"}),
+    ({"At": "Tue, 03 Nov 2026 00:00:00 +0000"}, {"At": "datetime"}),
+    ({"Note": "two words"}, {"Note": "keyword"}),
+    ({"At": "2026-11-03T00:00:00"}, {"At": "datetime"}),
+    # Conservative: any string may be a registered datetime. The Server
+    # refuses one that does not parse, so such a history cannot be written.
+    ({"At": "greeting"}, {"At": "datetime"}),
+    ({"Old": ""}, {"Old": "datetime"}),
     ({"Count": 3}, {"Count": "float"}),
 ])
 def test_recorded_type_identity_is_limited_to_what_an_untyped_upsert_fixes(
     fixture: str, authored: dict[str, Any], types: dict[str, str],
 ) -> None:
-    # The SDK's upsert declares no types. The Server records a registered
-    # key's namespace type, which the SDK cannot see during replay, so these
-    # recorded types are legitimate for the same value and must replay.
+    # The SDK's upsert declares no types, but the Server records a registered
+    # key's namespace type in place of the inferred one: PHP Server
+    # SearchAttributeValueValidator.php:93 ($registeredType ?? $declaredType)
+    # filled in at WorkerController.php:2734, and Rust Server
+    # search_attribute_upserts.rs:254-264. Replay cannot see the registry, so
+    # these recorded types are legitimate for the same value and must replay.
     history = recorded(fixture, authored, types)
     assert replays(authoring(authored), history) == replays(authoring(authored), recorded(fixture, authored))
 
@@ -226,3 +239,20 @@ def test_recorded_history_never_treats_a_non_list_as_a_list(fixture: str) -> Non
     with pytest.raises(ValueError):
         _canonical_search_attributes({"Tags": ("a", "b")})
     assert _canonical_search_attributes({"Tags": ("a", "b")}, authored=True) == {"Tags": ("list", ("a", "b"))}
+
+
+@pytest.mark.parametrize("types", [
+    {"Stage": []}, {"Stage": {}}, {"Stage": ["keyword"]}, {"Stage": {"type": "keyword"}}, {"Stage": 1},
+    {"Stage": True}, {"Stage": None}, {"Stage": 1.5},
+])
+def test_malformed_recorded_type_values_are_refused_not_raised(fixture: str, types: Any) -> None:
+    history = recorded(fixture, {"Stage": "greeting"}, types)
+    refused(RedriveVisibilityWorkflow, history, "search_attribute_type_mismatch")
+
+
+@pytest.mark.parametrize("workflow_cls", [RedriveVisibilityWorkflow, RedriveChangedStageWorkflow])
+def test_missing_recorded_attributes_are_refused(fixture: str, workflow_cls: type) -> None:
+    history = deepcopy(redriven(fixture))
+    del only_event(history, "SearchAttributesUpserted")["payload"]["attributes"]
+    refused(workflow_cls, history, "search_attribute_value_mismatch: SearchAttributesUpserted history has invalid "
+            "attributes: the attributes field is missing")

@@ -1455,12 +1455,17 @@ def _canonical_search_attributes(attributes: Any, *, authored: bool = False) -> 
 
 
 def _search_attribute_type_choices(value: Any) -> frozenset[str]:
-    """Types the Server can record for one authored value of an untyped upsert.
+    """Every type a Server can record for one value of this SDK's untyped upsert.
 
-    An unregistered key gets Core's inferred type. A key registered in the
-    namespace keeps its registered type, which must accept the value. The
-    SDK cannot see the registry during replay, so a string may be recorded as
-    keyword, string or (when RFC 3339) datetime, and an integer as int or float.
+    The SDK declares no types, but native Server 3.0.x resolves each key as
+    registered, then declared, then inferred from the raw value
+    (rust/src/runtime/search_attribute_upserts.rs:254-289, recorded at :856),
+    and the PHP Server fills registered types into the command the same way
+    (SearchAttributeValueValidator.php:93, WorkerController.php:2734). The SDK
+    cannot see the namespace registry, so this returns the union of the
+    inferred type and every registered type the Server accepts for the value.
+    Any string is treated as possibly registered datetime. The check refuses
+    only a recorded type that cannot hold the value at all.
     """
     if isinstance(value, bool):
         return frozenset({"bool"})
@@ -1469,11 +1474,7 @@ def _search_attribute_type_choices(value: Any) -> frozenset[str]:
     if isinstance(value, float):
         return frozenset({"float"})
     if isinstance(value, str):
-        choices = {"keyword", "string"}
-        with contextlib.suppress(ValueError):
-            if datetime.fromisoformat(value.strip(_SEARCH_ATTRIBUTE_TRIM).replace("Z", "+00:00")).tzinfo is not None:
-                choices.add("datetime")
-        return frozenset(choices)
+        return frozenset({"keyword", "string", "datetime"})
     return frozenset({"keyword_list"})
 
 
@@ -1482,16 +1483,16 @@ def _search_attribute_types_mismatch(recorded: Any, authored: Mapping[str, Any])
         recorded = {}  # PHP serializes an empty map as a JSON list.
     if not isinstance(recorded, Mapping):
         return "recorded attribute_types is not an object"
-    # A null value has no type. An authored blank string is null after
-    # trimming; the Server types it from the raw value, Core omits it.
-    required = {key for key, value in authored.items() if value is not None and not (
-        isinstance(value, str) and not value.strip(_SEARCH_ATTRIBUTE_TRIM))}
-    optional = {key for key, value in authored.items() if isinstance(value, str) and key not in required}
-    if not required <= set(recorded) <= required | optional:
+    # A null value has no type. Both Servers type every other raw value,
+    # including a blank string that is stored as null.
+    typed = {key for key, value in authored.items() if value is not None}
+    if not all(isinstance(key, str) for key in recorded) or set(recorded) != typed:
         return "recorded attribute_types names different keys from the current update"
     for key in sorted(recorded):
         kind = recorded[key]
-        if kind not in _SEARCH_ATTRIBUTE_TYPES or kind not in _search_attribute_type_choices(authored[key]):
+        if not isinstance(kind, str) or kind not in _SEARCH_ATTRIBUTE_TYPES:
+            return f"recorded attribute type for [{key}] is not a search attribute type"
+        if kind not in _search_attribute_type_choices(authored[key]):
             return f"recorded attribute type {kind!r} for [{key}] cannot hold the current value"
     return None
 
@@ -4412,7 +4413,9 @@ def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
         recorded = step.details.get("entries_identity")
         if isinstance(recorded, str) and recorded != _memo_replay_identity(command.entries):
             return "Recorded memo entries differ from the current workflow memo update."
-    elif isinstance(command, UpsertSearchAttributes) and "search_attributes" in step.details:
+    elif isinstance(command, UpsertSearchAttributes):
+        if "search_attributes" not in step.details:
+            return "search_attribute_value_mismatch: SearchAttributesUpserted history is missing its attributes."
         try:
             authored_attributes = _canonical_search_attributes(command.attributes, authored=True)
         except ValueError as exc:
@@ -4723,10 +4726,6 @@ def _replay_state(
             # The sequence-specific history parser below turns malformed memo
             # envelopes into the public non-determinism diagnostic.
             recorded_details = {}
-        if event_type == "SearchAttributesUpserted" and "attributes" in payload:
-            recorded_details["search_attributes"] = payload["attributes"]
-            if "attribute_types" in payload:
-                recorded_details["search_attribute_types"] = payload["attribute_types"]
         details_by_sequence.setdefault(sequence, {}).update(recorded_details)
         if event_type in (
             "ActivityScheduled", "ActivityStarted", "ActivityCompleted",
@@ -5587,17 +5586,25 @@ def _replay_state(
             memo_sequences_added.add(sequence)
             _append_resolved_result(None, "memo upsert", ev)
         elif etype == "SearchAttributesUpserted":
-            if "attributes" in payload:
-                try:
-                    _canonical_search_attributes(payload["attributes"])
-                except ValueError as exc:
-                    raise NonDeterministicReplayError(
-                        _workflow_sequence(payload) or len(recorded_steps) + 1,
-                        "search attributes upsert with canonical attributes",
-                        ["SearchAttributesUpserted"],
-                        detail=f"search_attribute_value_mismatch: SearchAttributesUpserted history has invalid "
-                        f"attributes: {exc}",
-                    ) from exc
+            # The recorded values are this step's replay identity; without
+            # them the step cannot be checked, so replay is refused.
+            upsert_sequence = _workflow_sequence(payload) or len(recorded_steps) + 1
+            try:
+                if "attributes" not in payload:
+                    raise ValueError("the attributes field is missing")
+                _canonical_search_attributes(payload["attributes"])
+            except ValueError as exc:
+                raise NonDeterministicReplayError(
+                    upsert_sequence,
+                    "search attributes upsert with canonical attributes",
+                    ["SearchAttributesUpserted"],
+                    detail=f"search_attribute_value_mismatch: SearchAttributesUpserted history has invalid "
+                    f"attributes: {exc}",
+                ) from exc
+            upsert_details = details_by_sequence.setdefault(upsert_sequence, {})
+            upsert_details["search_attributes"] = payload["attributes"]
+            if "attribute_types" in payload:
+                upsert_details["search_attribute_types"] = payload["attribute_types"]
             _append_resolved_result(None, "search attributes upsert", ev)
         elif etype == "SignalReceived":
             signal_name = payload.get("signal_name")
