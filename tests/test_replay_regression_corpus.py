@@ -43,6 +43,11 @@ from tests.test_patch_history import (
 )
 from tests.test_pending_operation_replay import PendingOperation
 from tests.test_poll_failure_backoff import RecoveredWorkflow
+from tests.test_redrive_successor_evidence import (
+    RedriveSuccessorCancellationClockWorkflow,
+    RedriveSuccessorMarkersWorkflow,
+    RedriveSuccessorTimerWorkflow,
+)
 from tests.test_replay_clock import (
     PersistedClockWorkflow,
     RedriveChangedStageWorkflow,
@@ -365,6 +370,9 @@ WORKFLOWS = [
     PersistedClockWorkflow,
     RedriveChangedStageWorkflow,
     RedriveSignalWorkflow,
+    RedriveSuccessorCancellationClockWorkflow,
+    RedriveSuccessorMarkersWorkflow,
+    RedriveSuccessorTimerWorkflow,
     RedriveVisibilityCleanupWorkflow,
     RedriveVisibilityWorkflow,
     NexusCooperativeDeliveryWorkflow,
