@@ -25,7 +25,7 @@ from durable_workflow import workflow
 from durable_workflow.errors import WorkflowCancelled
 from durable_workflow.workflow import CompleteWorkflow, ScheduleActivity, WorkflowContext, query_state, replay
 from tests.redrive_fixture_registry import NON_QUALIFYING, SOURCE_RUNS, VALID_SUCCESSORS
-from tests.test_replay_clock import REDRIVE_FIXTURES, check_redrive_successor, redrive_fixture
+from tests.test_replay_clock import REDRIVE_FIXTURES, check_redrive_successor, redrive_fixture, redrive_time
 
 SIDE_EFFECT_CALLS: list[str] = []
 
@@ -192,7 +192,7 @@ def test_valid_retiming_of_reused_events_changes_nothing(name: str, reused_at: s
 
 def _time(item: dict[str, Any]) -> datetime:
     payload = item["payload"]
-    return datetime.fromisoformat(payload.get("reused_recorded_at") or item["recorded_at"])
+    return redrive_time(payload.get("reused_recorded_at") or item["recorded_at"])
 
 
 def leaking_clock_remaining(history: list[dict[str, Any]]) -> float:
@@ -200,7 +200,7 @@ def leaking_clock_remaining(history: list[dict[str, Any]]) -> float:
     delivered = next(index for index, item in enumerate(history)
                      if item["event_type"] == "CooperativeCancellationDelivered")
     request = event(history, "CooperativeCancellationRequested")
-    deadline = datetime.fromisoformat(request["payload"]["cleanup_deadline_at"])
+    deadline = redrive_time(request["payload"]["cleanup_deadline_at"])
     return (deadline - max(_time(item) for item in history[:delivered + 1])).total_seconds()
 
 
@@ -315,6 +315,11 @@ def _request(history: list[dict[str, Any]]) -> dict[str, Any]:
 SOURCE_RUN = "01JBREDRIVESOURCERUN000000"
 
 
+def _both_contexts(history: list[dict[str, Any]], change: Any) -> None:
+    change(_request(history)["payload"]["cancellation"])
+    change(_delivery(history)["payload"]["cancellation"])
+
+
 @pytest.mark.parametrize(("change", "message"), [
     (lambda history: _delivery(history)["payload"].__setitem__("sequence", 2), "reuses a reused step"),
     (lambda history: _delivery(history)["payload"].__setitem__("sequence", 1), "reuses a reused step"),
@@ -323,10 +328,10 @@ SOURCE_RUN = "01JBREDRIVESOURCERUN000000"
     (lambda history: _delivery(history)["payload"].__setitem__("workflow_run_id", SOURCE_RUN), "another run"),
     (lambda history: _request(history)["payload"].__setitem__("workflow_instance_id", "another-instance"),
      "another workflow instance"),
-    (lambda history: _request(history)["payload"]["cancellation"].__setitem__("root_workflow_run_id", SOURCE_RUN),
+    (lambda history: _both_contexts(history, lambda context: context.__setitem__("root_workflow_run_id", SOURCE_RUN)),
      "rooted at the successor run"),
-    (lambda history: _delivery(history)["payload"]["cancellation"]["lineage"][-1].__setitem__(
-        "workflow_run_id", SOURCE_RUN), "rooted at the successor run"),
+    (lambda history: _both_contexts(history, lambda context: context["lineage"][-1].__setitem__(
+        "workflow_run_id", SOURCE_RUN)), "rooted at the successor run"),
     (lambda history: _request(history)["payload"].__setitem__("reused_from_run_id", SOURCE_RUN),
      "reused events must directly follow"),
     (lambda history: event(history, "ActivityScheduled")["payload"].__setitem__("sequence", 2),
@@ -335,3 +340,102 @@ SOURCE_RUN = "01JBREDRIVESOURCERUN000000"
 def test_the_successor_cancellation_is_its_own(change: Any, message: str) -> None:
     with pytest.raises(AssertionError, match=message):
         check(CANCELLATION, changed(CANCELLATION, change))
+
+
+# The successor cancellation is exactly one request, then exactly one delivery
+# of it, carrying one context bound to the successor, delivered to a call the
+# successor reached. Each mutation below was accepted by the bd41be60 check.
+CANCELLED_SUCCESSORS = [CANCELLATION, "redrive-reused-upserts-cancellation-clock"]
+
+
+def _duplicate(event_type: str) -> Any:
+    def change(history: list[dict[str, Any]]) -> None:
+        original = event(history, event_type)
+        history.insert(history.index(original) + 1, deepcopy(original))
+        _renumber(history)
+
+    return change
+
+
+def _without(event_type: str) -> Any:
+    def change(history: list[dict[str, Any]]) -> None:
+        history.remove(event(history, event_type))
+        _renumber(history)
+
+    return change
+
+
+def _context(target: str, change: Any) -> Any:
+    def apply(history: list[dict[str, Any]]) -> None:
+        for item in ([_request(history)] if target in {"request", "both"} else []) + (
+            [_delivery(history)] if target in {"delivery", "both"} else []
+        ):
+            change(item["payload"]["cancellation"])
+
+    return apply
+
+
+def _drop_context(target: str) -> Any:
+    def apply(history: list[dict[str, Any]]) -> None:
+        for item in ([_request(history)] if target in {"request", "both"} else []) + (
+            [_delivery(history)] if target in {"delivery", "both"} else []
+        ):
+            del item["payload"]["cancellation"]
+
+    return apply
+
+
+CANCELLATION_MUTATIONS = {
+    "context-deleted-from-both": (_drop_context("both"), "carries its cancellation context"),
+    "context-deleted-from-request": (_drop_context("request"), "carries its cancellation context"),
+    "context-deleted-from-delivery": (_drop_context("delivery"), "carries its request's context"),
+    "duplicate-request": (_duplicate("CooperativeCancellationRequested"), "exactly one request and one delivery"),
+    "duplicate-delivery": (_duplicate("CooperativeCancellationDelivered"), "exactly one request and one delivery"),
+    "request-deleted": (_without("CooperativeCancellationRequested"), "exactly one request and one delivery"),
+    "delivery-deleted": (_without("CooperativeCancellationDelivered"), "exactly one request and one delivery"),
+    "mismatched-context": (_context("delivery", lambda context: context["requester"].__setitem__("id", "other")),
+                           "carries its request's context"),
+    "delivery-before-request-time": (
+        lambda history: _delivery(history).__setitem__("recorded_at", "2026-11-03T00:05:00.750000+00:00"),
+        "not earlier than its request"),
+    "context-request-id": (_context("both", lambda context: context.__setitem__("request_id", "other-request")),
+                           "the context is this request"),
+    "context-root-request": (_context("both", lambda context: context.__setitem__("root_request_id", "other")),
+                             "its own root"),
+    "context-root-instance": (_context("both", lambda context: context.__setitem__(
+        "root_workflow_instance_id", "another-instance")), "rooted at the successor run"),
+    "lineage-request": (_context("both", lambda context: context["lineage"][-1].__setitem__("request_id", "other")),
+                        "rooted at the successor run"),
+    "context-deadline": (_context("both", lambda context: context.__setitem__(
+        "cleanup_deadline_at", "2026-11-03T00:05:40.000000Z")), "cleanup deadline"),
+    "delivery-to-unrecorded-step-4": (lambda history: _delivery(history)["payload"].__setitem__("sequence", 4),
+                                      "a successor step the successor reached"),
+}
+
+
+@pytest.mark.parametrize("name", CANCELLED_SUCCESSORS)
+@pytest.mark.parametrize("mutation", sorted(CANCELLATION_MUTATIONS))
+def test_the_successor_cancellation_is_bound_exactly(name: str, mutation: str) -> None:
+    change, message = CANCELLATION_MUTATIONS[mutation]
+    if mutation == "context-root-request":
+        # A root request: its context names itself as its root.
+        assert redrive_fixture(name)["history"][-1]["payload"]["cancellation"]["parent_request_id"] is None
+    with pytest.raises(AssertionError, match=message):
+        check(name, changed(name, change))
+
+
+def test_a_delivery_to_a_later_step_the_successor_recorded_is_accepted() -> None:
+    # The successor finishes step 3 and schedules step 4 before the cancel.
+    def later(history: list[dict[str, Any]]) -> None:
+        scheduled = event(history, "ActivityScheduled")
+        completed = {"event_type": "ActivityCompleted", "recorded_at": "2026-11-03T00:05:00.600000+00:00",
+                     "payload": {**scheduled["payload"], "result": "wwHioz3/VYAiNwoEb2s=", "payload_codec": "avro"}}
+        fourth = deepcopy(scheduled)
+        fourth["recorded_at"] = "2026-11-03T00:05:00.700000+00:00"
+        fourth["payload"].update(sequence=4, activity_execution_id="01JBREDRIVESUCCESSORACT002")
+        at = history.index(scheduled) + 1
+        history[at:at] = [completed, fourth]
+        _delivery(history)["payload"]["sequence"] = 4
+        _renumber(history)
+
+    check(CANCELLATION, changed(CANCELLATION, later))
