@@ -60,10 +60,15 @@ async def response_server(*, delay: float | None) -> AsyncIterator[str]:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["control", "discovery", "worker"])
 async def test_configured_timeout_bounds_a_stalled_response(operation: str) -> None:
+    async def allow_connection_setup(request: httpx.Request) -> None:
+        # Exercise the configured read budget even when cold TCP setup is slow.
+        request.extensions["timeout"]["connect"] = 1.0
+
     async with (
         response_server(delay=None) as endpoint,
         Client(endpoint, timeout=0.05, retry_policy=TransportRetryPolicy(max_attempts=1)) as client,
     ):
+        client._http.event_hooks["request"].append(allow_connection_setup)
         if operation == "control":
             request = client.health()
         elif operation == "discovery":

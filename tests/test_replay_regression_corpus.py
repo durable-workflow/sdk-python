@@ -25,6 +25,7 @@ from durable_workflow.workflow import (
     commands_to_server_commands,
     query_state,
 )
+from tests.condition_fingerprint_workflows import FingerprintApproval, FingerprintGenexpr, FingerprintTerminalDuplicate
 from tests.deregistration_recovery import RecoveredWorkflow as FencedRecoveryWorkflow
 from tests.test_condition_replay_drift import ConditionIdentityWorkflow
 from tests.test_generator_lifecycle import CleanupSideEffect, PendingFinally
@@ -424,6 +425,9 @@ WORKFLOWS = [
     OrphanedDuplicateDecision,
     TypedActivityResultsWorkflow,
     TypedOnboarding,
+    FingerprintApproval,
+    FingerprintGenexpr,
+    FingerprintTerminalDuplicate,
 ]
 WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__)): workflow for workflow in WORKFLOWS}
 WORKFLOW_TYPES["tests.replay.condition-identity"] = ConditionIdentityWorkflow
