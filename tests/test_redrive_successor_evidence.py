@@ -611,3 +611,180 @@ def test_a_call_completed_after_the_request_is_still_deliverable() -> None:
         _renumber(history)
 
     check(CANCELLATION, changed(CANCELLATION, completed_between))
+
+
+def _cancelled_activity(history: list[dict[str, Any]], before_request: bool = False) -> dict[str, Any]:
+    scheduled = _step_three_activity(history)
+    boundary = _request(history) if before_request else _delivery(history)
+    cancelled = {
+        "event_type": "ActivityCancelled", "recorded_at": boundary["recorded_at"],
+        "payload": {**scheduled["payload"], "cancelled_at": boundary["recorded_at"]},
+    }
+    history.insert(history.index(boundary), cancelled)
+    _renumber(history)
+    return cancelled
+
+
+def test_an_activity_cancelled_after_the_request_is_still_deliverable() -> None:
+    check(CANCELLATION, changed(CANCELLATION, _cancelled_activity))
+
+
+def test_an_activity_cancelled_before_the_request_is_not_deliverable() -> None:
+    with pytest.raises(AssertionError, match="resolved before its request"):
+        check(CANCELLATION, changed(CANCELLATION, lambda history: _cancelled_activity(history, True)))
+
+
+@pytest.mark.parametrize("key", ["sequence", "activity_type", "activity_execution_id"])
+@pytest.mark.parametrize("missing", [False, True], ids=["blank", "missing"])
+def test_activity_cancellation_requires_its_core_identity(key: str, missing: bool) -> None:
+    def mutate(history: list[dict[str, Any]]) -> None:
+        payload = _cancelled_activity(history)["payload"]
+        if missing:
+            del payload[key]
+        else:
+            payload[key] = 0 if key == "sequence" else " "
+
+    with pytest.raises(AssertionError, match=f"ActivityCancelled lacks {key}"):
+        check(CANCELLATION, changed(CANCELLATION, mutate))
+
+
+def _resolve_activity_before_next_call(
+    history: list[dict[str, Any]], resolution: str, before_request: bool,
+) -> None:
+    scheduled = _step_three_activity(history)
+    boundary = _request(history) if before_request else _delivery(history)
+    terminal = {
+        "event_type": resolution, "recorded_at": boundary["recorded_at"],
+        "payload": {**scheduled["payload"], "result": "wwHioz3/VYAiNwoEb2s=", "payload_codec": "avro"},
+    }
+    if resolution == "ActivityCancelled":
+        terminal["payload"].update(cancelled_at=boundary["recorded_at"])
+        terminal["payload"].pop("result")
+        terminal["payload"].pop("payload_codec")
+    history.insert(history.index(boundary), terminal)
+    _delivery(history)["payload"]["sequence"] = 4
+    _renumber(history)
+
+
+@pytest.mark.parametrize("resolution", ["ActivityCompleted", "ActivityCancelled"])
+@pytest.mark.parametrize("before_request", [False, True], ids=["after-request", "before-request"])
+def test_an_unscheduled_next_call_after_a_resolved_activity_is_deliverable(
+    resolution: str, before_request: bool,
+) -> None:
+    check(CANCELLATION, changed(CANCELLATION, lambda history: _resolve_activity_before_next_call(
+        history, resolution, before_request)))
+
+
+@pytest.mark.parametrize("first_resolved", [False, True], ids=["earlier-open", "all-resolved"])
+def test_the_next_call_follows_every_recorded_successor_call(first_resolved: bool) -> None:
+    def mutate(history: list[dict[str, Any]]) -> None:
+        _resolve_activity_before_next_call(history, "ActivityCompleted", True)
+        first = next(item for item in history if item["event_type"] == "ActivityCompleted"
+                     and item["payload"]["sequence"] == 3)
+        fourth = deepcopy(_step_three_activity(history))
+        fourth["recorded_at"] = _request(history)["recorded_at"]
+        fourth["payload"].update(sequence=4, activity_execution_id="fourth-activity")
+        terminal = {**deepcopy(first), "payload": {**first["payload"], **fourth["payload"]}}
+        at = history.index(_request(history))
+        history[at:at] = [fourth, terminal]
+        if not first_resolved:
+            history.remove(first)
+        _delivery(history)["payload"]["sequence"] = 5
+        _renumber(history)
+
+    if first_resolved:
+        check(CANCELLATION, changed(CANCELLATION, mutate))
+    else:
+        with pytest.raises(AssertionError, match="the successor reached"):
+            check(CANCELLATION, changed(CANCELLATION, mutate))
+
+
+def test_the_next_call_follows_an_atomic_memo_step() -> None:
+    def mutate(history: list[dict[str, Any]]) -> None:
+        history.remove(_step_three_activity(history))
+        memo = deepcopy(event(redrive_fixture("redrive-reused-upserts-clock")["history"], "MemoUpserted"))
+        for key in ("reused_from_run_id", "reused_recorded_at"):
+            memo["payload"].pop(key)
+        memo["payload"]["sequence"] = 3
+        memo["recorded_at"] = _request(history)["recorded_at"]
+        history.insert(history.index(_request(history)), memo)
+        _delivery(history)["payload"]["sequence"] = 4
+        _renumber(history)
+
+    check(CANCELLATION, changed(CANCELLATION, mutate))
+
+
+@pytest.mark.parametrize(("opened", "resolved", "identity"), [
+    ("TimerScheduled", "TimerFired", "timer_id"),
+    ("SignalWaitOpened", "SignalApplied", "signal_wait_id"),
+])
+@pytest.mark.parametrize("state", ["resolved", "open", "foreign-resolution"])
+def test_the_next_call_requires_a_resolution_of_the_recorded_timer_or_signal(
+    opened: str, resolved: str, identity: str, state: str,
+) -> None:
+    def mutate(history: list[dict[str, Any]]) -> None:
+        scheduled = _step_three_activity(history)
+        scheduled["event_type"] = opened
+        scheduled["payload"] = {"sequence": 3, identity: "successor-wait"}
+        if opened == "SignalWaitOpened":
+            scheduled["payload"]["signal_name"] = "approve"
+        terminal = {"event_type": resolved, "recorded_at": _request(history)["recorded_at"],
+                    "payload": dict(scheduled["payload"])}
+        if opened == "SignalWaitOpened":
+            terminal["payload"].update(workflow_command_id="signal-command", signal_id="successor-signal")
+            received = {"event_type": "SignalReceived", "recorded_at": terminal["recorded_at"],
+                        "payload": {**terminal["payload"],
+                                    "workflow_instance_id": _request(history)["payload"]["workflow_instance_id"],
+                                    "workflow_run_id": _request(history)["payload"]["workflow_run_id"]}}
+            received["payload"].pop("sequence")
+            history.insert(history.index(_request(history)), received)
+        if state != "open":
+            if state == "foreign-resolution":
+                terminal["payload"][identity] = "another-wait"
+            history.insert(history.index(_request(history)), terminal)
+        _delivery(history)["payload"]["sequence"] = 4
+        _renumber(history)
+
+    if state == "resolved":
+        check(CANCELLATION, changed(CANCELLATION, mutate))
+    else:
+        with pytest.raises(AssertionError, match="the successor reached|no opened wait"):
+            check(CANCELLATION, changed(CANCELLATION, mutate))
+
+
+@pytest.mark.parametrize("mutation", ["open", "resolved-after-delivery", "foreign-resolution", "skipped-step"])
+def test_an_unscheduled_delivery_cannot_skip_an_unreached_call(mutation: str) -> None:
+    def mutate(history: list[dict[str, Any]]) -> None:
+        _delivery(history)["payload"]["sequence"] = 4
+        if mutation == "open":
+            return
+        _resolve_activity_before_next_call(history, "ActivityCompleted", True)
+        terminal = next(
+            item for item in history if item["event_type"] == "ActivityCompleted"
+            and item["payload"]["sequence"] == 3)
+        if mutation == "resolved-after-delivery":
+            history.remove(terminal)
+            terminal["recorded_at"] = _delivery(history)["recorded_at"]
+            history.append(terminal)
+        elif mutation == "foreign-resolution":
+            terminal["payload"]["activity_execution_id"] = "other-activity"
+        else:
+            _delivery(history)["payload"]["sequence"] = 5
+        _renumber(history)
+
+    with pytest.raises(AssertionError, match="the successor reached"):
+        check(CANCELLATION, changed(CANCELLATION, mutate))
+
+
+def test_selection_handle_delivery_remains_outside_the_successor_model() -> None:
+    def mutate(history: list[dict[str, Any]]) -> None:
+        _delivery(history)["payload"].update(call_kind="selection_handle", operation_sequence=3)
+
+    with pytest.raises(AssertionError, match="single call kind"):
+        check(CANCELLATION, changed(CANCELLATION, mutate))
+
+
+@pytest.mark.parametrize("field", ["sequence_span", "operation_sequence", "operation_sequence_span"])
+def test_group_and_selection_operands_remain_outside_the_successor_model(field: str) -> None:
+    with pytest.raises(AssertionError, match="one single call"):
+        check(CANCELLATION, changed(CANCELLATION, lambda history: _delivery(history)["payload"].__setitem__(field, 1)))
