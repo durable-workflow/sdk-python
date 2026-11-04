@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Opt-in typed activity values (#184). `@activity.defn(..., typed=True)` decodes an activity's positional arguments to its parameter annotations, and `ctx.schedule_activity(..., result_type=T)` decodes the completed result in single calls, parallel groups and selections. Supported types are dataclasses, `Enum` (including `IntEnum` and `StrEnum`), `Optional[T]`, `list[T]`, `dict[str, T]` and scalars; other annotations raise `TypeError` up front. Undeclared keys are ignored and missing fields take their defaults. A mismatch raises the new `TypedValueError`, which names the field path but never the value. It is non-retryable in a typed activity and is raised at the `yield` for `result_type`. Dataclass and `Enum` activity arguments and results are now sent as their neutral values, the same bytes as `dataclasses.asdict()` with each enum's `.value`; these values were refused before. Untyped activities and calls receive plain values as before, so in-flight histories replay unchanged.
 
+### Fixed
+
+- Replay no longer fails when a condition wait has an orphaned duplicate open whose timer fires later. Server 3.0.x can record a second open of the same wait while the first is still open (server#1015). The first open's timeout used to end the logical wait in replay, while history continued with the reopened wait, so replay raised `NonDeterministicReplayError`. A wait now counts as reopened when the next open of the same wait was recorded before the earlier wait's own end. A wait that timed out before the next open is still finished, and the next open is a separate call. Every earlier release has this gap; it is not a 2.13.2 regression. (#253)
+
 ## [2.13.2] - 2026-11-04
 
 ### Fixed

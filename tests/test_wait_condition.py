@@ -6,6 +6,7 @@ from durable_workflow import serializer, workflow
 from durable_workflow.errors import NonDeterministicReplayError, QueryFailed
 from durable_workflow.workflow import (
     CompleteWorkflow,
+    ScheduleActivity,
     WaitCondition,
     WorkflowContext,
     query_state,
@@ -1394,3 +1395,76 @@ def test_a_selection_condition_member_is_not_reopened_by_a_wrong_signal() -> Non
         "payload_codec": serializer.AVRO_CODEC}}
     outcome = replay(DurableSelectionConditionSignalReplayWorkflow, [START, *opens, wrong], [])
     assert list(outcome.commands) == []
+
+
+# #253 (sdk-php#283): an orphaned duplicate open whose timer fires later does
+# not end the logical wait. Server 3.0.x can record a second open of the same
+# wait while the first is still open (server#1015); the first's timer stays live.
+@workflow.defn(name="tests.replay.condition-orphaned-duplicate")
+class OrphanedDuplicateDecision:
+    def __init__(self) -> None:
+        self.decided = False
+
+    @workflow.signal("decision")
+    def decision(self, approved: bool) -> None:
+        self.decided = bool(approved)
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        decided = yield ctx.wait_condition(lambda: self.decided, key="decision-1", timeout=300)
+        if not decided:
+            yield ctx.schedule_activity("expire-proposal", [])
+            return "expired"
+        return "decided"
+
+
+def _orphaned_duplicate_history(reopen: int, orphan_fired: bool) -> list[dict]:
+    def open_wait(wait_id: str, sequence: int, at: str, timeout: int) -> list[dict]:
+        return [
+            {"event_type": "ConditionWaitOpened", "recorded_at": at, "payload": {
+                "condition_wait_id": wait_id, "condition_key": "decision-1", "sequence": sequence,
+                "timeout_seconds": timeout}},
+            {"event_type": "TimerScheduled", "recorded_at": at, "payload": {
+                "timer_kind": "condition_timeout", "condition_wait_id": wait_id, "condition_key": "decision-1",
+                "sequence": sequence, "delay_seconds": timeout}},
+        ]
+
+    history = [
+        {"event_type": "WorkflowStarted", "recorded_at": "2026-11-04T04:07:36.890000+00:00", "payload": {}},
+        *open_wait("w3", 1, "2026-11-04T04:07:36.890000+00:00", 300),
+        *open_wait("w4", 2, "2026-11-04T04:07:36.908000+00:00", 300),
+        {"event_type": "SignalReceived", "recorded_at": "2026-11-04T04:09:36.979000+00:00", "payload": {
+            "signal_name": "decision", "value": serializer.envelope([False]), "payload_codec": serializer.AVRO_CODEC,
+            "workflow_sequence": 2}},
+        {"event_type": "ConditionWaitSatisfied", "recorded_at": "2026-11-04T04:09:37.008000+00:00", "payload": {
+            "condition_wait_id": "w4", "condition_key": "decision-1", "sequence": 2}},
+        {"event_type": "TimerCancelled", "recorded_at": "2026-11-04T04:09:37.008000+00:00", "payload": {
+            "timer_kind": "condition_timeout", "condition_wait_id": "w4", "sequence": 2}},
+        *open_wait("w5", 3, "2026-11-04T04:09:37.010000+00:00", reopen),
+    ]
+    if orphan_fired:
+        history.append({"event_type": "TimerFired", "recorded_at": "2026-11-04T04:12:36.956000+00:00", "payload": {
+            "timer_kind": "condition_timeout", "condition_wait_id": "w3", "condition_key": "decision-1",
+            "sequence": 1}})
+    return history
+
+
+class TestOrphanedDuplicateWait:
+    @pytest.mark.parametrize("reopen", [300, 180])
+    def test_the_orphans_timer_does_not_end_the_reopened_wait(self, reopen: int) -> None:
+        (command,) = replay(OrphanedDuplicateDecision, _orphaned_duplicate_history(reopen, True), []).commands
+        # The logical wait is still the reopened one; its first deadline has passed.
+        assert isinstance(command, WaitCondition) and command.timeout_seconds == 0
+
+    @pytest.mark.parametrize("reopen", [300, 180])
+    def test_before_the_orphan_fires_the_wait_reopens_with_the_remaining_time(self, reopen: int) -> None:
+        (command,) = replay(OrphanedDuplicateDecision, _orphaned_duplicate_history(reopen, False), []).commands
+        assert isinstance(command, WaitCondition) and command.timeout_seconds == 180
+
+    def test_the_reopened_waits_own_timeout_expires_the_decision(self) -> None:
+        history = _orphaned_duplicate_history(180, True) + [
+            {"event_type": "TimerFired", "recorded_at": "2026-11-04T04:12:37.216000+00:00", "payload": {
+                "timer_kind": "condition_timeout", "condition_wait_id": "w5", "condition_key": "decision-1",
+                "sequence": 3}},
+        ]
+        (command,) = replay(OrphanedDuplicateDecision, history, []).commands
+        assert isinstance(command, ScheduleActivity) and command.activity_type == "expire-proposal"
