@@ -32,7 +32,7 @@ from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
 
 from . import serializer
@@ -6989,26 +6989,21 @@ def _replay_state(
         """Reopen a logical wait with the time left before its first deadline.
 
         The deadline is fixed when the wait first opens, as in embedded
-        Workflow: the first ConditionWaitOpened time plus its timeout. A
-        non-satisfying signal re-drives the wait, and the reopen carries the
-        remaining whole seconds (rounded up, never below 0) measured at the
-        latest recorded history time. Without recorded times the authored
-        timeout is kept.
+        Workflow: the first ConditionWaitOpened time plus the authored
+        timeout. A non-satisfying signal re-drives the wait, and the reopen
+        carries the remaining whole seconds measured at the latest recorded
+        history time, rounded up and clamped to 0..authored (the sdk-php#269
+        rule). Without recorded times the authored timeout is kept.
         """
-        if command.timeout_seconds is None or first_index >= len(wait_opened):
+        authored = command.timeout_seconds
+        if authored is None or first_index >= len(wait_opened):
             return command
         opened_at = wait_opened_times[first_index]
         if opened_at is None or history_time is None:
             return command
-        recorded_timeout = wait_opened[first_index].get("timeout_seconds")
-        timeout = (
-            recorded_timeout
-            if isinstance(recorded_timeout, int) and not isinstance(recorded_timeout, bool) and recorded_timeout >= 0
-            else command.timeout_seconds
-        )
-        remaining = (opened_at + timedelta(seconds=timeout) - history_time).total_seconds()
+        remaining = math.ceil(authored - (history_time - opened_at).total_seconds())
         reopened = copy(command)
-        reopened.timeout_seconds = max(0, math.ceil(remaining))
+        reopened.timeout_seconds = min(authored, max(0, remaining))
         return reopened
 
     def _advance_cancellation_clock(indexes: Iterable[int | None]) -> None:

@@ -1309,3 +1309,15 @@ class TestReopenedWaitRemainingTimeout:
                      for event in _timed_open("w1", 1, "2026-11-03T00:00:00+00:00")],
                    _signal_received_event("note", [], workflow_sequence=1)]
         assert _reopened_timeout(history) == 300
+
+    @pytest.mark.parametrize(("signalled_at", "expected"), [
+        ("2026-11-04T02:38:05.345000+00:00", 180),
+        ("2026-11-04T02:40:05+00:00", 61),
+        ("2026-11-04T02:41:06+00:00", 0),
+    ])
+    def test_sdk_php_false_wake_deadline_vectors(self, signalled_at: str, expected: int) -> None:
+        # The same vectors as sdk-php ReplayerTest::falseWakeDeadlines (#269).
+        start = {**START, "recorded_at": "2026-11-04T02:36:05+00:00"}
+        history = [start, *_timed_open("w1", 1, "2026-11-04T02:36:05.295000+00:00"),
+                   _timed_signal("note", 1, signalled_at)]
+        assert _reopened_timeout(history) == expected
