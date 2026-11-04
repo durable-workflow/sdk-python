@@ -41,10 +41,10 @@ to use this adapter. Applications own scrape/export configuration and additional
 resource labels. Custom recorders should remain fast and handle their exporter
 failures without throwing into the client or worker.
 
-### Schedule-to-start latency (unreleased)
+### Schedule-to-start latency (SDK 2.15.0)
 
-This unreleased feature adds the histogram below. Package and published-Server
-acceptance remains pending in
+SDK 2.15.0 includes the histogram below. An authoritative published Server
+implementation and installed-runtime acceptance remain pending in
 [#188](https://github.com/durable-workflow/sdk-python/issues/188).
 
 | Recorder name | Instrument / unit | Tag keys | Measurement |
