@@ -1001,6 +1001,10 @@ is a workflow compatibility change.
 
 ## Typed activity values
 
+Typed activity arguments and activity `result_type` are available from SDK
+2.14.0. Typed workflow/handler arguments, child results and client results
+require SDK 2.15.0. Decoding is opt-in on each surface described below.
+
 Activity boundaries can carry dataclasses and enums without hand-written
 conversion. The wire format stays the neutral map, so PHP and Rust workers read
 and write the same values.
