@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.13.2] - 2026-11-04
+
 ### Fixed
 
 - A `wait_condition` timeout now counts from when the wait first opens. Before, a signal that left the predicate false reopened the wait with the full `timeout` again, so every such signal pushed the timeout later: a 300-second wait signalled after 2 minutes timed out after 7. The reopen now carries the seconds left before the first open's deadline, rounded up and never below 0, measured at the latest recorded history time. Histories without recorded times keep the authored timeout, and histories written by earlier versions still replay. (#245)
