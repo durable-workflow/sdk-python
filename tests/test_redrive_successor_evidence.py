@@ -562,6 +562,38 @@ def test_a_delivery_to_a_recorded_call_names_its_kind() -> None:
             "call_kind", "timer")))
 
 
+def _local_activity(call_kind: str) -> Any:
+    def change(history: list[dict[str, Any]]) -> None:
+        event(history, "ActivityScheduled")["payload"]["local_activity"] = True
+        _delivery(history)["payload"]["call_kind"] = call_kind
+
+    return change
+
+
+def test_a_delivery_to_a_recorded_local_activity_names_local_activity() -> None:
+    # Core callKindAt: an ActivityScheduled with local_activity true is a
+    # local_activity call. b9210162 refused this valid delivery.
+    check(CANCELLATION, changed(CANCELLATION, _local_activity("local_activity")))
+
+
+def test_an_activity_delivery_to_a_recorded_local_activity_is_refused() -> None:
+    # b9210162 accepted this delivery, which Core refuses.
+    with pytest.raises(AssertionError, match="the recorded call's kind"):
+        check(CANCELLATION, changed(CANCELLATION, _local_activity("activity")))
+
+
+def test_a_local_activity_delivery_to_a_recorded_activity_is_refused() -> None:
+    with pytest.raises(AssertionError, match="the recorded call's kind"):
+        check(CANCELLATION, changed(CANCELLATION, lambda history: _delivery(history)["payload"].__setitem__(
+            "call_kind", "local_activity")))
+
+
+@pytest.mark.parametrize("name", CANCELLED_SUCCESSORS)
+def test_a_whitespace_requester_value_is_accepted_as_core_does(name: str) -> None:
+    # Core CancellationContext::fromArray refuses only an empty string.
+    check(name, changed(name, _context("both", lambda context: context["requester"].__setitem__("label", " "))))
+
+
 @pytest.mark.parametrize("call_kind", ["activity", "timer", "child", "service_operation"])
 def test_a_delivery_to_the_unscheduled_resume_step_may_name_any_single_call(call_kind: str) -> None:
     # Core lets a delivery consume a call not yet scheduled; its shape is open.

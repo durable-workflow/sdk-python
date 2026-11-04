@@ -36,7 +36,7 @@ VALID_SUCCESSORS: dict[str, int] = {
     "redrive-successor-reused-timer": 3,
     "redrive-successor-reused-cancellation-clock": 3,
     # Added by #239: redrive-reused-upserts-cancellation-clock with the
-    # request's command_type, which Core WorkflowStub::cancel always writes.
+    # request's command_type, which Core WorkflowStub::recordCancellationRequest always writes.
     "redrive-successor-reused-upserts-cancellation-clock": 3,
 }
 
@@ -59,7 +59,7 @@ NON_QUALIFYING: dict[str, NonQualifying] = {
         replacement="redrive-successor-reused-upserts-cancellation-clock",
         release="unreleased (#236, after 2.13.1)",
         reason=(
-            "Its CooperativeCancellationRequested has no command_type. Core WorkflowStub::cancel "
+            "Its CooperativeCancellationRequested has no command_type. Core WorkflowStub::recordCancellationRequest "
             "(workflow 28893f97) always writes command_type request_cancellation, so Workflow cannot "
             "write this request. Its replay result is correct; the replacement adds only that field."
         ),

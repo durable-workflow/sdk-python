@@ -543,9 +543,19 @@ def redrive_time(value: Any) -> datetime:
     return parsed
 
 
-# Events a successor cancellation can be delivered to (a call the successor
-# recorded itself and that waits), with the call_kind a delivery to it names.
-REDRIVE_CANCELLABLE_EVENTS = {"ActivityScheduled": "activity", "TimerScheduled": "timer", "SignalWaitOpened": "signal"}
+# Events a successor cancellation can be delivered to: a call the successor
+# recorded itself and that waits.
+REDRIVE_CANCELLABLE_EVENTS = frozenset({"ActivityScheduled", "TimerScheduled", "SignalWaitOpened"})
+
+
+def _recorded_call_kind(event: dict[str, Any]) -> str:
+    """The call_kind Core CooperativeCancellationDelivery::callKindAt derives."""
+    payload = event["payload"]
+    if event["event_type"] == "ActivityScheduled":
+        return "local_activity" if payload.get("local_activity") is True else "activity"
+    if event["event_type"] == "TimerScheduled":
+        return {"condition_timeout": "condition", "signal_timeout": "signal"}.get(payload.get("timer_kind"), "timer")
+    return "signal"
 # Core CooperativeCancellationDelivery::CALL_SHAPES: single-call delivery kinds.
 REDRIVE_DELIVERY_CALL_KINDS = frozenset({
     "activity", "local_activity", "timer", "condition", "signal", "child", "service_operation",
@@ -663,10 +673,12 @@ def _check_successor_cancellation(
 ) -> None:
     """The successor's own cancellation: one request, then one delivery of it.
 
-    Shapes follow Workflow 28893f97: WorkflowStub::cancel writes the request
-    and a root CancellationContext (CancellationContext::fromArray), and
+    Shapes follow Workflow 28893f97: WorkflowStub::requestCancellation,
+    through recordCancellationRequest, writes the request and a root
+    CancellationContext (CancellationContext::fromArray), and
     CooperativeCancellationDelivery::record and ::validateCallBoundary write
-    and gate the delivery.
+    and gate the delivery. Parallel and selection_handle deliveries are
+    deliberately refused: no successor fixture uses those shapes.
     """
 
     def require(condition: bool, message: str) -> None:
@@ -709,7 +721,8 @@ def _check_successor_cancellation(
             and context.get("root_request_id") == command, "a root request is its own root")
     requester = context.get("requester")
     require(isinstance(requester, dict) and bool(requester)
-            and all(key in {"type", "id", "label"} and text(value) for key, value in requester.items()),
+            and all(key in {"type", "id", "label"} and isinstance(value, str) and value != ""
+                    for key, value in requester.items()),
             "the context requester identifies its caller")
     require(text(context.get("source")), "the context names its source")
     require(context.get("reason") is None or isinstance(context.get("reason"), str), "the context reason")
@@ -733,7 +746,7 @@ def _check_successor_cancellation(
     if opened:
         # A cancellable call the successor recorded, still open at the request
         # (Core resolvedBeforeRequest), of the kind the delivery names.
-        require(call_kind == REDRIVE_CANCELLABLE_EVENTS[opened[0]["event_type"]],
+        require(call_kind == _recorded_call_kind(opened[0]),
                 "the delivery's call_kind is the recorded call's kind")
         require(not any(event["event_type"] in REDRIVE_RESOLUTION_EVENTS and event["sequence"] < request["sequence"]
                         for event in at_step), "the delivery targets a call resolved before its request")
