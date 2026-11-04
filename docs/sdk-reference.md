@@ -1004,6 +1004,38 @@ activities, for example `OrderInput(order_id=UUID(data["order_id"]), ...)`.
 Adapter output is part of the durable history contract, so changing that shape
 is a workflow compatibility change.
 
+## Whole run histories and workflow lists (unreleased)
+
+`Client.get_history(...)` and `Client.list_workflows(...)` each return one
+Server page. Use the lazy iterators to visit all pages without collecting
+them in memory:
+
+```python
+async for execution in client.iter_workflows(workflow_type="invoice", page_size=100):
+    print(execution.workflow_id)
+
+async for event in client.iter_history(workflow_id, run_id, page_size=100):
+    print(event["event_type"])
+```
+
+`WorkflowHandle.iter_history(...)` offers the same traversal when the handle
+has an explicit `run_id`. List iterators yield `WorkflowExecution` values;
+history iterators yield the event dictionaries from `get_history` in Server
+order. Filters, run identity, namespace and page size stay fixed. A supplied
+`next_page_token` resumes at that opaque continuation; do not parse or alter it.
+
+The next page is fetched only after consuming the current page. Stop or close
+the iterator to avoid later requests. Empty pages with a continuation are
+followed, while a missing or empty token ends traversal. HTTP errors,
+cancellation and malformed or cyclic continuations propagate, possibly after
+earlier items have been yielded. A changing namespace is refused before the
+next request. This traverses the Server's cursor results; it does not create a
+snapshot of a concurrently changing workflow list.
+
+These helpers are unreleased source tracked in
+[the shared paging issue](https://github.com/durable-workflow/.github/issues/247).
+Published-package and actual multi-page acceptance remain separate.
+
 ## Typed activity values
 
 Typed activity arguments and activity `result_type` are available from SDK
