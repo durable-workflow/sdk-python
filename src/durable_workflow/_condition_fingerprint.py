@@ -133,11 +133,14 @@ def _predicate_node(function: Any) -> str | None:
     if function.__name__ == "<lambda>":
         lambdas = [node for node in ast.walk(tree) if isinstance(node, ast.Lambda) and node.lineno == first_line]
         lambdas.sort(key=lambda node: node.col_offset)
+        if len(lambdas) > 1:
+            matching = [node for node in lambdas if _compiles_to(node, code)]
+            if len(matching) == 1:
+                lambdas = matching
         if not lambdas:
             return None
-        # Lambdas that start on the same line share one fingerprint covering
-        # all of them. Telling them apart needs column data that Python 3.10
-        # lacks, and the fingerprint must be the same on every version.
+        # Lambdas that start on the same line and compile identically share
+        # one fingerprint covering all of them.
         return "|".join(_canonical(node) for node in lambdas)
     definitions = [
         node for node in ast.walk(tree)
@@ -147,6 +150,38 @@ def _predicate_node(function: Any) -> str | None:
     if len(definitions) != 1:
         return None
     return _canonical(definitions[0])
+
+
+def _compiles_to(node: ast.Lambda, code: Any) -> bool:
+    """Whether *node* compiles to *code* on this interpreter.
+
+    The candidate is compiled inside a function that binds the live code's
+    free variables, so names resolve the same way. Only the choice of node
+    uses bytecode, which is valid within one interpreter; the fingerprint
+    hashes the node's AST, so it stays portable.
+    """
+    free = list(code.co_freevars)
+    lines = ["def __dw_outer__():"]
+    if free:
+        lines.append(f"    {' = '.join(free)} = None")
+    lines.append(f"    return ({ast.unparse(node)})")
+    try:
+        outer = compile("\n".join(lines), "<condition-fingerprint>", "exec")
+    except SyntaxError:
+        return False
+    function = next((const for const in outer.co_consts if hasattr(const, "co_code")), None)
+    candidate = next(
+        (const for const in getattr(function, "co_consts", ()) if getattr(const, "co_name", None) == "<lambda>"),
+        None,
+    )
+    return candidate is not None and (
+        candidate.co_code == code.co_code
+        and candidate.co_names == code.co_names
+        and candidate.co_varnames == code.co_varnames
+        and candidate.co_freevars == code.co_freevars
+        and [c for c in candidate.co_consts if not hasattr(c, "co_code")]
+        == [c for c in code.co_consts if not hasattr(c, "co_code")]
+    )
 
 
 def _canonical(value: Any) -> str:

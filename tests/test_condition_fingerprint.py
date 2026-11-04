@@ -196,3 +196,14 @@ def test_a_changed_v2_predicate_is_refused() -> None:
     history = [START, _opened("w1", 1, changed, 1), _signal("approve", 1, 2), _satisfied("w1", 1, 2)]
     with pytest.raises(NonDeterministicReplayError, match="condition_fingerprint_changed"):
         replay(KeylessApproval, history, [])
+
+
+def test_two_lambdas_on_one_line_get_their_own_fingerprints() -> None:
+    # A conditional choice between predicates on one line (as in the
+    # condition-recovery integration test) must still detect drift. Each
+    # candidate is matched by compiling it on this interpreter; only its AST
+    # is hashed.
+    predicates = Approvals().predicates()
+    assert GOLDEN["fingerprints"]["same_line_first"] != GOLDEN["fingerprints"]["same_line_second"]
+    assert fingerprint(predicates["same_line_first"]) == GOLDEN["fingerprints"]["same_line_first"]
+    assert fingerprint(predicates["same_line_second"]) == GOLDEN["fingerprints"]["same_line_second"]
