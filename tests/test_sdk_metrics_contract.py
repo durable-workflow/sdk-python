@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 import time
@@ -22,10 +23,12 @@ from durable_workflow.errors import ServerError
 from durable_workflow.metrics import NOOP_METRICS, PrometheusMetrics
 from durable_workflow.retry_policy import TransportRetryPolicy
 from durable_workflow.worker import Worker
+from tests.test_worker import compatible_cluster_info
 
 CONTRACT_DIR = Path(__file__).parent / "fixtures/sdk_metrics"
 CONTRACT = json.loads((CONTRACT_DIR / "contract.json").read_text())
 SPECS = {metric["name"]: metric for metric in CONTRACT["metrics"]}
+SCHEDULE_TO_START = "durable_workflow_worker_task_schedule_to_start_seconds"
 
 
 @dataclass
@@ -122,6 +125,7 @@ async def test_actual_worker_poll_pair_matches_the_contract(
     recorder = Recorder()
     client = AsyncMock(spec=Client)
     worker = Worker(client, task_queue="orders", metrics=recorder)
+    client._cluster_info = {"worker_protocol": {"server_capabilities": {"claimed_task_ready_age": True}}}
     now = 1.0
 
     async def poll(**_: object) -> dict[str, str] | None:
@@ -136,7 +140,7 @@ async def test_actual_worker_poll_pair_matches_the_contract(
                 "task_queue": "orders", "retryable": True, "retry_after_seconds": 2,
             })
         if outcome == "task":
-            return {"task_id": "synthetic-task"}
+            return {"task_id": "synthetic-task", "ready_age_ms": 1250}
         worker._stop.set()
         return None
 
@@ -188,6 +192,146 @@ async def test_actual_task_dispatch_pair_matches_the_contract(
     await getattr(worker, f"_dispatch_{kind}_task")({"task_id": "synthetic-task"})
     assert assert_contract(recorder, duration=0.25) == {"worker_task"}
     assert recorder.calls[0][3] == {"task_kind": kind, "task_queue": "orders", "outcome": expected}
+
+
+@pytest.mark.parametrize("kind", ["workflow", "activity"])
+@pytest.mark.parametrize("ready_age_ms", [0, 1, 1250, 9007199254740991])
+@pytest.mark.parametrize("recorder_class", [Recorder, FalseyRecorder], ids=["normal", "falsey"])
+async def test_dispatch_records_server_ready_age_before_execution(
+    kind: str, ready_age_ms: int, recorder_class: type[Recorder], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = recorder_class()
+    client = Client("https://runtime.example", metrics=recorder)
+    client._cluster_info = {"worker_protocol": {"server_capabilities": {"claimed_task_ready_age": True}}}
+    worker = Worker(client, task_queue="orders")
+    now = 1.0
+    expected_sample = ("record", SCHEDULE_TO_START, ready_age_ms / 1000,
+                       {"task_kind": kind, "task_queue": "orders"})
+
+    async def execute(_: object) -> object:
+        nonlocal now
+        assert recorder.calls == [expected_sample]
+        now = 20.0  # Processing time must not enter the Server-computed age.
+        return [] if kind == "workflow" else "completed"
+
+    monkeypatch.setattr(worker_module, "time", SimpleNamespace(perf_counter=lambda: now))
+    monkeypatch.setattr(worker, f"_run_{kind}_task", execute)
+    if kind == "activity":
+        await worker._act_semaphore.acquire()
+    await getattr(worker, f"_dispatch_{kind}_task")({"ready_age_ms": ready_age_ms})
+    assert recorder.calls[0] == expected_sample
+    spec = SPECS[SCHEDULE_TO_START]
+    assert (spec["recorder_method"], spec["type"], spec["unit"], spec["scope"]) == (
+        "record", "histogram", "s", "worker_task_dispatch",
+    )
+    assert set(expected_sample[3]) == set(spec["tags"])
+    assert assert_contract(Recorder(recorder.calls[1:]), duration=19.0) == {"worker_task"}
+
+
+@pytest.mark.parametrize("kind", ["workflow", "activity"])
+@pytest.mark.parametrize("value", [None, True, False, -1, 9007199254740992, 1.0, float("nan"),
+                                  float("inf"), "private-value", {"private-key": "private-value"}, []])
+async def test_malformed_ready_age_drops_only_the_sample_with_a_bounded_warning(
+    kind: str, value: object, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorder = Recorder()
+    client = Client("https://runtime.example", metrics=recorder)
+    client._cluster_info = {"worker_protocol": {"server_capabilities": {"claimed_task_ready_age": True}}}
+    worker = Worker(client, task_queue="private-queue")
+    execute = AsyncMock(return_value=[] if kind == "workflow" else "completed")
+    monkeypatch.setattr(worker, f"_run_{kind}_task", execute)
+    if kind == "activity":
+        await worker._act_semaphore.acquire()
+    with caplog.at_level(logging.WARNING, logger="durable_workflow.worker"):
+        await getattr(worker, f"_dispatch_{kind}_task")({"ready_age_ms": value, "task_id": "private-id"})
+    execute.assert_awaited_once()
+    assert assert_contract(recorder) == {"worker_task"}
+    assert [r.getMessage() for r in caplog.records] == [
+        "invalid claimed task ready_age_ms; schedule-to-start sample omitted",
+    ]
+
+
+@pytest.mark.parametrize("kind", ["workflow", "activity"])
+@pytest.mark.parametrize("value", [1250, "unsupported-private-value"])
+@pytest.mark.parametrize("info", [None, {}, {"worker_protocol": None}, {"worker_protocol": []},
+    *({"worker_protocol": {"server_capabilities": caps}} for caps in (
+        None, [], {}, {"claimed_task_ready_age": False}, {"claimed_task_ready_age": 1},
+        {"claimed_task_ready_age": "true"}, {"claimed_task_ready_age": {"supported": True}},
+    )),
+])
+async def test_ready_age_requires_explicit_boolean_discovery(
+    kind: str, value: object, info: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorder = Recorder()
+    client = Client("https://runtime.example", metrics=recorder)
+    client._cluster_info = info
+    worker = Worker(client, task_queue="orders")
+    monkeypatch.setattr(worker, f"_run_{kind}_task", AsyncMock(return_value=[] if kind == "workflow" else "completed"))
+    if kind == "activity":
+        await worker._act_semaphore.acquire()
+    await getattr(worker, f"_dispatch_{kind}_task")({"ready_age_ms": value})
+    assert assert_contract(recorder) == {"worker_task"}
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("kind", ["workflow", "activity", "query", "update_validation"])
+async def test_missing_age_and_other_dispatch_kinds_emit_no_schedule_sample(
+    kind: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorder = Recorder()
+    client = Client("https://runtime.example", metrics=recorder)
+    client._cluster_info = {"worker_protocol": {"server_capabilities": {"claimed_task_ready_age": True}}}
+    worker = Worker(client, task_queue="orders")
+    result: object = [] if kind == "workflow" else "approved" if kind == "update_validation" else "completed"
+    monkeypatch.setattr(worker, f"_run_{kind}_task", AsyncMock(return_value=result))
+    if kind == "activity":
+        await worker._act_semaphore.acquire()
+    task = {} if kind in {"workflow", "activity"} else {"ready_age_ms": 1250}
+    await getattr(worker, f"_dispatch_{kind}_task")(task)
+    assert assert_contract(recorder) == {"worker_task"}
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("kind", ["workflow", "activity"])
+async def test_registration_discovery_and_retried_claim_record_once_at_dispatch(
+    kind: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = Recorder()
+    info = compatible_cluster_info()
+    protocol = info["worker_protocol"]
+    assert isinstance(protocol, dict)
+    protocol["server_capabilities"] = {"claimed_task_ready_age": True}
+    attempts = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        if request.url.path == "/api/cluster/info":
+            return httpx.Response(200, json=info)
+        if request.url.path == "/api/worker/register":
+            return httpx.Response(200, json={"worker_id": "worker", "registered": True})
+        assert request.url.path == f"/api/worker/{kind}-tasks/poll"
+        attempts += 1
+        return httpx.Response(503 if attempts == 1 else 200, json={"task": {"ready_age_ms": 1250}})
+
+    client = Client("https://runtime.example", worker_token="synthetic-token", metrics=recorder,
+                    retry_policy=TransportRetryPolicy(max_attempts=2, initial_backoff_seconds=0, jitter=False))
+    client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(respond))
+    client._runtime_external_payload_transport_resolved = True
+    worker = Worker(client, task_queue="orders", worker_id="worker")
+    monkeypatch.setattr(worker, f"_run_{kind}_task", AsyncMock(return_value=[] if kind == "workflow" else "completed"))
+    async with client:
+        await worker._register()
+        task = await getattr(client, f"poll_{kind}_task")(worker_id="worker", task_queue="orders")
+        assert attempts == 2
+        assert all(call[1] != SCHEDULE_TO_START for call in recorder.calls)
+        assert task is not None
+        if kind == "activity":
+            await worker._act_semaphore.acquire()
+        await getattr(worker, f"_dispatch_{kind}_task")(task)
+    assert [call for call in recorder.calls if call[1] == SCHEDULE_TO_START] == [
+        ("record", SCHEDULE_TO_START, 1.25, {"task_kind": kind, "task_queue": "orders"}),
+    ]
+    assert_contract(Recorder([call for call in recorder.calls if call[1] != SCHEDULE_TO_START]))
 
 
 @pytest.mark.parametrize("override", [False, True], ids=["inherit", "override"])

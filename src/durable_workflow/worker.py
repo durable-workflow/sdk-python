@@ -104,6 +104,7 @@ from .metrics import (
     WORKER_POLL_DURATION_SECONDS,
     WORKER_POLLS,
     WORKER_TASK_DURATION_SECONDS,
+    WORKER_TASK_SCHEDULE_TO_START_SECONDS,
     WORKER_TASKS,
     MetricsRecorder,
 )
@@ -1291,6 +1292,24 @@ class Worker:
         tags = {"task_kind": task_kind, "task_queue": self.task_queue, "outcome": outcome}
         self.metrics.increment(WORKER_TASKS, tags=tags)
         self.metrics.record(WORKER_TASK_DURATION_SECONDS, duration, tags=tags)
+
+    def _record_task_schedule_to_start(self, task_kind: str, task: dict[str, Any]) -> None:
+        # Use discovery cached by registration, as activity lease renewal does.
+        info = getattr(self.client, "_cluster_info", None)
+        protocol = info.get("worker_protocol") if isinstance(info, Mapping) else None
+        capabilities = protocol.get("server_capabilities") if isinstance(protocol, Mapping) else None
+        if not isinstance(capabilities, Mapping) or capabilities.get("claimed_task_ready_age") is not True:
+            return
+        if "ready_age_ms" not in task:
+            return
+        ready_age_ms = task["ready_age_ms"]
+        if type(ready_age_ms) is not int or not 0 <= ready_age_ms <= 9007199254740991:
+            log.warning("invalid claimed task ready_age_ms; schedule-to-start sample omitted")
+            return
+        self.metrics.record(
+            WORKER_TASK_SCHEDULE_TO_START_SECONDS, ready_age_ms / 1000,
+            tags={"task_kind": task_kind, "task_queue": self.task_queue},
+        )
 
     def _payload_size_warning_config(self) -> serializer.PayloadSizeWarningConfig | None:
         config = getattr(self.client, "payload_size_warning_config", serializer.DEFAULT_PAYLOAD_SIZE_WARNING)
@@ -3871,6 +3890,7 @@ class Worker:
     async def _dispatch_workflow_task(
         self, task: dict[str, Any]
     ) -> list[dict[str, Any]] | None:
+        self._record_task_schedule_to_start("workflow", task)
         task_start = time.perf_counter()
         outcome = "error"
         commands: list[dict[str, Any]] | None = None
@@ -3979,6 +3999,7 @@ class Worker:
             self._track(self._dispatch_activity_task(task))
 
     async def _dispatch_activity_task(self, task: dict[str, Any]) -> None:
+        self._record_task_schedule_to_start("activity", task)
         task_start = time.perf_counter()
         outcome = "error"
         self._activity_inflight += 1
