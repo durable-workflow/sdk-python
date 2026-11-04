@@ -217,6 +217,14 @@ def test_inlined_comprehension_segments_are_dropped_from_the_qualname() -> None:
         assert fingerprint(predicates[name]) == GOLDEN["fingerprints"][name]
 
 
+@pytest.mark.parametrize("kind", ["listcomp", "dictcomp", "setcomp"])
+def test_same_line_comprehension_bodies_share_a_portable_combined_fingerprint(kind: str) -> None:
+    predicates = Approvals().predicates()
+    first = fingerprint(predicates[f"same_line_{kind}_body_first"])
+    second = fingerprint(predicates[f"same_line_{kind}_body_second"])
+    assert first == second == GOLDEN["fingerprints"][f"same_line_{kind}_body_first"]
+
+
 # A keyless wait without source (eval, .pyc-only) still links its false-wake
 # reopen within its chain, as 2.14.0 did with its process-local v1.
 @workflow.defn(name="tests.fingerprint.keyless-no-source")

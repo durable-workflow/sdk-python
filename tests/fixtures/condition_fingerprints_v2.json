@@ -18,6 +18,12 @@
     "lambda_in_dictcomp": "dwpy2:sha256:a9ff285d478d5859d137782384a0df64f3f7236a8601ee25278b5e750def4e3d",
     "lambda_in_setcomp": "dwpy2:sha256:4d998d02bda534ead4a89dacb82846aaf72c96624aad0c68516c11653f3fe55f",
     "same_line_in_listcomp_first": "dwpy2:sha256:3b5d4ea892eb8458abd074e793d6f6fc35118bf1032530a8d16773d68bdcb96d",
-    "same_line_in_listcomp_second": "dwpy2:sha256:7bbdd2c46be01c6ce8ea970a2fa68f8cf17b8643a8d58b752e8cc6c21e27a641"
+    "same_line_in_listcomp_second": "dwpy2:sha256:7bbdd2c46be01c6ce8ea970a2fa68f8cf17b8643a8d58b752e8cc6c21e27a641",
+    "same_line_listcomp_body_first": "dwpy2:sha256:00ce99ef06cf9b60f5831755f511382ea0fc968bf840a5ce8975363612f8e877",
+    "same_line_listcomp_body_second": "dwpy2:sha256:00ce99ef06cf9b60f5831755f511382ea0fc968bf840a5ce8975363612f8e877",
+    "same_line_dictcomp_body_first": "dwpy2:sha256:940867da138c61a2bfcf8c892a11cc286f6575519260e6e453d6e1bff57c1208",
+    "same_line_dictcomp_body_second": "dwpy2:sha256:940867da138c61a2bfcf8c892a11cc286f6575519260e6e453d6e1bff57c1208",
+    "same_line_setcomp_body_first": "dwpy2:sha256:f7440ac9c37954c7265ed231940426db90d507250819b5f8cb9fb3bd2ceb4e7f",
+    "same_line_setcomp_body_second": "dwpy2:sha256:f7440ac9c37954c7265ed231940426db90d507250819b5f8cb9fb3bd2ceb4e7f"
   }
 }

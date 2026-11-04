@@ -74,9 +74,22 @@ class Approvals:
     def _same_line_in_listcomp(self) -> list[Callable[[], bool]]:
         return [(lambda: value > 0) if value else (lambda: not value) for value in [1, 0]]  # noqa: B023
 
+    def _same_line_listcomp_bodies(self) -> tuple[Callable[[], bool], Callable[[], bool]]:
+        return (lambda: any([n > 0 for n in self.items])), (lambda: any([n < 0 for n in self.items]))
+
+    def _same_line_dictcomp_bodies(self) -> tuple[Callable[[], bool], Callable[[], bool]]:
+        items = self.items
+        return (lambda: any({n: n > 0 for n in items}.values())), (lambda: any({n: n < 0 for n in items}.values()))
+
+    def _same_line_setcomp_bodies(self) -> tuple[Callable[[], bool], Callable[[], bool]]:
+        return (lambda: any({n > 0 for n in self.items})), (lambda: any({n < 0 for n in self.items}))
+
     def predicates(self) -> dict[str, Any]:
         first, second = self._same_line()
         positive, negative = self._same_line_in_listcomp()
+        list_first, list_second = self._same_line_listcomp_bodies()
+        dict_first, dict_second = self._same_line_dictcomp_bodies()
+        set_first, set_second = self._same_line_setcomp_bodies()
         return {
             "lambda": lambda: self.approved,
             "genexpr": lambda: any(n > 10 for n in self.items),
@@ -95,4 +108,10 @@ class Approvals:
             "lambda_in_setcomp": self._in_setcomp(),
             "same_line_in_listcomp_first": positive,
             "same_line_in_listcomp_second": negative,
+            "same_line_listcomp_body_first": list_first,
+            "same_line_listcomp_body_second": list_second,
+            "same_line_dictcomp_body_first": dict_first,
+            "same_line_dictcomp_body_second": dict_second,
+            "same_line_setcomp_body_first": set_first,
+            "same_line_setcomp_body_second": set_second,
         }

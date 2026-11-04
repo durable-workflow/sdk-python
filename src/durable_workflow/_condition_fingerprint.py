@@ -141,7 +141,14 @@ def _predicate_node(function: Any) -> str | None:
     if function.__name__ == "<lambda>":
         lambdas = [node for node in ast.walk(tree) if isinstance(node, ast.Lambda) and node.lineno == first_line]
         lambdas.sort(key=lambda node: node.col_offset)
-        if len(lambdas) > 1:
+        # PEP 709 moves comprehension instructions into the enclosing lambda.
+        # Candidates indistinguishable before 3.12 can become distinct after
+        # inlining, so keep the combined AST on every version in this case.
+        has_inlined_comprehension = any(
+            isinstance(child, ast.ListComp | ast.DictComp | ast.SetComp)
+            for node in lambdas for child in ast.walk(node)
+        )
+        if len(lambdas) > 1 and not has_inlined_comprehension:
             # Names and constants are stable across versions; bytecode only
             # breaks a tie, and is compared within this interpreter.
             matching = [node for node in lambdas if _compiles_to(node, code, compare_bytecode=False)]
