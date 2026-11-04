@@ -5210,6 +5210,8 @@ def _replay_state(
     # The recorded time of each ``wait_opened`` row, or None when history
     # carries no parseable time. A reopened wait keeps its first open's deadline.
     wait_opened_times: list[datetime | None] = []
+    # The history index of each ``wait_opened`` row.
+    wait_opened_event_indexes: list[int] = []
     # Map condition_wait_id → resolution: 'satisfied' (from ConditionWaitSatisfied
     # in history, future server-recorded) or 'timed_out' (from a matching
     # condition_timeout TimerFired event).
@@ -5758,6 +5760,7 @@ def _replay_state(
                     recorded_wait_steps.append(_recorded_step("condition wait", ev))
                     wait_opened.append(dict(payload))
                     wait_opened_times.append(_history_event_time(ev))
+                    wait_opened_event_indexes.append(event_index)
         elif etype == "ConditionWaitSatisfied":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
@@ -7073,6 +7076,36 @@ def _replay_state(
         except StopIteration as stop:
             return _terminal_state(stop.value, include_pending=True)
 
+    def _assert_reopen_within_first_timeout(first_index: int, reopen_index: int) -> None:
+        """A physical reopen keeps the first open's timeout or undercuts it.
+
+        Earlier SDKs reopened with the full timeout and later ones with the time
+        remaining, so a reopen may equal or undercut the first open. Anything
+        else, including a reopen that adds or drops the timeout, is not a
+        history this workflow code writes. This is the sdk-php#271 rule.
+        """
+        first = wait_opened[first_index].get("timeout_seconds")
+        reopen = wait_opened[reopen_index].get("timeout_seconds")
+        if first is None and reopen is None:
+            return
+        if (isinstance(first, int) and not isinstance(first, bool) and isinstance(reopen, int)
+                and not isinstance(reopen, bool) and reopen <= first):
+            return
+        sequence = wait_opened[reopen_index].get("sequence")
+        raise NonDeterministicReplayError(
+            sequence if isinstance(sequence, int) else current_call_sequence,
+            "condition wait reopen within its first open's timeout",
+            ["ConditionWaitOpened"],
+            detail="condition_wait_reopen_timeout_exceeded: a reopen records a longer timeout than the wait's "
+            "first open, or adds or drops it",
+        )
+
+    def _opened_before_terminal(next_index: int, opened: Mapping[str, Any] | None) -> bool:
+        """Whether the next open was recorded while *opened* was still open."""
+        wait_id = opened.get("condition_wait_id") if opened is not None else None
+        terminal = condition_wait_terminal_indexes.get(wait_id) if isinstance(wait_id, str) else None
+        return terminal is not None and wait_opened_event_indexes[next_index] < terminal
+
     def _reopened_with_remaining_timeout(command: WaitCondition, first_index: int) -> WaitCondition:
         """Reopen a logical wait with the time left before its first deadline.
 
@@ -7752,8 +7785,17 @@ def _replay_state(
                         and next_wait_index < len(wait_opened)
                         and _same_logical_condition_wait(wait_opened[next_wait_index], cmd)
                     )
-
                     if resolution == "timed_out":
+                        if has_reopened_same_wait and _opened_before_terminal(next_wait_index, opened):
+                            # The same wait was opened again while this one was
+                            # still open (a duplicate open, server#1015), so this
+                            # physical wait's later timeout does not end the
+                            # logical wait (#253, sdk-php#283). It is consumed
+                            # as a reopen, so the reopen bound applies (#248).
+                            _assert_reopen_within_first_timeout(first_open_index, next_wait_index)
+                            consumed_reopen_for_current_wait = True
+                            wait_yield_count = next_wait_index
+                            continue
                         terminal_condition_reopen_cmd = None
                         next_value = False
                         wait_yield_count += 1
@@ -7767,6 +7809,10 @@ def _replay_state(
                         )])
                     if resolution == "satisfied":
                         if has_reopened_same_wait and not satisfied:
+                            # Only an open consumed as a reopen is bounded (#248);
+                            # a later same-key wait after a true predicate is a
+                            # separate call with its own timeout.
+                            _assert_reopen_within_first_timeout(first_open_index, next_wait_index)
                             consumed_reopen_for_current_wait = True
                             wait_yield_count = next_wait_index
                             continue
@@ -7794,6 +7840,7 @@ def _replay_state(
                     # with the same key/fingerprint before declaring the
                     # logical wait still pending.
                     if has_reopened_same_wait:
+                        _assert_reopen_within_first_timeout(first_open_index, next_wait_index)
                         consumed_reopen_for_current_wait = True
                         wait_yield_count = next_wait_index
                         continue

@@ -6,6 +6,7 @@ from durable_workflow import serializer, workflow
 from durable_workflow.errors import NonDeterministicReplayError, QueryFailed
 from durable_workflow.workflow import (
     CompleteWorkflow,
+    ScheduleActivity,
     WaitCondition,
     WorkflowContext,
     query_state,
@@ -625,17 +626,6 @@ class TestReplayWaitCondition:
                     "condition_wait_id": "wait-finish",
                     "condition_key": "done",
                     "sequence": 22,
-                    "timeout_seconds": 30,
-                },
-            },
-            {
-                "event_type": "TimerScheduled",
-                "payload": {
-                    "timer_kind": "condition_timeout",
-                    "condition_wait_id": "wait-finish",
-                    "condition_key": "done",
-                    "sequence": 22,
-                    "delay_seconds": 30,
                 },
             },
         ]
@@ -674,17 +664,6 @@ class TestReplayWaitCondition:
                     "condition_wait_id": "wait-finish",
                     "condition_key": "done",
                     "sequence": 22,
-                    "timeout_seconds": 30,
-                },
-            },
-            {
-                "event_type": "TimerScheduled",
-                "payload": {
-                    "timer_kind": "condition_timeout",
-                    "condition_wait_id": "wait-finish",
-                    "condition_key": "done",
-                    "sequence": 22,
-                    "delay_seconds": 30,
                 },
             },
         ]
@@ -1377,6 +1356,18 @@ class TestWaitAfterATimedOutWait:
         assert isinstance(command, WaitCondition) and command.timeout_seconds == 271
 
 
+@workflow.defn(name="tests.replay.condition-longer-grace-after-timeout")
+class LongerGraceAfterTimeout(GraceAfterTimeout):
+    grace_seconds = 400
+
+
+def test_a_longer_grace_wait_after_a_timeout_is_a_separate_call() -> None:
+    # The 300 s wait timed out, so a 400 s wait with the same key is not a
+    # reopen and the reopen bound (#248) does not apply to it.
+    (command,) = replay(LongerGraceAfterTimeout, _timed_out_then_grace(400, "note"), []).commands
+    assert isinstance(command, WaitCondition) and command.timeout_seconds == 371
+
+
 def test_a_selection_condition_member_is_not_reopened_by_a_wrong_signal() -> None:
     # Ordinary parallel lists refuse WaitCondition. A condition inside
     # ctx.select is never re-sent while open, so its original timer keeps its
@@ -1394,3 +1385,192 @@ def test_a_selection_condition_member_is_not_reopened_by_a_wrong_signal() -> Non
         "payload_codec": serializer.AVRO_CODEC}}
     outcome = replay(DurableSelectionConditionSignalReplayWorkflow, [START, *opens, wrong], [])
     assert list(outcome.commands) == []
+
+
+# #248: a physical reopen never records more time than the wait's first open
+# (parity with sdk-php#271). Earlier SDKs reopened with the full timeout, later
+# ones with the remainder, so equal and shorter reopens replay.
+def _reopen_history(first: int | None, reopen: int | None) -> list[dict]:
+    def opened(wait_id: str, sequence: int, at: str, timeout: int | None) -> list[dict]:
+        events = _timed_open(wait_id, sequence, at, timeout=timeout or 0)
+        if timeout is None:
+            del events[0]["payload"]["timeout_seconds"]
+            events = events[:1]
+        return events
+
+    return [START, *opened("w1", 1, "2026-11-03T00:00:00+00:00", first),
+            _timed_signal("note", 1, "2026-11-03T00:02:00+00:00"),
+            *opened("w2", 2, "2026-11-03T00:02:01+00:00", reopen),
+            _timed_signal("note", 2, "2026-11-03T00:03:00+00:00")]
+
+
+@workflow.defn(name="tests.replay.condition-untimed-reopen")
+class UntimedApproval(RemainingTimeoutApproval):
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return (yield ctx.wait_condition(lambda: self.approved, key="approval"))
+
+
+class TestReopenTimeoutBound:
+    @pytest.mark.parametrize("reopen", [300, 179, 0])
+    def test_an_equal_or_shorter_reopen_replays(self, reopen: int) -> None:
+        assert _reopened_timeout(_reopen_history(300, reopen)) == 120
+
+    @pytest.mark.parametrize(("first", "reopen"), [(300, 301), (300, 600)])
+    def test_a_longer_reopen_is_refused(self, first: int, reopen: int) -> None:
+        with pytest.raises(NonDeterministicReplayError, match="condition_wait_reopen_timeout_exceeded") as raised:
+            replay(RemainingTimeoutApproval, _reopen_history(first, reopen), [])
+        assert raised.value.workflow_sequence == 2
+        assert str(reopen) not in str(raised.value)
+
+    def test_untimed_reopens_of_an_untimed_wait_replay(self) -> None:
+        (command,) = replay(UntimedApproval, _reopen_history(None, None), []).commands
+        assert isinstance(command, WaitCondition) and command.timeout_seconds is None
+
+    @pytest.mark.parametrize(("first", "reopen"), [(None, 60), (300, None)])
+    def test_a_reopen_that_adds_or_drops_the_timeout_is_refused(self, first: int | None, reopen: int | None) -> None:
+        # An untimed wait never records a timeout and a timed one never drops
+        # it, so either history comes from changed code (sdk-php#271).
+        workflow_cls = UntimedApproval if first is None else RemainingTimeoutApproval
+        with pytest.raises(NonDeterministicReplayError, match="condition_wait_reopen_timeout_exceeded"):
+            replay(workflow_cls, _reopen_history(first, reopen), [])
+
+
+# A same-key wait that follows a satisfied one is a separate call, so the
+# reopen bound (#248) does not apply to it, whatever its timeout.
+@workflow.defn(name="tests.replay.condition-two-approvals")
+class TwoApprovals:
+    first_timeout: int | None = 300
+    second_timeout: int | None = 400
+
+    def __init__(self) -> None:
+        self.approvals = 0
+
+    @workflow.signal("approve")
+    def approve(self) -> None:
+        self.approvals += 1
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        cls = type(self)
+        yield ctx.wait_condition(lambda: self.approvals >= 1, key="approval", timeout=cls.first_timeout)
+        yield ctx.wait_condition(lambda: self.approvals >= 2, key="approval", timeout=cls.second_timeout)
+        return self.approvals
+
+
+def _two_approvals_history(first: int | None, second: int | None, satisfied_recorded: bool) -> list[dict]:
+    def open_wait(wait_id: str, sequence: int, at: str, timeout: int | None) -> dict:
+        payload: dict = {"condition_wait_id": wait_id, "condition_key": "approval", "sequence": sequence}
+        if timeout is not None:
+            payload["timeout_seconds"] = timeout
+        return {"event_type": "ConditionWaitOpened", "recorded_at": at, "payload": payload}
+
+    history = [START, open_wait("w1", 1, "2026-11-03T00:00:00+00:00", first),
+               _timed_signal("approve", 1, "2026-11-03T00:00:10+00:00")]
+    if satisfied_recorded:
+        history.append({"event_type": "ConditionWaitSatisfied", "recorded_at": "2026-11-03T00:00:10+00:00",
+                        "payload": {"condition_wait_id": "w1", "condition_key": "approval", "sequence": 1}})
+    history.append(open_wait("w2", 2, "2026-11-03T00:00:11+00:00", second))
+    return history
+
+
+@pytest.mark.parametrize("satisfied_recorded", [True, False])
+@pytest.mark.parametrize(("first", "second"), [(300, 400), (None, 60), (300, None)],
+                         ids=["longer", "added", "dropped"])
+def test_a_separate_wait_after_a_satisfied_one_keeps_its_own_timeout(
+    first: int | None, second: int | None, satisfied_recorded: bool,
+) -> None:
+    TwoApprovals.first_timeout, TwoApprovals.second_timeout = first, second
+    try:
+        (command,) = replay(TwoApprovals, _two_approvals_history(first, second, satisfied_recorded), []).commands
+    finally:
+        TwoApprovals.first_timeout, TwoApprovals.second_timeout = 300, 400
+    assert isinstance(command, WaitCondition) and command.condition_key == "approval"
+    assert command.timeout_seconds == second
+
+
+# #253 (sdk-php#283): an orphaned duplicate open whose timer fires later does
+# not end the logical wait. Server 3.0.x can record a second open of the same
+# wait while the first is still open (server#1015); the first's timer stays live.
+@workflow.defn(name="tests.replay.condition-orphaned-duplicate")
+class OrphanedDuplicateDecision:
+    def __init__(self) -> None:
+        self.decided = False
+
+    @workflow.signal("decision")
+    def decision(self, approved: bool) -> None:
+        self.decided = bool(approved)
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        decided = yield ctx.wait_condition(lambda: self.decided, key="decision-1", timeout=300)
+        if not decided:
+            yield ctx.schedule_activity("expire-proposal", [])
+            return "expired"
+        return "decided"
+
+
+def _orphaned_duplicate_history(reopen: int, orphan_fired: bool) -> list[dict]:
+    def open_wait(wait_id: str, sequence: int, at: str, timeout: int) -> list[dict]:
+        return [
+            {"event_type": "ConditionWaitOpened", "recorded_at": at, "payload": {
+                "condition_wait_id": wait_id, "condition_key": "decision-1", "sequence": sequence,
+                "timeout_seconds": timeout}},
+            {"event_type": "TimerScheduled", "recorded_at": at, "payload": {
+                "timer_kind": "condition_timeout", "condition_wait_id": wait_id, "condition_key": "decision-1",
+                "sequence": sequence, "delay_seconds": timeout}},
+        ]
+
+    history = [
+        {"event_type": "WorkflowStarted", "recorded_at": "2026-11-04T04:07:36.890000+00:00", "payload": {}},
+        *open_wait("w3", 1, "2026-11-04T04:07:36.890000+00:00", 300),
+        *open_wait("w4", 2, "2026-11-04T04:07:36.908000+00:00", 300),
+        {"event_type": "SignalReceived", "recorded_at": "2026-11-04T04:09:36.979000+00:00", "payload": {
+            "signal_name": "decision", "value": serializer.envelope([False]), "payload_codec": serializer.AVRO_CODEC,
+            "workflow_sequence": 2}},
+        {"event_type": "ConditionWaitSatisfied", "recorded_at": "2026-11-04T04:09:37.008000+00:00", "payload": {
+            "condition_wait_id": "w4", "condition_key": "decision-1", "sequence": 2}},
+        {"event_type": "TimerCancelled", "recorded_at": "2026-11-04T04:09:37.008000+00:00", "payload": {
+            "timer_kind": "condition_timeout", "condition_wait_id": "w4", "sequence": 2}},
+        *open_wait("w5", 3, "2026-11-04T04:09:37.010000+00:00", reopen),
+    ]
+    if orphan_fired:
+        history.append({"event_type": "TimerFired", "recorded_at": "2026-11-04T04:12:36.956000+00:00", "payload": {
+            "timer_kind": "condition_timeout", "condition_wait_id": "w3", "condition_key": "decision-1",
+            "sequence": 1}})
+    return history
+
+
+class TestOrphanedDuplicateWait:
+    @pytest.mark.parametrize("reopen", [300, 180])
+    def test_the_orphans_timer_does_not_end_the_reopened_wait(self, reopen: int) -> None:
+        (command,) = replay(OrphanedDuplicateDecision, _orphaned_duplicate_history(reopen, True), []).commands
+        # The logical wait is still the reopened one; its first deadline has passed.
+        assert isinstance(command, WaitCondition) and command.timeout_seconds == 0
+
+    @pytest.mark.parametrize("reopen", [300, 180])
+    def test_before_the_orphan_fires_the_wait_reopens_with_the_remaining_time(self, reopen: int) -> None:
+        (command,) = replay(OrphanedDuplicateDecision, _orphaned_duplicate_history(reopen, False), []).commands
+        assert isinstance(command, WaitCondition) and command.timeout_seconds == 180
+
+    def test_the_reopened_waits_own_timeout_expires_the_decision(self) -> None:
+        history = _orphaned_duplicate_history(180, True) + [
+            {"event_type": "TimerFired", "recorded_at": "2026-11-04T04:12:37.216000+00:00", "payload": {
+                "timer_kind": "condition_timeout", "condition_wait_id": "w5", "condition_key": "decision-1",
+                "sequence": 3}},
+        ]
+        (command,) = replay(OrphanedDuplicateDecision, history, []).commands
+        assert isinstance(command, ScheduleActivity) and command.activity_type == "expire-proposal"
+
+
+@pytest.mark.parametrize("duplicate_timeout", [600, None], ids=["longer", "dropped"])
+@pytest.mark.parametrize("orphan_fired", [False, True], ids=["before-orphan-fires", "after-orphan-fires"])
+def test_an_orphans_duplicate_open_is_bounded_like_any_reopen(
+    duplicate_timeout: int | None, orphan_fired: bool,
+) -> None:
+    history = _orphaned_duplicate_history(180, orphan_fired)
+    duplicate = history[3]["payload"]
+    assert duplicate["condition_wait_id"] == "w4"
+    if duplicate_timeout is None:
+        del duplicate["timeout_seconds"]
+    else:
+        duplicate["timeout_seconds"] = duplicate_timeout
+    with pytest.raises(NonDeterministicReplayError, match="condition_wait_reopen_timeout_exceeded"):
+        replay(OrphanedDuplicateDecision, history, [])
