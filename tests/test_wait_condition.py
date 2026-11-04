@@ -250,7 +250,8 @@ class TestCtxWaitCondition:
         assert cmd.condition_key == "k"
         assert cmd.timeout_seconds == 5
         assert cmd.condition_definition_fingerprint is not None
-        assert cmd.condition_definition_fingerprint.startswith("sha256:")
+        # v2: stable across Python versions and processes (#258).
+        assert cmd.condition_definition_fingerprint.startswith("dwpy2:sha256:")
         assert callable(cmd.predicate)
         assert cmd.predicate() is False
 
