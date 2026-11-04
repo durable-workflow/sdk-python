@@ -203,9 +203,13 @@ def _type_workflow_methods(cls: type) -> None:
         if attr.startswith("_"):
             continue
         member = getattr(cls, attr, None)
-        if inspect.isfunction(member) and any(
-            isinstance(getattr(member, f"__{kind}_name__", None), str) for kind in _TYPED_HANDLER_KINDS
-        ):
+        if not any(isinstance(getattr(member, f"__{kind}_name__", None), str) for kind in _TYPED_HANDLER_KINDS):
+            continue
+        if isinstance(inspect.getattr_static(cls, attr), staticmethod | classmethod):
+            raise TypeError(
+                f"typed workflow {cls.__qualname__}.{attr}: handlers must be instance methods to decode arguments"
+            )
+        if inspect.isfunction(member):
             setattr(cls, attr, typed_method(member, 1))
 
 
@@ -1761,7 +1765,10 @@ def _condition_predicate_fingerprint(predicate: Callable[[], bool]) -> str:
     h.update(f"{getattr(predicate, '__module__', '')}\0".encode())
     h.update(f"{getattr(predicate, '__qualname__', '')}\0".encode())
 
-    code = getattr(predicate, "__code__", None)
+    # A typed=True wrapper is fingerprinted as the method it wraps, so turning
+    # typed on does not change a recorded predicate's identity (#184).
+    original = getattr(predicate, "__typed_workflow_method__", None)
+    code = getattr(original if original is not None else predicate, "__code__", None)
     if code is None:
         h.update(repr(predicate).encode())
     else:

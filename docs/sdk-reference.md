@@ -1030,6 +1030,31 @@ Dataclass and `Enum` values are also sent as neutral values when they are
 client workflow, signal, update, query or schedule arguments, child or
 continue-as-new arguments, or workflow and update results.
 
+Where a mismatch surfaces, by surface:
+
+| Surface | What a `TypedValueError` does |
+| --- | --- |
+| `typed=True` activity argument | Fails the activity without retries. |
+| `result_type` on an activity or child | Raised at the `yield`; workflow code can catch it. In `ctx.select`, it is the winner's `failure`. |
+| `run` argument of a `typed=True` workflow | Fails the workflow run. |
+| Signal argument of a `typed=True` workflow | Raised in the signal handler during replay, so it fails the workflow run. |
+| Update or update-validator argument | Fails or rejects that update; the run continues. |
+| Query argument | Fails that query. |
+| Client `result_type` | Raised by `handle.result(...)`; the workflow itself is unaffected. |
+
+Turning on `typed=True` does not change a recorded `wait_condition` predicate:
+a handler with nothing to decode is left unwrapped, and a wrapped handler is
+fingerprinted as the method it wraps. Handlers must be instance methods;
+`staticmethod` and `classmethod` handlers raise `TypeError` under
+`typed=True`.
+
+**Changing a dataclass while runs are in flight.** Replay decodes recorded
+payloads with the current code. Adding a field is safe only with a default (or
+`default_factory`); a new required field makes replay of older payloads fail
+with `TypedValueError`, which fails the run or the activity as described above.
+Removing or renaming a field drops that recorded key silently, because
+undeclared keys are ignored.
+
 Supported annotations: dataclasses, `Enum` (including `IntEnum` and `StrEnum`,
 which come back as their class), `Optional[T]` / `T | None`, `list[T]`,
 `dict[str, T]`, `str`, `int`, `float` (an integer is accepted), `bool`, `bytes`

@@ -89,10 +89,11 @@ class UntypedOnboarding:
         self.approval: dict[str, Any] | None = None
 
     @workflow.signal("approve")
-    def approve(self, approval: dict[str, Any]) -> None:
-        self.approval = approval
+    def approve(self, approval: Approval) -> None:
+        # Annotated but untyped: it must still receive the plain map.
+        self.approval = approval  # type: ignore[assignment]
 
-    def run(self, ctx: WorkflowContext, customer: dict[str, Any]):  # type: ignore[no-untyped-def]
+    def run(self, ctx: WorkflowContext, customer: Customer):  # type: ignore[no-untyped-def]
         account = yield ctx.start_child_workflow("tests.accounts.open", [customer])
         yield ctx.wait_condition(lambda: self.approval is not None, key="approval")
         assert self.approval is not None
@@ -201,3 +202,58 @@ async def test_the_client_decodes_a_result_type_and_sends_neutral_arguments() ->
     envelope = client._payload_envelope([ADA, Tier.GOLD], kind="workflow_input", workflow_id="wf", task_queue="q")
     assert envelope == serializer.envelope([ADA_NEUTRAL, "gold"])
     await client.aclose()
+
+
+# A predicate's recorded fingerprint must not change when typed=True is turned
+# on (#255 review): zero-arg handlers stay unwrapped, and a wrapped handler is
+# fingerprinted as the method it wraps.
+@workflow.defn(name="tests.replay.typed-predicate-fingerprint", typed=True)
+class TypedPredicate:
+    def __init__(self) -> None:
+        self.approvals: list[Approval] = []
+
+    @workflow.signal("approve")
+    def approve(self, approval: Approval) -> None:
+        self.approvals.append(approval)
+
+    @workflow.query("is_done")
+    def is_done(self) -> bool:
+        return bool(self.approvals)
+
+    @workflow.query("ready")
+    def ready(self, minimum: int = 2) -> bool:
+        return len(self.approvals) >= minimum
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.wait_condition(self.is_done, key="done")
+        yield ctx.wait_condition(self.ready, key="ready")
+        return [approval.approver for approval in self.approvals]
+
+
+PREDICATE_CORPUS = CORPUS.parent / "typed-predicate-fingerprint-opt-in.json"
+
+
+def test_typed_true_keeps_recorded_predicate_fingerprints() -> None:
+    from durable_workflow.workflow import _condition_predicate_fingerprint
+
+    instance = TypedPredicate()
+    # A zero-arg handler is not wrapped at all.
+    assert not hasattr(TypedPredicate.is_done, "__typed_workflow_method__")
+    # A wrapped handler keeps the fingerprint of the method it wraps.
+    original = TypedPredicate.ready.__typed_workflow_method__  # type: ignore[attr-defined]
+    assert _condition_predicate_fingerprint(instance.ready) == _condition_predicate_fingerprint(
+        original.__get__(instance))
+    fixture = json.loads(PREDICATE_CORPUS.read_text(encoding="utf-8"))
+    (command,) = replay(TypedPredicate, fixture["history"], [], payload_codec="avro").commands
+    assert command == CompleteWorkflow(fixture["expected"]["result"])
+
+
+@pytest.mark.parametrize("kind", [staticmethod, classmethod])
+def test_static_and_class_method_handlers_are_refused_when_typed(kind: Any) -> None:
+    def approve(*args: Any) -> None:
+        return None
+
+    approve.__signal_name__ = "approve"  # type: ignore[attr-defined]
+    namespace = {"approve": kind(approve), "run": lambda self, ctx: None}
+    with pytest.raises(TypeError, match="handlers must be instance methods"):
+        workflow.defn(name=f"tests.typed.{kind.__name__}-handler", typed=True)(type("StaticHandler", (), namespace))

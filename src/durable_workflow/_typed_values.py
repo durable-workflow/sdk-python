@@ -255,8 +255,14 @@ def to_payload_values(values: list[Any]) -> list[Any]:
     return [to_payload_value(value) for value in values]
 
 
-def _positional_decoder(fn: Callable[..., Any], skip: int, where: str) -> Callable[[tuple[Any, ...]], list[Any]]:
-    """Build a decoder for *fn*'s positional arguments after the first *skip*."""
+def _positional_decoder(
+    fn: Callable[..., Any], skip: int, where: str,
+) -> Callable[[tuple[Any, ...]], list[Any]] | None:
+    """Build a decoder for *fn*'s positional arguments after the first *skip*.
+
+    Returns None when no argument needs decoding (none, or only ``Any`` /
+    unannotated ones), so the caller can leave *fn* unwrapped.
+    """
     signature = inspect.signature(fn)
     try:
         hints = get_type_hints(fn)
@@ -272,6 +278,10 @@ def _positional_decoder(fn: Callable[..., Any], skip: int, where: str) -> Callab
         elif parameter.kind is inspect.Parameter.VAR_POSITIONAL:
             validate_annotation(annotation, parameter.name)
             variadic = (parameter.name, annotation)
+
+    annotations = [annotation for _, annotation in positional] + ([variadic[1]] if variadic is not None else [])
+    if all(annotation in _PASS_THROUGH for annotation in annotations):
+        return None
 
     def convert(args: tuple[Any, ...]) -> list[Any]:
         converted: list[Any] = []
@@ -297,7 +307,11 @@ def typed_callable(fn: Callable[..., Any]) -> Callable[..., Any]:
     the decorator binds that name to the wrapper, so supervised callbacks that
     pickle by reference resolve to it.
     """
-    convert = _positional_decoder(fn, 0, "typed activity")
+    decoder = _positional_decoder(fn, 0, "typed activity")
+
+    def convert(args: tuple[Any, ...]) -> list[Any]:
+        return list(args) if decoder is None else decoder(args)
+
     wrapper: Any
     if inspect.iscoroutinefunction(fn):
 
@@ -323,8 +337,13 @@ def typed_method(fn: Callable[..., Any], skip: int) -> Callable[..., Any]:
     ``skip`` is 1 for handlers (``self``) and 2 for ``run`` (``self, ctx``). A
     generator ``run`` stays a generator. Results are returned unchanged; the
     commands that carry them send dataclass and Enum values as neutral values.
+    A method with nothing to decode is returned unwrapped.
     """
     convert = _positional_decoder(fn, skip, "typed workflow method")
+    if convert is None:
+        # Nothing to decode: keep the original function, so a handler used as a
+        # wait_condition predicate keeps its recorded fingerprint.
+        return fn
     wrapper: Any
     if inspect.isgeneratorfunction(fn):
 
