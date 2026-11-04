@@ -28,6 +28,10 @@ _LEGACY = re.compile(r"sha256:[0-9a-f]{64}\Z")
 # Fields that carry no predicate meaning or differ between Python versions.
 _SKIPPED_FIELDS = frozenset({"ctx", "kind", "type_comment", "type_params", "decorator_list", "returns"})
 _parsed: dict[tuple[str, int], ast.Module | None] = {}
+_nodes: dict[Any, str | None] = {}
+# Python 3.12 inlines list, dict and set comprehensions (PEP 709), which drops
+# their segment from a nested function's __qualname__.
+_INLINED_COMPREHENSION = re.compile(r"\.<(?:listcomp|dictcomp|setcomp)>")
 
 Verdict = Literal["match", "mismatch", "unverifiable"]
 
@@ -63,13 +67,17 @@ def fingerprint(predicate: Callable[[], bool]) -> str | None:
     function = _authored_function(predicate)
     if function is None:
         return None
-    node = _predicate_node(function)
+    code = function.__code__
+    if code not in _nodes:
+        _nodes[code] = _predicate_node(function)
+    node = _nodes[code]
     if node is None:
         return None
+    qualname = _INLINED_COMPREHENSION.sub("", getattr(function, "__qualname__", ""))
     h = hashlib.sha256()
     h.update(b"durable-workflow-python.wait-condition.v2\0")
     h.update(f"{getattr(function, '__module__', '')}\0".encode())
-    h.update(f"{getattr(function, '__qualname__', '')}\0".encode())
+    h.update(f"{qualname}\0".encode())
     h.update(node.encode())
     return f"{V2_PREFIX}{h.hexdigest()}"
 
@@ -134,7 +142,11 @@ def _predicate_node(function: Any) -> str | None:
         lambdas = [node for node in ast.walk(tree) if isinstance(node, ast.Lambda) and node.lineno == first_line]
         lambdas.sort(key=lambda node: node.col_offset)
         if len(lambdas) > 1:
-            matching = [node for node in lambdas if _compiles_to(node, code)]
+            # Names and constants are stable across versions; bytecode only
+            # breaks a tie, and is compared within this interpreter.
+            matching = [node for node in lambdas if _compiles_to(node, code, compare_bytecode=False)]
+            if len(matching) > 1:
+                matching = [node for node in matching if _compiles_to(node, code, compare_bytecode=True)]
             if len(matching) == 1:
                 lambdas = matching
         if not lambdas:
@@ -152,7 +164,7 @@ def _predicate_node(function: Any) -> str | None:
     return _canonical(definitions[0])
 
 
-def _compiles_to(node: ast.Lambda, code: Any) -> bool:
+def _compiles_to(node: ast.Lambda, code: Any, *, compare_bytecode: bool) -> bool:
     """Whether *node* compiles to *code* on this interpreter.
 
     The candidate is compiled inside a function that binds the live code's
@@ -175,7 +187,8 @@ def _compiles_to(node: ast.Lambda, code: Any) -> bool:
         None,
     )
     return candidate is not None and (
-        candidate.co_code == code.co_code
+        (not compare_bytecode or candidate.co_code == code.co_code)
+        and candidate.co_argcount == code.co_argcount
         and candidate.co_names == code.co_names
         and candidate.co_varnames == code.co_varnames
         and candidate.co_freevars == code.co_freevars

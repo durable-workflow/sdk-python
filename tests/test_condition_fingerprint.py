@@ -207,3 +207,51 @@ def test_two_lambdas_on_one_line_get_their_own_fingerprints() -> None:
     assert GOLDEN["fingerprints"]["same_line_first"] != GOLDEN["fingerprints"]["same_line_second"]
     assert fingerprint(predicates["same_line_first"]) == GOLDEN["fingerprints"]["same_line_first"]
     assert fingerprint(predicates["same_line_second"]) == GOLDEN["fingerprints"]["same_line_second"]
+
+
+def test_inlined_comprehension_segments_are_dropped_from_the_qualname() -> None:
+    # 3.11 names a lambda in a list comprehension f.<locals>.<listcomp>.<lambda>;
+    # 3.12 inlines the comprehension (PEP 709) and names it f.<locals>.<lambda>.
+    predicates = Approvals().predicates()
+    for name in ("lambda_in_listcomp", "lambda_in_dictcomp", "lambda_in_setcomp"):
+        assert fingerprint(predicates[name]) == GOLDEN["fingerprints"][name]
+
+
+# A keyless wait without source (eval, .pyc-only) still links its false-wake
+# reopen within its chain, as 2.14.0 did with its process-local v1.
+@workflow.defn(name="tests.fingerprint.keyless-no-source")
+class KeylessNoSource:
+    def __init__(self) -> None:
+        self.approved = False
+
+    @workflow.signal("approve")
+    def approve(self) -> None:
+        self.approved = True
+
+    @workflow.signal("note")
+    def note(self) -> None:
+        return None
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.wait_condition(eval("lambda self=self: self.approved"))  # noqa: S307
+        return "approved"
+
+
+def test_a_keyless_wait_without_source_links_its_false_wake_reopen() -> None:
+    history = [START, _opened("w1", 1, None, 1), _signal("note", 1, 2), _satisfied("w1", 1, 2),
+               _opened("w2", 2, None, 3), _signal("approve", 2, 4), _satisfied("w2", 2, 4)]
+    assert list(replay(KeylessNoSource, history, []).commands) == [CompleteWorkflow("approved")]
+
+
+def test_a_keyless_wait_without_source_reopens_without_a_fingerprint() -> None:
+    (command,) = replay(KeylessNoSource, [START, _opened("w1", 1, None, 1), _signal("note", 1, 2)], []).commands
+    assert isinstance(command, WaitCondition) and command.condition_definition_fingerprint is None
+
+
+def test_terminal_cleanup_links_a_trailing_v1_duplicate_within_its_chain() -> None:
+    # A v1 keyless chain (opened before the upgrade, reopened with the same v1),
+    # then a trailing duplicate open recorded by a second queued task.
+    history = [START, _opened("w1", 1, FOREIGN_V1, 1), _signal("note", 1, 2), _satisfied("w1", 1, 2),
+               _opened("w2", 2, FOREIGN_V1, 3), _signal("approve", 2, 4), _satisfied("w2", 2, 4),
+               _opened("w3", 3, FOREIGN_V1, 5)]
+    assert list(replay(KeylessApproval, history, []).commands) == [CompleteWorkflow("approved")]

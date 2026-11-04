@@ -60,8 +60,23 @@ class Approvals:
 
         return ready
 
+    # Python 3.12 inlines list, dict and set comprehensions (PEP 709), so the
+    # comprehension disappears from these lambdas' __qualname__.
+    def _in_listcomp(self) -> Callable[[], bool]:
+        return [lambda: self.approved for _ in range(1)][0]
+
+    def _in_dictcomp(self) -> Callable[[], bool]:
+        return {key: lambda: bool(self.items) for key in ["only"]}["only"]
+
+    def _in_setcomp(self) -> Callable[[], bool]:
+        return next(iter({lambda: len(self.items) > 1 for _ in range(1)}))
+
+    def _same_line_in_listcomp(self) -> list[Callable[[], bool]]:
+        return [(lambda: value > 0) if value else (lambda: not value) for value in [1, 0]]  # noqa: B023
+
     def predicates(self) -> dict[str, Any]:
         first, second = self._same_line()
+        positive, negative = self._same_line_in_listcomp()
         return {
             "lambda": lambda: self.approved,
             "genexpr": lambda: any(n > 10 for n in self.items),
@@ -75,4 +90,9 @@ class Approvals:
             "bound_genexpr_method": self.has_large,
             "inner_def": self._inner(),
             "typed_wrapper": TypedReady().ready,
+            "lambda_in_listcomp": self._in_listcomp(),
+            "lambda_in_dictcomp": self._in_dictcomp(),
+            "lambda_in_setcomp": self._in_setcomp(),
+            "same_line_in_listcomp_first": positive,
+            "same_line_in_listcomp_second": negative,
         }

@@ -6085,7 +6085,16 @@ def _replay_state(
 
         opened_fingerprint = opened.get("condition_definition_fingerprint")
         if not isinstance(opened_fingerprint, str) or not opened_fingerprint:
-            return False
+            # A keyless wait without source has no identity beyond call order.
+            # Within its own chain (both opens recorded without a fingerprint)
+            # it is the same wait, as 2.14.0 linked it by its process-local v1.
+            first_fingerprint = (
+                chain_first.get("condition_definition_fingerprint") if chain_first is not None else "absent"
+            )
+            return (
+                cmd.condition_definition_fingerprint is None and not cmd.condition_key
+                and chain_first is not None and not first_fingerprint
+            )
         verdict = _fingerprint_verdict(opened, cmd)
         if verdict == "match":
             return True
@@ -6167,6 +6176,8 @@ def _replay_state(
     pending: list[Command] = []
     advanced_cmd: Any = None
     terminal_condition_reopen_cmd: WaitCondition | None = None
+    # The first open of the chain a terminal reopen cleanup belongs to (#258).
+    terminal_condition_chain_first: Mapping[str, Any] | None = None
     version_decisions: dict[str, int] = {}
 
     def _version_error(detail: str, step: _RecordedStep | None = None) -> NonDeterministicReplayError:
@@ -6742,7 +6753,9 @@ def _replay_state(
             return
         while wait_yield_count < len(wait_opened):
             opened = wait_opened[wait_yield_count]
-            if not _same_logical_condition_wait(opened, terminal_condition_reopen_cmd):
+            if not _same_logical_condition_wait(
+                opened, terminal_condition_reopen_cmd, chain_first=terminal_condition_chain_first,
+            ):
                 break
             opened_id = opened.get("condition_wait_id")
             if not isinstance(opened_id, str):
@@ -7839,6 +7852,7 @@ def _replay_state(
                             if has_reopened_same_wait and consumed_reopen_for_current_wait
                             else None
                         )
+                        terminal_condition_chain_first = wait_opened[first_open_index]
                         next_value = True
                         wait_yield_count += 1
                         break
@@ -7848,6 +7862,7 @@ def _replay_state(
                             if has_reopened_same_wait and consumed_reopen_for_current_wait
                             else None
                         )
+                        terminal_condition_chain_first = wait_opened[first_open_index]
                         next_value = True
                         wait_yield_count += 1
                         break

@@ -13,6 +13,11 @@
     "bound_method": "dwpy2:sha256:4b9aabe93ef8c48c2f05481ccb92f743da7c19b76104816c4a3f12ab32d741b9",
     "bound_genexpr_method": "dwpy2:sha256:9bbb6600801559c28420aa32085bfdc76ceef33e03c2d9194d2edb507053c934",
     "inner_def": "dwpy2:sha256:7be3326bb020ab50b9d1bad496b395551db90324bf6b0b0af9fe888e9dcfdd84",
-    "typed_wrapper": "dwpy2:sha256:f5f8904a70119a2f2999a4a256bc42549f48aca0c74c47ab42d256db852b919a"
+    "typed_wrapper": "dwpy2:sha256:f5f8904a70119a2f2999a4a256bc42549f48aca0c74c47ab42d256db852b919a",
+    "lambda_in_listcomp": "dwpy2:sha256:f8f58909db214449f4f0e7fbe94937b06bf98c83bb0c995563352f1d760fdb80",
+    "lambda_in_dictcomp": "dwpy2:sha256:a9ff285d478d5859d137782384a0df64f3f7236a8601ee25278b5e750def4e3d",
+    "lambda_in_setcomp": "dwpy2:sha256:4d998d02bda534ead4a89dacb82846aaf72c96624aad0c68516c11653f3fe55f",
+    "same_line_in_listcomp_first": "dwpy2:sha256:3b5d4ea892eb8458abd074e793d6f6fc35118bf1032530a8d16773d68bdcb96d",
+    "same_line_in_listcomp_second": "dwpy2:sha256:7bbdd2c46be01c6ce8ea970a2fa68f8cf17b8643a8d58b752e8cc6c21e27a641"
   }
 }
