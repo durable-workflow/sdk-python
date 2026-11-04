@@ -4911,6 +4911,13 @@ class TestWorkerHeartbeats:
     async def test_run_drives_periodic_heartbeats_with_slot_state(
         self, mock_client: AsyncMock
     ) -> None:
+        heartbeat_sent = asyncio.Event()
+
+        async def heartbeat(**kwargs: object) -> dict[str, bool]:
+            heartbeat_sent.set()
+            return {"acknowledged": True}
+
+        mock_client.heartbeat_worker = AsyncMock(side_effect=heartbeat)
         worker = Worker(
             mock_client,
             task_queue="q1",
@@ -4922,11 +4929,13 @@ class TestWorkerHeartbeats:
             heartbeat_interval=0.05,
         )
         run_task = asyncio.create_task(worker.run())
-        await asyncio.sleep(0.2)
-        await worker.stop()
-        run_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await run_task
+        try:
+            await asyncio.wait_for(heartbeat_sent.wait(), timeout=2)
+        finally:
+            await worker.stop()
+            run_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
 
         assert mock_client.heartbeat_worker.call_count >= 1
         kwargs = mock_client.heartbeat_worker.call_args.kwargs
