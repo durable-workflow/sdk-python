@@ -226,6 +226,46 @@ receipt = yield ctx.start_child_workflow(
 )
 ```
 
+## Activity execution identity (unreleased)
+
+Inside an activity, `activity.context().info.activity_execution_id` exposes the
+logical execution ID received from Server. `workflow_id` and `run_id` identify
+its owning workflow and run. The execution ID is the idempotency key for the
+logical call across retries. `task_id` and `activity_attempt_id` identify an
+attempt and must not replace it.
+
+Use the received key when calling an external service that supports idempotency:
+
+```python
+from durable_workflow import activity
+from durable_workflow.errors import NonRetryableError
+
+
+def current_idempotency_key() -> str:
+    execution_id = activity.context().info.activity_execution_id
+    if execution_id is None:
+        raise NonRetryableError("this operation requires a Server activity execution ID")
+    return execution_id
+```
+
+Pass that key to the external service's idempotency mechanism. Keep different
+external operations within one activity distinguishable using your own stable
+operation suffix. Idempotency still depends on the external service honoring
+the key.
+
+The accessor is read-only. Missing, invalid or blank execution IDs are `None`,
+including on older claims, and are never derived from task, attempt or session
+IDs. Nonblank received strings are preserved exactly. Session-routed activities
+use their ordinary activity claim identity. Prepared local activities expose the
+validated admission receipt's execution ID. Inline local activities have no
+admitted execution ID and expose `None`, while retaining their parent workflow
+and run IDs. Server-free mocks do not create Server activity identity.
+
+This source addition is unreleased and is outside the current typed-value
+release candidate. Published-package retry identity and execution-guarantees
+guide acceptance remain tracked in
+[the shared identity issue](https://github.com/durable-workflow/.github/issues/211).
+
 ## Local activities
 
 Use a local activity for short work that should run in the workflow worker

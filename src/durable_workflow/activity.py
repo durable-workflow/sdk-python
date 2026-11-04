@@ -82,6 +82,7 @@ class ActivityInfo:
     retry_info: ActivityRetryInfo = field(init=False)
     workflow_id: str | None = field(init=False)
     run_id: str | None = field(init=False)
+    activity_execution_id: str | None = field(init=False)
 
     def __post_init__(self, task_metadata: Mapping[str, Any] | None) -> None:
         task = task_metadata if task_metadata is not None else {}
@@ -89,6 +90,9 @@ class ActivityInfo:
         for name in ("workflow_id", "run_id"):
             value = task.get(name)
             object.__setattr__(self, name, value if isinstance(value, str) and value else None)
+        execution_id = task.get("activity_execution_id")
+        object.__setattr__(self, "activity_execution_id",
+                           execution_id if isinstance(execution_id, str) and execution_id.strip() else None)
 
 
 class ActivityContext:

@@ -416,18 +416,20 @@ async def test_worker_runs_only_an_admitted_process_then_replays_canonical_resul
     await wait_for_exit(int((tmp_path / "callback").read_text()))
 
 
-async def test_prepared_local_activity_preserves_parent_context_only(
+async def test_prepared_local_activity_preserves_admitted_execution_and_parent_context(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     server = PreparedServer()
     worker = await server.worker(monkeypatch, handler=inspect_activity_context)
     task = server.task(tmp_path / "unused")
     task["retry_policy"] = {"max_attempts": 9}
+    task["activity_execution_id"] = "unrelated-parent-metadata"
     try:
         commands = await worker._run_workflow_task(task)
         assert commands is not None and [command["type"] for command in commands] == ["complete_workflow"]
         assert serializer.decode_envelope(commands[0]["result"]) == {
-            "workflow_id": "workflow-1", "run_id": "run-1", "attempt": 1, "policy_provided": False,
+            "workflow_id": "workflow-1", "run_id": "run-1", "activity_execution_id": "execution",
+            "attempt": 1, "policy_provided": False,
             "policy": None, "maximum": None, "unlimited": False, "last": None,
         }
         server.client.fail_workflow_task.assert_not_awaited()

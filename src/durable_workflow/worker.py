@@ -2145,7 +2145,8 @@ class Worker:
             handler, tuple(call.command.arguments), ActivityInfo(
                 task_id, call.command.activity_type, attempt.attempt_id, attempt.attempt_number,
                 self.task_queue, self.worker_id,
-                task_metadata={"workflow_id": task.get("workflow_id"), "run_id": task.get("run_id")},
+                task_metadata={"workflow_id": task.get("workflow_id"), "run_id": task.get("run_id"),
+                               "activity_execution_id": attempt.execution_id},
             ), {**task, "activity_attempt_id": attempt.attempt_id}, self.interceptors,
             namespace=getattr(self.client, "namespace", None),
             execution_context=telemetry.capture() if telemetry is not None else None,
