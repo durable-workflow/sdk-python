@@ -6,11 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.15.0] - 2026-11-04
-
 ### Added
 
 - Lazy `Client.iter_workflows`, `Client.iter_history` and `WorkflowHandle.iter_history` follow opaque page tokens while retaining only the current page and bounded cursor bookkeeping. They preserve run/filter/namespace identity, follow empty continued pages, stop on early close, and surface HTTP, cancellation and invalid/cyclic cursor errors. Existing one-page methods keep their contracts. (durable-workflow/.github#247)
+
+## [2.15.0] - 2026-11-04
+
+### Added
 
 - Worker schedule-to-start histogram `durable_workflow_worker_task_schedule_to_start_seconds` for workflow and activity dispatches, tagged only with `task_kind` and `task_queue`. It requires Server's `claimed_task_ready_age` capability and a valid integer `ready_age_ms`, records Server-computed milliseconds as seconds, preserves real zero and omits missing/invalid samples. The shared metrics contract is pinned at revision 2. Published-Server and installed-package acceptance remains pending in #188.
 
