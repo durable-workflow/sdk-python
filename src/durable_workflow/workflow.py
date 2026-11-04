@@ -7020,6 +7020,30 @@ def _replay_state(
         except StopIteration as stop:
             return _terminal_state(stop.value, include_pending=True)
 
+    def _assert_reopen_within_first_timeout(first_index: int, reopen_index: int) -> None:
+        """A physical reopen keeps the first open's timeout or undercuts it.
+
+        Earlier SDKs reopened with the full timeout and later ones with the time
+        remaining, so a reopen may equal or undercut the first open. Anything
+        else, including a reopen that adds or drops the timeout, is not a
+        history this workflow code writes. This is the sdk-php#271 rule.
+        """
+        first = wait_opened[first_index].get("timeout_seconds")
+        reopen = wait_opened[reopen_index].get("timeout_seconds")
+        if first is None and reopen is None:
+            return
+        if (isinstance(first, int) and not isinstance(first, bool) and isinstance(reopen, int)
+                and not isinstance(reopen, bool) and reopen <= first):
+            return
+        sequence = wait_opened[reopen_index].get("sequence")
+        raise NonDeterministicReplayError(
+            sequence if isinstance(sequence, int) else current_call_sequence,
+            "condition wait reopen within its first open's timeout",
+            ["ConditionWaitOpened"],
+            detail="condition_wait_reopen_timeout_exceeded: a reopen records a longer timeout than the wait's "
+            "first open, or adds or drops it",
+        )
+
     def _reopened_with_remaining_timeout(command: WaitCondition, first_index: int) -> WaitCondition:
         """Reopen a logical wait with the time left before its first deadline.
 
@@ -7699,7 +7723,6 @@ def _replay_state(
                         and next_wait_index < len(wait_opened)
                         and _same_logical_condition_wait(wait_opened[next_wait_index], cmd)
                     )
-
                     if resolution == "timed_out":
                         terminal_condition_reopen_cmd = None
                         next_value = False
@@ -7714,6 +7737,10 @@ def _replay_state(
                         )])
                     if resolution == "satisfied":
                         if has_reopened_same_wait and not satisfied:
+                            # Only an open consumed as a reopen is bounded (#248);
+                            # a later same-key wait after a true predicate is a
+                            # separate call with its own timeout.
+                            _assert_reopen_within_first_timeout(first_open_index, next_wait_index)
                             consumed_reopen_for_current_wait = True
                             wait_yield_count = next_wait_index
                             continue
@@ -7741,6 +7768,7 @@ def _replay_state(
                     # with the same key/fingerprint before declaring the
                     # logical wait still pending.
                     if has_reopened_same_wait:
+                        _assert_reopen_within_first_timeout(first_open_index, next_wait_index)
                         consumed_reopen_for_current_wait = True
                         wait_yield_count = next_wait_index
                         continue

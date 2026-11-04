@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Opt-in typed activity values (#184). `@activity.defn(..., typed=True)` decodes an activity's positional arguments to its parameter annotations, and `ctx.schedule_activity(..., result_type=T)` decodes the completed result in single calls, parallel groups and selections. Supported types are dataclasses, `Enum` (including `IntEnum` and `StrEnum`), `Optional[T]`, `list[T]`, `dict[str, T]` and scalars; other annotations raise `TypeError` up front. Undeclared keys are ignored and missing fields take their defaults. A mismatch raises the new `TypedValueError`, which names the field path but never the value. It is non-retryable in a typed activity and is raised at the `yield` for `result_type`. Dataclass and `Enum` activity arguments and results are now sent as their neutral values, the same bytes as `dataclasses.asdict()` with each enum's `.value`; these values were refused before. Untyped activities and calls receive plain values as before, so in-flight histories replay unchanged.
 
+### Fixed
+
+- Replay now refuses a recorded condition-wait reopen that records a longer timeout than the wait's first open, or that adds or drops the timeout, with a `NonDeterministicReplayError` whose detail starts `condition_wait_reopen_timeout_exceeded`. Earlier versions linked such a reopen silently. Reopens with the full timeout (written before 2.13.2) or with the time remaining (2.13.2 and later) still replay. This matches sdk-php#271. (#248)
+
 ## [2.13.2] - 2026-11-04
 
 ### Fixed
