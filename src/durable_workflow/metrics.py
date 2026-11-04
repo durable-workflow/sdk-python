@@ -26,6 +26,7 @@ WORKER_POLLS = "durable_workflow_worker_polls"
 WORKER_POLL_DURATION_SECONDS = "durable_workflow_worker_poll_duration_seconds"
 WORKER_TASKS = "durable_workflow_worker_tasks"
 WORKER_TASK_DURATION_SECONDS = "durable_workflow_worker_task_duration_seconds"
+WORKER_TASK_SCHEDULE_TO_START_SECONDS = "durable_workflow_worker_task_schedule_to_start_seconds"
 
 
 class MetricsRecorder(Protocol):

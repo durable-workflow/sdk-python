@@ -7,15 +7,16 @@ or later.
 
 Client request, worker poll and task dispatch observations follow the
 [shared SDK metrics contract](https://github.com/durable-workflow/.github/tree/main/sdk-metrics).
-It defines six recorder names, counter or histogram instruments, count or
+It defines seven recorder names, counter or histogram instruments, count or
 second units, and the exact tag keys. The default recorder drops observations.
 A worker inherits its client's recorder unless given an explicit recorder.
 Selection uses `None` to mean unspecified; an empty or false-valued recorder
 still receives observations. Pass `NoopMetrics()` explicitly to discard them.
 
-Each instrumented operation increments its counter by one and records one
-nonnegative monotonic duration in seconds. Client observations include the
-request's transport retries; they do not count each HTTP attempt. Poll and task
+The existing client, poll and task processing instruments increment their
+counter by one and record one nonnegative monotonic duration in seconds.
+Client observations include the request's transport retries; they do not count
+each HTTP attempt. Poll and task
 observations describe local worker activity, not durable execution counts,
 workflow completion, billing units or schedule-to-start latency.
 
@@ -39,6 +40,37 @@ Those suffixes do not change the recorder names. Install the `prometheus` extra
 to use this adapter. Applications own scrape/export configuration and additional
 resource labels. Custom recorders should remain fast and handle their exporter
 failures without throwing into the client or worker.
+
+### Schedule-to-start latency (unreleased)
+
+This unreleased feature adds the histogram below. Package and published-Server
+acceptance remains pending in
+[#188](https://github.com/durable-workflow/sdk-python/issues/188).
+
+| Recorder name | Instrument / unit | Tag keys | Measurement |
+| --- | --- | --- | --- |
+| `durable_workflow_worker_task_schedule_to_start_seconds` | Histogram / seconds | `task_kind`, `task_queue` | This attempt's known eligibility instant to its committed Server lease instant. |
+
+At actual workflow or activity dispatch, the worker requires discovery's
+`worker_protocol.server_capabilities.claimed_task_ready_age` to be Boolean
+`true` and the claimed task's `ready_age_ms` to be an integer in
+`0..9007199254740991`, excluding booleans. It divides that value by 1000 and
+records once, before running the task. This histogram has no paired counter
+or `outcome` tag. Query and update-validation tasks are outside its scope.
+HTTP retries, empty or rejected polls do not record this sample.
+
+The Server-computed age excludes delay/backoff before eligibility, transport
+time and local handler processing. Supporting Servers must retain a known
+eligibility origin for newly created, retried, released and expired attempts.
+A replayed receipt of the same lease preserves its original age; a new lease
+uses its own eligibility origin. The worker never subtracts its clock from a
+Server timestamp or substitutes an aggregate oldest-ready age.
+
+Missing or unsupported fields produce no sample. A malformed value produces
+no sample and a fixed warning without task IDs or payload data. A real zero
+is recorded; missing data is never replaced with zero. Legacy or genuinely
+unknown/invalid origins may be omitted by Server. Server clock assumptions
+still apply even though worker clock skew cannot enter this measurement.
 
 ## Request outcomes and errors
 
