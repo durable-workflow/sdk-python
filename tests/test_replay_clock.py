@@ -11,7 +11,7 @@ import pytest
 
 from durable_workflow import serializer, workflow
 from durable_workflow.errors import NonDeterministicReplayError, WorkflowCancelled
-from durable_workflow.workflow import CompleteWorkflow, WorkflowContext, query_state, replay
+from durable_workflow.workflow import CompleteWorkflow, WaitCondition, WorkflowContext, query_state, replay
 from tests.redrive_fixture_registry import VALID_SUCCESSORS
 
 
@@ -342,6 +342,28 @@ def test_redriven_signal_wait_replays_at_the_failed_run_start_and_applies_once()
     assert serializer.decode(applied["value"], codec="avro") == "Grace"
     received = only_event(history, "SignalReceived")["payload"]
     assert serializer.decode(received["arguments"], codec="avro") == ["Grace"]
+
+
+def test_a_cold_worker_replays_reused_signal_wait_events_without_reopening_the_wait() -> None:
+    # #235 scope: the SDK cannot author a Core signal wait, so these reused
+    # events replay for history validity only. A cold replay applies the
+    # recorded signal once and opens no wait again. This does not qualify
+    # Python workers for Core signal waits: the counterpart's next call is
+    # numbered from 1, while Core's wait occupies step 1.
+    history = redriven("redrive-reused-signal-wait-clock")
+    for _ in range(2):
+        RedriveSignalWorkflow.applied = []
+        commands = replay_redriven(RedriveSignalWorkflow, history)
+        assert not any(isinstance(command, WaitCondition) for command in commands)
+        assert RedriveSignalWorkflow.applied == ["Grace"]
+    # Control: without the recorded signal the same replay opens the wait.
+    unsignalled = [deepcopy(event) for event in history
+                   if event["event_type"] not in ("SignalReceived", "SignalApplied")]
+    for number, event in enumerate(unsignalled, start=1):
+        event["sequence"] = number
+    RedriveSignalWorkflow.applied = []
+    assert [type(command) for command in replay_redriven(RedriveSignalWorkflow, unsignalled)] == [WaitCondition]
+    assert RedriveSignalWorkflow.applied == []
 
 
 def _retimed(history: list[dict[str, Any]], event_type: str, mode: str) -> list[dict[str, Any]]:
