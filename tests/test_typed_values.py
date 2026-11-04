@@ -76,7 +76,8 @@ def by_hand(value: Shipment) -> dict[str, Any]:
 # Conversion.
 def test_a_typed_value_round_trips_through_the_neutral_wire_format() -> None:
     assert to_payload_value(SHIPMENT) == NEUTRAL
-    decoded = from_payload_value(serializer.decode(serializer.encode(to_payload_value(SHIPMENT)), codec="avro"), Shipment)
+    blob = serializer.encode(to_payload_value(SHIPMENT))
+    decoded = from_payload_value(serializer.decode(blob, codec="avro"), Shipment)
     assert decoded == SHIPMENT
     assert type(decoded.priority) is Priority and type(decoded.channel) is Channel
 
