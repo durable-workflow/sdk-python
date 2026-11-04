@@ -1,0 +1,67 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "id": "condition-occurrence-selection-authoring-order",
+  "workflow": {
+    "type": "tests.condition-occurrence.selection",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_type": "tests.condition-occurrence.selection"
+      },
+      "sequence": 1
+    }
+  ],
+  "command_sequence": [
+    {
+      "type": "open_condition_wait",
+      "condition_key": "first",
+      "condition_wait_occurrence_id": "python:condition-wait:0"
+    },
+    {
+      "type": "open_condition_wait",
+      "condition_key": "nested",
+      "condition_wait_occurrence_id": "python:condition-wait:1"
+    },
+    {
+      "type": "start_timer",
+      "delay_seconds": 5
+    },
+    {
+      "type": "open_condition_wait",
+      "condition_key": "last",
+      "condition_wait_occurrence_id": "python:condition-wait:2"
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "open_condition_wait",
+        "condition_key": "first",
+        "condition_wait_occurrence_id": "python:condition-wait:0"
+      },
+      {
+        "type": "open_condition_wait",
+        "condition_key": "nested",
+        "condition_wait_occurrence_id": "python:condition-wait:1"
+      },
+      {
+        "type": "start_timer",
+        "delay_seconds": 5
+      },
+      {
+        "type": "open_condition_wait",
+        "condition_key": "last",
+        "condition_wait_occurrence_id": "python:condition-wait:2"
+      }
+    ]
+  }
+}

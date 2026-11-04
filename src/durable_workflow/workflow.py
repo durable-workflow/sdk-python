@@ -1645,6 +1645,7 @@ class WaitCondition:
     condition_key: str | None = None
     condition_definition_fingerprint: str | None = None
     timeout_seconds: int | None = None
+    condition_wait_occurrence_id: str | None = None
     _cancellation_scope_id: str = field(
         default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
     )
@@ -1670,6 +1671,8 @@ class WaitCondition:
             cmd["condition_definition_fingerprint"] = self.condition_definition_fingerprint
         if self.timeout_seconds is not None:
             cmd["timeout_seconds"] = self.timeout_seconds
+        if self.condition_wait_occurrence_id is not None:
+            cmd["condition_wait_occurrence_id"] = self.condition_wait_occurrence_id
         return cmd
 
 
@@ -2213,6 +2216,7 @@ class WorkflowContext:
         self._rng = random.Random(seed)
         self._uuid7_counter = 0
         self._nexus_call_counter = 0
+        self._condition_wait_counter = 0
         self._message_stream_messages: dict[str, list[MessageStreamMessage]] = {}
         self._message_stream_cursors: dict[str, int] = {}
         self._message_stream_waits: dict[str, int] = {}
@@ -2513,15 +2517,21 @@ class WorkflowContext:
         The deadline is fixed when the wait first opens. A signal that leaves
         the predicate false re-drives the workflow, and the wait reopens with
         only the time left before that deadline, so signals never extend it.
+
+        Each authored call gets a deterministic occurrence ID. Reopens keep
+        the first recorded ID, including its absence in legacy histories.
         """
         timeout_seconds: int | None = None
         if timeout is not None:
             timeout_seconds = max(0, math.ceil(timeout))
+        occurrence_id = f"python:condition-wait:{self._condition_wait_counter}"
+        self._condition_wait_counter += 1
         return WaitCondition(
             predicate=predicate,
             condition_key=key,
             condition_definition_fingerprint=_condition_predicate_fingerprint(predicate),
             timeout_seconds=timeout_seconds,
+            condition_wait_occurrence_id=occurrence_id,
         )
 
     def select(
@@ -7143,6 +7153,10 @@ def _replay_state(
         if first_index >= len(wait_opened):
             return command
         reopened = copy(command)
+        # An upgraded worker must not add an ID to a legacy chain or inherit
+        # a later physical open's ID when duplicate chains merge (#259).
+        occurrence = wait_opened[first_index].get("condition_wait_occurrence_id")
+        reopened.condition_wait_occurrence_id = occurrence if isinstance(occurrence, str) and occurrence else None
         # A reopen sends the fingerprint its first open recorded, so a wait
         # first opened under v1 (2.14.0 and earlier) keeps v1 across the
         # upgrade and links v1 to v1, never v1 to v2 (#258).
