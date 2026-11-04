@@ -41,3 +41,10 @@ class FingerprintGenexpr:
     def run(self, ctx: workflow.WorkflowContext):  # type: ignore[no-untyped-def]
         yield ctx.wait_condition(lambda: any(n > 10 for n in self.items), key="large")
         return list(self.items)
+
+
+@workflow.defn(name="tests.replay.fingerprint-terminal-duplicate")
+class FingerprintTerminalDuplicate(FingerprintApproval):
+    @workflow.signal("note")
+    def note(self) -> None:
+        return None

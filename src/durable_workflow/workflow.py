@@ -6178,6 +6178,8 @@ def _replay_state(
     terminal_condition_reopen_cmd: WaitCondition | None = None
     # The first open of the chain a terminal reopen cleanup belongs to (#258).
     terminal_condition_chain_first: Mapping[str, Any] | None = None
+    # Its terminal position proves whether a different-process duplicate belongs.
+    terminal_condition_chain_current: Mapping[str, Any] | None = None
     version_decisions: dict[str, int] = {}
 
     def _version_error(detail: str, step: _RecordedStep | None = None) -> NonDeterministicReplayError:
@@ -6755,6 +6757,7 @@ def _replay_state(
             opened = wait_opened[wait_yield_count]
             if not _same_logical_condition_wait(
                 opened, terminal_condition_reopen_cmd, chain_first=terminal_condition_chain_first,
+                chain_current=terminal_condition_chain_current, next_index=wait_yield_count,
             ):
                 break
             opened_id = opened.get("condition_wait_id")
@@ -7853,6 +7856,7 @@ def _replay_state(
                             else None
                         )
                         terminal_condition_chain_first = wait_opened[first_open_index]
+                        terminal_condition_chain_current = opened
                         next_value = True
                         wait_yield_count += 1
                         break
@@ -7863,6 +7867,7 @@ def _replay_state(
                             else None
                         )
                         terminal_condition_chain_first = wait_opened[first_open_index]
+                        terminal_condition_chain_current = opened
                         next_value = True
                         wait_yield_count += 1
                         break

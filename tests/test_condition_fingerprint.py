@@ -263,3 +263,20 @@ def test_terminal_cleanup_links_a_trailing_v1_duplicate_within_its_chain() -> No
                _opened("w2", 2, FOREIGN_V1, 3), _signal("approve", 2, 4), _satisfied("w2", 2, 4),
                _opened("w3", 3, FOREIGN_V1, 5)]
     assert list(replay(KeylessApproval, history, []).commands) == [CompleteWorkflow("approved")]
+
+
+def test_terminal_cleanup_links_a_cross_process_duplicate_opened_before_terminal() -> None:
+    history = [START, _opened("w1", 1, FOREIGN_V1, 1), _signal("note", 1, 2), _satisfied("w1", 1, 2),
+               _opened("w2", 2, FOREIGN_V1, 3), _opened("w3", 3, OTHER_V1, 3),
+               _signal("approve", 2, 4), _satisfied("w2", 2, 4)]
+    assert list(replay(KeylessApproval, history, []).commands) == [CompleteWorkflow("approved")]
+
+
+def test_terminal_cleanup_refuses_an_unrelated_later_keyless_v1_open() -> None:
+    history = [START, _opened("w1", 1, FOREIGN_V1, 1), _signal("note", 1, 2), _satisfied("w1", 1, 2),
+               _opened("w2", 2, FOREIGN_V1, 3), _signal("approve", 2, 4), _satisfied("w2", 2, 4),
+               _opened("w3", 3, OTHER_V1, 5)]
+    with pytest.raises(NonDeterministicReplayError) as captured:
+        replay(KeylessApproval, history, [])
+    assert captured.value.workflow_sequence == 3
+    assert captured.value.expected_shape == "complete workflow"
