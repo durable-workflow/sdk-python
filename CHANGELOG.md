@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Opt-in typed activity values (#184). `@activity.defn(..., typed=True)` decodes an activity's positional arguments to its parameter annotations, and `ctx.schedule_activity(..., result_type=T)` decodes the completed result in single calls, parallel groups and selections. Supported types are dataclasses, `Enum` (including `IntEnum` and `StrEnum`), `Optional[T]`, `list[T]`, `dict[str, T]` and scalars; other annotations raise `TypeError` up front. Undeclared keys are ignored and missing fields take their defaults. A mismatch raises the new `TypedValueError`, which names the field path but never the value. It is non-retryable in a typed activity and is raised at the `yield` for `result_type`. Dataclass and `Enum` activity arguments and results are now sent as their neutral values, the same bytes as `dataclasses.asdict()` with each enum's `.value`; these values were refused before. Untyped activities and calls receive plain values as before, so in-flight histories replay unchanged.
 
+## [2.13.2] - 2026-11-04
+
 ### Fixed
 
 - A `wait_condition` timeout now counts from when the wait first opens. Before, a signal that left the predicate false reopened the wait with the full `timeout` again, so every such signal pushed the timeout later: a 300-second wait signalled after 2 minutes timed out after 7. The reopen now carries the seconds left before the first open's deadline, rounded up and never below 0, measured at the latest recorded history time. Histories without recorded times keep the authored timeout, and histories written by earlier versions still replay. (#245)
