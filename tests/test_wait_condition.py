@@ -1321,3 +1321,76 @@ class TestReopenedWaitRemainingTimeout:
         history = [start, *_timed_open("w1", 1, "2026-11-04T02:36:05.295000+00:00"),
                    _timed_signal("note", 1, signalled_at)]
         assert _reopened_timeout(history) == expected
+
+
+# A separate wait after a timed-out one is a new logical wait: it measures from
+# its own open (General's sdk-php#271 review vectors).
+@workflow.defn(name="tests.replay.condition-grace-after-timeout")
+class GraceAfterTimeout:
+    grace_seconds = 60
+
+    def __init__(self) -> None:
+        self.approved = False
+
+    @workflow.signal("note")
+    def note(self) -> None:
+        return None
+
+    @workflow.signal("approve")
+    def approve(self) -> None:
+        self.approved = True
+
+    def ready(self) -> bool:
+        return self.approved
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        if (yield ctx.wait_condition(self.ready, key="approval", timeout=300)):
+            return "approved"
+        late = yield ctx.wait_condition(self.ready, key="approval", timeout=type(self).grace_seconds)
+        return "late" if late else "expired"
+
+
+@workflow.defn(name="tests.replay.condition-equal-grace-after-timeout")
+class EqualGraceAfterTimeout(GraceAfterTimeout):
+    grace_seconds = 300
+
+
+def _timed_out_then_grace(grace: int, signal: str) -> list[dict]:
+    fired = {"event_type": "TimerFired", "recorded_at": "2026-11-03T00:05:00+00:00", "payload": {
+        "timer_kind": "condition_timeout", "condition_wait_id": "w1", "condition_key": "approval", "sequence": 1}}
+    return [START, *_timed_open("w1", 1, "2026-11-03T00:00:00+00:00"), fired,
+            *_timed_open("w2", 2, "2026-11-03T00:05:00+00:00", timeout=grace),
+            _timed_signal(signal, 2, "2026-11-03T00:05:29+00:00")]
+
+
+class TestWaitAfterATimedOutWait:
+    def test_approval_during_the_grace_wait_is_late(self) -> None:
+        (command,) = replay(GraceAfterTimeout, _timed_out_then_grace(60, "approve"), []).commands
+        assert command == CompleteWorkflow("late")
+
+    def test_a_wrong_signal_reopens_the_grace_wait_from_its_own_open(self) -> None:
+        (command,) = replay(GraceAfterTimeout, _timed_out_then_grace(60, "note"), []).commands
+        assert isinstance(command, WaitCondition) and command.timeout_seconds == 31
+
+    def test_an_equal_timeout_grace_wait_is_still_a_new_wait(self) -> None:
+        (command,) = replay(EqualGraceAfterTimeout, _timed_out_then_grace(300, "note"), []).commands
+        assert isinstance(command, WaitCondition) and command.timeout_seconds == 271
+
+
+def test_a_selection_condition_member_is_not_reopened_by_a_wrong_signal() -> None:
+    # Ordinary parallel lists refuse WaitCondition. A condition inside
+    # ctx.select is never re-sent while open, so its original timer keeps its
+    # deadline and the remaining-time rule does not apply to it (#245).
+    from tests.test_durable_selection import (
+        DurableSelectionConditionSignalReplayWorkflow,
+        _condition_terminal_selection_history,
+    )
+
+    opens = [dict(event, recorded_at="2026-11-03T00:00:00+00:00")
+             for event in _condition_terminal_selection_history("ConditionWaitSatisfied", "valid")
+             if event["event_type"] in ("ConditionWaitOpened", "ActivityScheduled")]
+    wrong = {"event_type": "SignalReceived", "recorded_at": "2026-11-03T00:00:03+00:00", "payload": {
+        "sequence": 1, "signal_name": "change-value", "value": serializer.envelope(["wrong"]),
+        "payload_codec": serializer.AVRO_CODEC}}
+    outcome = replay(DurableSelectionConditionSignalReplayWorkflow, [START, *opens, wrong], [])
+    assert list(outcome.commands) == []
