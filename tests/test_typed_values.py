@@ -112,7 +112,7 @@ def test_optional_accepts_null_and_scalars_keep_their_kinds() -> None:
     ({**NEUTRAL, "status": "lost-in-transit"}, "shipment.status", "Status", "the string is not a member"),
     ({**NEUTRAL, "priority": True}, "shipment.priority", "Priority", "the boolean is not a member"),
     ({**NEUTRAL, "items": "secret-sku"}, "shipment.items", "list[", "got string"),
-    ({**NEUTRAL, "weights": {"a": "heavy"}}, "shipment.weights['a']", "float", "got string"),
+    ({**NEUTRAL, "weights": {"ada@example.test": "heavy"}}, "shipment.weights[entry 0]", "float", "got string"),
     ({**NEUTRAL, "order_id": None}, "shipment.order_id", "str", "got null"),
     ({**NEUTRAL, "items": [{"sku": "a", "qty": True}]}, "shipment.items[0].qty", "int", "got boolean"),
     ("secret-order", "shipment", "Shipment", "got string"),
@@ -125,7 +125,7 @@ def test_a_value_that_cannot_be_converted_names_the_path_never_the_value(
     assert raised.value.path == path
     assert raised.value.expected.startswith(expected)
     assert raised.value.detail == detail
-    for secret in ("secret", "lost-in-transit", "heavy"):
+    for secret in ("secret", "lost-in-transit", "heavy", "ada@example.test"):
         assert secret not in str(raised.value)
 
 
@@ -412,3 +412,53 @@ def test_selection_members_are_decoded_to_their_result_type() -> None:
 def test_a_selection_mismatch_is_the_winner_failure_and_raised_at_a_handle_await() -> None:
     (command,) = replay(MismatchedSelectionWorkflow, _selection_history(), [], payload_codec="avro").commands
     assert command == CompleteWorkflow({"winner": "fast", "winner_detail": "got object", "slow_detail": "got object"})
+
+
+# Redaction and refusal follow-ups from the #247 review.
+@dataclass
+class Positive:
+    amount: int
+
+    def __post_init__(self) -> None:
+        if self.amount <= 0:
+            raise ValueError(f"amount must be positive, got {self.amount}")
+
+
+def test_a_dataclass_that_refuses_its_fields_is_a_typed_value_error() -> None:
+    with pytest.raises(TypedValueError) as raised:
+        from_payload_value({"amount": -7}, Positive, "payment")
+    assert (raised.value.path, raised.value.detail) == ("payment", "the dataclass refused the decoded fields")
+    assert "-7" not in str(raised.value) and raised.value.__cause__ is None
+
+
+def test_map_entry_paths_never_name_the_key() -> None:
+    with pytest.raises(TypedValueError) as raised:
+        from_payload_value({"x": 1, "ada@example.test": "one"}, dict[str, int], "scores")
+    assert raised.value.path == "scores[entry 1]"
+    assert "ada@example.test" not in str(raised.value)
+
+
+@dataclass
+class Node:
+    child: Node | None = None
+
+
+def test_a_too_deeply_nested_payload_is_a_typed_value_error() -> None:
+    from durable_workflow._typed_values import decode_payload_value
+
+    nested: Any = None
+    for _ in range(5000):
+        nested = {"child": nested}
+    with pytest.raises(TypedValueError) as raised:
+        decode_payload_value(nested, Node, "tree")
+    assert raised.value.detail == "the value is nested too deeply"
+    assert isinstance(raised.value, NonRetryableError)
+
+
+def test_a_typed_activity_maps_refusals_to_typed_value_errors() -> None:
+    @activity.defn(name="tests.typed.pay", typed=True)
+    def pay(payment: Positive) -> int:
+        return payment.amount
+
+    with pytest.raises(TypedValueError, match="the dataclass refused the decoded fields"):
+        pay({"amount": 0})
