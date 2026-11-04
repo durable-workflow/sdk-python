@@ -42,6 +42,8 @@ from ._cancellation_scope_history import (
     CommittedCancellationScopeHistory,
     ScopeBoundary,
 )
+from ._condition_fingerprint import fingerprint as _stable_condition_fingerprint
+from ._condition_fingerprint import fingerprint_verdict, is_legacy
 from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
 from ._failure_reporting import exception_message
 from ._typed_values import decode_payload_value, to_payload_values, validate_annotation
@@ -1720,28 +1722,9 @@ class CancelDurableOperation:
         }
 
 
-def _condition_predicate_fingerprint(predicate: Callable[[], bool]) -> str:
-    h = hashlib.sha256()
-    h.update(b"durable-workflow-python.wait-condition.v1\0")
-    h.update(f"{getattr(predicate, '__module__', '')}\0".encode())
-    h.update(f"{getattr(predicate, '__qualname__', '')}\0".encode())
-
-    code = getattr(predicate, "__code__", None)
-    if code is None:
-        h.update(repr(predicate).encode())
-    else:
-        h.update(repr((
-            code.co_argcount,
-            code.co_posonlyargcount,
-            code.co_kwonlyargcount,
-            code.co_code,
-            code.co_consts,
-            code.co_names,
-            code.co_varnames,
-            code.co_freevars,
-        )).encode())
-
-    return f"sha256:{h.hexdigest()}"
+def _condition_predicate_fingerprint(predicate: Callable[[], bool]) -> str | None:
+    """The stable v2 predicate fingerprint, or None without source (#258)."""
+    return _stable_condition_fingerprint(predicate)
 
 
 Command = (
@@ -6017,10 +6000,7 @@ def _replay_state(
             )
 
         opened_fingerprint = opened.get("condition_definition_fingerprint")
-        if (
-            isinstance(opened_fingerprint, str)
-            and cmd.condition_definition_fingerprint != opened_fingerprint
-        ):
+        if _fingerprint_verdict(opened, cmd) == "mismatch":
             return NonDeterministicReplayError(
                 step.workflow_sequence, "condition wait", step.event_types,
                 detail=(
@@ -6033,7 +6013,19 @@ def _replay_state(
 
         return None
 
-    def _same_logical_condition_wait(opened: Mapping[str, Any], cmd: WaitCondition) -> bool:
+    def _fingerprint_verdict(opened: Mapping[str, Any], cmd: WaitCondition) -> str:
+        return fingerprint_verdict(
+            opened.get("condition_definition_fingerprint"), cmd.condition_definition_fingerprint, cmd.predicate,
+        )
+
+    def _same_logical_condition_wait(
+        opened: Mapping[str, Any],
+        cmd: WaitCondition,
+        *,
+        chain_first: Mapping[str, Any] | None = None,
+        chain_current: Mapping[str, Any] | None = None,
+        next_index: int | None = None,
+    ) -> bool:
         if _condition_wait_mismatch(opened, cmd) is not None:
             return False
 
@@ -6042,10 +6034,33 @@ def _replay_state(
             return True
 
         opened_fingerprint = opened.get("condition_definition_fingerprint")
+        if not isinstance(opened_fingerprint, str) or not opened_fingerprint:
+            # A keyless wait without source has no identity beyond call order.
+            # Within its own chain (both opens recorded without a fingerprint)
+            # it is the same wait, as 2.14.0 linked it by its process-local v1.
+            first_fingerprint = (
+                chain_first.get("condition_definition_fingerprint") if chain_first is not None else "absent"
+            )
+            return (
+                cmd.condition_definition_fingerprint is None and not cmd.condition_key
+                and chain_first is not None and not first_fingerprint
+            )
+        verdict = _fingerprint_verdict(opened, cmd)
+        if verdict == "match":
+            return True
+        if verdict != "unverifiable":
+            return False
+        # A keyless wait whose fingerprint cannot be checked (a v1 value from
+        # another Python version or process, #258) links only within its own
+        # chain: the same recorded v1 value as the chain's first open, or a
+        # duplicate opened while the current wait was still open (#253). It
+        # never binds a recorded wait to another call.
+        first_fingerprint = chain_first.get("condition_definition_fingerprint") if chain_first is not None else None
+        if is_legacy(opened_fingerprint) and opened_fingerprint == first_fingerprint:
+            return True
         return (
-            isinstance(opened_fingerprint, str)
-            and bool(opened_fingerprint)
-            and opened_fingerprint == cmd.condition_definition_fingerprint
+            chain_current is not None and next_index is not None
+            and _opened_before_terminal(next_index, chain_current)
         )
 
     result_cursor = 0
@@ -6111,6 +6126,10 @@ def _replay_state(
     pending: list[Command] = []
     advanced_cmd: Any = None
     terminal_condition_reopen_cmd: WaitCondition | None = None
+    # The first open of the chain a terminal reopen cleanup belongs to (#258).
+    terminal_condition_chain_first: Mapping[str, Any] | None = None
+    # Its terminal position proves whether a different-process duplicate belongs.
+    terminal_condition_chain_current: Mapping[str, Any] | None = None
     version_decisions: dict[str, int] = {}
 
     def _version_error(detail: str, step: _RecordedStep | None = None) -> NonDeterministicReplayError:
@@ -6686,7 +6705,10 @@ def _replay_state(
             return
         while wait_yield_count < len(wait_opened):
             opened = wait_opened[wait_yield_count]
-            if not _same_logical_condition_wait(opened, terminal_condition_reopen_cmd):
+            if not _same_logical_condition_wait(
+                opened, terminal_condition_reopen_cmd, chain_first=terminal_condition_chain_first,
+                chain_current=terminal_condition_chain_current, next_index=wait_yield_count,
+            ):
                 break
             opened_id = opened.get("condition_wait_id")
             if not isinstance(opened_id, str):
@@ -6928,9 +6950,14 @@ def _replay_state(
                     expected = ({"delay_seconds": leaf.delay_seconds} if isinstance(leaf, StartTimer) else {
                         "condition_key": leaf.condition_key,
                         "timeout_seconds": leaf.timeout_seconds,
-                        "condition_definition_fingerprint": leaf.condition_definition_fingerprint,
                     })
-                    if any(field in payload and payload[field] != actual for field, actual in expected.items()):
+                    fingerprint_changed = isinstance(leaf, WaitCondition) and fingerprint_verdict(
+                        payload.get("condition_definition_fingerprint"), leaf.condition_definition_fingerprint,
+                        leaf.predicate,
+                    ) == "mismatch"
+                    if fingerprint_changed or any(
+                        field in payload and payload[field] != actual for field, actual in expected.items()
+                    ):
                         raise NonDeterministicReplayError(
                             sequence, "original group member", [event_type],
                             detail="scoped group changed its original timer or condition definition",
@@ -7054,7 +7081,7 @@ def _replay_state(
         return terminal is not None and wait_opened_event_indexes[next_index] < terminal
 
     def _reopened_with_remaining_timeout(command: WaitCondition, first_index: int) -> WaitCondition:
-        """Reopen a logical wait with the time left before its first deadline.
+        """Reopen a logical wait with its first fingerprint and remaining time.
 
         The deadline is fixed when the wait first opens, as in embedded
         Workflow: the first ConditionWaitOpened time plus the authored
@@ -7063,14 +7090,20 @@ def _replay_state(
         history time, rounded up and clamped to 0..authored (the sdk-php#269
         rule). Without recorded times the authored timeout is kept.
         """
-        authored = command.timeout_seconds
-        if authored is None or first_index >= len(wait_opened):
+        if first_index >= len(wait_opened):
             return command
-        opened_at = wait_opened_times[first_index]
-        if opened_at is None or history_time is None:
-            return command
-        remaining = math.ceil(authored - (history_time - opened_at).total_seconds())
         reopened = copy(command)
+        # A reopen sends the fingerprint its first open recorded, so a wait
+        # first opened under v1 (2.14.0 and earlier) keeps v1 across the
+        # upgrade and links v1 to v1, never v1 to v2 (#258).
+        recorded = wait_opened[first_index].get("condition_definition_fingerprint")
+        if isinstance(recorded, str) and recorded:
+            reopened.condition_definition_fingerprint = recorded
+        authored = command.timeout_seconds
+        opened_at = wait_opened_times[first_index]
+        if authored is None or opened_at is None or history_time is None:
+            return reopened
+        remaining = math.ceil(authored - (history_time - opened_at).total_seconds())
         reopened.timeout_seconds = min(authored, max(0, remaining))
         return reopened
 
@@ -7730,7 +7763,10 @@ def _replay_state(
                     has_reopened_same_wait = (
                         opened is not None
                         and next_wait_index < len(wait_opened)
-                        and _same_logical_condition_wait(wait_opened[next_wait_index], cmd)
+                        and _same_logical_condition_wait(
+                            wait_opened[next_wait_index], cmd, chain_first=wait_opened[first_open_index],
+                            chain_current=opened, next_index=next_wait_index,
+                        )
                     )
                     if resolution == "timed_out":
                         if has_reopened_same_wait and _opened_before_terminal(next_wait_index, opened):
@@ -7769,6 +7805,8 @@ def _replay_state(
                             if has_reopened_same_wait and consumed_reopen_for_current_wait
                             else None
                         )
+                        terminal_condition_chain_first = wait_opened[first_open_index]
+                        terminal_condition_chain_current = opened
                         next_value = True
                         wait_yield_count += 1
                         break
@@ -7778,6 +7816,8 @@ def _replay_state(
                             if has_reopened_same_wait and consumed_reopen_for_current_wait
                             else None
                         )
+                        terminal_condition_chain_first = wait_opened[first_open_index]
+                        terminal_condition_chain_current = opened
                         next_value = True
                         wait_yield_count += 1
                         break

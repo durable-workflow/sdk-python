@@ -1,0 +1,61 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "condition-fingerprint-v2-approval",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.fingerprint-approval",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-04T00:00:00+00:00",
+      "payload": {
+        "workflow_type": "tests.replay.fingerprint-approval"
+      },
+      "sequence": 1
+    },
+    {
+      "event_type": "ConditionWaitOpened",
+      "recorded_at": "2026-11-04T00:00:01+00:00",
+      "payload": {
+        "condition_wait_id": "approval-1",
+        "sequence": 1,
+        "condition_definition_fingerprint": "dwpy2:sha256:21b0cde657ecccaf9e2dc2a362d2e32e0e4d5d822c112576e5e23f4485a03199"
+      },
+      "sequence": 2
+    },
+    {
+      "event_type": "SignalReceived",
+      "recorded_at": "2026-11-04T00:00:02+00:00",
+      "payload": {
+        "signal_name": "approve",
+        "value": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwA"
+        },
+        "payload_codec": "avro",
+        "workflow_sequence": 1
+      },
+      "sequence": 3
+    },
+    {
+      "event_type": "ConditionWaitSatisfied",
+      "recorded_at": "2026-11-04T00:00:02+00:00",
+      "payload": {
+        "condition_wait_id": "approval-1",
+        "sequence": 1
+      },
+      "sequence": 4
+    }
+  ],
+  "expected": {
+    "type": "complete_workflow",
+    "result": "approved"
+  }
+}
