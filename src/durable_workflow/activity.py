@@ -206,10 +206,25 @@ def _set_context(ctx: ActivityContext | None) -> contextvars.Token[ActivityConte
     return _current_context.set(ctx)
 
 
-def defn(*, name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """Register a callable as an activity type under a language-neutral name."""
+def defn(*, name: str, typed: bool = False) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Register a callable as an activity type under a language-neutral name.
+
+    With ``typed=True``, positional arguments are decoded to the callable's
+    parameter annotations: dataclasses, ``Enum`` (including ``IntEnum`` and
+    ``StrEnum``), ``Optional[T]``, ``list[T]``, ``dict[str, T]`` and the
+    scalars ``str``, ``int``, ``float``, ``bool`` and ``bytes``. Keys a
+    dataclass does not declare are ignored and missing fields take their
+    defaults. A value that does not match fails the activity without retries
+    with :class:`~durable_workflow.errors.TypedValueError`. An annotation
+    outside this list raises ``TypeError`` here, when the activity is
+    declared. Untyped activities keep receiving plain values.
+    """
 
     def wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
+        if typed:
+            from ._typed_values import typed_callable
+
+            fn = typed_callable(fn)
         fn.__activity_name__ = name  # type: ignore[attr-defined]
         _REGISTRY[name] = fn
         return fn

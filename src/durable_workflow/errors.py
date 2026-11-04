@@ -881,6 +881,26 @@ class NonRetryableError(DurableWorkflowError):
         self.__cause__ = cause
 
 
+class TypedValueError(NonRetryableError, TypeError):
+    """A payload value does not match the receiver's declared type.
+
+    Raised by opt-in typed values: a ``typed=True`` activity's arguments, or an
+    activity result decoded to ``result_type``. ``path`` names the field (for
+    example ``order.items[2].sku``) and ``expected`` the declared type. The
+    message never contains the received value. An activity whose arguments do
+    not match fails without retries, because a retry cannot change the payload.
+    """
+
+    def __init__(self, path: str, expected: str, detail: str) -> None:
+        self.path = path
+        self.expected = expected
+        self.detail = detail
+        super().__init__(f"{path}: expected {expected}; {detail}")
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (type(self), (self.path, self.expected, self.detail))
+
+
 class AvroNotInstalledError(DurableWorkflowError, ImportError):
     """Raised when the core ``avro`` runtime dependency is unavailable."""
 
