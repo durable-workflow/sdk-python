@@ -9,6 +9,7 @@ Keep this module's source unchanged: editing it changes the fingerprints.
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import wraps
 from typing import Any
 
 from durable_workflow import workflow
@@ -18,12 +19,23 @@ def _identity(predicate: Callable[[], bool]) -> Callable[[], bool]:
     return predicate
 
 
-@workflow.defn(name="tests.fingerprint.typed-ready", typed=True)
+def _typed_method_fixture(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Exercise the unwrapping marker without the unreleased typed workflow API."""
+    @wraps(fn)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **kwargs)
+
+    wrapped.__typed_workflow_method__ = fn  # type: ignore[attr-defined]
+    return wrapped
+
+
+@workflow.defn(name="tests.fingerprint.typed-ready")
 class TypedReady:
     def __init__(self) -> None:
         self.approvals: list[str] = []
 
     @workflow.query("ready")
+    @_typed_method_fixture
     def ready(self, minimum: int = 2) -> bool:
         return len(self.approvals) >= minimum
 
