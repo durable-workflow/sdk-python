@@ -179,9 +179,16 @@ def _compiles_to(node: ast.Lambda, code: Any) -> bool:
         and candidate.co_names == code.co_names
         and candidate.co_varnames == code.co_varnames
         and candidate.co_freevars == code.co_freevars
-        and [c for c in candidate.co_consts if not hasattr(c, "co_code")]
-        == [c for c in code.co_consts if not hasattr(c, "co_code")]
+        and _plain_constants(candidate) == _plain_constants(code)
     )
+
+
+def _plain_constants(code: Any) -> list[Any]:
+    """Constants other than nested code and the qualnames Python 3.10 stores for them."""
+    return [
+        const for const in code.co_consts
+        if not hasattr(const, "co_code") and not (isinstance(const, str) and "<locals>" in const)
+    ]
 
 
 def _canonical(value: Any) -> str:
