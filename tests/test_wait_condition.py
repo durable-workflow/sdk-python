@@ -1355,6 +1355,18 @@ class TestWaitAfterATimedOutWait:
         assert isinstance(command, WaitCondition) and command.timeout_seconds == 271
 
 
+@workflow.defn(name="tests.replay.condition-longer-grace-after-timeout")
+class LongerGraceAfterTimeout(GraceAfterTimeout):
+    grace_seconds = 400
+
+
+def test_a_longer_grace_wait_after_a_timeout_is_a_separate_call() -> None:
+    # The 300 s wait timed out, so a 400 s wait with the same key is not a
+    # reopen and the reopen bound (#248) does not apply to it.
+    (command,) = replay(LongerGraceAfterTimeout, _timed_out_then_grace(400, "note"), []).commands
+    assert isinstance(command, WaitCondition) and command.timeout_seconds == 371
+
+
 def test_a_selection_condition_member_is_not_reopened_by_a_wrong_signal() -> None:
     # Ordinary parallel lists refuse WaitCondition. A condition inside
     # ctx.select is never re-sent while open, so its original timer keeps its

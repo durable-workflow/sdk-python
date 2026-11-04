@@ -7723,7 +7723,9 @@ def _replay_state(
                         and next_wait_index < len(wait_opened)
                         and _same_logical_condition_wait(wait_opened[next_wait_index], cmd)
                     )
-                    if has_reopened_same_wait:
+                    # A wait that timed out is finished; the next same-key open is
+                    # a separate call, not a reopen, so its timeout is its own.
+                    if has_reopened_same_wait and resolution != "timed_out":
                         _assert_reopen_within_first_timeout(first_open_index, next_wait_index)
 
                     if resolution == "timed_out":
