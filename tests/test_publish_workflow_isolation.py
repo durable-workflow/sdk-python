@@ -1,10 +1,11 @@
 """Contract for .github/workflows/publish.yml (#240).
 
 Only the publish job can mint a PyPI OIDC token, and it runs no project code:
-it downloads the build job's artifact, checks its digest, extracts it and
-uploads it. Post-publish verification runs in a later job without id-token,
-and the source GitHub Release is created by a minimal job that runs only the
-preinstalled GitHub CLI.
+after the central policy's credential-free checkout it downloads the build
+job's artifact, checks its digest, extracts it and uploads it. Post-publish
+verification runs in a later job without id-token, and the source GitHub
+Release is created by a minimal job that runs only the preinstalled GitHub
+CLI.
 """
 
 from __future__ import annotations
@@ -75,14 +76,19 @@ def test_the_publish_job_has_exactly_the_permissions_publication_needs() -> None
 def test_the_publish_job_only_downloads_checks_and_uploads() -> None:
     publish = jobs()["publish"]
     actions = uses(publish)
-    assert [action.split("@")[0] + "@" for action in actions] == [DOWNLOAD_ARTIFACT_ACTION, PYPI_PUBLISH_ACTION]
+    assert [action.split("@")[0] + "@" for action in actions] == [
+        CHECKOUT_ACTION, DOWNLOAD_ARTIFACT_ACTION, PYPI_PUBLISH_ACTION,
+    ]
     assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", action) for action in actions)
+    # The central action policy's fixed preamble for a privileged artifact
+    # consumer: a credential-free checkout that nothing in the job executes.
+    assert publish["steps"][0] == {"uses": actions[0], "with": {
+        "fetch-depth": 0, "persist-credentials": False, "ref": "${{ github.sha }}",
+    }}
     # The artifact is downloaded by its recorded id, with digest enforcement.
     download = next(step for step in publish["steps"] if step.get("uses", "").startswith(DOWNLOAD_ARTIFACT_ACTION))
     assert download["with"]["digest-mismatch"] == "error"
     assert download["with"]["artifact-ids"] == "${{ needs.build.outputs.artifact-id }}"
-    # No checkout: the job never sees the project source.
-    assert not any(action.startswith(CHECKOUT_ACTION) for action in actions)
     scripts = runs(publish)
     assert len(scripts) == 2
     for script in scripts:
@@ -126,6 +132,8 @@ def test_the_github_release_follows_verification_and_runs_no_third_party_code() 
     release = jobs()["github-release"]
     assert release["permissions"] == {"contents": "write"}
     assert set(needs(release)) == {"build", "verify"}
+    # Privileged, so it runs only where publication itself may run.
+    assert release["if"] == jobs()["publish"]["if"]
     assert uses(release) == []
     scripts = runs(release)
     assert len(scripts) == 1
