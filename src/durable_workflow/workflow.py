@@ -44,7 +44,7 @@ from ._cancellation_scope_history import (
 )
 from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
 from ._failure_reporting import exception_message
-from ._typed_values import decode_payload_value, to_payload_values, validate_annotation
+from ._typed_values import decode_payload_value, to_payload_value, to_payload_values, validate_annotation
 from .cancellation import (
     CancellationContext,
     CancellationPolicy,
@@ -962,7 +962,7 @@ class CompleteWorkflow:
         return {
             "type": "complete_workflow",
             "result": _payload_envelope(
-                self.result,
+                to_payload_value(self.result),
                 payload_codec=payload_codec,
                 size_warning=size_warning,
                 warning_context=_payload_warning_context(
@@ -1035,7 +1035,7 @@ class CompleteUpdate:
             "type": "complete_update",
             "update_id": self.update_id,
             "result": _payload_envelope(
-                self.result,
+                to_payload_value(self.result),
                 payload_codec=payload_codec,
                 size_warning=size_warning,
                 warning_context=_payload_warning_context(
@@ -1105,7 +1105,7 @@ class ContinueAsNew:
         if self.workflow_type is not None:
             cmd["workflow_type"] = self.workflow_type
         cmd["arguments"] = _payload_envelope(
-            self.arguments,
+            to_payload_values(list(self.arguments)),
             payload_codec=payload_codec,
             size_warning=size_warning,
             warning_context=_payload_warning_context(
@@ -1175,6 +1175,8 @@ class StartChildWorkflow:
     execution_timeout_seconds: int | None = None
     run_timeout_seconds: int | None = None
     cancellation_policy: str | CancellationPolicy | None = None
+    # Opt-in local decoding of the child's result; never sent or compared.
+    result_type: Any = field(default=None, repr=False, compare=False)
     _cancellation_scope_id: str = field(
         default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
     )
@@ -1186,6 +1188,10 @@ class StartChildWorkflow:
     )
 
     def __post_init__(self) -> None:
+        # Dataclass and Enum arguments travel as their neutral values.
+        self.arguments = to_payload_values(list(self.arguments))
+        if self.result_type is not None:
+            validate_annotation(self.result_type, "result_type")
         _canonical_child_policies({
             "parent_close_policy": self.parent_close_policy,
             "cancellation_policy": self.cancellation_policy,
@@ -2676,7 +2682,14 @@ class WorkflowContext:
         retry_policy: ChildWorkflowRetryPolicyInput | None = None,
         execution_timeout_seconds: int | None = None,
         run_timeout_seconds: int | None = None,
+        result_type: Any = None,
     ) -> StartChildWorkflow:
+        """Yield a child workflow start.
+
+        Dataclass and ``Enum`` arguments are sent as their neutral values.
+        ``result_type`` opts in to decoding the child's result, with the same
+        rules and failure behavior as ``schedule_activity(result_type=...)``.
+        """
         return StartChildWorkflow(
             workflow_type=workflow_type,
             arguments=list(arguments) if arguments is not None else [],
@@ -2686,6 +2699,7 @@ class WorkflowContext:
             retry_policy=retry_policy,
             execution_timeout_seconds=execution_timeout_seconds,
             run_timeout_seconds=run_timeout_seconds,
+            result_type=result_type,
         )
 
     def call_nexus_service(
@@ -3154,10 +3168,13 @@ def _history_event_time(event: Mapping[str, Any]) -> datetime | None:
 
 
 def _typed_activity_result(command: Any, value: Any) -> Any:
-    """Decode an activity result to the call's opt-in result_type, if any."""
-    if not isinstance(command, ScheduleActivity) or command.result_type is None or isinstance(value, BaseException):
+    """Decode an activity or child result to the call's opt-in result_type."""
+    if not isinstance(command, ScheduleActivity | StartChildWorkflow) or command.result_type is None or isinstance(
+        value, BaseException,
+    ):
         return value
-    return decode_payload_value(value, command.result_type, "activity result")
+    path = "activity result" if isinstance(command, ScheduleActivity) else "child workflow result"
+    return decode_payload_value(value, command.result_type, path)
 
 
 def _decode_history_result(

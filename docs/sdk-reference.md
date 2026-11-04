@@ -1020,6 +1020,15 @@ class Fulfil:
   for a single call, inside a parallel group (`yield [...]`) and inside
   `ctx.select(...)`. `result_type` is local: it is never sent, compared or
   written to history.
+- `@workflow.defn(..., typed=True)` decodes the arguments of `run` (after
+  `ctx`) and of every signal, query, update and update-validator handler.
+- `ctx.start_child_workflow(..., result_type=T)` decodes a child's result,
+  and `await handle.result(result_type=T)` decodes a workflow's result on the
+  client.
+
+Dataclass and `Enum` values are also sent as neutral values when they are
+client workflow, signal, update, query or schedule arguments, child or
+continue-as-new arguments, or workflow and update results.
 
 Supported annotations: dataclasses, `Enum` (including `IntEnum` and `StrEnum`,
 which come back as their class), `Optional[T]` / `T | None`, `list[T]`,
