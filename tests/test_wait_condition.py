@@ -1222,3 +1222,90 @@ class TestReplayWaitCondition:
         assert len(outcome.commands) == 1
         assert isinstance(outcome.commands[0], CompleteWorkflow)
         assert outcome.commands[0].result == "done"
+
+
+# #245: a reopened wait keeps the deadline fixed at its first open.
+@workflow.defn(name="tests.replay.condition-remaining-timeout")
+class RemainingTimeoutApproval:
+    def __init__(self) -> None:
+        self.approved = False
+
+    @workflow.signal("note")
+    def note(self) -> None:
+        return None
+
+    @workflow.signal("approve")
+    def approve(self) -> None:
+        self.approved = True
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return (yield ctx.wait_condition(lambda: self.approved, key="approval", timeout=300))
+
+
+def _timed_open(wait_id: str, sequence: int, at: str, timeout: int = 300) -> list[dict]:
+    return [
+        {"event_type": "ConditionWaitOpened", "recorded_at": at, "payload": {
+            "condition_wait_id": wait_id, "condition_key": "approval", "sequence": sequence,
+            "timeout_seconds": timeout}},
+        {"event_type": "TimerScheduled", "recorded_at": at, "payload": {
+            "timer_kind": "condition_timeout", "condition_wait_id": wait_id, "condition_key": "approval",
+            "sequence": sequence, "delay_seconds": timeout}},
+    ]
+
+
+def _timed_signal(name: str, sequence: int, at: str) -> dict:
+    return {**_signal_received_event(name, [], workflow_sequence=sequence), "recorded_at": at}
+
+
+START = {"event_type": "WorkflowStarted", "recorded_at": "2026-11-03T00:00:00+00:00", "payload": {}}
+
+
+def _reopened_timeout(history: list[dict]) -> int | None:
+    (command,) = replay(RemainingTimeoutApproval, history, []).commands
+    assert isinstance(command, WaitCondition)
+    return command.timeout_seconds
+
+
+class TestReopenedWaitRemainingTimeout:
+    def test_a_non_satisfying_signal_reopens_with_the_remaining_time(self) -> None:
+        history = [START, *_timed_open("w1", 1, "2026-11-03T00:00:00+00:00"),
+                   _timed_signal("note", 1, "2026-11-03T00:02:00.250000+00:00")]
+        # Deadline 00:05:00 less 00:02:00.25, rounded up.
+        assert _reopened_timeout(history) == 180
+
+    def test_a_second_reopen_keeps_the_first_deadline(self) -> None:
+        history = [START, *_timed_open("w1", 1, "2026-11-03T00:00:00+00:00"),
+                   _timed_signal("note", 1, "2026-11-03T00:02:00+00:00"),
+                   *_timed_open("w2", 2, "2026-11-03T00:02:01+00:00", timeout=180),
+                   _timed_signal("note", 2, "2026-11-03T00:04:30+00:00")]
+        assert _reopened_timeout(history) == 30
+
+    def test_a_reopen_after_the_deadline_carries_zero(self) -> None:
+        history = [START, *_timed_open("w1", 1, "2026-11-03T00:00:00+00:00"),
+                   _timed_signal("note", 1, "2026-11-03T00:06:00+00:00")]
+        assert _reopened_timeout(history) == 0
+
+    def test_history_recorded_with_full_reopen_timeouts_still_replays(self) -> None:
+        # Earlier SDKs reopened with the full timeout; the open is not compared.
+        history = [START, *_timed_open("w1", 1, "2026-11-03T00:00:00+00:00"),
+                   _timed_signal("note", 1, "2026-11-03T00:02:00+00:00"),
+                   *_timed_open("w2", 2, "2026-11-03T00:02:01+00:00", timeout=300),
+                   _timed_signal("note", 2, "2026-11-03T00:03:00+00:00")]
+        assert _reopened_timeout(history) == 120
+
+    def test_a_satisfying_signal_completes_without_a_reopen(self) -> None:
+        history = [START, *_timed_open("w1", 1, "2026-11-03T00:00:00+00:00"),
+                   _timed_signal("approve", 1, "2026-11-03T00:02:00+00:00")]
+        (command,) = replay(RemainingTimeoutApproval, history, []).commands
+        assert command == CompleteWorkflow(True)
+
+    def test_a_first_open_keeps_the_authored_timeout(self) -> None:
+        (command,) = replay(RemainingTimeoutApproval, [START], []).commands
+        assert isinstance(command, WaitCondition) and command.timeout_seconds == 300
+
+    def test_history_without_recorded_times_keeps_the_authored_timeout(self) -> None:
+        history = [{"event_type": "WorkflowStarted", "payload": {"timestamp": "2026-11-03T00:00:00+00:00"}},
+                   *[{key: value for key, value in event.items() if key != "recorded_at"}
+                     for event in _timed_open("w1", 1, "2026-11-03T00:00:00+00:00")],
+                   _signal_received_event("note", [], workflow_sequence=1)]
+        assert _reopened_timeout(history) == 300
