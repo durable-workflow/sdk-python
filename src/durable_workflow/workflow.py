@@ -2463,6 +2463,10 @@ class WorkflowContext:
         ``False`` (otherwise ``True``). The fractional ``timeout`` is rounded
         up to the next whole second to match the server's integer-second
         timer resolution.
+
+        The deadline is fixed when the wait first opens. A signal that leaves
+        the predicate false re-drives the workflow, and the wait reopens with
+        only the time left before that deadline, so signals never extend it.
         """
         timeout_seconds: int | None = None
         if timeout is not None:
@@ -3080,6 +3084,20 @@ def _validated_replay_payload_codec(
     if (explicit or codec is not None) and codec != serializer.AVRO_CODEC:
         serializer.decode("", codec=codec)
     return codec
+
+
+def _history_event_time(event: Mapping[str, Any]) -> datetime | None:
+    """The recorded time of a history event, or None if it has none."""
+    value = event.get("timestamp")
+    if value is None:
+        value = event.get("recorded_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
 
 
 def _decode_history_result(
@@ -4979,6 +4997,10 @@ def _replay_state(
         ):
             resolved_sequences.add(sequence)
 
+    # The latest recorded time in this history: when a re-driven wait reopens.
+    history_time = max(
+        (time for time in (_history_event_time(ev) for ev in events) if time is not None), default=None,
+    )
     workflow_start_time: datetime | None = None
     replay_clock_error = "Workflow replay clock unavailable: missing WorkflowStarted persisted start time"
     for ev in events:
@@ -5101,6 +5123,9 @@ def _replay_state(
     # to match against their corresponding opened wait in history
     # (Nth yield ↔ Nth opened).
     wait_opened: list[dict[str, Any]] = []
+    # The recorded time of each ``wait_opened`` row, or None when history
+    # carries no parseable time. A reopened wait keeps its first open's deadline.
+    wait_opened_times: list[datetime | None] = []
     # Map condition_wait_id → resolution: 'satisfied' (from ConditionWaitSatisfied
     # in history, future server-recorded) or 'timed_out' (from a matching
     # condition_timeout TimerFired event).
@@ -5648,6 +5673,7 @@ def _replay_state(
                 else:
                     recorded_wait_steps.append(_recorded_step("condition wait", ev))
                     wait_opened.append(dict(payload))
+                    wait_opened_times.append(_history_event_time(ev))
         elif etype == "ConditionWaitSatisfied":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
@@ -6959,6 +6985,27 @@ def _replay_state(
         except StopIteration as stop:
             return _terminal_state(stop.value, include_pending=True)
 
+    def _reopened_with_remaining_timeout(command: WaitCondition, first_index: int) -> WaitCondition:
+        """Reopen a logical wait with the time left before its first deadline.
+
+        The deadline is fixed when the wait first opens, as in embedded
+        Workflow: the first ConditionWaitOpened time plus the authored
+        timeout. A non-satisfying signal re-drives the wait, and the reopen
+        carries the remaining whole seconds measured at the latest recorded
+        history time, rounded up and clamped to 0..authored (the sdk-php#269
+        rule). Without recorded times the authored timeout is kept.
+        """
+        authored = command.timeout_seconds
+        if authored is None or first_index >= len(wait_opened):
+            return command
+        opened_at = wait_opened_times[first_index]
+        if opened_at is None or history_time is None:
+            return command
+        remaining = math.ceil(authored - (history_time - opened_at).total_seconds())
+        reopened = copy(command)
+        reopened.timeout_seconds = min(authored, max(0, remaining))
+        return reopened
+
     def _advance_cancellation_clock(indexes: Iterable[int | None]) -> None:
         if ctx._cancellation_context is None and not consumed_scope_deliveries:
             return
@@ -7541,6 +7588,7 @@ def _replay_state(
                 # Terminal cleanup may only skip a later open after this
                 # yielded wait has already replayed at least one false reopen.
                 consumed_reopen_for_current_wait = False
+                first_open_index = wait_yield_count
                 while True:
                     resolution: str | None = None
                     opened: dict[str, Any] | None = None
@@ -7643,7 +7691,10 @@ def _replay_state(
                         continue
 
                     _set_replaying(False)
-                    pending.append(cmd)
+                    pending.append(
+                        _reopened_with_remaining_timeout(cmd, first_open_index)
+                        if opened is not None else cmd
+                    )
                     wait_yield_count = next_wait_index
                     return _state(pending)
                 continue
