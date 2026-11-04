@@ -355,7 +355,7 @@ def test_the_successor_cancellation_is_its_own(change: Any, message: str) -> Non
 # The successor cancellation is exactly one request, then exactly one delivery
 # of it, carrying one context bound to the successor, delivered to a call the
 # successor reached. Each mutation below was accepted by the bd41be60 check.
-CANCELLED_SUCCESSORS = [CANCELLATION, "redrive-reused-upserts-cancellation-clock"]
+CANCELLED_SUCCESSORS = [CANCELLATION, "redrive-successor-reused-upserts-cancellation-clock"]
 
 
 def _duplicate(event_type: str) -> Any:
@@ -460,3 +460,122 @@ def test_a_delivery_to_a_later_step_the_successor_recorded_is_accepted() -> None
 def test_a_plain_copied_schedule_may_name_the_source_run(name: str, change: Any) -> None:
     # Core copies the source run's schedule payload; a null key is plain.
     check(name, changed(name, change))
+
+
+# #239: the successor cancellation as Core 28893f97 writes it. Each mutation
+# below was accepted by the 262eb6ef check and is refused here.
+def _step_three_activity(history: list[dict[str, Any]]) -> dict[str, Any]:
+    """The successor's step-3 ActivityScheduled, inserted before the request if absent."""
+    scheduled = [item for item in history if item["event_type"] == "ActivityScheduled"]
+    if scheduled:
+        return scheduled[0]
+    item = {"event_type": "ActivityScheduled", "recorded_at": _request(history)["recorded_at"],
+            "payload": {"activity_execution_id": "01JBREDRIVESUCCESSORACT001",
+                        "activity_type": "tests.redrive.second", "sequence": 3}}
+    history.insert(history.index(_request(history)), item)
+    _renumber(history)
+    return item
+
+
+def _completed_before_request(history: list[dict[str, Any]]) -> None:
+    scheduled = _step_three_activity(history)
+    completed = {"event_type": "ActivityCompleted", "recorded_at": _request(history)["recorded_at"],
+                 "payload": {**scheduled["payload"], "result": "wwHioz3/VYAiNwoEb2s=", "payload_codec": "avro"}}
+    history.insert(history.index(scheduled) + 1, completed)
+    _renumber(history)
+
+
+def _scheduled_after_delivery(history: list[dict[str, Any]]) -> None:
+    scheduled = _step_three_activity(history)
+    history.remove(scheduled)
+    scheduled["recorded_at"] = _delivery(history)["recorded_at"]
+    history.insert(history.index(_delivery(history)) + 1, scheduled)
+    _renumber(history)
+
+
+def _source_run_prepended(context: dict[str, Any]) -> None:
+    context["lineage"].insert(0, {"request_id": "source-request", "workflow_instance_id":
+                                  context["root_workflow_instance_id"], "workflow_run_id": SOURCE_RUN})
+
+
+CORE_CANCELLATION_MUTATIONS = {
+    # 1. Root binding: a parent no longer skips the root check.
+    "parent-with-another-root": (_context("both", lambda context: context.update(
+        parent_request_id="parent-request", root_request_id="parent-request")), "its own root"),
+    "parent-request-id-missing": (_context("both", lambda context: context.pop("parent_request_id")), "its own root"),
+    # 2. Lineage: the whole lineage is the request's own address.
+    "lineage-source-run-prepended": (_context("both", _source_run_prepended), "rooted at the successor run"),
+    "lineage-entry-repeated": (_context("both", lambda context: context["lineage"].append(
+        dict(context["lineage"][0]))), "rooted at the successor run"),
+    # 3. Delivery step.
+    "delivery-to-a-call-completed-before-the-request": (_completed_before_request, "resolved before its request"),
+    "schedule-after-a-delivery-to-the-resume-step": (_scheduled_after_delivery, "the successor reached"),
+    # 4. Fields Core always writes.
+    "request-command-type-missing": (lambda history: _request(history)["payload"].pop("command_type"),
+                                     "command_type"),
+    "request-command-type-other": (lambda history: _request(history)["payload"].__setitem__(
+        "command_type", "request_termination"), "command_type"),
+    "delivery-call-kind-missing": (lambda history: _delivery(history)["payload"].pop("call_kind"), "call_kind"),
+    "delivery-call-kind-unknown": (lambda history: _delivery(history)["payload"].__setitem__(
+        "call_kind", "workflow"), "call_kind"),
+    "delivery-call-kind-parallel": (lambda history: _delivery(history)["payload"].__setitem__(
+        "call_kind", "parallel"), "call_kind"),
+    "delivery-sequence-span": (lambda history: _delivery(history)["payload"].__setitem__("sequence_span", 2),
+                               "one single call"),
+    "context-schema-missing": (_context("both", lambda context: context.pop("schema")), "schema"),
+    "context-schema-unknown": (_context("both", lambda context: context.__setitem__(
+        "schema", "durable-workflow.cancellation-context/v3")), "schema"),
+    "context-schema-scoped": (_context("both", lambda context: context.__setitem__(
+        "schema", "durable-workflow.cancellation-context/v2")), "schema"),
+    "context-scope-origin": (_context("both", lambda context: context.__setitem__("scope_origin", {})), "schema"),
+    "context-requested-at-missing": (_context("both", lambda context: context.pop("requested_at")),
+                                     "history time must be a string"),
+    "context-requested-after-the-request": (_context("both", lambda context: context.__setitem__(
+        "requested_at", "2026-11-03T00:05:05.000000Z")), "requested_at"),
+    "context-requested-before-the-start": (_context("both", lambda context: context.__setitem__(
+        "requested_at", "2026-11-03T00:04:59.000000Z")), "requested_at"),
+    "context-deadline-at-the-request": (lambda history: [
+        target.__setitem__("cleanup_deadline_at", _request(history)["payload"]["cancellation"]["requested_at"])
+        for target in (_request(history)["payload"], _request(history)["payload"]["cancellation"],
+                       _delivery(history)["payload"]["cancellation"])], "cleanup deadline"),
+    "context-requester-empty": (_context("both", lambda context: context.__setitem__("requester", {})),
+                                "requester"),
+    "context-requester-unknown-key": (_context("both", lambda context: context["requester"].__setitem__(
+        "email", "operator@example.test")), "requester"),
+    "context-source-blank": (_context("both", lambda context: context.__setitem__("source", " ")), "source"),
+    "request-reason-differs": (lambda history: _request(history)["payload"].__setitem__("reason", "other"),
+                               "reason"),
+}
+
+
+@pytest.mark.parametrize("name", CANCELLED_SUCCESSORS)
+@pytest.mark.parametrize("mutation", sorted(CORE_CANCELLATION_MUTATIONS))
+def test_the_successor_cancellation_has_core_shape(name: str, mutation: str) -> None:
+    change, message = CORE_CANCELLATION_MUTATIONS[mutation]
+    with pytest.raises(AssertionError, match=message):
+        check(name, changed(name, change))
+
+
+def test_a_delivery_to_a_recorded_call_names_its_kind() -> None:
+    with pytest.raises(AssertionError, match="the recorded call's kind"):
+        check(CANCELLATION, changed(CANCELLATION, lambda history: _delivery(history)["payload"].__setitem__(
+            "call_kind", "timer")))
+
+
+@pytest.mark.parametrize("call_kind", ["activity", "timer", "child", "service_operation"])
+def test_a_delivery_to_the_unscheduled_resume_step_may_name_any_single_call(call_kind: str) -> None:
+    # Core lets a delivery consume a call not yet scheduled; its shape is open.
+    name = "redrive-successor-reused-upserts-cancellation-clock"
+    check(name, changed(name, lambda history: _delivery(history)["payload"].__setitem__("call_kind", call_kind)))
+
+
+def test_a_call_completed_after_the_request_is_still_deliverable() -> None:
+    # Core resolvedBeforeRequest: only a resolution before the request refuses it.
+    def completed_between(history: list[dict[str, Any]]) -> None:
+        scheduled = _step_three_activity(history)
+        completed = {"event_type": "ActivityCompleted", "recorded_at": _delivery(history)["recorded_at"],
+                     "payload": {**scheduled["payload"], "result": "wwHioz3/VYAiNwoEb2s=", "payload_codec": "avro"}}
+        history.insert(history.index(_delivery(history)), completed)
+        _renumber(history)
+
+    check(CANCELLATION, changed(CANCELLATION, completed_between))

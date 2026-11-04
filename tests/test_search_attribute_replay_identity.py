@@ -445,7 +445,7 @@ def test_pointer_records_claim_no_sequence(event_type: str) -> None:
 # Cancellation deliveries are durable command positions (Core
 # WorkflowStepHistory::nextSequenceFromEvents). A delivery claims its sequence
 # and, with sequence_span, every sequence through sequence + span - 1.
-DELIVERY_FIXTURE = "redrive-reused-upserts-cancellation-clock"
+DELIVERY_FIXTURE = "redrive-successor-reused-upserts-cancellation-clock"
 
 
 def _cooperative(fixture: str, sequence: int, span: int, order: str, drop_memo: bool = False) -> list[dict[str, Any]]:
