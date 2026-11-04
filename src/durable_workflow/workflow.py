@@ -7855,10 +7855,13 @@ def _replay_state(
                             prefix="wait_condition predicate raised",
                         )])
                     if resolution == "satisfied":
-                        if has_reopened_same_wait and not satisfied:
-                            # Only an open consumed as a reopen is bounded (#248);
-                            # a later same-key wait after a true predicate is a
-                            # separate call with its own timeout.
+                        if has_reopened_same_wait and (
+                            not satisfied or _opened_before_terminal(next_wait_index, opened)
+                        ):
+                            # An already-open duplicate belongs to this wait
+                            # even when the older open satisfied it (#256).
+                            # An open after satisfaction can be a separate
+                            # authored call, with its own timeout (#248).
                             _assert_reopen_within_first_timeout(first_open_index, next_wait_index)
                             consumed_reopen_for_current_wait = True
                             wait_yield_count = next_wait_index
