@@ -378,6 +378,33 @@ class _RuntimeExternalPayloadTransport:
     prepared_completion_context: bool = False
 
 
+class _PageTokens:
+    """Detect cyclic opaque continuations with constant-space checkpoints."""
+
+    def __init__(self, token: str | None) -> None:
+        self.current = token
+        self._checkpoint = token
+        self._distance = 0
+        self._power = 1
+
+    def advance(self, token: Any) -> bool:
+        if token is None or token == "":
+            self.current = None
+            return False
+        if not isinstance(token, str):
+            raise RuntimeError("pagination returned an invalid page token")
+        if token == self.current or token == self._checkpoint:
+            raise RuntimeError("pagination repeated a page token")
+        self.current = token
+        self._distance += 1
+        # Brent's cycle detector retains one checkpoint, not every old token.
+        if self._distance == self._power:
+            self._checkpoint = token
+            self._power *= 2
+            self._distance = 0
+        return True
+
+
 @dataclass
 class WorkflowExecution:
     """Current server view of one workflow execution."""
@@ -1375,6 +1402,17 @@ class WorkflowHandle:
         if self.run_id is None:
             raise ValueError("run_id is required to export workflow history from a handle")
         return await self._client.export_history(self.workflow_id, self.run_id)
+
+    async def iter_history(
+        self, *, page_size: int | None = None, next_page_token: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield this explicit run's history. See :meth:`Client.iter_history`."""
+        if self.run_id is None:
+            raise ValueError("run_id is required to iterate workflow history from a handle")
+        async for event in self._client.iter_history(
+            self.workflow_id, self.run_id, page_size=page_size, next_page_token=next_page_token,
+        ):
+            yield event
 
     async def list_runs(self) -> WorkflowRunList:
         """List all runs in this workflow execution chain. See :meth:`Client.list_workflow_runs`."""
@@ -3871,6 +3909,39 @@ class Client:
             next_page_token=data.get("next_page_token"),
         )
 
+    async def iter_workflows(
+        self,
+        *,
+        workflow_type: str | None = None,
+        status: str | None = None,
+        query: str | None = None,
+        page_size: int | None = None,
+        next_page_token: str | None = None,
+    ) -> AsyncIterator[WorkflowExecution]:
+        """Yield workflow list results lazily, retaining no previous pages.
+
+        Filters and namespace stay fixed across pages. An empty page with a
+        continuation is followed; missing/empty continuation ends iteration.
+        Cancellation, malformed/cyclic continuations and HTTP errors propagate,
+        possibly after earlier results have been yielded. This is a traversal
+        of Server pages, not a snapshot of concurrently changing workflows.
+        """
+        tokens = _PageTokens(next_page_token)
+        namespace = self.namespace
+        while True:
+            if self.namespace != namespace:
+                raise RuntimeError("client namespace changed during pagination")
+            page = await self.list_workflows(
+                workflow_type=workflow_type, status=status, query=query, page_size=page_size,
+                next_page_token=tokens.current,
+            )
+            more = tokens.advance(page.next_page_token)
+            for execution in page.executions:
+                yield execution
+            del page
+            if not more:
+                return
+
     async def get_history(
         self,
         workflow_id: str,
@@ -3892,6 +3963,39 @@ class Client:
         return await self._request(
             "GET", path, context=workflow_id
         )
+
+    async def iter_history(
+        self,
+        workflow_id: str,
+        run_id: str,
+        *,
+        page_size: int | None = None,
+        next_page_token: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield run-history events in Server order, fetching one page at a time.
+
+        Workflow/run/namespace identity and page size stay fixed. Stopping the
+        iterator fetches no subsequent page. Empty continued pages are followed;
+        malformed/cyclic continuations and HTTP errors propagate rather than
+        appearing as a complete history. Already yielded events are not undone.
+        """
+        tokens = _PageTokens(next_page_token)
+        namespace = self.namespace
+        while True:
+            if self.namespace != namespace:
+                raise RuntimeError("client namespace changed during pagination")
+            page = await self.get_history(
+                workflow_id, run_id, page_size=page_size, next_page_token=tokens.current,
+            )
+            if (not isinstance(page, dict) or not isinstance(page.get("events"), list)
+                    or any(not isinstance(event, dict) for event in page["events"])):
+                raise RuntimeError("history pagination returned invalid events")
+            more = tokens.advance(page.get("next_page_token"))
+            for event in page["events"]:
+                yield event
+            del page
+            if not more:
+                return
 
     async def export_history(self, workflow_id: str, run_id: str) -> Any:
         """Export one workflow run history as a replay bundle."""
