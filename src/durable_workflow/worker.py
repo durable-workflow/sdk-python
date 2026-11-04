@@ -49,6 +49,7 @@ from ._failure_reporting import REQUEST_BYTES, exception_message, normalize_loca
 from ._prepared_local_activity import PreparedAttempt, PreparedCancellationObserved, PreparedLocalRunner
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
 from ._sticky_workflow_cache import CacheKey, StickyWorkflowCache, complete_history
+from ._typed_values import to_payload_value
 from .activity import ActivityContext, ActivityInfo, _set_context
 from .auth_composition import (
     AUTH_COMPOSITION_CONTRACT_SCHEMA,
@@ -2505,6 +2506,9 @@ class Worker:
                     "duration_ms": max(0, round((time.monotonic() - attempt_started_at) * 1000)),
                     "heartbeats": heartbeats,
                 })
+                # The workflow receives the same neutral value on this first
+                # run as on replay of the recorded result.
+                result = to_payload_value(result)
                 try:
                     inline_result = serializer.envelope(result, codec=payload_codec)
                 except Exception:
@@ -3270,6 +3274,7 @@ class Worker:
         finally:
             _set_context(None)
 
+        result = to_payload_value(result)
         log.info("completing activity task %s (%s) -> %r", task_id, activity_type, result)
         try:
             await self.client.complete_activity_task(

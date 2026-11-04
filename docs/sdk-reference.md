@@ -957,6 +957,85 @@ activities, for example `OrderInput(order_id=UUID(data["order_id"]), ...)`.
 Adapter output is part of the durable history contract, so changing that shape
 is a workflow compatibility change.
 
+## Typed activity values
+
+Activity boundaries can carry dataclasses and enums without hand-written
+conversion. The wire format stays the neutral map, so PHP and Rust workers read
+and write the same values.
+
+**Sending.** A dataclass or `Enum` passed as an activity argument, or returned
+by an activity, is sent as its neutral value: a dataclass as the string-keyed
+map of its fields and an `Enum` as its `.value`. The bytes are the same as
+passing `dataclasses.asdict(value)` with each enum replaced by `.value`. Other
+rich values (datetimes, `UUID`, `Decimal`, pydantic and attrs models) still
+need `to_avro_payload_value(...)` or explicit conversion.
+
+**Receiving (opt in).** Decoding to a Python type happens only where you ask
+for it, so existing workflows keep receiving plain values on replay:
+
+```python
+from dataclasses import dataclass, field
+from enum import Enum
+
+from durable_workflow import activity, workflow
+from durable_workflow.workflow import WorkflowContext
+
+
+class Status(Enum):
+    OPEN = "open"
+    SHIPPED = "shipped"
+
+
+@dataclass
+class Item:
+    sku: str
+    qty: int = 1
+
+
+@dataclass
+class Shipment:
+    order_id: str
+    status: Status
+    items: list[Item] = field(default_factory=list)
+    note: str | None = None
+
+
+@activity.defn(name="ship", typed=True)
+def ship(shipment: Shipment) -> Shipment:
+    # shipment is a Shipment; the returned Shipment is sent as a neutral map.
+    return Shipment(shipment.order_id, Status.SHIPPED, shipment.items)
+
+
+@workflow.defn(name="fulfil")
+class Fulfil:
+    def run(self, ctx: WorkflowContext, order_id: str):
+        shipment = Shipment(order_id, Status.OPEN, [Item("a", 2)])
+        shipped = yield ctx.schedule_activity("ship", [shipment], result_type=Shipment)
+        return shipped.status.value
+```
+
+- `@activity.defn(..., typed=True)` decodes positional arguments to the
+  function's parameter annotations.
+- `ctx.schedule_activity(..., result_type=T)` decodes the completed result
+  for a single call, inside a parallel group (`yield [...]`) and inside
+  `ctx.select(...)`. `result_type` is local: it is never sent, compared or
+  written to history.
+
+Supported annotations: dataclasses, `Enum` (including `IntEnum` and `StrEnum`,
+which come back as their class), `Optional[T]` / `T | None`, `list[T]`,
+`dict[str, T]`, `str`, `int`, `float` (an integer is accepted), `bool`, `bytes`
+and `Any`. Any other annotation, including a union of two non-`None` types,
+raises `TypeError` when the activity is declared or the call is made.
+
+Decoding follows rolling-deploy rules. Keys a dataclass does not declare are
+ignored, and a missing field takes its default. A missing field with no
+default, a value of the wrong kind, or an unknown enum value raises
+`TypedValueError`, whose `path` names the field (for example
+`shipment.items[0].sku`). The message never includes the value. In a typed
+activity the error fails the activity without retries. With `result_type` it is
+raised at the `yield`, where workflow code can catch it; a selection winner
+reports it as `SelectionResult.failure`.
+
 ## Authentication
 
 For local servers that use one shared bearer token, pass `token=`:

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "typed-dataclass-enum-neutral-map",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": [
+    "python"
+  ],
+  "value": {
+    "type": "map",
+    "entries": [
+      {
+        "key": "order_id",
+        "value": {
+          "type": "string",
+          "value": "o-1"
+        }
+      },
+      {
+        "key": "status",
+        "value": {
+          "type": "string",
+          "value": "shipped"
+        }
+      },
+      {
+        "key": "priority",
+        "value": {
+          "type": "long",
+          "value": "2"
+        }
+      },
+      {
+        "key": "items",
+        "value": {
+          "type": "array",
+          "items": [
+            {
+              "type": "map",
+              "entries": [
+                {
+                  "key": "sku",
+                  "value": {
+                    "type": "string",
+                    "value": "a"
+                  }
+                },
+                {
+                  "key": "qty",
+                  "value": {
+                    "type": "long",
+                    "value": "2"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "key": "note",
+        "value": {
+          "type": "null"
+        }
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": "wwHioz3/VYAiNw4KEG9yZGVyX2lkCgZvLTEMc3RhdHVzCg5zaGlwcGVkEHByaW9yaXR5BAQKaXRlbXMMAg4EBnNrdQoCYQZxdHkEBAAACG5vdGUAAA=="
+  },
+  "failure_policy": {
+    "operation": "round_trip",
+    "error": null
+  }
+}
