@@ -44,7 +44,7 @@ from ._cancellation_scope_history import (
 )
 from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
 from ._failure_reporting import exception_message
-from ._typed_values import from_payload_value, to_payload_values, validate_annotation
+from ._typed_values import decode_payload_value, to_payload_values, validate_annotation
 from .cancellation import (
     CancellationContext,
     CancellationPolicy,
@@ -3128,7 +3128,7 @@ def _typed_activity_result(command: Any, value: Any) -> Any:
     """Decode an activity result to the call's opt-in result_type, if any."""
     if not isinstance(command, ScheduleActivity) or command.result_type is None or isinstance(value, BaseException):
         return value
-    return from_payload_value(value, command.result_type, "activity result")
+    return decode_payload_value(value, command.result_type, "activity result")
 
 
 def _decode_history_result(
