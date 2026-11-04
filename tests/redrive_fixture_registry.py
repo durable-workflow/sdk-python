@@ -28,7 +28,6 @@ VALID_SUCCESSORS: dict[str, int] = {
     # Added by #236 (unreleased at the time of #237).
     "redrive-reused-upserts-clock": 3,
     "redrive-reused-signal-wait-clock": 2,
-    "redrive-reused-upserts-cancellation-clock": 3,
     "redrive-reused-search-attribute-value-mismatch": 3,
     "redrive-reused-search-attribute-type-mismatch": 3,
     "redrive-reused-search-attribute-update-missing": 3,
@@ -36,6 +35,9 @@ VALID_SUCCESSORS: dict[str, int] = {
     "redrive-successor-reused-markers": 4,
     "redrive-successor-reused-timer": 3,
     "redrive-successor-reused-cancellation-clock": 3,
+    # Added by #239: redrive-reused-upserts-cancellation-clock with the
+    # request's command_type, which Core WorkflowStub::recordCancellationRequest always writes.
+    "redrive-successor-reused-upserts-cancellation-clock": 3,
 }
 
 NON_QUALIFYING: dict[str, NonQualifying] = {
@@ -49,6 +51,17 @@ NON_QUALIFYING: dict[str, NonQualifying] = {
             "identity, link or resume step) and no reused prefix. It asserts only ctx.now(), which is "
             "correct; it is ambiguous rather than a clock defect. The replacement asserts the same "
             "start clock on a valid successor."
+        ),
+    ),
+    "redrive-reused-upserts-cancellation-clock": NonQualifying(
+        sha256="f8c40d18fa71a0656089290fd5be44e7df318fafd12721d7a6680e1113ec4856",
+        error="the request's command_type is request_cancellation",
+        replacement="redrive-successor-reused-upserts-cancellation-clock",
+        release="unreleased (#236, after 2.13.1)",
+        reason=(
+            "Its CooperativeCancellationRequested has no command_type. Core WorkflowStub::recordCancellationRequest "
+            "(workflow 28893f97) always writes command_type request_cancellation, so Workflow cannot "
+            "write this request. Its replay result is correct; the replacement adds only that field."
         ),
     ),
 }
