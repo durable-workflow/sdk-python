@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Unreleased typed run-activity visibility through `Client.get_run_activities` and `WorkflowHandle.get_activities`, with activity/attempt metadata, exact run/namespace binding, explicit unavailable fields and preserved diagnostic authority. Standalone activity listing is unchanged. Shared delivery remains tracked in durable-workflow/.github#235.
+
 - Worker schedule-to-start histogram `durable_workflow_worker_task_schedule_to_start_seconds` for workflow and activity dispatches, tagged only with `task_kind` and `task_queue`. It requires Server's `claimed_task_ready_age` capability and a valid integer `ready_age_ms`, records Server-computed milliseconds as seconds, preserves real zero and omits missing/invalid samples. The shared metrics contract is pinned at revision 2. Published-Server and installed-package acceptance remains pending in #188.
 
 - Condition wait opens carry a deterministic `python:condition-wait:{ordinal}` occurrence ID for each authored call, including selection members. False-wake reopens preserve the first open's ID and remaining timeout; legacy chains without an ID keep that absence even when later physical opens have an ID. Separate calls and grace waits receive new ordinals. These identities enable unresolved-open deduplication on supporting runtimes. (#259)

@@ -700,6 +700,133 @@ class WorkflowRunList:
 
 
 @dataclass
+class WorkflowActivityAttempt:
+    """Received attempt visibility. Missing metadata stays unavailable."""
+
+    id: str | None = None
+    worker_attempt_id: str | None = None
+    attempt_number: int | None = None
+    status: str | None = None
+    task_id: str | None = None
+    lease_owner: str | None = None
+    lease_expires_at: str | None = None
+    started_at: str | None = None
+    last_heartbeat_at: str | None = None
+    last_heartbeat_progress: dict[str, Any] | list[Any] | None = None
+    closed_at: str | None = None
+    can_continue: bool | None = None
+    cancel_requested: bool | None = None
+    stop_reason: str | None = None
+    failure_reason: str | None = None
+    raw: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkflowActivityAttempt:
+        values = {name: _run_activity_field(data, name, str) for name in (
+            "id", "worker_attempt_id", "status", "task_id", "lease_owner", "lease_expires_at", "started_at",
+            "last_heartbeat_at", "closed_at", "stop_reason", "failure_reason",
+        )}
+        return cls(**values, attempt_number=_run_activity_field(data, "attempt_number", int),
+                   can_continue=_run_activity_field(data, "can_continue", bool),
+                   cancel_requested=_run_activity_field(data, "cancel_requested", bool),
+                   last_heartbeat_progress=_run_activity_progress(data), raw=copy.deepcopy(data))
+
+
+@dataclass
+class WorkflowActivity:
+    """Activity metadata from one run, retaining Server diagnostic authority."""
+
+    id: str | None = None
+    idempotency_key: str | None = None
+    sequence: int | None = None
+    activity_type: str | None = None
+    activity_class: str | None = None
+    execution_mode: str | None = None
+    local_activity: bool | None = None
+    history_authority: str | None = None
+    diagnostic_only: bool | None = None
+    history_event_types: list[str] | None = None
+    history_unsupported_reason: str | None = None
+    reused_from_run_id: str | None = None
+    reused_activity_execution_id: str | None = None
+    reused_recorded_at: str | None = None
+    row_status: str | None = None
+    parallel_group_kind: str | None = None
+    parallel_group_id: str | None = None
+    parallel_group_base_sequence: int | None = None
+    parallel_group_size: int | None = None
+    parallel_group_index: int | None = None
+    parallel_group_path: list[dict[str, Any]] | None = None
+    attempt_id: str | None = None
+    worker_attempt_id: str | None = None
+    status: str | None = None
+    attempt_count: int | None = None
+    retry_policy: Any = None
+    connection: str | None = None
+    queue: str | None = None
+    last_heartbeat_at: str | None = None
+    last_heartbeat_progress: dict[str, Any] | list[Any] | None = None
+    created_at: str | None = None
+    started_at: str | None = None
+    closed_at: str | None = None
+    attempts: list[WorkflowActivityAttempt] | None = None
+    raw: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkflowActivity:
+        values = {name: _run_activity_field(data, name, str) for name in (
+            "id", "idempotency_key", "execution_mode", "history_authority", "history_unsupported_reason",
+            "reused_from_run_id", "reused_activity_execution_id", "reused_recorded_at", "row_status",
+            "parallel_group_kind", "parallel_group_id", "attempt_id", "worker_attempt_id", "status",
+            "connection", "queue", "last_heartbeat_at", "created_at", "started_at", "closed_at",
+        )}
+        for name in ("sequence", "parallel_group_base_sequence", "parallel_group_size", "parallel_group_index",
+                     "attempt_count"):
+            values[name] = _run_activity_field(data, name, int)
+        for name in ("local_activity", "diagnostic_only"):
+            values[name] = _run_activity_field(data, name, bool)
+        attempts = _run_activity_items(data, "attempts", dict)
+        return cls(**values, activity_type=_run_activity_field(data, "type", str),
+                   activity_class=_run_activity_field(data, "class", str),
+                   history_event_types=_run_activity_items(data, "history_event_types", str),
+                   parallel_group_path=_run_activity_items(data, "parallel_group_path", dict),
+                   attempts=[WorkflowActivityAttempt.from_dict(item) for item in attempts]
+                   if attempts is not None else None,
+                   last_heartbeat_progress=_run_activity_progress(data),
+                   retry_policy=copy.deepcopy(data.get("retry_policy")), raw=copy.deepcopy(data))
+
+
+@dataclass
+class WorkflowActivityList:
+    """One explicit run's activity visibility, distinct from standalone jobs."""
+
+    workflow_id: str
+    run_id: str
+    activities: list[WorkflowActivity]
+
+
+def _run_activity_field(data: dict[str, Any], name: str, kind: type[Any]) -> Any:
+    value = data.get(name)
+    if value is not None and type(value) is not kind:
+        raise RuntimeError(f"invalid run activity field: {name}")
+    return value
+
+
+def _run_activity_items(data: dict[str, Any], name: str, kind: type[Any]) -> Any:
+    items = _run_activity_field(data, name, list)
+    if items is not None and any(type(item) is not kind for item in items):
+        raise RuntimeError(f"invalid run activity items: {name}")
+    return items
+
+
+def _run_activity_progress(data: dict[str, Any]) -> Any:
+    value = data.get("last_heartbeat_progress")
+    if value is not None and not isinstance(value, (dict, list)):
+        raise RuntimeError("invalid run activity field: last_heartbeat_progress")
+    return copy.deepcopy(value)
+
+
+@dataclass
 class StandaloneActivityExecution:
     """Server view of one standalone activity execution.
 
@@ -1386,6 +1513,13 @@ class WorkflowHandle:
         if selected_run_id is None:
             raise ValueError("run_id is required to describe a workflow run from a handle")
         return await self._client.describe_workflow_run(self.workflow_id, selected_run_id)
+
+    async def get_activities(self, run_id: str | None = None) -> WorkflowActivityList:
+        """Read activities for an explicit run. See :meth:`Client.get_run_activities`."""
+        selected_run_id = self.run_id if run_id is None else run_id
+        if selected_run_id is None:
+            raise ValueError("run_id is required to fetch workflow activities from a handle")
+        return await self._client.get_run_activities(self.workflow_id, selected_run_id)
 
     async def signal(
         self,
@@ -3911,6 +4045,25 @@ class Client:
             run_count=data.get("run_count", len(runs)),
             runs=runs,
         )
+
+    async def get_run_activities(self, workflow_id: str, run_id: str) -> WorkflowActivityList:
+        """Read typed activity/attempt metadata for this namespace and exact run.
+
+        Missing optional metadata stays None. Diagnostic/unsupported states and
+        unknown future status strings are preserved; this visibility snapshot
+        does not grant attempt authority. Payloads are not fetched or decoded.
+        """
+        data = await self._request(
+            "GET", f"/workflows/{quote(workflow_id, safe='._:-')}/runs/{quote(run_id, safe='._:-')}/activities",
+            context=workflow_id,
+        )
+        if (not isinstance(data, dict) or data.get("workflow_id") != workflow_id
+                or data.get("run_id") != run_id):
+            raise RuntimeError("run activity response changed workflow/run identity")
+        items = _run_activity_items(data, "activities", dict)
+        if items is None:
+            raise RuntimeError("run activity response omitted activities")
+        return WorkflowActivityList(workflow_id, run_id, [WorkflowActivity.from_dict(item) for item in items])
 
     async def describe_workflow_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
         """Return detailed status, payload, and actionability for one specific workflow run."""
