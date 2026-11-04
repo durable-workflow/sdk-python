@@ -62,6 +62,7 @@ from ._poll_transport import POLL_PATHS as _POLL_PATHS
 from ._poll_transport import unwrap_response as _unwrap_poll_response
 from ._poll_transport import warn_early_cutoff as _warn_poll_cutoff
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
+from ._typed_values import decode_payload_value, to_payload_values, validate_annotation
 from .errors import (
     REQUEST_ID_CONFLICT,
     ExternalPayloadIntegrityMismatch,
@@ -1328,6 +1329,12 @@ class BridgeAdapterOutcome:
         )
 
 
+# Client payloads that carry caller arguments.
+_ARGUMENT_PAYLOAD_KINDS = frozenset({
+    "workflow_input", "signal", "update", "query", "activity_input", "schedule_input",
+})
+
+
 class WorkflowHandle:
     """Convenience wrapper for operating on one workflow ID."""
 
@@ -1337,9 +1344,11 @@ class WorkflowHandle:
         self.run_id = run_id
         self.workflow_type = workflow_type
 
-    async def result(self, *, poll_interval: float = 0.5, timeout: float = 30.0) -> Any:
+    async def result(self, *, poll_interval: float = 0.5, timeout: float = 30.0, result_type: Any = None) -> Any:
         """Block until this workflow terminates and return its result. See :meth:`Client.get_result`."""
-        return await self._client.get_result(self, poll_interval=poll_interval, timeout=timeout)
+        return await self._client.get_result(
+            self, poll_interval=poll_interval, timeout=timeout, result_type=result_type,
+        )
 
     async def describe(self) -> WorkflowExecution:
         """Return the server's current view of this workflow. See :meth:`Client.describe_workflow`."""
@@ -1807,6 +1816,11 @@ class Client:
         external_storage: ExternalStorageDriver | None = None,
         external_storage_threshold_bytes: int | None = None,
     ) -> dict[str, Any]:
+        if kind in _ARGUMENT_PAYLOAD_KINDS and isinstance(value, list):
+            # Dataclass and Enum arguments travel as their neutral values, the
+            # bytes dataclasses.asdict() and .value give. The codec refuses
+            # those values, so no existing caller depends on this conversion.
+            value = to_payload_values(value)
         warning_context = self._payload_context(
             kind=kind,
             workflow_id=workflow_id,
@@ -4760,8 +4774,15 @@ class Client:
         *,
         poll_interval: float = 0.5,
         timeout: float = 30.0,
+        result_type: Any = None,
     ) -> Any:
         """Poll a workflow until it reaches a terminal state and return its result.
+
+        ``result_type`` opts in to decoding the result to that annotation
+        (the types :func:`durable_workflow.activity.defn` lists for
+        ``typed=True``); a mismatch raises
+        :class:`~durable_workflow.errors.TypedValueError`, which names the
+        field path but never the value. Without it the plain value is returned.
 
         Raises :class:`~durable_workflow.errors.WorkflowFailed`,
         :class:`~durable_workflow.errors.WorkflowCancelled`, or
@@ -4770,6 +4791,8 @@ class Client:
         raises :class:`~durable_workflow.errors.WorkflowTimedOut`; a caller's
         :class:`TimeoutError` means ``timeout`` seconds elapsed while waiting.
         """
+        if result_type is not None:
+            validate_annotation(result_type, "result_type")
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
             desc = await self.describe_workflow(handle.workflow_id)
@@ -4789,12 +4812,15 @@ class Client:
                         etype = ev.get("event_type")
                         payload = ev.get("payload") or {}
                         if etype == "WorkflowCompleted":
-                            return serializer.decode_envelope(
+                            output = serializer.decode_envelope(
                                 payload.get("output"),
                                 codec=payload.get("payload_codec") or desc.payload_codec,
                                 external_storage=self.external_storage,
                                 external_storage_cache=self.external_storage_cache,
                             )
+                            if result_type is None:
+                                return output
+                            return decode_payload_value(output, result_type, "workflow result")
                         if etype == "WorkflowFailed":
                             raise WorkflowFailed(
                                 payload.get("message", "workflow failed"),

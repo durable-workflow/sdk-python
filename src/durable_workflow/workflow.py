@@ -44,7 +44,7 @@ from ._cancellation_scope_history import (
 )
 from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
 from ._failure_reporting import exception_message
-from ._typed_values import decode_payload_value, to_payload_values, validate_annotation
+from ._typed_values import decode_payload_value, to_payload_value, to_payload_values, validate_annotation
 from .cancellation import (
     CancellationContext,
     CancellationPolicy,
@@ -189,16 +189,49 @@ def _validate_workflow_handler_result(result: Any, cls: type, method: str, *, al
     return result
 
 
-def defn(*, name: str) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
+_TYPED_HANDLER_KINDS = ("signal", "query", "update", "update_validator")
+
+
+def _type_workflow_methods(cls: type) -> None:
+    """Wrap run and every handler so their arguments decode to annotations."""
+    from ._typed_values import typed_method
+
+    entrypoint = getattr(cls, "run", None)
+    if inspect.isfunction(entrypoint):
+        cls.run = typed_method(entrypoint, 2)  # type: ignore[attr-defined]
+    for attr in dir(cls):
+        if attr.startswith("_"):
+            continue
+        member = getattr(cls, attr, None)
+        if not any(isinstance(getattr(member, f"__{kind}_name__", None), str) for kind in _TYPED_HANDLER_KINDS):
+            continue
+        if isinstance(inspect.getattr_static(cls, attr), staticmethod | classmethod):
+            raise TypeError(
+                f"typed workflow {cls.__qualname__}.{attr}: handlers must be instance methods to decode arguments"
+            )
+        if inspect.isfunction(member):
+            setattr(cls, attr, typed_method(member, 1))
+
+
+def defn(*, name: str, typed: bool = False) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
     """Register a class as a workflow type under a language-neutral name.
 
     Scans the class for ``@signal``, ``@query``, and ``@update`` decorated
     methods and builds registries at decoration time so worker-side dispatch
     can use stable receiver names without re-inspecting the class on every
     history event or control-plane request.
+
+    With ``typed=True``, the arguments of ``run`` (after ``ctx``) and of every
+    signal, query, update and update-validator handler are decoded to their
+    annotations, with the rules :func:`durable_workflow.activity.defn`
+    documents for ``typed=True``. A mismatch raises
+    :class:`~durable_workflow.errors.TypedValueError` when the method is
+    called. Without it, methods keep receiving plain values.
     """
 
     def wrap(cls: type[_WorkflowT]) -> type[_WorkflowT]:
+        if typed:
+            _type_workflow_methods(cls)
         cls.__workflow_name__ = name  # type: ignore[attr-defined]
         _validate_workflow_entrypoint(cls)
         signals, queries, updates, update_validators = _workflow_handler_registries(cls)
@@ -933,7 +966,7 @@ class CompleteWorkflow:
         return {
             "type": "complete_workflow",
             "result": _payload_envelope(
-                self.result,
+                to_payload_value(self.result),
                 payload_codec=payload_codec,
                 size_warning=size_warning,
                 warning_context=_payload_warning_context(
@@ -1006,7 +1039,7 @@ class CompleteUpdate:
             "type": "complete_update",
             "update_id": self.update_id,
             "result": _payload_envelope(
-                self.result,
+                to_payload_value(self.result),
                 payload_codec=payload_codec,
                 size_warning=size_warning,
                 warning_context=_payload_warning_context(
@@ -1076,7 +1109,7 @@ class ContinueAsNew:
         if self.workflow_type is not None:
             cmd["workflow_type"] = self.workflow_type
         cmd["arguments"] = _payload_envelope(
-            self.arguments,
+            to_payload_values(list(self.arguments)),
             payload_codec=payload_codec,
             size_warning=size_warning,
             warning_context=_payload_warning_context(
@@ -1146,6 +1179,8 @@ class StartChildWorkflow:
     execution_timeout_seconds: int | None = None
     run_timeout_seconds: int | None = None
     cancellation_policy: str | CancellationPolicy | None = None
+    # Opt-in local decoding of the child's result; never sent or compared.
+    result_type: Any = field(default=None, repr=False, compare=False)
     _cancellation_scope_id: str = field(
         default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
     )
@@ -1157,6 +1192,10 @@ class StartChildWorkflow:
     )
 
     def __post_init__(self) -> None:
+        # Dataclass and Enum arguments travel as their neutral values.
+        self.arguments = to_payload_values(list(self.arguments))
+        if self.result_type is not None:
+            validate_annotation(self.result_type, "result_type")
         _canonical_child_policies({
             "parent_close_policy": self.parent_close_policy,
             "cancellation_policy": self.cancellation_policy,
@@ -1726,7 +1765,10 @@ def _condition_predicate_fingerprint(predicate: Callable[[], bool]) -> str:
     h.update(f"{getattr(predicate, '__module__', '')}\0".encode())
     h.update(f"{getattr(predicate, '__qualname__', '')}\0".encode())
 
-    code = getattr(predicate, "__code__", None)
+    # A typed=True wrapper is fingerprinted as the method it wraps, so turning
+    # typed on does not change a recorded predicate's identity (#184).
+    original = getattr(predicate, "__typed_workflow_method__", None)
+    code = getattr(original if original is not None else predicate, "__code__", None)
     if code is None:
         h.update(repr(predicate).encode())
     else:
@@ -2647,7 +2689,14 @@ class WorkflowContext:
         retry_policy: ChildWorkflowRetryPolicyInput | None = None,
         execution_timeout_seconds: int | None = None,
         run_timeout_seconds: int | None = None,
+        result_type: Any = None,
     ) -> StartChildWorkflow:
+        """Yield a child workflow start.
+
+        Dataclass and ``Enum`` arguments are sent as their neutral values.
+        ``result_type`` opts in to decoding the child's result, with the same
+        rules and failure behavior as ``schedule_activity(result_type=...)``.
+        """
         return StartChildWorkflow(
             workflow_type=workflow_type,
             arguments=list(arguments) if arguments is not None else [],
@@ -2657,6 +2706,7 @@ class WorkflowContext:
             retry_policy=retry_policy,
             execution_timeout_seconds=execution_timeout_seconds,
             run_timeout_seconds=run_timeout_seconds,
+            result_type=result_type,
         )
 
     def call_nexus_service(
@@ -3125,10 +3175,13 @@ def _history_event_time(event: Mapping[str, Any]) -> datetime | None:
 
 
 def _typed_activity_result(command: Any, value: Any) -> Any:
-    """Decode an activity result to the call's opt-in result_type, if any."""
-    if not isinstance(command, ScheduleActivity) or command.result_type is None or isinstance(value, BaseException):
+    """Decode an activity or child result to the call's opt-in result_type."""
+    if not isinstance(command, ScheduleActivity | StartChildWorkflow) or command.result_type is None or isinstance(
+        value, BaseException,
+    ):
         return value
-    return decode_payload_value(value, command.result_type, "activity result")
+    path = "activity result" if isinstance(command, ScheduleActivity) else "child workflow result"
+    return decode_payload_value(value, command.result_type, path)
 
 
 def _decode_history_result(

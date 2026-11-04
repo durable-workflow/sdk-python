@@ -1,0 +1,107 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "typed-workflow-values-opt-in",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.typed-workflow-values",
+    "input": [
+      {
+        "name": "Ada",
+        "tier": "gold",
+        "tags": [
+          "vip"
+        ]
+      }
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-04T00:00:00+00:00",
+      "payload": {
+        "workflow_type": "tests.replay.typed-workflow-values"
+      },
+      "sequence": 1
+    },
+    {
+      "event_type": "ChildWorkflowScheduled",
+      "recorded_at": "2026-11-04T00:00:01+00:00",
+      "payload": {
+        "sequence": 1,
+        "child_workflow_type": "tests.accounts.open"
+      },
+      "sequence": 2
+    },
+    {
+      "event_type": "ChildRunStarted",
+      "recorded_at": "2026-11-04T00:00:01+00:00",
+      "payload": {
+        "sequence": 1,
+        "child_workflow_type": "tests.accounts.open"
+      },
+      "sequence": 3
+    },
+    {
+      "event_type": "ChildRunCompleted",
+      "recorded_at": "2026-11-04T00:00:02+00:00",
+      "payload": {
+        "sequence": 1,
+        "child_workflow_type": "tests.accounts.open",
+        "output": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4ICG5hbWUKBkFkYQh0aWVyCghnb2xkCHRhZ3MMAgoGdmlwABRhY2NvdW50X2lkCgxhY2N0LTEA"
+        },
+        "payload_codec": "avro"
+      },
+      "sequence": 4
+    },
+    {
+      "event_type": "ConditionWaitOpened",
+      "recorded_at": "2026-11-04T00:00:03+00:00",
+      "payload": {
+        "condition_wait_id": "approval-1",
+        "condition_key": "approval",
+        "sequence": 2
+      },
+      "sequence": 5
+    },
+    {
+      "event_type": "SignalReceived",
+      "recorded_at": "2026-11-04T00:00:04+00:00",
+      "payload": {
+        "signal_name": "approve",
+        "value": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCDgQQYXBwcm92ZXIKCkdyYWNlFmFkZGVkX2luX3YyAgEAAA=="
+        },
+        "payload_codec": "avro",
+        "workflow_sequence": 2
+      },
+      "sequence": 6
+    },
+    {
+      "event_type": "ConditionWaitSatisfied",
+      "recorded_at": "2026-11-04T00:00:04+00:00",
+      "payload": {
+        "condition_wait_id": "approval-1",
+        "condition_key": "approval",
+        "sequence": 2
+      },
+      "sequence": 7
+    }
+  ],
+  "expected": {
+    "type": "complete_workflow",
+    "result": {
+      "name": "Ada",
+      "tier": "gold",
+      "approver": "Grace",
+      "note": null
+    }
+  }
+}

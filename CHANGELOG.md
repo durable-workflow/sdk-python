@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in typed workflow values (#184). `@workflow.defn(..., typed=True)` decodes the arguments of `run` (after `ctx`) and of every signal, query, update and update-validator handler to their annotations. `ctx.start_child_workflow(..., result_type=T)` decodes a child's result, and `WorkflowHandle.result(result_type=T)` / `Client.get_result(..., result_type=T)` decode a workflow's result on the client. Dataclass and `Enum` values in client workflow, signal, update, query and schedule arguments, child and continue-as-new arguments, and workflow and update results are sent as their neutral values. A typed `TypedValueError` names the path but never the value. Untyped workflows receive plain values as before, so in-flight histories replay unchanged.
+
 ## [2.14.0] - 2026-11-04
 
 **Upgrade from 2.13.2 and earlier.** Every earlier release fails replay when a condition wait has an orphaned duplicate open whose timer fires later, which Server 3.0.x can record (#253 below).

@@ -255,22 +255,22 @@ def to_payload_values(values: list[Any]) -> list[Any]:
     return [to_payload_value(value) for value in values]
 
 
-def typed_callable(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Wrap *fn* so positional arguments decode to its annotations.
+def _positional_decoder(
+    fn: Callable[..., Any], skip: int, where: str,
+) -> Callable[[tuple[Any, ...]], list[Any]] | None:
+    """Build a decoder for *fn*'s positional arguments after the first *skip*.
 
-    Annotations are validated here, so an unsupported type fails when the
-    activity is declared. The wrapper keeps *fn*'s module and qualified name:
-    the decorator binds that name to the wrapper, so supervised callbacks that
-    pickle by reference resolve to it.
+    Returns None when no argument needs decoding (none, or only ``Any`` /
+    unannotated ones), so the caller can leave *fn* unwrapped.
     """
     signature = inspect.signature(fn)
     try:
         hints = get_type_hints(fn)
     except (NameError, TypeError) as error:
-        raise TypeError(f"typed activity {fn.__qualname__} has unresolvable annotations: {error}") from None
+        raise TypeError(f"{where} {fn.__qualname__} has unresolvable annotations: {error}") from None
     positional: list[tuple[str, Any]] = []
     variadic: tuple[str, Any] | None = None
-    for parameter in signature.parameters.values():
+    for parameter in list(signature.parameters.values())[skip:]:
         annotation = hints.get(parameter.name, Any)
         if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
             validate_annotation(annotation, parameter.name)
@@ -278,6 +278,10 @@ def typed_callable(fn: Callable[..., Any]) -> Callable[..., Any]:
         elif parameter.kind is inspect.Parameter.VAR_POSITIONAL:
             validate_annotation(annotation, parameter.name)
             variadic = (parameter.name, annotation)
+
+    annotations = [annotation for _, annotation in positional] + ([variadic[1]] if variadic is not None else [])
+    if all(annotation in _PASS_THROUGH for annotation in annotations):
+        return None
 
     def convert(args: tuple[Any, ...]) -> list[Any]:
         converted: list[Any] = []
@@ -291,6 +295,22 @@ def typed_callable(fn: Callable[..., Any]) -> Callable[..., Any]:
             else:
                 converted.append(value)
         return converted
+
+    return convert
+
+
+def typed_callable(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap an activity so positional arguments decode to its annotations.
+
+    Annotations are validated here, so an unsupported type fails when the
+    activity is declared. The wrapper keeps *fn*'s module and qualified name:
+    the decorator binds that name to the wrapper, so supervised callbacks that
+    pickle by reference resolve to it.
+    """
+    decoder = _positional_decoder(fn, 0, "typed activity")
+
+    def convert(args: tuple[Any, ...]) -> list[Any]:
+        return list(args) if decoder is None else decoder(args)
 
     wrapper: Any
     if inspect.iscoroutinefunction(fn):
@@ -308,4 +328,43 @@ def typed_callable(fn: Callable[..., Any]) -> Callable[..., Any]:
 
         wrapper = typed_sync
     wrapper.__typed_activity__ = fn
+    return cast(Callable[..., Any], wrapper)
+
+
+def typed_method(fn: Callable[..., Any], skip: int) -> Callable[..., Any]:
+    """Wrap a workflow method so arguments after the first *skip* decode.
+
+    ``skip`` is 1 for handlers (``self``) and 2 for ``run`` (``self, ctx``). A
+    generator ``run`` stays a generator. Results are returned unchanged; the
+    commands that carry them send dataclass and Enum values as neutral values.
+    A method with nothing to decode is returned unwrapped.
+    """
+    convert = _positional_decoder(fn, skip, "typed workflow method")
+    if convert is None:
+        # Nothing to decode: keep the original function, so a handler used as a
+        # wait_condition predicate keeps its recorded fingerprint.
+        return fn
+    wrapper: Any
+    if inspect.isgeneratorfunction(fn):
+
+        @functools.wraps(fn)
+        def typed_generator(*args: Any, **kwargs: Any) -> Any:
+            return (yield from fn(*args[:skip], *convert(args[skip:]), **kwargs))
+
+        wrapper = typed_generator
+    elif inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def typed_async(*args: Any, **kwargs: Any) -> Any:
+            return await fn(*args[:skip], *convert(args[skip:]), **kwargs)
+
+        wrapper = typed_async
+    else:
+
+        @functools.wraps(fn)
+        def typed_sync(*args: Any, **kwargs: Any) -> Any:
+            return fn(*args[:skip], *convert(args[skip:]), **kwargs)
+
+        wrapper = typed_sync
+    wrapper.__typed_workflow_method__ = fn
     return cast(Callable[..., Any], wrapper)
