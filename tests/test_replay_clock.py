@@ -497,6 +497,7 @@ REDRIVE_EVENT_IDENTITY: dict[str, tuple[str, ...]] = {
     # followed by the reused TimerFired.
     "ActivityScheduled": ("sequence", "activity_type", "activity_execution_id"),
     "ActivityCompleted": ("sequence", "activity_type", "activity_execution_id"),
+    "ActivityCancelled": ("sequence", "activity_type", "activity_execution_id"),
     "TimerScheduled": ("sequence", "timer_id"),
     "TimerFired": ("sequence", "timer_id"),
     "SideEffectRecorded": ("sequence",),
@@ -512,8 +513,8 @@ REDRIVE_STEP_SHAPES = {
 # Successor events that occupy a workflow step of their own.
 REDRIVE_SUCCESSOR_STEP_EVENTS = frozenset({
     "MemoUpserted", "SearchAttributesUpserted", "SignalWaitOpened", "SignalApplied", "ActivityScheduled",
-    "ActivityCompleted", "TimerScheduled", "TimerFired", "SideEffectRecorded", "VersionMarkerRecorded",
-    "CooperativeCancellationDelivered",
+    "ActivityCompleted", "ActivityCancelled", "TimerScheduled", "TimerFired", "SideEffectRecorded",
+    "VersionMarkerRecorded", "CooperativeCancellationDelivered",
 })
 
 
@@ -583,7 +584,7 @@ REDRIVE_DELIVERY_CALL_KINDS = frozenset({
     "activity", "local_activity", "timer", "condition", "signal", "child", "service_operation",
 })
 # Core CooperativeCancellationDelivery::RESOLUTION_TYPES this check can see.
-REDRIVE_RESOLUTION_EVENTS = frozenset({"ActivityCompleted", "TimerFired", "SignalApplied"})
+REDRIVE_RESOLUTION_EVENTS = frozenset({"ActivityCompleted", "ActivityCancelled", "TimerFired", "SignalApplied"})
 
 
 def check_redrive_successor(history: list[dict[str, Any]], workflow: dict[str, Any]) -> None:
@@ -773,9 +774,28 @@ def _check_successor_cancellation(
         require(not any(event["event_type"] in REDRIVE_RESOLUTION_EVENTS and event["sequence"] < request["sequence"]
                         for event in at_step), "the delivery targets a call resolved before its request")
     else:
-        # The first unreused step, a call not yet scheduled: the delivery
-        # consumes it, so no successor event occupies it before or after.
-        require(step == resume and not at_step, "the delivery targets a successor step the successor reached")
+        # Core nextDurableCommandSequence is one past the highest typed step
+        # already recorded. This single-call model also requires earlier calls
+        # to have resolved before delivery; it cannot infer parallel progress.
+        before_delivery = [event for event in events if event["sequence"] < delivery["sequence"]
+                           and event["event_type"] in REDRIVE_SUCCESSOR_STEP_EVENTS]
+        next_step = max((event["payload"]["sequence"] for event in before_delivery), default=resume - 1) + 1
+        require(step == next_step and not at_step, "the delivery targets a successor step the successor reached")
+        resolutions = {
+            "ActivityScheduled": ("activity_execution_id", {"ActivityCompleted", "ActivityCancelled"}),
+            "TimerScheduled": ("timer_id", {"TimerFired"}),
+            "SignalWaitOpened": ("signal_wait_id", {"SignalApplied"}),
+        }
+        for earlier in before_delivery:
+            if earlier["event_type"] not in resolutions:
+                continue
+            identity, kinds = resolutions[earlier["event_type"]]
+            require(any(
+                terminal["sequence"] > earlier["sequence"] and terminal["event_type"] in kinds
+                and terminal["payload"]["sequence"] == earlier["payload"]["sequence"]
+                and terminal["payload"][identity] == earlier["payload"][identity]
+                for terminal in before_delivery
+            ), "the delivery targets a successor step the successor reached: an earlier call is unresolved")
 
 
 REDRIVE_SUCCESSOR_FIXTURES = VALID_SUCCESSORS
