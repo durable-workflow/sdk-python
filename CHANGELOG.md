@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.15.0] - 2026-11-04
+
 ### Added
 
 - Worker schedule-to-start histogram `durable_workflow_worker_task_schedule_to_start_seconds` for workflow and activity dispatches, tagged only with `task_kind` and `task_queue`. It requires Server's `claimed_task_ready_age` capability and a valid integer `ready_age_ms`, records Server-computed milliseconds as seconds, preserves real zero and omits missing/invalid samples. The shared metrics contract is pinned at revision 2. Published-Server and installed-package acceptance remains pending in #188.
@@ -17,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Replay consumes an already-open duplicate of a condition wait when the older physical wait is satisfied with a true predicate. A wait opened after that satisfaction remains a separate authored call with its own timeout. (#256)
+
+## [2.14.1] - 2026-11-04
+
+### Fixed
 
 - `wait_condition` predicate fingerprints no longer change across Python versions or worker processes. Every earlier release hashed the predicate's bytecode and the `repr` of its constants. So upgrading Python (for example 3.12 to 3.13) failed replay of every in-flight run at its first wait, and a predicate containing a nested function (a generator expression, a nested lambda, or a comprehension on 3.10 and 3.11) got a new fingerprint in every process, so a restart or cache loss failed replay with `condition_fingerprint_changed`. New waits record a v2 fingerprint (`dwpy2:sha256:...`) computed from the predicate's module, qualified name and a canonical form of its source AST, with no bytecode, addresses, paths or line numbers. Without source (for example `eval` or a REPL) no fingerprint is sent, and the wait is identified by its key and call order. A v1 value recorded by an earlier release still matches when this process computes the same v1; otherwise it is accepted as unverifiable instead of failing replay, so drift in those predicates is no longer detected. A reopen sends the fingerprint its first open recorded, so a wait opened before the upgrade keeps its v1 value, and a keyless wait links a v1 value only within its own chain. A keyless wait without source links its false-wake reopens within its chain, as before. **Rollback and mixed fleets:** a run that opened a wait under this release records a v2 fingerprint, which 2.14.0 and earlier refuse on replay. Don't roll a task queue back below this release once such waits exist, and upgrade every worker on a queue together. (#258)
 
