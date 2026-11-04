@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Unreleased `ActivityInfo.activity_execution_id` exposes the received logical activity identity without task/attempt/session fallbacks. Prepared local callbacks receive their validated admission ID; inline local callbacks and older claims without an ID expose `None`. Shared identity acceptance remains tracked in durable-workflow/.github#211.
+- Unreleased `ActivityInfo.activity_execution_id` exposes the received logical activity identity without task/attempt/session fallbacks. Prepared local callbacks receive their validated admission ID; inline local callbacks and older claims without an ID expose `None`. These IDs are public idempotency metadata, not live-claim or external-effect authority, and replace no credentials, heartbeat/current-attempt checks, per-effect suffixes or outcome reconciliation. Shared identity acceptance remains tracked in durable-workflow/.github#211.
 
 - Worker schedule-to-start histogram `durable_workflow_worker_task_schedule_to_start_seconds` for workflow and activity dispatches, tagged only with `task_kind` and `task_queue`. It requires Server's `claimed_task_ready_age` capability and a valid integer `ready_age_ms`, records Server-computed milliseconds as seconds, preserves real zero and omits missing/invalid samples. The shared metrics contract is pinned at revision 2. Published-Server and installed-package acceptance remains pending in #188.
 

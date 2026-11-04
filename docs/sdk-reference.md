@@ -253,6 +253,13 @@ external operations within one activity distinguishable using your own stable
 operation suffix. Idempotency still depends on the external service honoring
 the key.
 
+An execution ID is public idempotency metadata. Application code and tests can
+construct, copy or deserialize an `ActivityInfo` with matching IDs; this does
+not prove ownership of a live Server claim or authenticate or authorize an
+external effect. Keep the external service's credentials, current-attempt and
+heartbeat authority checks, per-effect key suffixes, and outcome
+compare-and-swap or reconciliation. The ID replaces none of those controls.
+
 The accessor is read-only. Missing, invalid or blank execution IDs are `None`,
 including on older claims, and are never derived from task, attempt or session
 IDs. Nonblank received strings are preserved exactly. Session-routed activities
