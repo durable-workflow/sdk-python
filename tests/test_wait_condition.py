@@ -1620,7 +1620,8 @@ def test_a_call_after_the_satisfied_orphan_chain_keeps_its_own_timeout() -> None
         "condition_wait_id": "next-call", "condition_key": "approval", "sequence": 3, "timeout_seconds": 400,
     }})
     (command,) = replay(TwoApprovals, history, []).commands
-    assert isinstance(command, WaitCondition) and command.timeout_seconds == 400
+    assert isinstance(command, WaitCondition)
+    assert command.timeout_seconds == 400
 
 
 @pytest.mark.parametrize("duplicate_timeout", [600, None], ids=["longer", "dropped"])
