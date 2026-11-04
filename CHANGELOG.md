@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Lazy `Client.iter_workflows`, `Client.iter_history` and `WorkflowHandle.iter_history` follow opaque page tokens while retaining only the current page and bounded cursor bookkeeping. They preserve run/filter/namespace identity, follow empty continued pages, stop on early close, and surface HTTP, cancellation and invalid/cyclic cursor errors. Existing one-page methods keep their contracts. (durable-workflow/.github#247)
+
 ## [2.15.0] - 2026-11-04
 
 ### Added
