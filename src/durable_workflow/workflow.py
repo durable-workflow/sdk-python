@@ -44,6 +44,7 @@ from ._cancellation_scope_history import (
 )
 from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
 from ._failure_reporting import exception_message
+from ._typed_values import from_payload_value, to_payload_values, validate_annotation
 from .cancellation import (
     CancellationContext,
     CancellationPolicy,
@@ -66,6 +67,7 @@ from .errors import (
     NonDeterministicReplayError,
     QueryFailed,
     SagaCompensationFailed,
+    TypedValueError,
     WorkflowCancelled,
     WorkflowEntryArgumentsMismatchError,
     WorkflowPayloadDecodeError,
@@ -583,6 +585,9 @@ class ScheduleActivity:
     heartbeat_timeout: int | None = None
     worker_session: WorkerSessionOptions | None = None
     cancellation_policy: str | CancellationPolicy | None = None
+    # Opt-in local decoding of the completed result. It is never encoded into
+    # the command, compared, or written to history.
+    result_type: Any = field(default=None, repr=False, compare=False)
     _cancellation_scope_id: str = field(
         default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
     )
@@ -594,6 +599,12 @@ class ScheduleActivity:
     )
 
     def __post_init__(self) -> None:
+        # Dataclass and Enum arguments travel as their neutral values, the
+        # bytes dataclasses.asdict() and .value give. The codec refuses those
+        # values, so no existing history depends on this conversion.
+        self.arguments = to_payload_values(list(self.arguments))
+        if self.result_type is not None:
+            validate_annotation(self.result_type, "result_type")
         self._validate_cancellation_policy()
 
     def _validate_cancellation_policy(self) -> None:
@@ -2396,7 +2407,19 @@ class WorkflowContext:
         heartbeat_timeout: int | None = None,
         worker_session: WorkerSessionOptions | None = None,
         cancellation_policy: str | CancellationPolicy | None = None,
+        result_type: Any = None,
     ) -> ScheduleActivity:
+        """Yield an activity request.
+
+        Dataclass and ``Enum`` arguments are sent as their neutral values.
+        ``result_type`` opts in to decoding the completed result to that
+        annotation (the types :func:`durable_workflow.activity.defn` lists for
+        ``typed=True``), in single calls, parallel groups and selections. It
+        changes only the value this workflow receives; history keeps the
+        neutral payload. A result that does not match raises
+        :class:`~durable_workflow.errors.TypedValueError` at this yield, where
+        workflow code can catch it.
+        """
         return ScheduleActivity(
             activity_type=activity_type,
             arguments=list(arguments),
@@ -2408,6 +2431,7 @@ class WorkflowContext:
             heartbeat_timeout=heartbeat_timeout,
             worker_session=worker_session,
             cancellation_policy=cancellation_policy,
+            result_type=result_type,
         )
 
     def local_activity(
@@ -3080,6 +3104,13 @@ def _validated_replay_payload_codec(
     if (explicit or codec is not None) and codec != serializer.AVRO_CODEC:
         serializer.decode("", codec=codec)
     return codec
+
+
+def _typed_activity_result(command: Any, value: Any) -> Any:
+    """Decode an activity result to the call's opt-in result_type, if any."""
+    if not isinstance(command, ScheduleActivity) or command.result_type is None or isinstance(value, BaseException):
+        return value
+    return from_payload_value(value, command.result_type, "activity result")
 
 
 def _decode_history_result(
@@ -6319,6 +6350,7 @@ def _replay_state(
         *,
         outcome: str | None = None,
         resolution_sequence: int | None = None,
+        leaves: Sequence[Any] | None = None,
     ) -> tuple[bool, Any, BaseException | None]:
         if outcome == "failed":
             if resolution_sequence is None:
@@ -6344,6 +6376,9 @@ def _replay_state(
             if isinstance(value, BaseException):
                 return True, None, value
             values.append(value)
+        if leaves is not None:
+            # May raise TypedValueError; callers deliver it at the yield.
+            values = [_typed_activity_result(leaf, value) for leaf, value in zip(leaves, values, strict=True)]
         if shape is None:
             return True, values[0], None
         return True, _parallel_result_shape(shape, values), None
@@ -7246,13 +7281,21 @@ def _replay_state(
                     min(handle.base_sequence for handle in handles.values()),
                     len(annotated),
                 )
-                resolved, value, failure = _selection_member_value(
-                    winner.base_sequence,
-                    winner.size,
-                    shapes[winner_key],
-                    outcome=str(marker.get("outcome")),
-                    resolution_sequence=resolution_sequence,
-                )
+                winner_offset = winner.base_sequence - group_base
+                typed_failure: TypedValueError | None = None
+                try:
+                    resolved, value, failure = _selection_member_value(
+                        winner.base_sequence,
+                        winner.size,
+                        shapes[winner_key],
+                        outcome=str(marker.get("outcome")),
+                        resolution_sequence=resolution_sequence,
+                        leaves=annotated[winner_offset:winner_offset + winner.size],
+                    )
+                except TypedValueError as error:
+                    # The committed winner stands; only its typed decode failed.
+                    typed_failure = error
+                    resolved, value, failure = True, cast(Any, None), None
                 if marker.get("outcome") == "completed" and failure is not None:
                     raise NonDeterministicReplayError(
                         winner.base_sequence,
@@ -7281,7 +7324,7 @@ def _replay_state(
                     kind=winner.kind,
                     identity=winner.identity,
                     value=value,
-                    failure=failure,
+                    failure=failure if typed_failure is None else typed_failure,
                     winner=winner,
                     handles=handles,
                 )
@@ -7326,10 +7369,16 @@ def _replay_state(
                             if index is not None and failure_index is not None and index <= failure_index
                         ]
                     _advance_cancellation_clock(consumed_indexes)
-                    if failed is not None:
+                    group_typed_failure: TypedValueError | None = None
+                    if failed is None:
+                        try:
+                            vals = [_typed_activity_result(leaf, value) for leaf, value in zip(cmd, vals, strict=True)]
+                        except TypedValueError as error:
+                            group_typed_failure = error
+                    if failed is not None or group_typed_failure is not None:
                         try:
                             _refresh_replay_logging()
-                            advanced_cmd = gen.throw(failed)
+                            advanced_cmd = gen.throw(failed if failed is not None else group_typed_failure)
                             continue
                         except StopIteration as stop:
                             return _terminal_state(stop.value, include_pending=False)
@@ -7369,19 +7418,25 @@ def _replay_state(
                     )
                 else:
                     selection_leaves = [cmd.operation]
-                resolved, value, failure = _selection_member_value(
-                    cmd.base_sequence,
-                    cmd.size,
-                    selection_shape,
-                )
+                handle_typed_failure: TypedValueError | None = None
+                try:
+                    resolved, value, failure = _selection_member_value(
+                        cmd.base_sequence,
+                        cmd.size,
+                        selection_shape,
+                        leaves=selection_leaves,
+                    )
+                except TypedValueError as error:
+                    handle_typed_failure = error
+                    resolved, value, failure = True, cast(Any, None), None
                 if not resolved:
                     _set_replaying(False)
                     return _state(pending)
                 _advance_selection_clock(cmd.base_sequence, cmd.size, failure)
-                if failure is not None:
+                if failure is not None or handle_typed_failure is not None:
                     try:
                         _refresh_replay_logging()
-                        advanced_cmd = gen.throw(failure)
+                        advanced_cmd = gen.throw(failure if failure is not None else handle_typed_failure)
                         continue
                     except StopIteration as stop:
                         return _terminal_state(stop.value, include_pending=True)
@@ -7654,7 +7709,12 @@ def _replay_state(
                     if not isinstance(cmd, RecordLocalActivity) or prepare_local_activities:
                         _advance_cancellation_clock([recorded_steps[result_cursor].history_index])
                     result_cursor += 1
-                    if isinstance(val, ActivityFailed | ChildWorkflowFailed):
+                    if not isinstance(val, ActivityFailed | ChildWorkflowFailed):
+                        try:
+                            val = _typed_activity_result(cmd, val)
+                        except TypedValueError as error:
+                            val = error
+                    if isinstance(val, ActivityFailed | ChildWorkflowFailed | TypedValueError):
                         try:
                             _refresh_replay_logging()
                             advanced_cmd = gen.throw(val)

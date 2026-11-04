@@ -55,6 +55,7 @@ from tests.test_replay_clock import (
     RedriveVisibilityCleanupWorkflow,
     RedriveVisibilityWorkflow,
 )
+from tests.test_typed_values import TypedActivityResultsWorkflow
 from tests.test_update_signal_condition_replay import (
     PostConditionReceiversWorkflow,
     UpdateSignalConditionTimerWorkflow,
@@ -414,6 +415,7 @@ WORKFLOWS = [
     WorkflowMemoAuthorWorkflow,
     YieldedContinueAfterMetadataWorkflow,
     StatusRecoveryWorkflow,
+    TypedActivityResultsWorkflow,
 ]
 WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__)): workflow for workflow in WORKFLOWS}
 WORKFLOW_TYPES["tests.replay.condition-identity"] = ConditionIdentityWorkflow
