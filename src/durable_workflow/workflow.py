@@ -189,16 +189,45 @@ def _validate_workflow_handler_result(result: Any, cls: type, method: str, *, al
     return result
 
 
-def defn(*, name: str) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
+_TYPED_HANDLER_KINDS = ("signal", "query", "update", "update_validator")
+
+
+def _type_workflow_methods(cls: type) -> None:
+    """Wrap run and every handler so their arguments decode to annotations."""
+    from ._typed_values import typed_method
+
+    entrypoint = getattr(cls, "run", None)
+    if inspect.isfunction(entrypoint):
+        cls.run = typed_method(entrypoint, 2)  # type: ignore[attr-defined]
+    for attr in dir(cls):
+        if attr.startswith("_"):
+            continue
+        member = getattr(cls, attr, None)
+        if inspect.isfunction(member) and any(
+            isinstance(getattr(member, f"__{kind}_name__", None), str) for kind in _TYPED_HANDLER_KINDS
+        ):
+            setattr(cls, attr, typed_method(member, 1))
+
+
+def defn(*, name: str, typed: bool = False) -> Callable[[type[_WorkflowT]], type[_WorkflowT]]:
     """Register a class as a workflow type under a language-neutral name.
 
     Scans the class for ``@signal``, ``@query``, and ``@update`` decorated
     methods and builds registries at decoration time so worker-side dispatch
     can use stable receiver names without re-inspecting the class on every
     history event or control-plane request.
+
+    With ``typed=True``, the arguments of ``run`` (after ``ctx``) and of every
+    signal, query, update and update-validator handler are decoded to their
+    annotations, with the rules :func:`durable_workflow.activity.defn`
+    documents for ``typed=True``. A mismatch raises
+    :class:`~durable_workflow.errors.TypedValueError` when the method is
+    called. Without it, methods keep receiving plain values.
     """
 
     def wrap(cls: type[_WorkflowT]) -> type[_WorkflowT]:
+        if typed:
+            _type_workflow_methods(cls)
         cls.__workflow_name__ = name  # type: ignore[attr-defined]
         _validate_workflow_entrypoint(cls)
         signals, queries, updates, update_validators = _workflow_handler_registries(cls)
