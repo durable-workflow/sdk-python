@@ -1561,6 +1561,69 @@ class TestOrphanedDuplicateWait:
         assert isinstance(command, ScheduleActivity) and command.activity_type == "expire-proposal"
 
 
+def _satisfied_orphan_history(duplicate_timeout: int = 180, *, equal_times: bool = False) -> list[dict]:
+    """Synthetic #256 history: the older open is satisfied after a duplicate."""
+    first_at = "2026-11-04T00:00:00+00:00"
+    end_at = "2026-11-04T00:00:10+00:00"
+    duplicate_at = end_at if equal_times else "2026-11-04T00:00:09+00:00"
+    history = [{"event_type": "WorkflowStarted", "recorded_at": first_at, "payload": {}}]
+    for wait_id, sequence, at, timeout in (("older", 1, first_at, 300),
+                                          ("duplicate", 2, duplicate_at, duplicate_timeout)):
+        history.extend([
+            {"event_type": "ConditionWaitOpened", "recorded_at": at, "payload": {
+                "condition_wait_id": wait_id, "condition_key": "decision-1", "sequence": sequence,
+                "timeout_seconds": timeout}},
+            {"event_type": "TimerScheduled", "recorded_at": at, "payload": {
+                "timer_kind": "condition_timeout", "condition_wait_id": wait_id,
+                "condition_key": "decision-1", "sequence": sequence, "delay_seconds": timeout}},
+        ])
+    history.extend([
+        {**_signal_received_event("decision", [True], workflow_sequence=1), "recorded_at": end_at},
+        {"event_type": "ConditionWaitSatisfied", "recorded_at": end_at, "payload": {
+            "condition_wait_id": "older", "condition_key": "decision-1", "sequence": 1}},
+    ])
+    return history
+
+
+@pytest.mark.parametrize("duplicate_timeout", [0, 180, 300])
+@pytest.mark.parametrize("equal_times", [False, True], ids=["distinct-times", "equal-times"])
+def test_a_satisfied_orphan_consumes_its_already_open_duplicate(
+    duplicate_timeout: int, equal_times: bool,
+) -> None:
+    outcome = replay(OrphanedDuplicateDecision, _satisfied_orphan_history(
+        duplicate_timeout, equal_times=equal_times,
+    ), [])
+    assert outcome.commands == [CompleteWorkflow("decided")]
+
+
+@pytest.mark.parametrize("duplicate_timeout", [600, None], ids=["longer", "dropped"])
+def test_a_satisfied_orphans_duplicate_keeps_the_reopen_timeout_bound(duplicate_timeout: int | None) -> None:
+    history = _satisfied_orphan_history()
+    duplicate = history[3]["payload"]
+    if duplicate_timeout is None:
+        del duplicate["timeout_seconds"]
+    else:
+        duplicate["timeout_seconds"] = duplicate_timeout
+    with pytest.raises(NonDeterministicReplayError, match="condition_wait_reopen_timeout_exceeded"):
+        replay(OrphanedDuplicateDecision, history, [])
+
+
+def test_a_call_after_the_satisfied_orphan_chain_keeps_its_own_timeout() -> None:
+    history = _satisfied_orphan_history()
+    for event in history:
+        payload = event["payload"]
+        if "condition_key" in payload:
+            payload["condition_key"] = "approval"
+        if event["event_type"] == "SignalReceived":
+            payload.update(signal_name="approve", value=serializer.envelope([]))
+    history.append({"event_type": "ConditionWaitOpened", "recorded_at": "2026-11-04T00:00:11+00:00", "payload": {
+        "condition_wait_id": "next-call", "condition_key": "approval", "sequence": 3, "timeout_seconds": 400,
+    }})
+    (command,) = replay(TwoApprovals, history, []).commands
+    assert isinstance(command, WaitCondition)
+    assert command.timeout_seconds == 400
+
+
 @pytest.mark.parametrize("duplicate_timeout", [600, None], ids=["longer", "dropped"])
 @pytest.mark.parametrize("orphan_fired", [False, True], ids=["before-orphan-fires", "after-orphan-fires"])
 def test_an_orphans_duplicate_open_is_bounded_like_any_reopen(
