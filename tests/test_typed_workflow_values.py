@@ -230,7 +230,44 @@ class TypedPredicate:
         return [approval.approver for approval in self.approvals]
 
 
-PREDICATE_CORPUS = CORPUS.parent / "typed-predicate-fingerprint-opt-in.json"
+def _untyped_predicate_history() -> list[dict[str, Any]]:
+    """The history an untyped deploy of TypedPredicate records on this Python.
+
+    Fingerprints hash the predicate's bytecode, which differs between Python
+    versions, so they are computed from the unwrapped methods at run time
+    rather than stored in a corpus fixture.
+    """
+    import inspect
+
+    from durable_workflow.workflow import _condition_predicate_fingerprint
+
+    # inspect.unwrap reaches the authored method whether or not typed=True
+    # wrapped it, which is what an untyped deploy fingerprints.
+    instance = TypedPredicate()
+    done = _condition_predicate_fingerprint(inspect.unwrap(TypedPredicate.is_done).__get__(instance))
+    ready = _condition_predicate_fingerprint(inspect.unwrap(TypedPredicate.ready).__get__(instance))
+    at = "2026-11-04T00:00:0{}+00:00"
+
+    def approve(value: dict[str, Any], sequence: int, second: int) -> dict[str, Any]:
+        return {"event_type": "SignalReceived", "recorded_at": at.format(second), "payload": {
+            "signal_name": "approve", "value": serializer.envelope([value]), "payload_codec": "avro",
+            "workflow_sequence": sequence}}
+
+    def opened(wait_id: str, key: str, sequence: int, fingerprint: str, second: int) -> dict[str, Any]:
+        return {"event_type": "ConditionWaitOpened", "recorded_at": at.format(second), "payload": {
+            "condition_wait_id": wait_id, "condition_key": key, "sequence": sequence,
+            "condition_definition_fingerprint": fingerprint}}
+
+    def satisfied(wait_id: str, key: str, sequence: int, second: int) -> dict[str, Any]:
+        return {"event_type": "ConditionWaitSatisfied", "recorded_at": at.format(second), "payload": {
+            "condition_wait_id": wait_id, "condition_key": key, "sequence": sequence}}
+
+    return [
+        {"event_type": "WorkflowStarted", "recorded_at": at.format(0), "payload": {}},
+        opened("done-1", "done", 1, done, 1), approve({"approver": "Grace"}, 1, 2), satisfied("done-1", "done", 1, 2),
+        opened("ready-1", "ready", 2, ready, 3), approve({"approver": "Ada", "note": "ok"}, 2, 4),
+        satisfied("ready-1", "ready", 2, 4),
+    ]
 
 
 def test_typed_true_keeps_recorded_predicate_fingerprints() -> None:
@@ -243,9 +280,11 @@ def test_typed_true_keeps_recorded_predicate_fingerprints() -> None:
     original = TypedPredicate.ready.__typed_workflow_method__  # type: ignore[attr-defined]
     assert _condition_predicate_fingerprint(instance.ready) == _condition_predicate_fingerprint(
         original.__get__(instance))
-    fixture = json.loads(PREDICATE_CORPUS.read_text(encoding="utf-8"))
-    (command,) = replay(TypedPredicate, fixture["history"], [], payload_codec="avro").commands
-    assert command == CompleteWorkflow(fixture["expected"]["result"])
+
+
+def test_an_untyped_history_with_predicate_fingerprints_replays_under_typed_true() -> None:
+    (command,) = replay(TypedPredicate, _untyped_predicate_history(), [], payload_codec="avro").commands
+    assert command == CompleteWorkflow(["Grace", "Ada"])
 
 
 @pytest.mark.parametrize("kind", [staticmethod, classmethod])
