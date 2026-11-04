@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Replay now refuses a recorded condition-wait reopen that records a longer timeout than the wait's first open (dropping the timeout counts as longer), with a `NonDeterministicReplayError` whose detail starts `condition_wait_reopen_timeout_exceeded`. Earlier versions linked such a reopen silently. Reopens with the full timeout (written before 2.13.2) or with the time remaining (2.13.2 and later) still replay. This matches sdk-php#271. (#248)
+- Replay now refuses a recorded condition-wait reopen that records a longer timeout than the wait's first open, or that adds or drops the timeout, with a `NonDeterministicReplayError` whose detail starts `condition_wait_reopen_timeout_exceeded`. Earlier versions linked such a reopen silently. Reopens with the full timeout (written before 2.13.2) or with the time remaining (2.13.2 and later) still replay. This matches sdk-php#271. (#248)
 
 ## [2.13.2] - 2026-11-04
 

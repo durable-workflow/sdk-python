@@ -625,17 +625,6 @@ class TestReplayWaitCondition:
                     "condition_wait_id": "wait-finish",
                     "condition_key": "done",
                     "sequence": 22,
-                    "timeout_seconds": 30,
-                },
-            },
-            {
-                "event_type": "TimerScheduled",
-                "payload": {
-                    "timer_kind": "condition_timeout",
-                    "condition_wait_id": "wait-finish",
-                    "condition_key": "done",
-                    "sequence": 22,
-                    "delay_seconds": 30,
                 },
             },
         ]
@@ -674,17 +663,6 @@ class TestReplayWaitCondition:
                     "condition_wait_id": "wait-finish",
                     "condition_key": "done",
                     "sequence": 22,
-                    "timeout_seconds": 30,
-                },
-            },
-            {
-                "event_type": "TimerScheduled",
-                "payload": {
-                    "timer_kind": "condition_timeout",
-                    "condition_wait_id": "wait-finish",
-                    "condition_key": "done",
-                    "sequence": 22,
-                    "delay_seconds": 30,
                 },
             },
         ]
@@ -1362,11 +1340,10 @@ class TestReopenTimeoutBound:
         (command,) = replay(UntimedApproval, _reopen_history(None, None), []).commands
         assert isinstance(command, WaitCondition) and command.timeout_seconds is None
 
-    def test_a_reopen_that_drops_the_timeout_is_longer_and_refused(self) -> None:
+    @pytest.mark.parametrize(("first", "reopen"), [(None, 60), (300, None)])
+    def test_a_reopen_that_adds_or_drops_the_timeout_is_refused(self, first: int | None, reopen: int | None) -> None:
+        # An untimed wait never records a timeout and a timed one never drops
+        # it, so either history comes from changed code (sdk-php#271).
+        workflow_cls = UntimedApproval if first is None else RemainingTimeoutApproval
         with pytest.raises(NonDeterministicReplayError, match="condition_wait_reopen_timeout_exceeded"):
-            replay(RemainingTimeoutApproval, _reopen_history(300, None), [])
-
-    def test_a_reopen_that_adds_a_timeout_to_an_unbounded_wait_replays(self) -> None:
-        # An untimed first open is unbounded, so any timed reopen is shorter.
-        (command,) = replay(UntimedApproval, _reopen_history(None, 60), []).commands
-        assert isinstance(command, WaitCondition) and command.timeout_seconds is None
+            replay(workflow_cls, _reopen_history(first, reopen), [])

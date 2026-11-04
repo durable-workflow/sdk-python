@@ -6986,23 +6986,19 @@ def _replay_state(
             return _terminal_state(stop.value, include_pending=True)
 
     def _assert_reopen_within_first_timeout(first_index: int, reopen_index: int) -> None:
-        """A physical reopen never asks for more time than the wait's first open.
+        """A physical reopen keeps the first open's timeout or undercuts it.
 
         Earlier SDKs reopened with the full timeout and later ones with the time
-        remaining, so a reopen may equal or undercut the first open. A longer
-        reopen is not a history this workflow code writes (sdk-php#271). A
-        missing timeout is unbounded: dropping it lengthens the wait, and a
-        reopen that adds one shortens it.
+        remaining, so a reopen may equal or undercut the first open. Anything
+        else, including a reopen that adds or drops the timeout, is not a
+        history this workflow code writes. This is the sdk-php#271 rule.
         """
-
-        def bound(value: Any) -> float | None:
-            if value is None:
-                return math.inf
-            return float(value) if isinstance(value, int) and not isinstance(value, bool) else None
-
-        first = bound(wait_opened[first_index].get("timeout_seconds"))
-        reopen = bound(wait_opened[reopen_index].get("timeout_seconds"))
-        if first is not None and reopen is not None and reopen <= first:
+        first = wait_opened[first_index].get("timeout_seconds")
+        reopen = wait_opened[reopen_index].get("timeout_seconds")
+        if first is None and reopen is None:
+            return
+        if (isinstance(first, int) and not isinstance(first, bool) and isinstance(reopen, int)
+                and not isinstance(reopen, bool) and reopen <= first):
             return
         sequence = wait_opened[reopen_index].get("sequence")
         raise NonDeterministicReplayError(
@@ -7010,7 +7006,7 @@ def _replay_state(
             "condition wait reopen within its first open's timeout",
             ["ConditionWaitOpened"],
             detail="condition_wait_reopen_timeout_exceeded: a reopen records a longer timeout than the wait's "
-            "first open",
+            "first open, or adds or drops it",
         )
 
     def _reopened_with_remaining_timeout(command: WaitCondition, first_index: int) -> WaitCondition:
