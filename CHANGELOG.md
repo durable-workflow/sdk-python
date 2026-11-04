@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Condition wait opens carry a deterministic `python:condition-wait:{ordinal}` occurrence ID for each authored call, including selection members. False-wake reopens preserve the first open's ID and remaining timeout; legacy chains without an ID keep that absence even when later physical opens have an ID. Separate calls and grace waits receive new ordinals. These identities enable unresolved-open deduplication on supporting runtimes. (#259)
+
 - Opt-in typed workflow values (#184). `@workflow.defn(..., typed=True)` decodes the arguments of `run` (after `ctx`) and of every signal, query, update and update-validator handler to their annotations. `ctx.start_child_workflow(..., result_type=T)` decodes a child's result, and `WorkflowHandle.result(result_type=T)` / `Client.get_result(..., result_type=T)` decode a workflow's result on the client. Dataclass and `Enum` values in client workflow, signal, update, query and schedule arguments, child and continue-as-new arguments, and workflow and update results are sent as their neutral values. A typed `TypedValueError` names the path but never the value. Untyped workflows receive plain values as before, so in-flight histories replay unchanged.
 
 ### Fixed
