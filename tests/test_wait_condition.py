@@ -1432,3 +1432,55 @@ class TestReopenTimeoutBound:
         workflow_cls = UntimedApproval if first is None else RemainingTimeoutApproval
         with pytest.raises(NonDeterministicReplayError, match="condition_wait_reopen_timeout_exceeded"):
             replay(workflow_cls, _reopen_history(first, reopen), [])
+
+
+# A same-key wait that follows a satisfied one is a separate call, so the
+# reopen bound (#248) does not apply to it, whatever its timeout.
+@workflow.defn(name="tests.replay.condition-two-approvals")
+class TwoApprovals:
+    first_timeout: int | None = 300
+    second_timeout: int | None = 400
+
+    def __init__(self) -> None:
+        self.approvals = 0
+
+    @workflow.signal("approve")
+    def approve(self) -> None:
+        self.approvals += 1
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        cls = type(self)
+        yield ctx.wait_condition(lambda: self.approvals >= 1, key="approval", timeout=cls.first_timeout)
+        yield ctx.wait_condition(lambda: self.approvals >= 2, key="approval", timeout=cls.second_timeout)
+        return self.approvals
+
+
+def _two_approvals_history(first: int | None, second: int | None, satisfied_recorded: bool) -> list[dict]:
+    def open_wait(wait_id: str, sequence: int, at: str, timeout: int | None) -> dict:
+        payload: dict = {"condition_wait_id": wait_id, "condition_key": "approval", "sequence": sequence}
+        if timeout is not None:
+            payload["timeout_seconds"] = timeout
+        return {"event_type": "ConditionWaitOpened", "recorded_at": at, "payload": payload}
+
+    history = [START, open_wait("w1", 1, "2026-11-03T00:00:00+00:00", first),
+               _timed_signal("approve", 1, "2026-11-03T00:00:10+00:00")]
+    if satisfied_recorded:
+        history.append({"event_type": "ConditionWaitSatisfied", "recorded_at": "2026-11-03T00:00:10+00:00",
+                        "payload": {"condition_wait_id": "w1", "condition_key": "approval", "sequence": 1}})
+    history.append(open_wait("w2", 2, "2026-11-03T00:00:11+00:00", second))
+    return history
+
+
+@pytest.mark.parametrize("satisfied_recorded", [True, False])
+@pytest.mark.parametrize(("first", "second"), [(300, 400), (None, 60), (300, None)],
+                         ids=["longer", "added", "dropped"])
+def test_a_separate_wait_after_a_satisfied_one_keeps_its_own_timeout(
+    first: int | None, second: int | None, satisfied_recorded: bool,
+) -> None:
+    TwoApprovals.first_timeout, TwoApprovals.second_timeout = first, second
+    try:
+        (command,) = replay(TwoApprovals, _two_approvals_history(first, second, satisfied_recorded), []).commands
+    finally:
+        TwoApprovals.first_timeout, TwoApprovals.second_timeout = 300, 400
+    assert isinstance(command, WaitCondition) and command.condition_key == "approval"
+    assert command.timeout_seconds == second

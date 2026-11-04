@@ -7723,11 +7723,6 @@ def _replay_state(
                         and next_wait_index < len(wait_opened)
                         and _same_logical_condition_wait(wait_opened[next_wait_index], cmd)
                     )
-                    # A wait that timed out is finished; the next same-key open is
-                    # a separate call, not a reopen, so its timeout is its own.
-                    if has_reopened_same_wait and resolution != "timed_out":
-                        _assert_reopen_within_first_timeout(first_open_index, next_wait_index)
-
                     if resolution == "timed_out":
                         terminal_condition_reopen_cmd = None
                         next_value = False
@@ -7742,6 +7737,10 @@ def _replay_state(
                         )])
                     if resolution == "satisfied":
                         if has_reopened_same_wait and not satisfied:
+                            # Only an open consumed as a reopen is bounded (#248);
+                            # a later same-key wait after a true predicate is a
+                            # separate call with its own timeout.
+                            _assert_reopen_within_first_timeout(first_open_index, next_wait_index)
                             consumed_reopen_for_current_wait = True
                             wait_yield_count = next_wait_index
                             continue
@@ -7769,6 +7768,7 @@ def _replay_state(
                     # with the same key/fingerprint before declaring the
                     # logical wait still pending.
                     if has_reopened_same_wait:
+                        _assert_reopen_within_first_timeout(first_open_index, next_wait_index)
                         consumed_reopen_for_current_wait = True
                         wait_yield_count = next_wait_index
                         continue
