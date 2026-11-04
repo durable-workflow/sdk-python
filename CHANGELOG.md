@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Replay now refuses a recorded condition-wait reopen that records a longer timeout than the wait's first open, or that adds or drops the timeout, with a `NonDeterministicReplayError` whose detail starts `condition_wait_reopen_timeout_exceeded`. Earlier versions linked such a reopen silently. Reopens with the full timeout (written before 2.13.2) or with the time remaining (2.13.2 and later) still replay. This matches sdk-php#271. (#248)
 - Replay no longer fails when a condition wait has an orphaned duplicate open whose timer fires later. Server 3.0.x can record a second open of the same wait while the first is still open (server#1015). The first open's timeout used to end the logical wait in replay, while history continued with the reopened wait, so replay raised `NonDeterministicReplayError`. A wait now counts as reopened when the next open of the same wait was recorded before the earlier wait's own end. A wait that timed out before the next open is still finished, and the next open is a separate call. Every earlier release has this gap; it is not a 2.13.2 regression. (#253)
 
 ## [2.13.2] - 2026-11-04
