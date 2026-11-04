@@ -136,6 +136,14 @@ def validate_annotation(annotation: Any, where: str, _seen: frozenset[type] = fr
     raise TypeError(f"{where}: typed values do not support {_type_name(annotation)}")
 
 
+def decode_payload_value(value: Any, annotation: Any, path: str = "value") -> Any:
+    """Decode an untrusted payload value; every refusal is a TypedValueError."""
+    try:
+        return from_payload_value(value, annotation, path)
+    except RecursionError:
+        raise TypedValueError(path, _type_name(annotation), "the value is nested too deeply") from None
+
+
 def from_payload_value(value: Any, annotation: Any, path: str = "value") -> Any:
     """Return *value* converted to *annotation*, which must be validated."""
     if annotation in _PASS_THROUGH:
@@ -162,7 +170,12 @@ def from_payload_value(value: Any, annotation: Any, path: str = "value") -> Any:
         if not isinstance(value, dict):
             raise TypedValueError(path, _type_name(annotation), f"got {_json_kind(value)}")
         _, item_type = get_args(annotation) or (str, Any)
-        return {key: from_payload_value(item, item_type, f"{path}[{key!r}]") for key, item in value.items()}
+        # Map keys are user data (for example email addresses), so a path names
+        # an entry by its position, never by its key.
+        return {
+            key: from_payload_value(item, item_type, f"{path}[entry {index}]")
+            for index, (key, item) in enumerate(value.items())
+        }
 
     if isinstance(annotation, type) and issubclass(annotation, Enum):
         return _enum_from_payload(value, annotation, path)
@@ -211,7 +224,12 @@ def _dataclass_from_payload(value: Any, cls: type, path: str) -> Any:
         elif item.default is dataclasses.MISSING and item.default_factory is dataclasses.MISSING:
             raise TypedValueError(field_path, _type_name(annotation), "the field is missing")
     # Keys the receiver does not declare are ignored for rolling deploys.
-    return cls(**arguments)
+    try:
+        return cls(**arguments)
+    except ValueError:
+        # A __post_init__ check refused the decoded fields. Its message can
+        # carry the values, so it is not repeated here.
+        raise TypedValueError(path, cls.__qualname__, "the dataclass refused the decoded fields") from None
 
 
 def to_payload_value(value: Any) -> Any:
@@ -266,10 +284,10 @@ def typed_callable(fn: Callable[..., Any]) -> Callable[..., Any]:
         for index, value in enumerate(args):
             if index < len(positional):
                 name, annotation = positional[index]
-                converted.append(from_payload_value(value, annotation, name))
+                converted.append(decode_payload_value(value, annotation, name))
             elif variadic is not None:
                 name, annotation = variadic
-                converted.append(from_payload_value(value, annotation, f"{name}[{index - len(positional)}]"))
+                converted.append(decode_payload_value(value, annotation, f"{name}[{index - len(positional)}]"))
             else:
                 converted.append(value)
         return converted
