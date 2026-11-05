@@ -18,7 +18,8 @@ if sys.version_info < (3, 11):
 
 SCRIPT = Path(__file__).parents[1] / "scripts/prepare_portal.py"
 SPEC = importlib.util.spec_from_file_location("prepare_portal", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
+assert SPEC is not None
+assert SPEC.loader is not None
 portal = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(portal)
 
@@ -93,7 +94,8 @@ def test_stable_build_combines_current_presentation_and_published_content(source
     assert config["nav"] == [{"Published metrics": "reference/metrics.md"}]
     assert config["plugins"][1]["mkdocstrings"]["handlers"]["python"]["paths"] == [str(root / ".docs-sdk/src")]
     assert audit["docs_source_revision"] != audit["sdk_source_revision"]
-    assert audit["sdk_version"] == "2.14.1" and audit["channel"] == "stable"
+    assert audit["sdk_version"] == "2.14.1"
+    assert audit["channel"] == "stable"
     inventory = json.loads((root / ".docs-api-inventory.json").read_text())
     assert [row["path"] for row in inventory] == ["durable_workflow/__init__.py"]
     assert str(root) not in (root / ".docs-provenance.json").read_text()
@@ -131,6 +133,7 @@ def test_source_build_stays_preview_with_current_api_and_no_package_claim(source
     root, env, _installed = sources
     env["STABLE_TAG"] = ""
     audit = portal.prepare(root, env)
-    assert audit["channel"] == "source-preview" and audit["sdk_version"] == "2.15.0"
+    assert audit["channel"] == "source-preview"
+    assert audit["sdk_version"] == "2.15.0"
     assert audit["docs_source_revision"] == audit["sdk_source_revision"]
     assert audit["published_wheel_sha256"] is None

@@ -22,9 +22,6 @@
 }
 
 /* Structural primitives; visual values come from the shared role tokens. */
-.dw-landing {
-  color: var(--dw-ink);
-}
 
 .dw-landing * {
   box-sizing: border-box;
@@ -34,46 +31,10 @@
   text-underline-offset: .18em;
 }
 
-.dw-hero {
-  display: grid;
-}
-
 .dw-hero__actions, .dw-inline-actions, .dw-runtime-card__actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-}
-
-.dw-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--dw-line);
-  text-decoration: none;
-}
-
-.dw-text-link {
-  display: inline-flex;
-  align-items: center;
-  color: var(--dw-action);
-  text-decoration: none;
-}
-
-.dw-hero__facts {
-  display: flex;
-  flex-wrap: wrap;
-}
-
-.dw-install-card {
-  align-self: center;
-  min-width: 0;
-  background: var(--dw-code-background);
-  color: var(--dw-code-foreground);
-}
-
-.dw-install-card__links {
-  display: flex;
-  justify-content: space-between;
 }
 
 .dw-role-grid, .dw-link-grid, .dw-runtime-grid {
@@ -83,10 +44,6 @@
 
 .dw-link-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.dw-runtime-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .dw-role-card, .dw-link-card, .dw-runtime-card {
@@ -127,10 +84,6 @@
   background: transparent;
   color: inherit;
   font: inherit;
-}
-
-.dw-runtime-card {
-  gap: 12px;
 }
 
 .dw-runtime-card .dw-text-link {
@@ -194,8 +147,8 @@
   .dw-landing *,
   .dw-landing *::before,
   .dw-landing *::after {
-    scroll-behavior: auto !important;
-    transition: none !important;
+    scroll-behavior: auto;
+    transition: none;
   }
 }
 
@@ -537,6 +490,8 @@ body:has(.dw-landing) .md-content__inner {
 }
 
 .dw-landing {
+  color: var(--dw-ink);
+
   display: flex;
   flex-direction: column;
   gap: 88px;
@@ -545,6 +500,8 @@ body:has(.dw-landing) .md-content__inner {
 }
 
 .dw-hero {
+  display: grid;
+
   padding: 0;
   gap: 48px;
   align-items: center;
@@ -586,23 +543,25 @@ body:has(.dw-landing) .md-content__inner {
 }
 
 .dw-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--dw-line);
+  text-decoration: none;
+
   border-radius: 6px;
   padding: 0 20px;
   border-color: var(--dw-line);
 }
 
-.dw-button--primary {
+.dw-button.dw-button--primary {
   background: var(--dw-action);
   border-color: var(--dw-action);
-  color: var(--dw-on-action) !important;
+  color: var(--dw-on-action);
 }
 
-[data-md-color-scheme="slate"] .dw-button--primary {
-  color: var(--dw-on-action) !important;
-}
-
-.dw-button--secondary {
-  color: var(--dw-ink) !important;
+.dw-button.dw-button--secondary {
+  color: var(--dw-ink);
   background: var(--dw-surface);
 }
 
@@ -612,10 +571,18 @@ body:has(.dw-landing) .md-content__inner {
 }
 
 .dw-text-link {
+  display: inline-flex;
+  align-items: center;
+  color: var(--dw-action);
+  text-decoration: none;
+
   padding: 10px 8px;
 }
 
 .dw-hero__facts {
+  display: flex;
+  flex-wrap: wrap;
+
   font: 400 13px var(--dw-font-mono);
   color: var(--dw-muted);
   margin-top: 22px;
@@ -627,6 +594,11 @@ body:has(.dw-landing) .md-content__inner {
 }
 
 .dw-install-card {
+  align-self: center;
+  min-width: 0;
+  background: var(--dw-code-background);
+  color: var(--dw-code-foreground);
+
   border: none;
   border-radius: 8px;
   box-shadow: none;
@@ -646,6 +618,9 @@ body:has(.dw-landing) .md-content__inner {
 }
 
 .dw-install-card__links {
+  display: flex;
+  justify-content: space-between;
+
   padding: 14px 16px;
   margin: 0;
   border-top: 1px solid #26302c;
@@ -654,7 +629,7 @@ body:has(.dw-landing) .md-content__inner {
 }
 
 .dw-install-card__links a {
-  color: #5fe0a6 !important;
+  color: #5fe0a6;
 }
 
 .dw-section {
@@ -685,11 +660,6 @@ body:has(.dw-landing) .md-content__inner {
   border-radius: 8px;
   box-shadow: none;
   padding: 20px;
-}
-
-.dw-role-card {
-  min-height: 190px;
-  gap: 8px;
 }
 
 .dw-role-card__step {
@@ -744,10 +714,14 @@ body:has(.dw-landing) .md-content__inner {
 }
 
 .dw-runtime-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+
   gap: 16px;
 }
 
 .dw-runtime-card {
+  gap: 12px;
+
   border-top: 1px solid var(--dw-line);
   min-height: 220px;
 }
@@ -826,11 +800,6 @@ body:has(.dw-landing) .md-content__inner {
   content: "output";
 }
 
-.dw-landing .highlight pre {
-  margin: 0;
-  max-width: 100%;
-}
-
 .dw-landing .highlight pre code {
   padding: 18px 16px;
   background: var(--dw-code-background);
@@ -844,15 +813,6 @@ body:has(.dw-landing) .md-content__inner {
 .dw-quickstart-code .highlight pre code {
   max-height: 640px;
   overflow: auto;
-}
-
-.dw-landing button[data-clipboard-target] {
-  top: 8px;
-  right: 8px;
-  color: var(--dw-code-muted);
-  border: 1px solid #2e3934;
-  border-radius: 4px;
-  opacity: 1;
 }
 
 .dw-footer {
@@ -1119,13 +1079,6 @@ body:has(.dw-landing) .md-content__inner {
   font-size: 15px;
 }
 
-.dw-landing button[data-clipboard-target] {
-  width: auto;
-  height: 28px;
-  padding: 4px 8px;
-  background: transparent;
-}
-
 .dw-landing button[data-clipboard-target]::after {
   content: "Copy";
   display: block;
@@ -1157,6 +1110,9 @@ body:has(.dw-landing) .md-content__inner {
 
 /* Keep the maintained theme's copy action in the code header in both theme versions. */
 .dw-landing .highlight pre {
+  margin: 0;
+  max-width: 100%;
+
   position: static;
 }
 .dw-landing .md-code__nav {
@@ -1165,6 +1121,18 @@ body:has(.dw-landing) .md-content__inner {
   right: 8px;
 }
 .dw-landing button[data-clipboard-target] {
+  top: 8px;
+  right: 8px;
+  color: var(--dw-code-muted);
+  border: 1px solid #2e3934;
+  border-radius: 4px;
+  opacity: 1;
+
+  width: auto;
+  height: 28px;
+  padding: 4px 8px;
+  background: transparent;
+
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1187,5 +1155,12 @@ body:has(.dw-landing) .md-content__inner {
   margin: 0;
 }
 .dw-role-card {
+  min-height: 190px;
+  gap: 8px;
+
   width: 100%;
+}
+
+button[data-clipboard-target] {
+  color: var(--dw-code-muted);
 }

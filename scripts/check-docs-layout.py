@@ -13,6 +13,8 @@ from typing import Any
 
 from playwright.sync_api import Browser, Page, sync_playwright
 
+FOCUSED = "element => element === document.activeElement"
+
 
 class SiteHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, _format: str, *_args: object) -> None:
@@ -163,7 +165,7 @@ def exercise_mobile_controls(page: Page) -> None:
     close_navigation = drawer.locator(".dw-navigation__close")
     close_navigation.click()
     page.wait_for_function("!document.querySelector('#__drawer').checked")
-    assert navigation.evaluate("element => element === document.activeElement"), "navigation focus was not restored"
+    assert navigation.evaluate(FOCUSED), "navigation focus was not restored"
 
     search = page.locator(".md-header__button[for='__search']")
     search.click()
@@ -177,7 +179,7 @@ def exercise_mobile_controls(page: Page) -> None:
     assert search_box is not None and search_box["x"] >= -1 and search_box["width"] <= width + 1
     page.locator(".md-search__icon[for='__search']").click()
     page.wait_for_function("!document.querySelector('#__search').checked")
-    assert search.evaluate("element => element === document.activeElement"), "search focus was not restored"
+    assert search.evaluate(FOCUSED), "search focus was not restored"
 
 
 def exercise_identity(page: Page, theme: str) -> None:
@@ -203,7 +205,7 @@ def exercise_identity(page: Page, theme: str) -> None:
     assert switcher.get_by_role("link", name="Rust", exact=True).get_attribute("href") == "https://rust.durable-workflow.com/"
     trigger.press("Escape")
     assert not switcher.evaluate("element => element.open")
-    assert trigger.evaluate("element => element === document.activeElement")
+    assert trigger.evaluate(FOCUSED)
     assert page.locator("[data-status-label]").text_content() == "Status unknown"
     assert page.locator(".dw-global-actions .dw-button").is_visible()
 
@@ -216,12 +218,19 @@ def exercise_copy_and_steps(page: Page) -> None:
         }""",
     )
     assert abs(spacing - 0.08) < 0.001, "Eyebrow tracking differs from the canonical design"
+    targets = page.locator("button[data-clipboard-target]").evaluate_all(
+        "buttons => buttons.map(button => button.dataset.clipboardTarget)",
+    )
+    assert len(set(targets)) == len(targets), "Code blocks share a copy target"
     for selector in (".dw-install-card", ".dw-quickstart-code"):
         block = page.locator(selector)
         expected = block.locator("pre code").text_content()
         # Never inspect a shared host's previous clipboard contents.
         page.evaluate("navigator.clipboard.writeText('sdk-python-public-copy-control')")
         block.locator("button[data-clipboard-target]").click()
+        page.wait_for_function(
+            "async () => (await navigator.clipboard.readText()) !== 'sdk-python-public-copy-control'",
+        )
         copied = page.evaluate("navigator.clipboard.readText()")
         assert copied.rstrip("\n") == expected.rstrip("\n"), "Copy changed or truncated the code"
     assert page.locator("#start-server").count() == 1
@@ -230,8 +239,38 @@ def exercise_copy_and_steps(page: Page) -> None:
     assert page.locator(".dw-quickstart-copy a[href='#start-server']").count() == 1
     assert page.locator(".dw-quickstart-copy a[href='#run-greeter']").count() == 1
     code = page.locator(".dw-quickstart-code pre code").text_content() or ""
-    assert "asyncio.run(main())" in code and "workflows=[GreeterWorkflow]" in code
-    assert "activities=[greet]" in code and "task_queue=TASK_QUEUE" in code
+    assert "asyncio.run(main())" in code
+    assert "workflows=[GreeterWorkflow]" in code
+    assert "activities=[greet]" in code
+    assert "task_queue=TASK_QUEUE" in code
+
+
+def check_landing_views(browser: Browser, base_url: str, screenshots: Path | None) -> None:
+    for width in (1440, 1024, 390, 320):
+        for theme in ("light", "dark"):
+            page, errors = open_page(browser, base_url, "/", {"width": width, "height": 920})
+            exercise_identity(page, theme)
+            assert_landing_contract(page)
+            assert_rendered_health(page, f"{width} {theme} landing", errors)
+            exercise_copy_and_steps(page)
+            if width < 960:
+                exercise_mobile_controls(page)
+            assert_rendered_health(page, f"{width} {theme} controls", errors)
+            if screenshots:
+                page.screenshot(path=str(screenshots / f"python-{width}-{theme}.png"), full_page=True)
+            page.close()
+
+
+def check_api_views(browser: Browser, base_url: str) -> None:
+    for path in ("/sdk-reference/", "/reference/client/"):
+        for width in (1440, 390):
+            for theme in ("light", "dark"):
+                page, errors = open_page(browser, base_url, path, {"width": width, "height": 920})
+                exercise_identity(page, theme)
+                assert_rendered_health(page, f"{width} {theme} {path}", errors)
+                if width < 960:
+                    exercise_mobile_controls(page)
+                page.close()
 
 
 def main() -> int:
@@ -248,29 +287,8 @@ def main() -> int:
         try:
             if args.screenshots:
                 args.screenshots.mkdir(parents=True, exist_ok=True)
-            for width in (1440, 1024, 390, 320):
-                for theme in ("light", "dark"):
-                    page, errors = open_page(browser, base_url, "/", {"width": width, "height": 920})
-                    exercise_identity(page, theme)
-                    assert_landing_contract(page)
-                    assert_rendered_health(page, f"{width} {theme} landing", errors)
-                    exercise_copy_and_steps(page)
-                    if width < 960:
-                        exercise_mobile_controls(page)
-                    assert_rendered_health(page, f"{width} {theme} controls", errors)
-                    if args.screenshots:
-                        page.screenshot(path=str(args.screenshots / f"python-{width}-{theme}.png"), full_page=True)
-                    page.close()
-
-            for path in ("/sdk-reference/", "/reference/client/"):
-                for width in (1440, 390):
-                    for theme in ("light", "dark"):
-                        page, errors = open_page(browser, base_url, path, {"width": width, "height": 920})
-                        exercise_identity(page, theme)
-                        assert_rendered_health(page, f"{width} {theme} {path}", errors)
-                        if width < 960:
-                            exercise_mobile_controls(page)
-                        page.close()
+            check_landing_views(browser, base_url, args.screenshots)
+            check_api_views(browser, base_url)
 
         finally:
             browser.close()

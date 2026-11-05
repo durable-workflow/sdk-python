@@ -33,9 +33,13 @@ namespace.
 
 ## Install
 
+<div id="install-package-code" markdown="1">
+
 ```bash
 pip install durable-workflow
 ```
+
+</div>
 
 Use a virtual environment and lock the resolved package version with the rest
 of your application dependencies.
@@ -73,11 +77,17 @@ worker, and client against the stable Server channel.
 
 Docker keeps this first run local. Select the stable 2.x Server channel:
 
+<div id="server-image-code" markdown="1">
+
 ```bash
 export DW_SERVER_IMAGE='durableworkflow/server:2'
 ```
 
+</div>
+
 Then bootstrap and start that qualified image:
+
+<div id="start-server-code" markdown="1">
 
 ```bash
 export DURABLE_WORKFLOW_RUNTIME_URL='http://127.0.0.1:8080'
@@ -94,6 +104,8 @@ docker run -d --name durable-workflow-python-server -p 8080:8080 \
   "$DW_SERVER_IMAGE"
 until curl -sf http://127.0.0.1:8080/api/ready >/dev/null; do sleep 1; done
 ```
+
+</div>
 
 <div class="dw-quickstart-grid" markdown="1">
 <div class="dw-quickstart-copy" markdown="1">
@@ -112,6 +124,8 @@ First [start Server](#start-server), then save this complete program and
 
 </div>
 <div class="dw-quickstart-code" markdown="1">
+
+<div id="greeter-program-code" markdown="1">
 
 ```python
 import asyncio
@@ -166,24 +180,34 @@ asyncio.run(main())
 ```
 
 </div>
+
+</div>
 </div>
 
 
 ### 3. Run it { #run-greeter }
 
+<div id="run-program-code" markdown="1">
+
 ```bash
 python greeter.py
 ```
+
+</div>
 
 <div class="dw-checkpoint" data-worker-ready-output="registered" markdown="1">
 
 The SDK reports registration before it handles the workflow, followed by the
 completed result:
 
+<div id="workflow-output-code" markdown="1">
+
 ```text
 worker py-worker-… registered on python-workers
 Hello, world!
 ```
+
+</div>
 
 </div>
 
@@ -236,6 +260,8 @@ Replace the placeholders with values returned for your namespace, then run the
 same `greeter.py`. Keep client and worker tokens in their respective processes
 when you split the example for production.
 
+<div id="managed-runtime-code" markdown="1">
+
 ```bash
 export DURABLE_WORKFLOW_RUNTIME_URL='<provisioned-runtime-url>'
 export DURABLE_WORKFLOW_RUNTIME_NAMESPACE='<provisioned-runtime-namespace>'
@@ -244,6 +270,8 @@ export DURABLE_WORKFLOW_WORKER_TOKEN='<runtime-worker-token>'
 unset DURABLE_WORKFLOW_TOKEN
 python greeter.py
 ```
+
+</div>
 
 <p class="dw-inline-actions"><a class="dw-button dw-button--secondary" data-docs-destination="cloud-guide" href="https://durable-workflow.com/docs/2.0/polyglot/cloud-control-plane/">Cloud runtime guide</a><a class="dw-text-link" data-docs-destination="python-playground" href="https://github.com/durable-workflow/sample-app#symmetric-sdk-playground">Run the Python playground →</a></p>
 

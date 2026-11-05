@@ -9,6 +9,7 @@ on:
       - 'overrides/**'
       - 'mkdocs.yml'
       - 'pyproject.toml'
+      - 'requirements-docs.txt'
       - 'scripts/check-docs-analytics.py'
       - 'scripts/check-docs-layout.py'
       - 'scripts/prepare_portal.py'
@@ -151,20 +152,14 @@ jobs:
           PUBLISHED_WHEEL_URL: ${{ steps.release-channel.outputs.wheel_url }}
           PUBLISHED_WHEEL_SHA256: ${{ steps.release-channel.outputs.wheel_sha256 }}
         run: |
+          pip install --only-binary=:all: -r requirements-docs.txt
           if [ -n "$STABLE_TAG" ]; then
-            python - <<'PY'
-          import tomllib
-          from pathlib import Path
-          dependencies = tomllib.loads(Path("pyproject.toml").read_text())["project"]["optional-dependencies"]["docs"]
-          Path(".docs-requirements.txt").write_text("\n".join(dependencies) + "\n")
-          PY
-            pip install --only-binary=:all: -r .docs-requirements.txt
-            pip install --only-binary=:all: "$PUBLISHED_WHEEL_URL#sha256=$PUBLISHED_WHEEL_SHA256"
+            pip install --no-deps --only-binary=:all: "$PUBLISHED_WHEEL_URL#sha256=$PUBLISHED_WHEEL_SHA256"
           else
-            pip install -e '.[docs]'
+            pip install --no-deps --only-binary=:all: -e .
           fi
       - name: Require the accepted central APT floor before browser system dependencies
-        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a
+        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
       - name: Install Chromium
         env:
           NODE_OPTIONS: --use-openssl-ca

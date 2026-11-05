@@ -50,6 +50,61 @@ def sdk_inventory(sdk: Path, *, verify_installed: bool) -> list[dict[str, Any]]:
     return rows
 
 
+def published_identity(root: Path, sdk: Path, tag: str, environment: dict[str, str]) -> tuple[str, dict[str, Any]]:
+    if not re.fullmatch(r"\d+\.\d+\.\d+", tag):
+        raise ValueError("Stable SDK requires an exact stable tag")
+    revision = git(sdk, "rev-parse", "HEAD")
+    if revision != git(root, "rev-parse", f"refs/tags/{tag}^{{commit}}"):
+        raise ValueError("API checkout differs from the published tag")
+    if git(sdk, "status", "--porcelain", "--untracked-files=all"):
+        raise ValueError("Selected SDK source is modified")
+    project = tomllib.loads((sdk / "pyproject.toml").read_text())["project"]
+    if project["version"] != tag or importlib.metadata.version("durable-workflow") != tag:
+        raise ValueError("Published SDK source/package version differs from the selected tag")
+    if not re.fullmatch(r"[0-9a-f]{64}", environment.get("DOCS_WHEEL_SHA256", "")):
+        raise ValueError("Published wheel digest is required")
+    return revision, project
+
+
+def published_landing(root: Path, sdk: Path, project: dict[str, Any], tag: str) -> str:
+    landing = (root / "docs/index.md").read_text()
+    if CODE_BLOCKS.findall(landing) != CODE_BLOCKS.findall((sdk / "docs/index.md").read_text()):
+        raise ValueError("Landing examples differ from the selected published SDK documentation")
+    floors = re.findall(r"<span>Python (\d+\.\d+)\+</span>", landing)
+    if len(floors) != 1 or project.get("requires-python") != f">={floors[0]}":
+        raise ValueError("Landing Python support floor differs from the published SDK")
+    installed_python = importlib.metadata.distribution("durable-workflow").metadata.get("Requires-Python")
+    if installed_python != project["requires-python"]:
+        raise ValueError("Installed Python support metadata differs from the selected SDK source")
+    landing, matches = re.subn(
+        r"Python SDK · \d+\.\d+\.\d+ published", f"Python SDK · {tag} published", landing,
+    )
+    if matches != 1:
+        raise ValueError("Published package label is missing or ambiguous")
+    return landing
+
+
+def stage_published_docs(root: Path, sdk: Path, config: dict[str, Any], project: dict[str, Any], tag: str) -> None:
+    stage = Path(tempfile.mkdtemp(prefix=".docs-stage-", dir=root))
+    # The complete SDK documentation content comes from tracked tag files.
+    # Only this closed set of presentation assets and the reviewed landing
+    # page come from the current documentation revision.
+    for source in source_files(sdk, "docs"):
+        target = stage / source.relative_to(sdk / "docs")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    for directory in PRESENTATION_DIRECTORIES:
+        shutil.copytree(root / "docs" / directory, stage / directory, dirs_exist_ok=True)
+    landing = published_landing(root, sdk, project, tag)
+    (stage / "index.md").write_text(landing)
+    config["docs_dir"] = str(stage)
+    config["nav"] = yaml.safe_load((sdk / "mkdocs.yml").read_text())["nav"]
+    documentation = next(plugin["mkdocstrings"] for plugin in config["plugins"]
+                         if isinstance(plugin, dict) and "mkdocstrings" in plugin)
+    documentation["handlers"]["python"]["paths"] = [str(sdk / "src")]
+    config["extra"]["published_sdk_version"] = tag
+
+
 def prepare(root: Path, environment: dict[str, str]) -> dict[str, Any]:
     for name in (".docs-build.yml", ".docs-api-inventory.json", ".docs-provenance.json"):
         (root / name).unlink(missing_ok=True)
@@ -61,51 +116,10 @@ def prepare(root: Path, environment: dict[str, str]) -> dict[str, Any]:
     channel = "source-preview"
     tag = environment.get("STABLE_TAG", "")
     if tag:
-        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", tag):
-            raise ValueError("Stable SDK requires an exact stable tag")
         sdk = root / ".docs-sdk"
-        revision = git(sdk, "rev-parse", "HEAD")
-        if revision != git(root, "rev-parse", f"refs/tags/{tag}^{{commit}}"):
-            raise ValueError("API checkout differs from the published tag")
-        if git(sdk, "status", "--porcelain", "--untracked-files=all"):
-            raise ValueError("Selected SDK source is modified")
-        project = tomllib.loads((sdk / "pyproject.toml").read_text())["project"]
+        revision, project = published_identity(root, sdk, tag, environment)
         version = project["version"]
-        if version != tag or importlib.metadata.version("durable-workflow") != tag:
-            raise ValueError("Published SDK source/package version differs from the selected tag")
-        if not re.fullmatch(r"[0-9a-f]{64}", environment.get("DOCS_WHEEL_SHA256", "")):
-            raise ValueError("Published wheel digest is required")
-        stage = Path(tempfile.mkdtemp(prefix=".docs-stage-", dir=root))
-        # The complete SDK documentation content comes from tracked tag files.
-        # Only this closed set of presentation assets and the reviewed landing
-        # page come from the current documentation revision.
-        for source in source_files(sdk, "docs"):
-            target = stage / source.relative_to(sdk / "docs")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
-        for directory in PRESENTATION_DIRECTORIES:
-            shutil.copytree(root / "docs" / directory, stage / directory, dirs_exist_ok=True)
-        landing = (root / "docs/index.md").read_text()
-        if CODE_BLOCKS.findall(landing) != CODE_BLOCKS.findall((sdk / "docs/index.md").read_text()):
-            raise ValueError("Landing examples differ from the selected published SDK documentation")
-        floors = re.findall(r"<span>Python ([0-9]+\.[0-9]+)\+</span>", landing)
-        if len(floors) != 1 or project.get("requires-python") != f">={floors[0]}":
-            raise ValueError("Landing Python support floor differs from the published SDK")
-        installed_python = importlib.metadata.distribution("durable-workflow").metadata.get("Requires-Python")
-        if installed_python != project["requires-python"]:
-            raise ValueError("Installed Python support metadata differs from the selected SDK source")
-        landing, matches = re.subn(
-            r"Python SDK · [0-9]+\.[0-9]+\.[0-9]+ published", f"Python SDK · {tag} published", landing,
-        )
-        if matches != 1:
-            raise ValueError("Published package label is missing or ambiguous")
-        (stage / "index.md").write_text(landing)
-        config["docs_dir"] = str(stage)
-        config["nav"] = yaml.safe_load((sdk / "mkdocs.yml").read_text())["nav"]
-        documentation = next(plugin["mkdocstrings"] for plugin in config["plugins"]
-                             if isinstance(plugin, dict) and "mkdocstrings" in plugin)
-        documentation["handlers"]["python"]["paths"] = [str(sdk / "src")]
-        config["extra"]["published_sdk_version"] = tag
+        stage_published_docs(root, sdk, config, project, tag)
         channel = "stable"
     else:
         revision = docs_revision
