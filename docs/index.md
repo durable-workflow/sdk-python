@@ -11,7 +11,7 @@ hide:
 
 <div class="dw-hero__copy" markdown="1">
 
-<p class="dw-eyebrow">First-party Python SDK · 2.0 stable</p>
+<p class="dw-eyebrow">Python SDK · 2.14.1 published</p>
 
 # Durable workflows in Python.
 
@@ -62,33 +62,6 @@ dispatches them to your workflow and activity code.
 
 </section>
 
-<section class="dw-section dw-runtime" id="runtime-choices" aria-labelledby="choose-who-runs-the-runtime" markdown="1">
-
-## Choose who runs the runtime
-
-The workflow types, activity types, and task queue stay the same. Only the
-endpoint, credentials, and operating boundary change.
-
-<div class="dw-runtime-grid">
-  <article class="dw-runtime-card dw-runtime-card--primary" data-runtime="self-hosted" data-access="no-account-required">
-    <span class="dw-tag">Available without an account</span>
-    <h3>Self-hosted Server</h3>
-    <p>Run the published Server image locally, then execute the complete Python journey below.</p>
-    <a class="dw-button dw-button--primary" data-docs-destination="self-hosted-quickstart" href="#first-workflow">Start locally <span aria-hidden="true">→</span></a>
-  </article>
-  <article class="dw-runtime-card dw-runtime-card--secondary dw-cloud-promotion" data-runtime="cloud" data-access="limited" data-promotion-source="sdk-python-reference">
-    <span class="dw-cloud-promotion__eyebrow dw-tag">Managed runtime · limited access</span>
-    <h3>Durable Workflow Cloud</h3>
-    <p>Connect the same program to a provisioned namespace with separate client and worker credentials.</p>
-    <p class="dw-runtime-card__actions">
-      <a class="dw-button dw-button--secondary" data-docs-destination="cloud-quickstart" href="#managed-cloud">Connect a namespace</a>
-      <a class="dw-cloud-promotion__action" data-docs-destination="cloud-access" data-promotion-action="early-access" href="https://cloud.durable-workflow.com/early-access#source=sdk-python-reference">Request early access →</a>
-    </p>
-  </article>
-</div>
-
-</section>
-
 <section class="dw-section dw-first-run" id="first-workflow" data-docs-journey="local-self-hosted" data-workflow-type="python.greeter" data-activity-type="python.greet" data-task-queue="python-workers" aria-labelledby="run-your-first-local-workflow" markdown="1">
 
 ## Run your first local workflow
@@ -96,7 +69,7 @@ endpoint, credentials, and operating boundary change.
 This source-free path runs one Python file containing an activity, workflow,
 worker, and client against the stable Server channel.
 
-### 1. Start Server
+### 1. Start Server { #start-server }
 
 Docker keeps this first run local. Select the stable 2.x Server channel:
 
@@ -122,12 +95,23 @@ docker run -d --name durable-workflow-python-server -p 8080:8080 \
 until curl -sf http://127.0.0.1:8080/api/ready >/dev/null; do sleep 1; done
 ```
 
-### 2. Save `greeter.py`
+<div class="dw-quickstart-grid" markdown="1">
+<div class="dw-quickstart-copy" markdown="1">
+
+<p class="dw-eyebrow">Step 2 of 3</p>
+
+### Save `greeter.py` { #save-greeter }
 
 The named constants make the authoring contract visible: the decorator and
 start call share a workflow type, the workflow and decorator share an activity
 type, and the client and worker share one task queue. Values cross those
 boundaries with the supported Avro authoring codec.
+
+First [start Server](#start-server), then save this complete program and
+[run it in step 3](#run-greeter). Copy preserves the whole file and its indentation.
+
+</div>
+<div class="dw-quickstart-code" markdown="1">
 
 ```python
 import asyncio
@@ -181,7 +165,11 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-### 3. Run it
+</div>
+</div>
+
+
+### 3. Run it { #run-greeter }
 
 ```bash
 python greeter.py
@@ -197,6 +185,33 @@ worker py-worker-… registered on python-workers
 Hello, world!
 ```
 
+</div>
+
+</section>
+
+<section class="dw-section dw-runtime" id="runtime-choices" aria-labelledby="choose-who-runs-the-runtime" markdown="1">
+
+## Choose who runs the runtime
+
+The workflow types, activity types, and task queue stay the same. Only the
+endpoint, credentials, and operating boundary change.
+
+<div class="dw-runtime-grid">
+  <article class="dw-runtime-card dw-runtime-card--primary" data-runtime="self-hosted" data-access="no-account-required">
+    <span class="dw-tag">Available without an account</span>
+    <h3>Self-hosted Server</h3>
+    <p>Run the published Server image locally, then execute the complete Python journey below.</p>
+    <a class="dw-button dw-button--primary" data-docs-destination="self-hosted-quickstart" href="#first-workflow">Start locally <span aria-hidden="true">→</span></a>
+  </article>
+  <article class="dw-runtime-card dw-runtime-card--secondary dw-cloud-promotion" data-runtime="cloud" data-access="limited" data-promotion-source="sdk-python-reference">
+    <span class="dw-cloud-promotion__eyebrow dw-tag">Managed runtime · limited access</span>
+    <h3>Durable Workflow Cloud</h3>
+    <p>Connect the same program to a provisioned namespace with separate client and worker credentials.</p>
+    <p class="dw-runtime-card__actions">
+      <a class="dw-button dw-button--secondary" data-docs-destination="cloud-quickstart" href="#managed-cloud">Connect a namespace</a>
+      <a class="dw-cloud-promotion__action" data-docs-destination="cloud-access" data-promotion-action="early-access" href="https://cloud.durable-workflow.com/early-access#source=sdk-python-reference">Request early access →</a>
+    </p>
+  </article>
 </div>
 
 </section>

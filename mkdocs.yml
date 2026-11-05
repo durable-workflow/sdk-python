@@ -9,7 +9,7 @@ theme:
   name: material
   custom_dir: overrides
   font: false
-  logo: assets/favicon.svg
+  logo: assets/logo.svg
   favicon: assets/favicon.svg
   features:
     - navigation.sections
@@ -18,23 +18,23 @@ theme:
     - content.code.annotate
     - toc.follow
   palette:
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: indigo
+    - scheme: default
+      primary: custom
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      primary: indigo
+    - scheme: slate
+      primary: custom
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
 
 extra_javascript:
+  - javascripts/identity.js
   - path: javascripts/analytics.js
     type: module
 extra_css:
+  - stylesheets/identity-tokens.css
   - stylesheets/layout.css
 
 plugins:
@@ -63,6 +63,7 @@ plugins:
               - "!^to_dict$"
 
 markdown_extensions:
+  - attr_list
   - admonition
   - md_in_html
   - pymdownx.details
@@ -101,6 +102,8 @@ nav:
       - Testing: reference/testing.md
 
 extra:
+  published_sdk_version: "2.14.1"
+  docs_channel: source-preview
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/durable-workflow/sdk-python
