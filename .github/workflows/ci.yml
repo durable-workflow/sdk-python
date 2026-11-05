@@ -210,6 +210,13 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           path: sdk-python
+      # The Server PHP parent contains affected APT. Keep this consumer closed
+      # until #295 selects an accepted fixed parent and first-RUN version guard.
+      - name: Refuse the unqualified Server image build
+        shell: bash
+        run: |
+          echo '::error title=Server producer blocked::Integration image builds require the fixed APT producer in durable-workflow/.github#295.'
+          exit 1
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.12"
