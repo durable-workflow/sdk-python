@@ -106,8 +106,10 @@ bracketed cleanup path; nearby timestamps or RepairRequested alone do not prove
 its cause. Attempt zero supports only no committed claim visible in that
 snapshot; a committed claim without history delivery is a claim/delivery gap.
 
-The original timer had attempt 1 and a cleanup-originated `RepairRequested`.
-Post-shutdown ready state cannot prove it was never claimed. The original mixed
+The original timer had attempt 1 and an observed `RepairRequested`. The source
+shows that cleanup can create such a repair; the missing original
+command/event/attempt/path proof does not establish that cleanup caused this
+one. Post-shutdown ready state cannot prove it was never claimed. The original mixed
 trace places its timeout in registration while waiting for response headers;
 the missing wire trace does not establish why the reply was delayed. Do not
 rewrite these facts as two unclaimed tasks or a single demonstrated cause.

@@ -11,8 +11,9 @@
     },
     {
       "id": "committed-claim-without-history-delivery",
-      "given": ["same original task/run has incremented attempt and matching lease owner", "current registration and poll binding match", "no complete history-bearing response observed"],
-      "conclusion": "claim/delivery gap; hydration or transport boundary still unknown",
+      "given": ["same original task/run has incremented attempt and matching lease owner", "current registration and poll binding match", "complete relevant HTTP coverage including cloned client, body/stream completeness and non-truncated observation buffers for the bracketed interval", "no completed history-bearing response within that observed interval"],
+      "conclusion": "claim/delivery gap within the completely observed interval; hydration or transport cause still unknown",
+      "missing_coverage_conclusion": "incomplete/unknown observational gap only, not a completed phase verdict",
       "must_not_conclude": ["task was never claimed", "handler admitted", "history fetch succeeded"]
     },
     {
