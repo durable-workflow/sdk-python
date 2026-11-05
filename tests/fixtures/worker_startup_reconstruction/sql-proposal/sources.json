@@ -1,0 +1,53 @@
+{
+  "accepted_contract": "https://github.com/durable-workflow/sdk-python/blob/78ff7a1857961f92e4b9ac277b83ca60ca53e3b7/tests/fixtures/worker_startup_reconstruction/proposal.json",
+  "actual_queries_executed": 0,
+  "collector_source_selected": null,
+  "database_dialect": "MySQL8.0, proposed only; no SQL engine/parser execution",
+  "execution_admitted": false,
+  "historical_schema_sources": [
+    {
+      "blob": "e9000f7476a7e5fea8c09be3107b67adc595e140",
+      "bytes": 2593,
+      "commit": "19a7a1cf33604c66f1f838e8b3db22563041f6b2",
+      "path": "src/migrations/2026_04_05_000103_create_workflow_tasks_table.php",
+      "repository": "durable-workflow/workflow",
+      "sha256": "273882a0a89fa55a84fa0a8499ed144d166806e3715805eea319c17c45735b92"
+    },
+    {
+      "blob": "bddd04060a5671d07652500424202fdd054838f4",
+      "bytes": 3026,
+      "commit": "19a7a1cf33604c66f1f838e8b3db22563041f6b2",
+      "path": "src/migrations/2026_04_05_000101_create_workflow_runs_table.php",
+      "repository": "durable-workflow/workflow",
+      "sha256": "a747f47bcf164adfb4853e81347ed08aecbc790e2a696c9bd4142cac968aec96"
+    },
+    {
+      "blob": "3716ab6ac6bde6e8a2f58eb8ced707e1afcb4f5b",
+      "bytes": 3754,
+      "commit": "8709feb28f1b85853de1d9ad15152d961860926f",
+      "path": "app/Support/NamespaceWorkflowScope.php",
+      "repository": "durable-workflow/server",
+      "sha256": "3a093652cc41ed4ecb4d8454c38ef1abb1086159698e77a685a55e89cc0f6b84"
+    }
+  ],
+  "issue": "https://github.com/durable-workflow/sdk-python/issues/123",
+  "parameter_driver_selected": null,
+  "private_binding_comparator_selected": null,
+  "registration_comparator_selected": null,
+  "server_comparator_review": "https://github.com/durable-workflow/sdk-python/issues/123#issuecomment-6646942397",
+  "source_owner": "sdk-python",
+  "source_review_owner": "server",
+  "sql_files": [
+    {
+      "bytes": 585,
+      "file": "original-run.sql",
+      "sha256": "46f291d0cd698f693845aa999139342fb2b0e314b7eaf5aa1cd68231fe40382f"
+    },
+    {
+      "bytes": 1047,
+      "file": "original-task.sql",
+      "sha256": "41284331ea4ad06904cbe4312afc9aec5eff789e560e7910c50fe48397202725"
+    }
+  ],
+  "status": "unexecuted-source-proposal-not-a-complete-comparator"
+}
