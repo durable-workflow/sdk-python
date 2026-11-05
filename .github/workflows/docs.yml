@@ -161,8 +161,6 @@ jobs:
           Path(".docs-published-wheel.txt").write_text(requirement)
           PY
             pip install --require-hashes --no-deps --only-binary=:all: -r .docs-published-wheel.txt
-          else
-            pip install --no-deps --only-binary=:all: -e .
           fi
       - name: Require the accepted central APT floor before browser system dependencies
         uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
