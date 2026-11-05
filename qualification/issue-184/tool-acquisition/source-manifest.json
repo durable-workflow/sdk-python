@@ -8,12 +8,12 @@
     {
       "bytes": 1898,
       "file": "184-acquire-tools-v5-adapter-controls-result.json",
-      "sha256": "bd63b42f53a018ca93ce9c115dd667c074a7cbace2a7213cf1fe6bbb6d465150"
+      "sha256": "a33efea734891ebdf0cf196f082b6d0d153b25e7c0bbc7206a3b0ca2d9d3251e"
     },
     {
       "bytes": 10492,
       "file": "184-acquire-tools-v5-adapter-controls.py",
-      "sha256": "0f4f521580b491016251f0fb9904ee86a33a5274d2acd64e6d1b2a10b760a8af"
+      "sha256": "d6f18f1ad8cb1a561a96a6528925ed55f8e551eb27e5ca8ef6d64b92ee1ae017"
     },
     {
       "bytes": 2875,
@@ -46,6 +46,11 @@
       "sha256": "79ddc82b0095872885aceb943cbf9daa1eb3a05048bc08f9ee9cd093511de187"
     },
     {
+      "bytes": 20980,
+      "file": "184-acquisition-custody-guardian-v4-proposal.py",
+      "sha256": "d52bb389127cb81b5b0303b3a593ee1af74f8c4835793d67f08d0bf182e2101c"
+    },
+    {
       "bytes": 4928,
       "file": "184-acquisition-guardian-v3-controls-result.json",
       "sha256": "30c7d4815ea68410ac839351bab09f10ff9591e9395151d26ce1a917d293b65d"
@@ -54,6 +59,16 @@
       "bytes": 9789,
       "file": "184-acquisition-guardian-v3-controls.py",
       "sha256": "9c8aca4ba5092f1d981556207b4eb435bbeed2bb0a32ba763af4c4cb7a510048"
+    },
+    {
+      "bytes": 5884,
+      "file": "184-acquisition-guardian-v4-controls-result.json",
+      "sha256": "2c7ee85f4b7b814cab4a9c78c1d150723d86f9cb8b78185644031cd775dc7a73"
+    },
+    {
+      "bytes": 14803,
+      "file": "184-acquisition-guardian-v4-controls.py",
+      "sha256": "cc7ed2f6cacb830a5a1bc2f10bfa01aa3eff196a03e776591aacdebd58d72cf0"
     },
     {
       "bytes": 1010,
@@ -78,17 +93,17 @@
     {
       "bytes": 3466,
       "file": "184-acquisition-session-controls-result.json",
-      "sha256": "df2cfe26d296769d938d446a202f3dcfab780c30d3b9894dd348fee943e9de81"
+      "sha256": "211c0e96505d19a6f24a4f2d8c32bcbc1623018f10185413402edabb7ef3cd93"
     },
     {
       "bytes": 25506,
       "file": "184-acquisition-session-controls.py",
-      "sha256": "93a30d336c2a702b5bd06ea7e5c3226eb2143a8e995efc51858b80f4e301eac2"
+      "sha256": "f389d59341e68d709c566530a65ec849f9da99fb70b2ce5d15df7548479622bc"
     },
     {
-      "bytes": 41271,
+      "bytes": 41327,
       "file": "184-acquisition-session-proposal.py",
-      "sha256": "3ef6df413565d36f63b2e4722c7ee0bd9eb5c62a29a1d79b450acfa0b5ae8d3d"
+      "sha256": "4ed6698d3c6f93ea5040312c7c17f067aa8b1642376e00bb07f9b4302d51266f"
     },
     {
       "bytes": 1826,
@@ -111,14 +126,14 @@
       "sha256": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c"
     },
     {
-      "bytes": 7865,
+      "bytes": 8202,
       "file": "README.md",
-      "sha256": "75c1b6b3ffa1289d10567ce0545c0e9d55e2f7ff7e0c811342cc5a43fb1ddf27"
+      "sha256": "1acf83f7aa9daa9c3c1705b72b9caa216d3b6e54da26bc6ce8a5b11e78f8eae9"
     },
     {
       "bytes": 1209,
       "file": "authority-template.json",
-      "sha256": "d42c600f69d79e745854d76ef8c7c89de2bdb6b737178deb46810c66c69cd6fb"
+      "sha256": "74910b72df111bb7bc327486d08b82b5938cee027e43a0931eae0fca1022da82"
     },
     {
       "bytes": 1170,
@@ -186,18 +201,21 @@
       "sha256": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c"
     },
     {
-      "bytes": 5857,
+      "bytes": 6397,
       "file": "review-packet.json",
-      "sha256": "3f3ac204bb359d86512965704f1fdf0077acb994b40edf1789ecafc31f10ceaa"
+      "sha256": "2d124b2c38175808f71034830971ca2596a28ca8a3d3e93eaa10c4e5536612d9"
     }
   ],
   "guardian_later_findings": {
     "issues": [
       "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6660476483",
-      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662253657"
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662253657",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663237183"
     ],
     "predecessor_v2_sha256": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70",
-    "proposed_successor": "guardian-v3; whole-packet source review pending"
+    "predecessor_v3_sha256": "79ddc82b0095872885aceb943cbf9daa1eb3a05048bc08f9ee9cd093511de187",
+    "proposed_successor": "guardian-v4; tracked descendants must all be unlinked before root-absence completion; exact successor review pending",
+    "superseded_whole_source_PASS": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662795537"
   },
   "manifest_excludes_self": true,
   "new_general_decision": null,
@@ -226,17 +244,17 @@
     "184-acquire-tools-v5-adapter-controls-result.json": {
       "cases": 16,
       "passed": 16,
-      "sha256": "bd63b42f53a018ca93ce9c115dd667c074a7cbace2a7213cf1fe6bbb6d465150"
+      "sha256": "a33efea734891ebdf0cf196f082b6d0d153b25e7c0bbc7206a3b0ca2d9d3251e"
     },
     "184-acquire-tools-v5-controls-result.json": {
       "cases": 86,
       "passed": 86,
       "sha256": "2a84c6612fcd2fd57235f4844face425420dafb3217be7d6e82ef57cc6fab1cd"
     },
-    "184-acquisition-guardian-v3-controls-result.json": {
-      "cases": 53,
-      "passed": 53,
-      "sha256": "30c7d4815ea68410ac839351bab09f10ff9591e9395151d26ce1a917d293b65d"
+    "184-acquisition-guardian-v4-controls-result.json": {
+      "cases": 62,
+      "passed": 62,
+      "sha256": "2c7ee85f4b7b814cab4a9c78c1d150723d86f9cb8b78185644031cd775dc7a73"
     },
     "184-acquisition-launcher-bootstrap-controls-result.json": {
       "cases": 27,
@@ -246,7 +264,7 @@
     "184-acquisition-session-controls-result.json": {
       "cases": 31,
       "passed": 31,
-      "sha256": "df2cfe26d296769d938d446a202f3dcfab780c30d3b9894dd348fee943e9de81"
+      "sha256": "211c0e96505d19a6f24a4f2d8c32bcbc1623018f10185413402edabb7ef3cd93"
     },
     "184-acquisition-terminal-controls-result.json": {
       "cases": 16,
@@ -254,5 +272,5 @@
       "sha256": "32a30a3767d760befae96f77f906431f234dd2733c28b17c3deadb71921f3be0"
     }
   },
-  "stage": "UNEXECUTED successor source/input review packet; proposed corrections for6660476483/6662253657; no operational admission"
+  "stage": "UNEXECUTED guardian-v4 successor for6663237183; prior49dd source PASS superseded; exact review pending; no operational admission"
 }

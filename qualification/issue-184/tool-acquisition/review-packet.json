@@ -7,13 +7,21 @@
   "connected_retry_admission": null,
   "cpu_affinity": null,
   "downloaded_wheel_imports_or_installs": 0,
+  "frozen_predecessor_control_result": {
+    "cases": 53,
+    "passed": 53,
+    "sha256": "30c7d4815ea68410ac839351bab09f10ff9591e9395151d26ce1a917d293b65d"
+  },
   "guardian_later_findings": {
     "issues": [
       "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6660476483",
-      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662253657"
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662253657",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663237183"
     ],
     "predecessor_v2_sha256": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70",
-    "proposed_successor": "guardian-v3; whole-packet source review pending"
+    "predecessor_v3_sha256": "79ddc82b0095872885aceb943cbf9daa1eb3a05048bc08f9ee9cd093511de187",
+    "proposed_successor": "guardian-v4; tracked descendants must all be unlinked before root-absence completion; exact successor review pending",
+    "superseded_whole_source_PASS": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662795537"
   },
   "host": "lab4, subject to fresh capacity/input/cache/name checks",
   "inline_launcher_bootstrap_sha256": "0cd9d5309b1dd3314e5a7f288f7462c784e2bcf4cea9618eeff4aa401f516aaf",
@@ -60,7 +68,7 @@
   "runtime_source_inputs": {
     "bootstrap": "6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed",
     "ca": "2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b",
-    "guardian": "79ddc82b0095872885aceb943cbf9daa1eb3a05048bc08f9ee9cd093511de187",
+    "guardian": "d52bb389127cb81b5b0303b3a593ee1af74f8c4835793d67f08d0bf182e2101c",
     "interpreter": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41",
     "library": "982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87",
     "owner": "234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb",
@@ -72,22 +80,22 @@
   "selected_archive_bytes": 2901292,
   "selected_archives_acquired": 0,
   "selected_sdk_source": "14adc40b00b68cc8a3e1ae5647a885a42f273650",
-  "session_sha256": "3ef6df413565d36f63b2e4722c7ee0bd9eb5c62a29a1d79b450acfa0b5ae8d3d",
+  "session_sha256": "4ed6698d3c6f93ea5040312c7c17f067aa8b1642376e00bb07f9b4302d51266f",
   "source_control_results": {
     "184-acquire-tools-v5-adapter-controls-result.json": {
       "cases": 16,
       "passed": 16,
-      "sha256": "bd63b42f53a018ca93ce9c115dd667c074a7cbace2a7213cf1fe6bbb6d465150"
+      "sha256": "a33efea734891ebdf0cf196f082b6d0d153b25e7c0bbc7206a3b0ca2d9d3251e"
     },
     "184-acquire-tools-v5-controls-result.json": {
       "cases": 86,
       "passed": 86,
       "sha256": "2a84c6612fcd2fd57235f4844face425420dafb3217be7d6e82ef57cc6fab1cd"
     },
-    "184-acquisition-guardian-v3-controls-result.json": {
-      "cases": 53,
-      "passed": 53,
-      "sha256": "30c7d4815ea68410ac839351bab09f10ff9591e9395151d26ce1a917d293b65d"
+    "184-acquisition-guardian-v4-controls-result.json": {
+      "cases": 62,
+      "passed": 62,
+      "sha256": "2c7ee85f4b7b814cab4a9c78c1d150723d86f9cb8b78185644031cd775dc7a73"
     },
     "184-acquisition-launcher-bootstrap-controls-result.json": {
       "cases": 27,
@@ -97,7 +105,7 @@
     "184-acquisition-session-controls-result.json": {
       "cases": 31,
       "passed": 31,
-      "sha256": "df2cfe26d296769d938d446a202f3dcfab780c30d3b9894dd348fee943e9de81"
+      "sha256": "211c0e96505d19a6f24a4f2d8c32bcbc1623018f10185413402edabb7ef3cd93"
     },
     "184-acquisition-terminal-controls-result.json": {
       "cases": 16,

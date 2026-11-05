@@ -29,10 +29,14 @@ their original identities. Whole-source PASS does not qualify or replace them.
 - `184-acquisition-terminal-proposal.py`: independently verifies successful owner
   exit, all six raw/ZIP/METADATA/WHEEL/dependency tuples, exact request/event
   linkage, clean trust, sealed inode/byte inventory and stable second readback.
-- Guardian-v3 closes the two later findings6660476483/6662253657: full root-tree
-  cleanup and partial-allocation custody, plus unambiguous authority schemas.
-  Frozen guardian-v2 remains byte-identical as a predecessor countercontrol. Its
-  earlier owner-exit-only PASS does not clear these later findings or this packet.
+- Guardian-v4 proposes the additional completion correction6663237183. Missing
+  root completion requires every tracked directory/archive descriptor to have
+  the exact identity/type/owner and zero links. A moved child or a directory
+  created before its identity can be read remains unproved custody.
+- Frozen guardian-v2/v3 remain byte-identical predecessor countercontrols.
+  V3 closed findings6660476483/6662253657 (partial allocation and authority
+  parsing), but its later moved-child HOLD supersedes whole-packet PASS6662795537.
+  Exact successor review is pending; no earlier PASS carries to this packet.
 
 Normal preservation requires owner exit0, independent full input readback,
 guardian exit and a second outer inventory comparison. Result is collected for
@@ -89,7 +93,7 @@ admit this residual policy; it is not permission supplied by these sources.
 | Owner |86| parser, transport, trust, custody and no-child boundary |
 | Preallocated adapter |16| readiness, descriptors, inode collisions and partial writes |
 | Independent readback |16| synthetic six-tool tuples, metadata, ledger and inventory |
-| Guardian successor |53| actual v2 counterexamples, authority grammar/types, whole-tree removal, allocation failure and unknown-member retention |
+| Guardian successor |62| retained v2 controls, actual v3 moved-child/partial-identity false-completion counterexamples, fully-unlinked positive, authority grammar/types and whole-tree custody |
 | Role protocol |31| real local roles, allocation rollback/custody, EOF/deadline, guardian loss, survivors, setup refusal, unknown owner, late nonpass and integrated fake HTTP |
 | Launcher bootstrap |27| exact reads, authority schemas, startup refusals, resource affinity and custody wrapper |
 
