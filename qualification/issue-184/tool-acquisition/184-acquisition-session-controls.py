@@ -31,7 +31,7 @@ def load(name,path):
 
 
 s=load('trusted_session_protocol_control',BASE/'184-acquisition-session-proposal.py')
-g=load('trusted_guard_protocol_control',BASE/'184-acquisition-custody-guardian-v4-proposal.py')
+g=load('trusted_guard_protocol_control',BASE/'184-acquisition-custody-guardian-v5-proposal.py')
 t=load('trusted_terminal_protocol_control',BASE/'184-acquisition-terminal-proposal.py')
 o=load('trusted_owner_protocol_control',BASE/'184-acquire-tools-v5.py')
 selection=json.loads((BASE/'184-immutable-build-tool-input-proposal.json').read_text())

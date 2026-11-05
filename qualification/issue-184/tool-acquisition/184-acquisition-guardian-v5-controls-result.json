@@ -1,0 +1,277 @@
+{
+  "cases": 66,
+  "failed": 0,
+  "new_general_decision": null,
+  "passed": 66,
+  "predecessor_sha256": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70",
+  "real_network_requests": 0,
+  "results": [
+    {
+      "id": "v4-false-complete-opened-archive-before-identity",
+      "outcome": "pass"
+    },
+    {
+      "id": "v5-retains-opened-archive-before-identity",
+      "outcome": "pass"
+    },
+    {
+      "id": "v5-fully-unlinked-partial-archive-root-absent-positive",
+      "outcome": "pass"
+    },
+    {
+      "id": "v5-fully-unlinked-partial-archive-root-present-positive",
+      "outcome": "pass"
+    },
+    {
+      "id": "predecessor-false-complete-allocation-before-child-identity",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-retains-allocation-before-child-identity",
+      "outcome": "pass"
+    },
+    {
+      "id": "predecessor-false-complete-removed-root-linked-wheelhouse",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-retains-removed-root-linked-wheelhouse",
+      "outcome": "pass"
+    },
+    {
+      "id": "predecessor-false-complete-removed-root-linked-archive",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-retains-removed-root-linked-archive",
+      "outcome": "pass"
+    },
+    {
+      "id": "predecessor-false-complete-removed-root-linked-extra-directory",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-retains-removed-root-linked-extra-directory",
+      "outcome": "pass"
+    },
+    {
+      "id": "fully-unlinked-root-children-and-archives-completes",
+      "outcome": "pass"
+    },
+    {
+      "id": "exact-schema-positive",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-duplicate-identical",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-duplicate-conflicting",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-duplicate-escaped",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-extra-top-field",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-missing-survivor_policy",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-missing-pool_parent",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-missing-launcher_sha256",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-missing-cpu_affinity",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-missing-retention_deadline_utc",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-nested-duplicate-inputs",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-nested-schema-inputs-extra",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-nested-schema-inputs-missing",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-nested-duplicate-environment",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-nested-schema-environment-extra",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-nested-schema-environment-missing",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-float-total_seconds",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-total_seconds-bool",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-total_seconds-string",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-total_seconds-nan",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-total_seconds-positive-infinity",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-total_seconds-negative-infinity",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-float-io_seconds",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-io_seconds-bool",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-io_seconds-string",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-io_seconds-nan",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-io_seconds-positive-infinity",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-io_seconds-negative-infinity",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-accept-new-refuse-float-retries",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-retries-bool",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-retries-string",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-retries-nan",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-retries-positive-infinity",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-retries-negative-infinity",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-cpu-schema-[]",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-cpu-schema-[True]",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-cpu-schema-[0, 0]",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-cpu-schema-[0.0]",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-cpu-schema-['0']",
+      "outcome": "pass"
+    },
+    {
+      "id": "refuse-cpu-schema-[0, 1, 2]",
+      "outcome": "pass"
+    },
+    {
+      "id": "nonfinite-at-unexpected-depth-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "invalid-utf8-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "sha-check-preserved",
+      "outcome": "pass"
+    },
+    {
+      "id": "predecessor-tree-normal",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-tree-normal",
+      "outcome": "pass"
+    },
+    {
+      "id": "predecessor-tree-normal-unknown",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-tree-normal-unknown",
+      "outcome": "pass"
+    },
+    {
+      "id": "predecessor-tree-after-root",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-tree-after-root",
+      "outcome": "pass"
+    },
+    {
+      "id": "predecessor-tree-after-wheelhouse",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-tree-after-wheelhouse",
+      "outcome": "pass"
+    },
+    {
+      "id": "predecessor-tree-after-root-unknown",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-tree-after-root-unknown",
+      "outcome": "pass"
+    }
+  ],
+  "scope": "guardian authority/root-tree predecessor countercontrols only; no admitted data API",
+  "selected_archives_acquired": 0,
+  "source_sha256": "4c92d889d89dbef2502ef5e9bc923d00c0314821b42aa77d4c0ee92080aba41e"
+}
