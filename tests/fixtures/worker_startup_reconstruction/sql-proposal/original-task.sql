@@ -1,7 +1,9 @@
 -- Unexecuted MySQL 8.0 source proposal; fixture namespace and original IDs only.
--- Parameter binding, query deadline and row validation are not implemented here.
+-- Parameter binding, query deadline and actual row collection remain unimplemented.
 SELECT
     UTC_TIMESTAMP(6) AS database_time_utc,
+    @@session.time_zone AS session_time_zone,
+    @@system_time_zone AS system_time_zone,
     t.id AS original_task_id,
     t.workflow_run_id AS original_run_id,
     t.namespace,
