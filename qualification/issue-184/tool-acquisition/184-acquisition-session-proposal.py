@@ -31,7 +31,7 @@ INTERPRETER='/usr/bin/python3.14'
 INTERPRETER_SHA='52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41'
 LIBRARY='/usr/lib/x86_64-linux-gnu/libpython3.14.so.1.0'
 LIBRARY_SHA='982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87'
-PINNED={'owner': '234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb', 'bootstrap': '6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed', 'guardian': 'cbb1672855a0dec48c7d952f02be49ab3c0935d9bd7b1cf467638d73fc543e4c', 'terminal': '7e75b0929e612ec8605d095956fd446c2ad779a8f8b7e8403563f2764b1e70bf', 'selection': 'e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c', 'interpreter': '52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41', 'library': '982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87', 'ca': '2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b'}
+PINNED={'owner': '234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb', 'bootstrap': '6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed', 'guardian': '032a2da74a26ea8ed036428d5470420dd49f099b7fe61cfcf4d7ab216d720066', 'terminal': '7e75b0929e612ec8605d095956fd446c2ad779a8f8b7e8403563f2764b1e70bf', 'selection': 'e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c', 'interpreter': '52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41', 'library': '982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87', 'ca': '2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b'}
 FRAME_CAP=65536
 POOL_CAP=4*1024**2
 
@@ -131,11 +131,16 @@ def prepare_tree(guard,parent,leaf,filenames):
             custody.allocated_directory_names.add(name)
             st=os.stat(name,dir_fd=custody.root_fd,follow_symlinks=False)
             custody.dir_ids[name]=[st.st_dev,st.st_ino]
-            fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=custody.root_fd)
-            custody.directory_fds[name]=fd
-            custody.stack.callback(custody.close_owned_fd,fd)
-            st=os.fstat(fd)
-            require([st.st_dev,st.st_ino]==custody.dir_ids[name],'DIRECTORY_ALLOCATION_COLLISION')
+            fd=None;adopted=False
+            try:
+                fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=custody.root_fd)
+                custody.directory_fds[name]=fd
+                adopted=True
+                custody.stack.callback(custody.close_owned_fd,fd)
+                st=os.fstat(fd)
+                require([st.st_dev,st.st_ino]==custody.dir_ids[name],'DIRECTORY_ALLOCATION_COLLISION')
+            finally:
+                if fd is not None and not adopted:custody.close_owned_fd(fd)
         return custody
     except BaseException as error:
         # No owner exists. Roll back only identity-verified, empty extra dirs.
@@ -345,6 +350,34 @@ def retained_inventory(custody,terminal):
     return {name:{key:value for key,value in row.items() if key!='raw'} for name,row in current.items()}
 
 
+def remove_unadopted_tree(custody):
+    """No owner exists: remove exact empty auxiliary dirs and the allocated tree."""
+    custody.scope();os.fchmod(custody.root_fd,0o700)
+    for name in ('events','metadata'):
+        if name not in getattr(custody,'dir_ids',{}):continue
+        fd=custody.directory_fds.get(name)
+        require(type(fd) is int,'UNADOPTED_DIRECTORY_HANDLE_MISSING')
+        descriptor=os.fstat(fd);named=os.stat(name,dir_fd=custody.root_fd,follow_symlinks=False)
+        require(stat.S_ISDIR(named.st_mode) and named.st_uid==os.geteuid()
+                and [named.st_dev,named.st_ino]==custody.dir_ids[name]
+                and (named.st_dev,named.st_ino)==(descriptor.st_dev,descriptor.st_ino)
+                and not os.listdir(fd),'UNADOPTED_DIRECTORY_NOT_EMPTY_OR_CHANGED')
+        os.rmdir(name,dir_fd=custody.root_fd)
+    return custody.cleanup()
+
+
+def append_readonly_archive(custody,name,readonly):
+    fd=None;adopted=False
+    try:
+        fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=custody.wheelhouse_fd)
+        readonly.append(fd);adopted=True
+        st=os.fstat(fd)
+        require((st.st_dev,st.st_ino)==custody.archive_nodes[name]['identity'],
+                'OUTER_ARCHIVE_DESCRIPTOR_CHANGED')
+    finally:
+        if fd is not None and not adopted:os.close(fd)
+
+
 def verify_retention_deadline(value,wall_now=None):
     now=time.time() if wall_now is None else wall_now
     require(type(value) is str,'EXACT_RETENTION_DEADLINE_REQUIRED')
@@ -360,7 +393,7 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
     selection=json.loads(selection_raw,object_pairs_hook=pairs)
     filenames=[tool['filename'] for tool in selection['tools']]
     leaf='sdk-python-184-tools-guardian-14adc40b-'+authority['decision'].rsplit('-',1)[-1]
-    custody=None;role=None;stop=None;owner_result=None;allocation_error=None
+    custody=None;role=None;stop=None;owner_result=None;allocation_error=None;outer_adopted=False
     try:
         custody=prepare_tree(guard,POOL_PARENT,leaf,filenames)
         custody.metadata_names={tool['name']+'.json' for tool in selection['tools']}
@@ -372,11 +405,7 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
         readonly=[]
         try:
             for name in filenames:
-                fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=custody.wheelhouse_fd)
-                readonly.append(fd)
-                st=os.fstat(fd)
-                require((st.st_dev,st.st_ino)==custody.archive_nodes[name]['identity'],
-                        'OUTER_ARCHIVE_DESCRIPTOR_CHANGED')
+                append_readonly_archive(custody,name,readonly)
             send_frame(channel,{'type':'REGISTERED','proof':proof,'filenames':filenames,
                                'metadata_names':sorted(custody.metadata_names)},fds[:5]+readonly)
         finally:
@@ -384,6 +413,7 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
         channel.settimeout(max(0.001,min(10,active-time.monotonic())))
         message,received=recv_frame(channel)
         require(not received and message=={'type':'ARM'},'GUARDIAN_ARM_MISMATCH')
+        outer_adopted=True
         role=spawn_owner(bootstrap,authority['decision'],proof,custody,ceiling)
         send_frame(channel,{'type':'OWNER','pid':role['pid']},[role['pidfd']])
         message,received=recv_frame(channel)
@@ -433,7 +463,18 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
             code=str(error) if isinstance(error,(Refusal,guard.Refusal,terminal.Refusal)) else ''
         reason=code if re.fullmatch(r'[A-Z0-9_]{1,128}',code) else 'GUARDIAN_'+type(error).__name__.upper()
         if role is not None and stop is None:stop=stop_owner(role,ceiling)
-        if allocation_error is not None:
+        if not outer_adopted:
+            if allocation_error is not None:cleanup=allocation_error.cleanup
+            else:
+                try:cleanup=remove_unadopted_tree(custody) if custody is not None else {'complete':False}
+                except BaseException as cleanup_error:
+                    cleanup={'complete':False,'refusal_code':type(cleanup_error).__name__}
+            complete=bool(cleanup['complete'])
+            result={'status':'PRE_ADOPTION_REMOVED' if complete else 'PRE_ADOPTION_CUSTODY_REQUIRED',
+                    'stop_reason':reason,'allocation_cleanup':cleanup,'owner_was_allocated':False,
+                    'outer_adoption_acknowledged':False,'terminal_cleanup_complete':complete and time.monotonic()<ceiling,
+                    'outer_owner_custody_required':not complete,'acquisition_accepted':False}
+        elif allocation_error is not None:
             result={'status':'ALLOCATION_REFUSED','stop_reason':reason,
                     'allocation_cleanup':allocation_error.cleanup,'owner_was_allocated':False,
                     'terminal_cleanup_complete':bool(allocation_error.cleanup['complete']),
@@ -453,16 +494,30 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
                                                else 'reserved-child-waitpid') if stop['owner_exited'] else 'unconfirmed'
             if stop.get('stop_refusal_code'):result['stop_refusal_code']=stop['stop_refusal_code']
         inventory=None
-        if allocation_error is None and custody is not None and (role is None or stop['owner_exited']):
+        if outer_adopted and allocation_error is None and custody is not None and (role is None or stop['owner_exited']):
             try:
                 record_terminal(custody,result,authority_raw);result['retained_terminal_record_written']=True
                 if result.get('retained_forensic_custody_ready'):
                     inventory=retained_inventory(custody,terminal)
             except BaseException:
                 result['retained_terminal_record_written']=False;result['retained_forensic_custody_ready']=False
-        try:send_frame(channel,{'type':'TERMINAL','result':result,'inventory':inventory})
+        try:
+            send_frame(channel,{'type':'TERMINAL','result':result,'inventory':inventory})
+            if result.get('status')=='PRE_ADOPTION_REMOVED':
+                # Keep the terminal packet available while the outer resolves a
+                # queued REGISTERED frame. Drain its ARM/ABORT before closing;
+                # no owner is spawned on this already-refused path.
+                channel.settimeout(max(0.001,min(1,ceiling-time.monotonic())))
+                for _ in range(4):
+                    acknowledgement,received=recv_frame(channel)
+                    try:
+                        require(not received,'UNEXPECTED_REMOVAL_ACK_DESCRIPTORS')
+                        if acknowledgement=={'type':'REMOVAL_ACK'}:break
+                        require(acknowledgement in ({'type':'ARM'},{'type':'ABORT'}),'REMOVAL_ACK_MISMATCH')
+                    finally:
+                        for fd in received:os.close(fd)
         except BaseException:pass
-        if allocation_error is not None and not allocation_error.cleanup['complete']:
+        if not outer_adopted and not result['allocation_cleanup']['complete']:
             # Exact partial handles remain with this guardian. Unknown names are
             # never removed; the outer keeps this guardian handle and escalates.
             while True:time.sleep(1)
@@ -498,7 +553,7 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
 
 class Session:
     """Outer owner retains handles until process exit AND scoped terminal proof."""
-    def __init__(self,channel,pid,pidfd,guard,terminal,ceiling,expected_pool,expected_names,expected_metadata,authority_raw=None):
+    def __init__(self,channel,pid,pidfd,guard,terminal,ceiling,expected_pool,expected_names,expected_metadata,authority_raw=None,start_guardian=False):
         self.channel,self.pid,self.pidfd=channel,pid,pidfd
         self.guard,self.terminal,self.ceiling=guard,terminal,ceiling
         self.expected_pool,self.expected_names=str(expected_pool),list(expected_names)
@@ -509,8 +564,13 @@ class Session:
         self.custody=None;self.owner_pidfd=None;self.owner_pid=None
         self.stack=ExitStack();self.stack.callback(channel.close);self.stack.callback(os.close,pidfd)
         self.finished=False;self.guardian_reaped=False
+        self.needs_guardian_start=start_guardian
+        self.arm_sent=False;self.pre_adoption_result=None
 
     def receive(self):
+        if self.needs_guardian_start:
+            self.needs_guardian_start=False
+            send_frame(self.channel,{'type':'START'})
         self.channel.settimeout(max(0.001,self.ceiling-time.monotonic()))
         message,fds=recv_frame(self.channel)
         adopted=False
@@ -533,11 +593,13 @@ class Session:
                 lease.directory_fds=dict(zip(['.','wheelhouse','metadata','events'],fds[1:5]))
                 lease.archive_nodes={name:{'fd':fd,'identity':(os.fstat(fd).st_dev,os.fstat(fd).st_ino)} for name,fd in zip(names,fds[5:])}
                 lease.metadata_names=self.expected_metadata
+                lease.closed_owned_fds=set();lease.allocated_directory_names={'wheelhouse','metadata','events'}
+                lease.pending_archive_names=set()
                 lease.scope();progress_bound(lease)
                 for name in names:require(lease.node(name).st_size==0,'ARCHIVE_NOT_EMPTY_AT_HANDOFF')
                 self.custody=lease
                 for fd in fds:self.stack.callback(os.close,fd)
-                adopted=True;send_frame(self.channel,{'type':'ARM'})
+                adopted=True;self.arm_sent=True;send_frame(self.channel,{'type':'ARM'})
             elif message.get('type')=='OWNER':
                 require(self.custody is not None and self.owner_pidfd is None and len(fds)==1,'OWNER_DESCRIPTOR_HANDOFF_CHANGED')
                 require(os.readlink(f'/proc/self/fd/{fds[0]}')=='anon_inode:[pidfd]','EXACT_OWNER_PIDFD_REQUIRED')
@@ -550,7 +612,12 @@ class Session:
             elif message.get('type') in {'TERMINAL','DEFERRED_CLEANUP'}:
                 require(not fds,'UNEXPECTED_TERMINAL_DESCRIPTORS')
                 result=message['result']
-                if result.get('status')=='SURVIVOR_CUSTODY_REQUIRED':return message
+                if result.get('status') in {'SURVIVOR_CUSTODY_REQUIRED','PRE_ADOPTION_CUSTODY_REQUIRED'}:return message
+                if result.get('status')=='PRE_ADOPTION_REMOVED':
+                    self.verify_pre_adoption_removal(result)
+                    self.pre_adoption_result=result
+                    try:send_frame(self.channel,{'type':'REMOVAL_ACK'})
+                    except OSError:pass
                 require(select.select([self.pidfd],[],[],max(0,self.ceiling-time.monotonic()))[0],
                         'GUARDIAN_EXIT_UNCONFIRMED')
                 _,status=os.waitpid(self.pid,0)
@@ -565,6 +632,8 @@ class Session:
                     require(result.get('owner_was_allocated') is False,'ALLOCATION_OWNER_STATE_CHANGED')
                     if result['allocation_cleanup'].get('exclusive_root_created') is not False:
                         require(not os.path.lexists(self.expected_pool),'ALLOCATION_ROOT_RETAINED')
+                elif result.get('status')=='PRE_ADOPTION_REMOVED':
+                    self.verify_pre_adoption_removal(result)
                 elif result.get('retained_forensic_custody_ready'):
                     require(result.get('owner_process_exited') is True or result.get('owner_was_allocated') is False,
                             'RETENTION_OWNER_EXIT_UNPROVEN')
@@ -608,11 +677,55 @@ class Session:
             record['terminal_cleanup_complete']=False;record['acquisition_accepted']=False
         return result
 
+    def verify_pre_adoption_removal(self,result):
+        require(self.owner_pidfd is None and result.get('owner_was_allocated') is False
+                and result.get('outer_adoption_acknowledged') is False
+                and result.get('allocation_cleanup',{}).get('complete') is True
+                and result.get('terminal_cleanup_complete') is True
+                and time.monotonic()<self.ceiling and not os.path.lexists(self.expected_pool),
+                'PRE_ADOPTION_REMOVAL_UNPROVEN')
+        if self.custody is not None:
+            require(self.custody.unlink_state()['all_unlinked'],'PRE_ADOPTION_DESCENDANTS_RETAINED')
+
+    def queued_pre_adoption_removal(self):
+        # REGISTERED may have been queued just before the sender failed. Drain
+        # only the pre-ARM socket queue and acknowledge verified no-owner removal.
+        # Exact guardian reap is still required before terminal completion.
+        candidate=self.pre_adoption_result
+        # Once ARM may have reached the guardian, an unreported owner is unknown.
+        # Do not consume/discard a possible OWNER handoff on this drain path.
+        if self.arm_sent:
+            if candidate is not None:self.verify_pre_adoption_removal(candidate)
+            return candidate
+        for _ in range(4):
+            available,_,_=select.select([self.channel,self.pidfd],[],[],max(0,self.ceiling-time.monotonic()))
+            if self.channel not in available:break
+            try:message,fds=recv_frame(self.channel)
+            except (Refusal,ValueError,OSError):break
+            try:
+                if message.get('type')=='TERMINAL' and not fds:
+                    value=message.get('result',{})
+                    if value.get('status')=='PRE_ADOPTION_REMOVED':
+                        self.verify_pre_adoption_removal(value)
+                        candidate=value;self.pre_adoption_result=value
+                        try:send_frame(self.channel,{'type':'REMOVAL_ACK'})
+                        except OSError:pass
+                        break
+            finally:
+                for fd in fds:os.close(fd)
+        if candidate is not None:
+            self.verify_pre_adoption_removal(candidate)
+        return candidate
+
     def abort(self,reason):
         """Keep custody if either writer/guardian exit or exact cleanup is unproved."""
         stop_refusal=None
         try:send_frame(self.channel,{'type':'ABORT'})
         except BaseException:pass
+        removed=None
+        if self.owner_pidfd is None:
+            try:removed=self.queued_pre_adoption_removal()
+            except BaseException:pass
         guardian_gone=bool(select.select([self.pidfd],[],[],max(0,self.ceiling-time.monotonic()))[0])
         owner_gone=self.owner_pidfd is not None and bool(select.select([self.owner_pidfd],[],[],0)[0])
         if guardian_gone and not owner_gone and self.owner_pidfd is not None:
@@ -622,6 +735,12 @@ class Session:
             owner_gone=bool(select.select([self.owner_pidfd],[],[],max(0,min(5,self.ceiling-time.monotonic())))[0])
         if guardian_gone and not self.guardian_reaped:
             os.waitpid(self.pid,0);self.guardian_reaped=True
+        if guardian_gone and self.owner_pidfd is None and removed is not None:
+            try:self.verify_pre_adoption_removal(removed)
+            except BaseException:pass
+            else:
+                self.finished=True;self.stack.close()
+                return {'type':'TERMINAL','result':removed}
         if guardian_gone and owner_gone and self.owner_pidfd is not None:
             owner_gone=confirm_reaped_pidfd(self.owner_pidfd,self.ceiling)
         if guardian_gone and owner_gone and self.custody is not None:
@@ -649,13 +768,104 @@ class Session:
         return {'type':'TERMINAL','result':result}
 
 
+def stop_reserved_guardian(pid,ceiling):
+    """This single-threaded parent has not reaped its child; PID cannot be reused."""
+    refusal=None
+    try:os.kill(pid,signal.SIGKILL)
+    except ProcessLookupError:pass
+    except OSError as error:refusal='RESERVED_GUARDIAN_STOP_ERRNO_'+str(error.errno)
+    limit=min(time.monotonic()+5,ceiling)
+    while time.monotonic()<limit:
+        waited,status=os.waitpid(pid,os.WNOHANG)
+        if waited:
+            return {'guardian_reaped':True,'guardian_exit_code':os.waitstatus_to_exitcode(status),
+                    'stop_refusal_code':refusal}
+        time.sleep(0.01)
+    return {'guardian_reaped':False,'guardian_exit_code':None,'stop_refusal_code':refusal}
+
+
+class GuardianSetupSession:
+    """No START was sent: retain the reserved child until exact parent reap."""
+    def __init__(self,pid,stop,ceiling,pool,reason,close_errors,held_resources):
+        self.pid,self.stop,self.ceiling,self.expected_pool=pid,stop,ceiling,str(pool)
+        self.owner_pid=None;self.reason=reason;self.close_errors=close_errors
+        self.held_resources=held_resources
+        self.finished=stop['guardian_reaped'] and not close_errors
+
+    def wait(self):
+        within=time.monotonic()<self.ceiling
+        return {'type':'TERMINAL','result':{
+            'status':'GUARDIAN_SETUP_REFUSED','stop_reason':self.reason,'guardian_pid':self.pid,
+            'guardian_process_exited':self.stop['guardian_reaped'],
+            'guardian_exit_code':self.stop['guardian_exit_code'],
+            'stop_refusal_code':self.stop['stop_refusal_code'],
+            'allocation_gate_sent':False,'pool_was_allocated':False,'owner_was_allocated':False,
+            'handles_closed':not self.close_errors,'close_refusals':self.close_errors,
+            'within_cleanup_ceiling':within,'terminal_cleanup_complete':self.finished and within,
+            'outer_owner_custody_required':not self.finished,'acquisition_accepted':False}}
+
+    def reconcile_retained(self):
+        if self.finished:return None
+        if not self.stop['guardian_reaped']:
+            waited,status=os.waitpid(self.pid,os.WNOHANG)
+            if not waited:return None
+            self.stop.update(guardian_reaped=True,guardian_exit_code=os.waitstatus_to_exitcode(status))
+        if self.close_errors:return None
+        self.finished=True
+        result=self.wait();result['result'].update(quiescent_after_failed_bound=True,
+            terminal_cleanup_complete=False,acquisition_accepted=False)
+        return result
+
+
+def spawn_guardian_session(job,guard,terminal,ceiling,pool,filenames,metadata,authority_raw):
+    require(signal.getsignal(signal.SIGCHLD)==signal.SIG_DFL,'WAITABLE_GUARDIAN_CHILD_REQUIRED')
+    outer,inner=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
+    try:pid=os.fork()
+    except BaseException:
+        outer.close();inner.close();raise
+    if pid==0:
+        outer.close();os.setsid()
+        resource.setrlimit(resource.RLIMIT_AS,(128*1024**2,384*1024**2))
+        resource.setrlimit(resource.RLIMIT_CPU,(30,60))
+        resource.setrlimit(resource.RLIMIT_FSIZE,(POOL_CAP,POOL_CAP))
+        try:
+            inner.settimeout(max(0.001,min(10,ceiling-time.monotonic())))
+            message,received=recv_frame(inner)
+            try:require(not received and message=={'type':'START'},'GUARDIAN_START_MISMATCH')
+            finally:
+                for fd in received:os.close(fd)
+            code=job(inner)
+        except BaseException:code=2
+        finally:inner.close()
+        os._exit(code)
+    pidfd=None
+    try:
+        inner.close()
+        pidfd=os.pidfd_open(pid)
+        # No allocation until this object has returned and receive() sends START.
+        return Session(outer,pid,pidfd,guard,terminal,ceiling,pool,filenames,metadata,
+                       authority_raw,start_guardian=True)
+    except BaseException as error:
+        close_errors=[];held=[]
+        for label,resource_value in [('outer_channel',outer),('inner_channel',inner),('guardian_pidfd',pidfd)]:
+            if resource_value is None:continue
+            try:
+                if type(resource_value) is int:os.close(resource_value)
+                else:resource_value.close()
+            except BaseException as close_error:
+                close_errors.append(label+'_'+type(close_error).__name__.upper());held.append(resource_value)
+        stop=stop_reserved_guardian(pid,ceiling)
+        return GuardianSetupSession(pid,stop,ceiling,pool,
+            'GUARDIAN_SETUP_'+type(error).__name__.upper(),close_errors,held)
+
+
 def start(authority_path,expected_sha,expected_decision,expected_session_sha,started,started_utc):
     """Proposal API only; caller must have the separate exact General admission."""
     verify_startup()
     require(PINNED and expected_decision is not None,'UNFROZEN_OR_UNADMITTED_PACKET')
     checked_bytes(Path(__file__),expected_session_sha,65536,os.geteuid())
     raw=checked_bytes(Path(authority_path),expected_sha,32768,os.geteuid())
-    guard=module('reviewed_guardian','184-acquisition-custody-guardian-v6-proposal.py',PINNED['guardian'])
+    guard=module('reviewed_guardian','184-acquisition-custody-guardian-v7-proposal.py',PINNED['guardian'])
     authority=guard.bind_authority(raw,expected_sha,expected_decision,PINNED)
     require(authority.get('survivor_policy')=='retain-custody-and-escalate'
             and authority.get('pool_parent')==str(POOL_PARENT)
@@ -677,22 +887,12 @@ def start(authority_path,expected_sha,expected_decision,expected_session_sha,sta
     selection=json.loads(selection_raw,object_pairs_hook=pairs)
     checked_bytes(owner.CA_SOURCE,owner.CA_SHA,300000,os.geteuid())
     require(type(started) in (int,float) and 0<started<=time.monotonic()<started+270,'BOOTSTRAP_TOTAL_DEADLINE_EXCEEDED')
-    outer,inner=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
-    pid=os.fork()
-    if pid==0:
-        outer.close();os.setsid()
-        resource.setrlimit(resource.RLIMIT_AS,(128*1024**2,384*1024**2))
-        resource.setrlimit(resource.RLIMIT_CPU,(30,60))
-        resource.setrlimit(resource.RLIMIT_FSIZE,(POOL_CAP,POOL_CAP))
-        try:code=guardian_job(inner,raw,authority,started,started_utc,(guard,owner,bootstrap,terminal))
-        except BaseException:code=2
-        finally:inner.close()
-        os._exit(code)
-    inner.close()
     expected_pool=POOL_PARENT/('sdk-python-184-tools-guardian-14adc40b-'+authority['decision'].rsplit('-',1)[-1])
-    return Session(outer,pid,os.pidfd_open(pid),guard,terminal,started+300,
-                   expected_pool,[tool['filename'] for tool in selection['tools']],
-                   [tool['name']+'.json' for tool in selection['tools']],raw)
+    def job(channel):
+        return guardian_job(channel,raw,authority,started,started_utc,(guard,owner,bootstrap,terminal))
+    return spawn_guardian_session(job,guard,terminal,started+300,expected_pool,
+        [tool['filename'] for tool in selection['tools']],
+        [tool['name']+'.json' for tool in selection['tools']],raw)
 
 
 if __name__=='__main__':

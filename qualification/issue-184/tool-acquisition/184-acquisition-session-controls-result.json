@@ -1,12 +1,104 @@
 {
   "acquisition_accepted": false,
-  "cases": 33,
+  "cases": 58,
   "downloaded_wheel_imports_or_installs": 0,
   "failed": 0,
   "new_general_decision": null,
-  "passed": 33,
+  "passed": 58,
   "real_network_requests": 0,
   "results": [
+    {
+      "id": "v6-guardian-pidfd-failure-loses-live-job-predecessor",
+      "outcome": "pass"
+    },
+    {
+      "id": "guardian-pidfd-failure-before-allocation-stops-reaps-reserved-child",
+      "outcome": "pass"
+    },
+    {
+      "id": "guardian-constructor-failure-before-allocation-stops-reaps-reserved-child",
+      "outcome": "pass"
+    },
+    {
+      "id": "guardian-allocation-waits-for-returned-outer-session-start-gate",
+      "outcome": "pass"
+    },
+    {
+      "id": "readonly-pre-ledger-MemoryError-closes-local-fd",
+      "outcome": "pass"
+    },
+    {
+      "id": "v6-leak-metadata-immediate-pre-ledger-MemoryError",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-closes-metadata-immediate-pre-ledger-MemoryError",
+      "outcome": "pass"
+    },
+    {
+      "id": "v6-leak-events-immediate-pre-ledger-MemoryError",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-closes-events-immediate-pre-ledger-MemoryError",
+      "outcome": "pass"
+    },
+    {
+      "id": "readonly-pre-ledger-KeyboardInterrupt-closes-local-fd",
+      "outcome": "pass"
+    },
+    {
+      "id": "v6-leak-metadata-immediate-pre-ledger-KeyboardInterrupt",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-closes-metadata-immediate-pre-ledger-KeyboardInterrupt",
+      "outcome": "pass"
+    },
+    {
+      "id": "v6-leak-events-immediate-pre-ledger-KeyboardInterrupt",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-closes-events-immediate-pre-ledger-KeyboardInterrupt",
+      "outcome": "pass"
+    },
+    {
+      "id": "v6-unowned-retention-pre-registration-open",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-no-owner-tree-removed-pre-registration-open",
+      "outcome": "pass"
+    },
+    {
+      "id": "v6-unowned-retention-pre-registration-fstat",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-no-owner-tree-removed-pre-registration-fstat",
+      "outcome": "pass"
+    },
+    {
+      "id": "v6-unowned-retention-pre-registration-send",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-no-owner-tree-removed-pre-registration-send",
+      "outcome": "pass"
+    },
+    {
+      "id": "v6-unowned-retention-pre-registration-send-after",
+      "outcome": "pass"
+    },
+    {
+      "id": "successor-no-owner-tree-removed-pre-registration-send-after",
+      "outcome": "pass"
+    },
+    {
+      "id": "unknown-pre-registration-tree-keeps-exact-guardian-custody",
+      "outcome": "pass"
+    },
     {
       "id": "metadata-callback-failure-closes-recorded-directory-fd",
       "outcome": "pass"
@@ -138,9 +230,17 @@
     {
       "id": "missing-new-decision-refuses-before-authority-or-fork",
       "outcome": "pass"
+    },
+    {
+      "id": "all-control-children-reaped",
+      "outcome": "pass"
+    },
+    {
+      "id": "all-control-descriptors-closed",
+      "outcome": "pass"
     }
   ],
   "scope": "synthetic role-protocol controls; start/admitted-data API never called with a decision",
   "selected_archives_acquired": 0,
-  "source_sha256": "e721bba90c8cf7fae9eede4b3a2df2b7abb25b59f84b62f8ee5be5b9ee381e89"
+  "source_sha256": "608c968c38f95774f2cd68aa873b0a978ba48f363aebd86db14cfe61ce541a04"
 }

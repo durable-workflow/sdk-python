@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import ast
 import hashlib
 import importlib.util
 import io
@@ -15,9 +16,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import urllib.request
 import zipfile
-from types import SimpleNamespace
+from types import ModuleType,SimpleNamespace
 from unittest.mock import patch
 
 sys.dont_write_bytecode=True
@@ -31,7 +33,11 @@ def load(name,path):
 
 
 s=load('trusted_session_protocol_control',BASE/'184-acquisition-session-proposal.py')
-g=load('trusted_guard_protocol_control',BASE/'184-acquisition-custody-guardian-v6-proposal.py')
+g=load('trusted_guard_protocol_control',BASE/'184-acquisition-custody-guardian-v7-proposal.py')
+historical=BASE/'control-inputs/historical-source/session-v6.source'
+assert hashlib.sha256(historical.read_bytes()).hexdigest()=='e721bba90c8cf7fae9eede4b3a2df2b7abb25b59f84b62f8ee5be5b9ee381e89'
+predecessor=ModuleType('trusted_session_v6_predecessor');predecessor.__file__=str(historical)
+exec(compile(historical.read_bytes(),str(historical),'exec'),predecessor.__dict__)
 t=load('trusted_terminal_protocol_control',BASE/'184-acquisition-terminal-proposal.py')
 o=load('trusted_owner_protocol_control',BASE/'184-acquire-tools-v5.py')
 selection=json.loads((BASE/'184-immutable-build-tool-input-proposal.json').read_text())
@@ -119,7 +125,7 @@ def cleanup_directory(path):
         directory.chmod(0o700)
 
 
-def run_protocol(mode,disconnect=None):
+def run_protocol(mode,disconnect=None,module=s):
     with tempfile.TemporaryDirectory(prefix='sdk-python-184-session-controls-') as temporary:
         parent=Path(temporary);outer,inner=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
         started=time.monotonic();ceiling=started+3
@@ -132,7 +138,25 @@ def run_protocol(mode,disconnect=None):
         if child==0:
             try:
                 outer.close();os.environ.clear();os.environ.update(s.MINIMAL_ENV)
-                s.POOL_PARENT=parent
+                module.POOL_PARENT=parent
+                if mode.startswith('pre-registration-'):
+                    real_open=os.open;real_fstat=os.fstat;real_send=module.send_frame;opened=set()
+                    def prereg_open(path,flags,*args,**kwargs):
+                        if path==filenames[0] and flags==os.O_RDONLY|os.O_NOFOLLOW:
+                            if mode=='pre-registration-open':raise OSError('synthetic readonly open failure')
+                            fd=real_open(path,flags,*args,**kwargs);opened.add(fd);return fd
+                        return real_open(path,flags,*args,**kwargs)
+                    def prereg_fstat(fd):
+                        if fd in opened and mode=='pre-registration-fstat':raise OSError('synthetic readonly identity failure')
+                        return real_fstat(fd)
+                    def prereg_send(channel,value,fds=()):
+                        if value.get('type')=='REGISTERED':
+                            if mode=='pre-registration-unknown':(expected_pool/'unknown-root-member').write_bytes(b'unknown must stay')
+                            if mode=='pre-registration-send-after':real_send(channel,value,fds)
+                            if mode in {'pre-registration-send','pre-registration-send-after','pre-registration-unknown'}:
+                                raise OSError('synthetic registration send failure')
+                        return real_send(channel,value,fds)
+                    module.os.open=prereg_open;module.os.fstat=prereg_fstat;module.send_frame=prereg_send
                 if mode.startswith('alloc-'):
                     real_mkdir=os.mkdir;real_open=os.open
                     def allocated_mkdir(path,mode_bits=0o777,*,dir_fd=None):
@@ -157,7 +181,7 @@ def run_protocol(mode,disconnect=None):
                         if calls[0]==1:return {'owner_exited':False,'owner_exit_code':None}
                         return real_stop(role,ceiling)
                     s.stop_owner=stop_with_one_survivor
-                code=s.guardian_job(inner,authority_raw,authority,started,dt.datetime.now(dt.timezone.utc).isoformat(),
+                code=module.guardian_job(inner,authority_raw,authority,started,dt.datetime.now(dt.timezone.utc).isoformat(),
                     modules,bounds=(0.05 if mode in {'survivor','stop-refusal'} else 1 if mode.startswith('integrated-') else 0.35,3))
                 inner.close();os._exit(code)
             except BaseException:os._exit(3)
@@ -177,8 +201,12 @@ def run_protocol(mode,disconnect=None):
                 _,status=os.waitpid(child,0);reaped=True
                 assert os.waitstatus_to_exitcode(status)==1
                 if owner_pidfd is not None:assert select.select([owner_pidfd],[],[],0)[0]
-                assert not list((expected_pool/'wheelhouse').iterdir())
-                assert (expected_pool/'guardian-result.json').exists()
+                if disconnect=='register':
+                    assert not expected_pool.exists()
+                    assert all(os.fstat(fd).st_nlink==0 for fd in received[1:])
+                else:
+                    assert not list((expected_pool/'wheelhouse').iterdir())
+                    assert (expected_pool/'guardian-result.json').exists()
             else:
                 session=s.Session(outer,child,pidfd,g,modules[3],ceiling,expected_pool,filenames,metadata,authority_raw)
                 if mode=='abort':
@@ -198,13 +226,30 @@ def run_protocol(mode,disconnect=None):
                 else:message=session.wait()
                 reaped=session.guardian_reaped
                 result=message['result'];assert not result['acquisition_accepted']
-                if mode=='alloc-unknown':
+                if mode=='pre-registration-unknown':
+                    assert result['status']=='PRE_ADOPTION_CUSTODY_REQUIRED',result
+                    assert not session.finished and not result['terminal_cleanup_complete']
+                    assert not select.select([pidfd],[],[],0)[0]
+                    assert session.custody is None and session.owner_pidfd is None
+                    assert (expected_pool/'unknown-root-member').read_bytes()==b'unknown must stay'
+                elif mode.startswith('pre-registration-'):
+                    assert session.owner_pidfd is None and not result['acquisition_accepted']
+                    if module is predecessor:
+                        assert not session.finished and result['outer_owner_custody_required'],result
+                        assert result['status'] in {'REFUSED','OUTER_CUSTODY_REQUIRED'}
+                        assert session.custody is None and expected_pool.exists()
+                        assert select.select([pidfd],[],[],max(0,ceiling-time.monotonic()))[0]
+                        assert not list((expected_pool/'wheelhouse').iterdir())
+                    else:
+                        assert result['status']=='PRE_ADOPTION_REMOVED' and result['terminal_cleanup_complete'],result
+                        assert result['owner_was_allocated'] is False and not expected_pool.exists() and session.finished
+                elif mode=='alloc-unknown':
                     assert not session.finished and result['outer_owner_custody_required']
                     assert not result['terminal_cleanup_complete'] and not result.get('retained_forensic_custody_ready')
                     assert not select.select([pidfd],[],[],0)[0], 'partial allocation guardian lost custody'
                     assert (expected_pool/'unknown-root-member').read_bytes()==b'synthetic unknown stays'
                 elif mode.startswith('alloc-'):
-                    assert result['status']=='ALLOCATION_REFUSED' and result['terminal_cleanup_complete']
+                    assert result['status']=='PRE_ADOPTION_REMOVED' and result['terminal_cleanup_complete']
                     assert result['allocation_cleanup']['complete'] and session.finished
                     assert not expected_pool.exists(), 'outer independently verifies allocation root absence'
                 elif mode=='late-reconcile':
@@ -234,7 +279,8 @@ def run_protocol(mode,disconnect=None):
                         assert result['stop_reason']=='OWNER_PIDFD_PREREQUISITE_FAILED'
                         assert result['owner_process_exited'] and not result['owner_pidfd_available']
                     if mode=='stop-refusal':assert result['stop_refusal_code']=='PIDFD_STOP_ERRNO_1'
-                assert select.select([pidfd],[],[],0)[0] if not session.finished and mode!='alloc-unknown' else True
+                if not session.finished and mode not in {'alloc-unknown','pre-registration-unknown'}:
+                    assert select.select([pidfd],[],[],0)[0]
         finally:
             if not reaped:
                 try:os.kill(child,signal.SIGKILL)
@@ -380,13 +426,174 @@ def preparation_callback_failure_closes(directory):
             if held is not None:held.close()
 
 
+def directory_before_ledger(module,directory,interruption):
+    tree=ast.parse(Path(module.__file__).read_text())
+    insertion=next(node for node in ast.walk(tree) if isinstance(node,ast.Assign)
+        and any(isinstance(target,ast.Subscript) and isinstance(target.value,ast.Attribute)
+                and target.value.attr=='directory_fds' for target in node.targets))
+    with tempfile.TemporaryDirectory(prefix='sdk-python-184-directory-pre-ledger-') as temporary:
+        parent=Path(temporary);held=None;opened=[]
+        def interrupt(frame,event,arg):
+            if event=='line' and frame.f_code.co_filename==module.__file__ and frame.f_lineno==insertion.lineno and frame.f_locals['name']==directory:
+                opened.append(frame.f_locals['fd']);raise interruption('synthetic pre-ledger directory interruption')
+            return interrupt
+        try:
+            sys.settrace(interrupt)
+            try:module.prepare_tree(g,parent,'sdk-python-184-tools-guardian-directory-pre-ledger',filenames)
+            except g.AllocationRefusal as error:held=error.custody
+            finally:sys.settrace(None)
+            assert len(opened)==1
+            held.close();held.close()
+            if module is predecessor:
+                assert os.fstat(opened[0]).st_nlink==0, 'predecessor untracked directory FD not reproduced'
+                os.close(opened.pop())
+            else:
+                try:os.fstat(opened[0])
+                except OSError as error:assert error.errno==9
+                else:raise AssertionError('pre-ledger directory descriptor leaked')
+                opened.clear()
+            assert not held.path.exists()
+        finally:
+            sys.settrace(None)
+            if held is not None:held.close()
+            for fd in opened:
+                try:os.close(fd)
+                except OSError:pass
+
+
+def readonly_before_ledger(interruption):
+    with tempfile.TemporaryDirectory(prefix='sdk-python-184-readonly-pre-ledger-') as temporary:
+        custody=s.prepare_tree(g,Path(temporary),'sdk-python-184-tools-guardian-readonly-pre-ledger',filenames)
+        opened=[];real_open=os.open
+        class RefusedList:
+            def append(self,fd):raise interruption('synthetic read-only list insertion interruption')
+        def opened_fd(*args,**kwargs):
+            fd=real_open(*args,**kwargs);opened.append(fd);return fd
+        try:
+            with patch.object(s.os,'open',side_effect=opened_fd):
+                try:s.append_readonly_archive(custody,filenames[0],RefusedList())
+                except interruption:pass
+                else:raise AssertionError('read-only insertion failure not exercised')
+            assert len(opened)==1
+            try:os.fstat(opened[0])
+            except OSError as error:assert error.errno==9
+            else:raise AssertionError('pre-ledger read-only FD leaked')
+            assert s.remove_unadopted_tree(custody)['complete'] and not custody.path.exists()
+        finally:custody.close()
+
+
+def guardian_startup_failure(mode):
+    with tempfile.TemporaryDirectory(prefix='sdk-python-184-guardian-setup-') as temporary:
+        parent=Path(temporary);pool=parent/'not-allocated';marker=parent/'job-started';session=None
+        def job(channel):
+            marker.write_bytes(b'synthetic source fixture only')
+            signal.signal(signal.SIGALRM,signal.SIG_DFL);signal.alarm(3)
+            signal.pause();return 1
+        try:
+            target='pidfd_open' if mode=='pidfd' else 'Session'
+            owner=s.os if mode=='pidfd' else s
+            with patch.object(owner,target,side_effect=OSError('synthetic guardian startup prerequisite failure')):
+                session=s.spawn_guardian_session(job,g,t,time.monotonic()+2,pool,filenames,metadata,b'{}')
+            result=session.wait()['result']
+            assert session.finished and result['status']=='GUARDIAN_SETUP_REFUSED'
+            assert result['guardian_process_exited'] and result['handles_closed'] and result['terminal_cleanup_complete']
+            assert not result['allocation_gate_sent'] and not result['pool_was_allocated'] and not result['owner_was_allocated']
+            assert not marker.exists() and not pool.exists() and not result['acquisition_accepted']
+            try:os.waitpid(session.pid,os.WNOHANG)
+            except ChildProcessError:pass
+            else:raise AssertionError('exact setup guardian not reaped')
+        finally:
+            if session is not None and not session.stop['guardian_reaped']:
+                os.kill(session.pid,signal.SIGKILL);os.waitpid(session.pid,0)
+
+
+def predecessor_guardian_pidfd_failure():
+    # Compile only the exact frozen start() fork suffix, retaining its error path;
+    # substitute guardian_job with an inert marker fixture, never call start().
+    tree=ast.parse(historical.read_text());start=next(node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=='start')
+    index=next(i for i,node in enumerate(start.body) if isinstance(node,ast.Assign)
+               and any(isinstance(target,ast.Tuple) for target in node.targets))
+    function=ast.FunctionDef(name='frozen_guardian_fork_suffix',args=ast.arguments(posonlyargs=[],args=[],kwonlyargs=[],kw_defaults=[],defaults=[]),
+                             body=start.body[index:],decorator_list=[])
+    wrapper=ast.fix_missing_locations(ast.Module(body=[function],type_ignores=[]))
+    with tempfile.TemporaryDirectory(prefix='sdk-python-184-v6-guardian-pidfd-') as temporary:
+        parent=Path(temporary);marker=parent/'unowned-job-started';created=[];channels=[]
+        real_fork=os.fork;real_pair=socket.socketpair
+        def fork():
+            pid=real_fork()
+            if pid:created.append(pid)
+            return pid
+        def pair(*args):
+            pair=real_pair(*args);channels.extend(pair);return pair
+        def job(*args):
+            marker.write_bytes(b'predecessor allocation could run without outer pidfd')
+            signal.signal(signal.SIGALRM,signal.SIG_DFL);signal.alarm(3);signal.pause();return 1
+        env=dict(predecessor.__dict__,POOL_PARENT=parent,raw=b'{}',authority={'decision':REF},
+                 started=time.monotonic(),started_utc='synthetic',guard=g,owner=o,bootstrap=None,terminal=t,
+                 selection=selection,guardian_job=job)
+        exec(compile(wrapper,str(historical)+'#exact-start-fork-suffix','exec'),env)
+        try:
+            with patch.object(predecessor.os,'fork',side_effect=fork),patch.object(predecessor.socket,'socketpair',side_effect=pair), \
+                 patch.object(predecessor.os,'pidfd_open',side_effect=OSError('synthetic outer pidfd failure')):
+                try:env['frozen_guardian_fork_suffix']()
+                except OSError:pass
+                else:raise AssertionError('predecessor pidfd refusal missing')
+            assert len(created)==1
+            deadline=time.monotonic()+1
+            while not marker.exists() and time.monotonic()<deadline:time.sleep(0.01)
+            assert marker.exists() and os.waitpid(created[0],os.WNOHANG)==(0,0), 'predecessor lost live guardian not reproduced'
+        finally:
+            for pid in created:
+                try:os.kill(pid,signal.SIGKILL)
+                except ProcessLookupError:pass
+                try:os.waitpid(pid,0)
+                except ChildProcessError:pass
+            for channel in channels:channel.close()
+
+
+def guardian_gate_positive():
+    with tempfile.TemporaryDirectory(prefix='sdk-python-184-guardian-gate-') as temporary:
+        parent=Path(temporary);pool=parent/'never-allocated';marker=parent/'gate-received'
+        def job(channel):
+            marker.write_bytes(b'exact start gate arrived')
+            s.send_frame(channel,{'type':'TERMINAL','result':{
+                'status':'PRE_ADOPTION_REMOVED','owner_was_allocated':False,'outer_adoption_acknowledged':False,
+                'allocation_cleanup':{'complete':True},'terminal_cleanup_complete':True,'acquisition_accepted':False}})
+            return 1
+        session=s.spawn_guardian_session(job,g,t,time.monotonic()+2,pool,filenames,metadata,b'{}')
+        try:
+            assert not marker.exists() and session.needs_guardian_start
+            result=session.wait()['result']
+            assert marker.exists() and session.finished and session.guardian_reaped and result['terminal_cleanup_complete']
+            assert not result['acquisition_accepted'] and not pool.exists()
+        finally:
+            if not session.guardian_reaped:
+                os.kill(session.pid,signal.SIGKILL);os.waitpid(session.pid,0)
+            session.stack.close()
+
+
 def check(name,operation):
     try:operation()
-    except BaseException as error:results.append({'id':name,'outcome':'fail','type':type(error).__name__,'detail':str(error)[:600]})
+    except BaseException as error:results.append({'id':name,'outcome':'fail','type':type(error).__name__,'detail':str(error)[:600],
+        'traceback':traceback.format_exc(limit=4)[-2000:]})
     else:results.append({'id':name,'outcome':'pass'})
 
 
+baseline_fd_count=len(os.listdir('/proc/self/fd'))
 with patch.object(socket,'create_connection',side_effect=AssertionError('NO_NETWORK_IN_SESSION_CONTROLS')):
+    check('v6-guardian-pidfd-failure-loses-live-job-predecessor',predecessor_guardian_pidfd_failure)
+    for failure in ('pidfd','constructor'):
+        check('guardian-'+failure+'-failure-before-allocation-stops-reaps-reserved-child',lambda failure=failure:guardian_startup_failure(failure))
+    check('guardian-allocation-waits-for-returned-outer-session-start-gate',guardian_gate_positive)
+    for interruption in (MemoryError,KeyboardInterrupt):
+        check('readonly-pre-ledger-'+interruption.__name__+'-closes-local-fd',lambda interruption=interruption:readonly_before_ledger(interruption))
+        for directory in ('metadata','events'):
+            for module,label in ((predecessor,'v6-leak'),(s,'successor-closes')):
+                check(label+'-'+directory+'-immediate-pre-ledger-'+interruption.__name__,lambda module=module,directory=directory,interruption=interruption:directory_before_ledger(module,directory,interruption))
+    for mode in ('pre-registration-open','pre-registration-fstat','pre-registration-send','pre-registration-send-after'):
+        for module,label in ((predecessor,'v6-unowned-retention'),(s,'successor-no-owner-tree-removed')):
+            check(label+'-'+mode,lambda module=module,mode=mode:run_protocol(mode,module=module))
+    check('unknown-pre-registration-tree-keeps-exact-guardian-custody',lambda:run_protocol('pre-registration-unknown'))
     for directory in ('metadata','events'):
         check(directory+'-callback-failure-closes-recorded-directory-fd',lambda directory=directory:preparation_callback_failure_closes(directory))
     for seconds,accepted in [(0,False),(300,False),(301,True),(86400,True),(86401,False)]:
@@ -415,6 +622,10 @@ with patch.object(socket,'create_connection',side_effect=AssertionError('NO_NETW
     check('non-object-frame-refused',lambda:frame_control(b'[]','FRAME_OBJECT_REQUIRED'))
     check('actual-root-owned-interpreter-clean-env-I-S-startup',actual_closed_startup)
     check('missing-new-decision-refuses-before-authority-or-fork',live_start_refuses_no_decision)
+    check('all-control-children-reaped',lambda:s.require(not Path('/proc/self/task/'+str(os.getpid())+'/children').read_text().strip(),
+                                                      'CONTROL_CHILD_REMAINS'))
+    check('all-control-descriptors-closed',lambda:s.require(len(os.listdir('/proc/self/fd'))==baseline_fd_count,
+                                                           'CONTROL_DESCRIPTOR_REMAINS'))
 
 report={'scope':'synthetic role-protocol controls; start/admitted-data API never called with a decision',
         'source_sha256':hashlib.sha256((BASE/'184-acquisition-session-proposal.py').read_bytes()).hexdigest(),

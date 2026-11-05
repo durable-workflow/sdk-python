@@ -8,12 +8,12 @@
     {
       "bytes": 1898,
       "file": "184-acquire-tools-v5-adapter-controls-result.json",
-      "sha256": "b49570665353a9202701af61b98d117eee45023f851616d4a460d5ac29c923ea"
+      "sha256": "fdeaa7cda910e83f057ced455411bbb360e875e8c9163f554d525fab5933c3be"
     },
     {
       "bytes": 10492,
       "file": "184-acquire-tools-v5-adapter-controls.py",
-      "sha256": "294d5dab6b21d66071a4bfca224ebe9ad954ea512610d7f8fc3dc49330a66ccc"
+      "sha256": "dfd74c20fa379062efca6110f151e5f52824da291f1591858e560cf7e8d09785"
     },
     {
       "bytes": 2875,
@@ -61,6 +61,11 @@
       "sha256": "cbb1672855a0dec48c7d952f02be49ab3c0935d9bd7b1cf467638d73fc543e4c"
     },
     {
+      "bytes": 23306,
+      "file": "184-acquisition-custody-guardian-v7-proposal.py",
+      "sha256": "032a2da74a26ea8ed036428d5470420dd49f099b7fe61cfcf4d7ab216d720066"
+    },
+    {
       "bytes": 4928,
       "file": "184-acquisition-guardian-v3-controls-result.json",
       "sha256": "30c7d4815ea68410ac839351bab09f10ff9591e9395151d26ce1a917d293b65d"
@@ -101,6 +106,16 @@
       "sha256": "6f963d6195d3f7244890f0f391a8f7640f4266c9bad7881cda34614f515dd82d"
     },
     {
+      "bytes": 7877,
+      "file": "184-acquisition-guardian-v7-controls-result.json",
+      "sha256": "f29e2eda2681715389afd32b4dc0bc3c1f4d48decb352ffcad8195a54db2c228"
+    },
+    {
+      "bytes": 25028,
+      "file": "184-acquisition-guardian-v7-controls.py",
+      "sha256": "3219a930f460460ea1d7ea09366cf0a9fc623574644c53a2c2252f9929f544ff"
+    },
+    {
       "bytes": 1010,
       "file": "184-acquisition-interpreter-authority-proposal.json",
       "sha256": "cb819468f659c6235176fabcd29894dda552ffb85f0bf54664d83b7dcdd3d2e1"
@@ -121,19 +136,19 @@
       "sha256": "0cd9d5309b1dd3314e5a7f288f7462c784e2bcf4cea9618eeff4aa401f516aaf"
     },
     {
-      "bytes": 3678,
+      "bytes": 6311,
       "file": "184-acquisition-session-controls-result.json",
-      "sha256": "2ac6e635fa7f8ba76091e85548e98db6d9f4cd1fd0313400702edfdf429c5974"
+      "sha256": "95f2abfc9345198e667cfa742fcaadab280e8a1c689a8653abbb10226254d7c3"
     },
     {
-      "bytes": 27176,
+      "bytes": 41303,
       "file": "184-acquisition-session-controls.py",
-      "sha256": "7f23fe46b0880e557d333efb61f5bc6f41af1044ff190bc17cd31157a6e8eb56"
+      "sha256": "4ff34e4c60859619403a414b5d57fc7bf05411c5720abda4010a7484c263a630"
     },
     {
-      "bytes": 41341,
+      "bytes": 52040,
       "file": "184-acquisition-session-proposal.py",
-      "sha256": "e721bba90c8cf7fae9eede4b3a2df2b7abb25b59f84b62f8ee5be5b9ee381e89"
+      "sha256": "608c968c38f95774f2cd68aa873b0a978ba48f363aebd86db14cfe61ce541a04"
     },
     {
       "bytes": 1826,
@@ -156,24 +171,29 @@
       "sha256": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c"
     },
     {
-      "bytes": 9049,
+      "bytes": 10676,
       "file": "README.md",
-      "sha256": "37849d545c76dd3ecd5fedcb91bf33650e30cca3241e152fb812bd5655d953e4"
+      "sha256": "7b2cf2765620a1fee9d246ca9ed727e2586b36257dd492461e18991b209910c3"
     },
     {
       "bytes": 1209,
       "file": "authority-template.json",
-      "sha256": "239d025c890988971963c6429bad148789498e4d813bb84816c5c0826dae7b2e"
+      "sha256": "22479d136d6f23e3022100d09ff4dda356e54c3b29208f4d815ed5c099efe560"
     },
     {
-      "bytes": 1170,
+      "bytes": 1520,
       "file": "control-inputs/historical-source/manifest.json",
-      "sha256": "9ab040cbd1ecfe0890ff1a257bca76a411e8d8d0b4e05481cd4d3da652504e81"
+      "sha256": "c5d33f28439e92554bd603cb9c677c8ebb42e3fb2ce109cebc3d42f6a63a321c"
     },
     {
       "bytes": 17804,
       "file": "control-inputs/historical-source/original-owner.source",
       "sha256": "e0b8955c8c26c68333e1439c4eb195ef803d710d68f4a4b297b3dd17fcfd7c54"
+    },
+    {
+      "bytes": 41341,
+      "file": "control-inputs/historical-source/session-v6.source",
+      "sha256": "e721bba90c8cf7fae9eede4b3a2df2b7abb25b59f84b62f8ee5be5b9ee381e89"
     },
     {
       "bytes": 34138,
@@ -231,9 +251,9 @@
       "sha256": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c"
     },
     {
-      "bytes": 7081,
+      "bytes": 8293,
       "file": "review-packet.json",
-      "sha256": "9947c69df3533b3165beadb3062d13696889aa17d0aca10993fffae4cca58060"
+      "sha256": "969ef8c6e1191cbf85a6bd58bbaf131e8c418dc491c98c11518dfb02a48394eb"
     }
   ],
   "guardian_later_findings": {
@@ -242,13 +262,16 @@
       "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662253657",
       "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663237183",
       "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663491930",
-      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663692366"
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663692366",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6665713217"
     ],
+    "narrow_v6_PASS_not_whole_packet": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6664016731",
     "predecessor_v2_sha256": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70",
     "predecessor_v3_sha256": "79ddc82b0095872885aceb943cbf9daa1eb3a05048bc08f9ee9cd093511de187",
     "predecessor_v4_sha256": "d52bb389127cb81b5b0303b3a593ee1af74f8c4835793d67f08d0bf182e2101c",
     "predecessor_v5_sha256": "4c92d889d89dbef2502ef5e9bc923d00c0314821b42aa77d4c0ee92080aba41e",
-    "proposed_successor": "guardian-v6; explicit idempotent descriptor close independent of callback registration; exact successor review pending",
+    "predecessor_v6_sha256": "cbb1672855a0dec48c7d952f02be49ab3c0935d9bd7b1cf467638d73fc543e4c",
+    "proposed_successor": "guardian-v7/session; gated pre-allocation guardian setup recovery, exact no-owner pre-adoption removal or live keeper, and protected raw-FD ledger insertion; exact whole-source review pending",
     "superseded_whole_source_PASS": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662795537"
   },
   "manifest_excludes_self": true,
@@ -274,21 +297,22 @@
   },
   "sdk_source_or_feature_cohort_changed": false,
   "selected_sdk_source": "14adc40b00b68cc8a3e1ae5647a885a42f273650",
+  "source_control_result_total": 284,
   "source_control_results": {
     "184-acquire-tools-v5-adapter-controls-result.json": {
       "cases": 16,
       "passed": 16,
-      "sha256": "b49570665353a9202701af61b98d117eee45023f851616d4a460d5ac29c923ea"
+      "sha256": "fdeaa7cda910e83f057ced455411bbb360e875e8c9163f554d525fab5933c3be"
     },
     "184-acquire-tools-v5-controls-result.json": {
       "cases": 86,
       "passed": 86,
       "sha256": "2a84c6612fcd2fd57235f4844face425420dafb3217be7d6e82ef57cc6fab1cd"
     },
-    "184-acquisition-guardian-v6-controls-result.json": {
-      "cases": 73,
-      "passed": 73,
-      "sha256": "f1b504d920d26468dff0f882b6f2e0041529bf3c0f0c4ecb9f88842bd239f4e4"
+    "184-acquisition-guardian-v7-controls-result.json": {
+      "cases": 81,
+      "passed": 81,
+      "sha256": "f29e2eda2681715389afd32b4dc0bc3c1f4d48decb352ffcad8195a54db2c228"
     },
     "184-acquisition-launcher-bootstrap-controls-result.json": {
       "cases": 27,
@@ -296,9 +320,9 @@
       "sha256": "874b1b868975690e56818147c72b1eb7db197c51a961b42da0f1ae00312452b1"
     },
     "184-acquisition-session-controls-result.json": {
-      "cases": 33,
-      "passed": 33,
-      "sha256": "2ac6e635fa7f8ba76091e85548e98db6d9f4cd1fd0313400702edfdf429c5974"
+      "cases": 58,
+      "passed": 58,
+      "sha256": "95f2abfc9345198e667cfa742fcaadab280e8a1c689a8653abbb10226254d7c3"
     },
     "184-acquisition-terminal-controls-result.json": {
       "cases": 16,
@@ -306,5 +330,5 @@
       "sha256": "32a30a3767d760befae96f77f906431f234dd2733c28b17c3deadb71921f3be0"
     }
   },
-  "stage": "UNEXECUTED guardian-v6 successor for6663692366; v5 holds recorded; exact review pending; no operational admission"
+  "stage": "UNEXECUTED guardian-v7/session successor for composed HOLD6665713217; exact whole-source review pending; no operational admission"
 }

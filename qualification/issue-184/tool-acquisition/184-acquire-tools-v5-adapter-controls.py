@@ -26,9 +26,9 @@ def load(name,path):
 
 
 owner=load('trusted_v5_owner_adapter',BASE/'184-acquire-tools-v5.py')
-guard=load('trusted_reviewed_guard_custody',BASE/'184-acquisition-custody-guardian-v6-proposal.py')
-assert hashlib.sha256((BASE/'184-acquisition-custody-guardian-v6-proposal.py').read_bytes()).hexdigest()== \
-    'cbb1672855a0dec48c7d952f02be49ab3c0935d9bd7b1cf467638d73fc543e4c'
+guard=load('trusted_reviewed_guard_custody',BASE/'184-acquisition-custody-guardian-v7-proposal.py')
+assert hashlib.sha256((BASE/'184-acquisition-custody-guardian-v7-proposal.py').read_bytes()).hexdigest()== \
+    '032a2da74a26ea8ed036428d5470420dd49f099b7fe61cfcf4d7ab216d720066'
 results=[]
 
 
@@ -187,7 +187,7 @@ with patch.object(socket,'create_connection',side_effect=AssertionError('NO_NETW
 
 report={'scope':'synthetic owner adapter, not integrated acquisition or launcher',
         'owner_sha256':hashlib.sha256((BASE/'184-acquire-tools-v5.py').read_bytes()).hexdigest(),
-        'guardian_sha256':hashlib.sha256((BASE/'184-acquisition-custody-guardian-v6-proposal.py').read_bytes()).hexdigest(),
+        'guardian_sha256':hashlib.sha256((BASE/'184-acquisition-custody-guardian-v7-proposal.py').read_bytes()).hexdigest(),
         'cases':len(results),'passed':sum(row['outcome']=='pass' for row in results),
         'failed':sum(row['outcome']=='fail' for row in results),'results':results,
         'real_network_requests':0,'downloaded_wheel_imports_or_installs':0,

@@ -21,6 +21,21 @@ their original identities. Whole-source PASS does not qualify or replace them.
   directories, six preallocated archive inodes, read-only outer duplicates,
   bounded descriptor handoff, owner pidfd before RUN, progress bounds, exact exit,
   independent preserve/readback, and explicit refusal/deferred custody states.
+- Guardian-v7/session close the three composed-source findings6665713217:
+  allocation waits for START from a returned outer Session with a guardian pidfd.
+  A failed pidfd/Session setup closes known handles and stops/reaps the still
+  reserved child; an unconfirmed reap remains an explicit custody session. No
+  START, allocation, owner, retry or data fallback occurs on that path.
+  Before ARM acknowledgement, no owner exists: exact empty auxiliary directories,
+  archives, wheelhouse and root are removed, or the guardian stays alive holding
+  the partial tree. No pre-adoption forensic tree is sealed and abandoned.
+  The outer acknowledges verified removal, including a queued REGISTERED failure,
+  before exact guardian reap. Once ARM may have been sent, an unreported owner
+  remains unknown; the no-owner drain cannot discard a possible OWNER handoff.
+  Archive allocation intent precedes open. Raw archive/extra-directory/read-only
+  descriptors are protected through ledger insertion and close locally if that
+  insertion is interrupted. An archive with unproved ledger insertion remains
+  explicit unknown custody even if its root was removed or the archive moved.
 - `184-acquire-tools-v5.py` and its bootstrap: adopt the attested pool before
   network; fresh six metadata checks then exact cache/read-or-one-request inputs;
   response/semantic diagnostics and candidate-only result. Exact reviewed CA
@@ -46,10 +61,13 @@ their original identities. Whole-source PASS does not qualify or replace them.
   be unlinked. Moved children and directories created before their identity can
   be read remain unproved custody. V4's pre-registration gap is retained as an
   actual predecessor countercontrol; fully-unlinked partial archives are positives.
-- Frozen guardian-v2/v3/v4/v5 remain byte-identical predecessor countercontrols.
+- Frozen guardian-v2/v3/v4/v5/v6 remain byte-identical predecessor countercontrols.
   V3 closed findings6660476483/6662253657 (partial allocation and authority
   parsing), but its later moved-child HOLD supersedes whole-packet PASS6662795537.
-  Exact successor review is pending; no earlier PASS carries to this packet.
+  The exact frozen session-v6 is also retained as inert historical source. Its
+  guardian-pidfd loss, pre-registration unowned retention, and raw extra-directory
+  leaks are reproduced by controls. Exact successor review is pending; the narrow
+  v6 PASS does not close the later composed-source HOLD or carry to this packet.
 
 Normal preservation requires owner exit0, independent full input readback,
 guardian exit and a second outer inventory comparison. Result is collected for
@@ -81,8 +99,8 @@ wheelhouse removal is independently checked; unknown allocation siblings retain
 the guardian and outer process handle instead of escaping constructor unwinding.
 
 The primitive's full cleanup removes identity-verified empty owned directories.
-The composed session instead intentionally retains sealed diagnostic trees after
-an exited owner. Those results explicitly keep root_tree_retained=true,
+After acknowledged outer adoption, the composed session intentionally retains
+sealed diagnostic trees after an exited owner. Those results explicitly keep root_tree_retained=true,
 outer_owner_custody_required=true, retention_owner=sdk-python, and
 terminal_cleanup_complete=false. Both roles verify the complete retained tree
 inventory before process/fd custody can close. Unknown members cannot take that
@@ -106,8 +124,8 @@ admit this residual policy; it is not permission supplied by these sources.
 | Owner |86| parser, transport, trust, custody and no-child boundary |
 | Preallocated adapter |16| readiness, descriptors, inode collisions and partial writes |
 | Independent readback |16| synthetic six-tool tuples, metadata, ledger and inventory |
-| Guardian successor |73| retained66 plus actual v5 callback leak/current idempotent close, descriptor reuse, and parent/root/wheelhouse callback failures |
-| Role protocol |33| retained31 plus metadata/events callback failure and independent tracked-directory closure |
+| Guardian successor |81| retained73 plus actual v6 immediate pre-ledger archive leak/false completion, successor close/unknown retention, root present/removed and MemoryError/KeyboardInterrupt |
+| Role protocol |58| retained33 plus frozen guardian-pidfd loss, gated startup/constructor failure, pre-registration open/identity/send failures, unknown-tree keeper, immediate directory/read-only insertion failures, and exact child/FD absence |
 | Launcher bootstrap |27| exact reads, authority schemas, startup refusals, resource affinity and custody wrapper |
 
 These are source controls, not acquired-package or SDK/runtime qualification.

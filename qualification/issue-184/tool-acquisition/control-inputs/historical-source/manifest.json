@@ -23,6 +23,12 @@
       "durable_source": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6655819896",
       "file": "v3-bootstrap.source",
       "sha256": "8797366c75b3f55d61c21c19ac3e98ba0bed5b65bbf0a04e4bf3e2b73d326fcc"
+    },
+    {
+      "bytes": 41341,
+      "durable_source": "https://github.com/durable-workflow/sdk-python/tree/d42e510952f945e9de68cdd8a18b4f5cf8969987/qualification/issue-184/tool-acquisition/184-acquisition-session-proposal.py",
+      "file": "session-v6.source",
+      "sha256": "e721bba90c8cf7fae9eede4b3a2df2b7abb25b59f84b62f8ee5be5b9ee381e89"
     }
   ],
   "scope": "historical inert source countercontrols; never job entrypoints or current admissions"
