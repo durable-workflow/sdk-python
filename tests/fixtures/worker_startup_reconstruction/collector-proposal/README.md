@@ -21,6 +21,19 @@ import closure, authentication/TLS dependencies and installed input are **not
 selected or acquired**. Public release/source identity is only an input to this
 proposal; it does not establish a supported or qualified historical tuple.
 
+The first pure source slice now lives in `tests/worker_startup_raw.py`.
+`bind_original_query` verifies the two immutable SQL texts, translates their
+closed placeholder inventory and returns values separately without invoking a
+driver. `decode_raw_snapshot` validates supplied ordered aliases and positional
+bytes/null values, enforces field-size limits, pads valid whole-second timestamp
+text and calls the existing projection decoder. Its controls consume inert
+tuples only. They do not prove that a driver produced those types or that a read
+completed; the future collector must establish its bounded capture before using
+this transform. A complete supplied projection still has an unknown phase.
+No driver, raw receive/deadline guard, terminator validation, process owner,
+framing or cleanup is implemented by this slice. The collector vectors below
+remain unexecuted, and all operating inputs remain unselected.
+
 The process receives only the fixture identity and dedicated SELECT-only
 fixture connection parameters through the future owner's private input channel.
 Never obtain production endpoints, ambient credentials, config files, plugin
