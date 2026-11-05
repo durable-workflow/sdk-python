@@ -76,12 +76,15 @@ incompatible harness is a setup finding, not permission to patch the SDK.
   while retaining that limit on per-client attribution. A missing cloned-client
   trace cannot count as full coverage.
 
-The current driver emits a full before-shutdown observation on failure only.
-The next observer-source revision must add the same bounded snapshot on success
-before calling `stop_and_drain`, bind API/database snapshots to that boundary,
-and preserve the existing primary exception if observation or shutdown fails.
-Do not run the current sources and claim those additions were present. Return
-the revised source hashes for review rather than carrying these source pins.
+The driver now captures the same bounded observation before and after shutdown
+on success and failure. Each capture has its own monotonic bracket; capture
+failure is explicitly invalid. Reporting or shutdown failures cannot replace an
+existing primary exception, and reporting failure still runs the original
+stop/drain. Capture availability does not establish phase/SQL/API completeness.
+No new probes, waits, timeout extensions or outer cleanup deadline are supplied
+by this slice. Binding API/database snapshots to these boundaries and enforcing
+the future ten-second overall cleanup bound remain pending. Return revised
+source hashes for review rather than carrying the historical source pins.
 
 ## Server comparator review
 

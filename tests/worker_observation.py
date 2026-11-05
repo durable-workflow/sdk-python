@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections import Counter, deque
 from collections.abc import Callable, Coroutine
@@ -227,6 +228,60 @@ async def stop_and_drain(workers: list[Any], runners: list[asyncio.Task[Any]]) -
     for outcome in outcomes:
         if isinstance(outcome, BaseException):
             raise outcome
+
+
+def print_observation(record: dict[str, Any]) -> None:
+    print(json.dumps(record), flush=True)
+
+
+async def observe_and_drain(
+    observation: WorkerObservation, identity: dict[str, Any],
+    workers: list[Any], runners: list[asyncio.Task[Any]], *,
+    primary_error: BaseException | None = None,
+    emit: Callable[[dict[str, Any]], None] = print_observation,
+) -> None:
+    """Bracket the existing shutdown with bounded reports, retaining the primary error.
+
+    Capture availability is separate from report completeness and phase linkage.
+    Capture is synchronous; API/SQL probes and timeout extensions are absent.
+    """
+    secondary_error: BaseException | None = None
+
+    def capture(phase: str, error: BaseException | None) -> None:
+        nonlocal secondary_error
+        record: dict[str, Any] = {**identity, "phase": phase}
+        if error is not None:
+            record["exception"] = type(error).__name__
+        try:
+            record["monotonic_before"] = observation.clock()
+            report = observation.report()
+            record["monotonic_after"] = observation.clock()
+            record["observation"] = report
+            record["observation_capture_state"] = "complete"
+        except BaseException as capture_error:
+            record["observation_capture_state"] = "invalid"
+            record["observation_exception"] = type(capture_error).__name__
+            if secondary_error is None:
+                secondary_error = capture_error
+        try:
+            emit(record)
+        except BaseException as emit_error:
+            if secondary_error is None:
+                secondary_error = emit_error
+
+    capture("before_shutdown", primary_error)
+    shutdown_error: BaseException | None = None
+    try:
+        await stop_and_drain(workers, runners)
+    except BaseException as error:
+        shutdown_error = error
+        if secondary_error is None:
+            secondary_error = error
+        capture("shutdown", error)
+    finally:
+        capture("after_shutdown", shutdown_error if shutdown_error is not None else primary_error)
+    if primary_error is None and secondary_error is not None:
+        raise secondary_error
 
 
 class ObservationInterceptor(PassthroughWorkerInterceptor):
