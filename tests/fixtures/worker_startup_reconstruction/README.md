@@ -66,6 +66,16 @@ incompatible harness is a setup finding, not permission to patch the SDK.
   in the historical Worker. `workflow_handler_enter` is later. The intervening
   interval includes history loading, decode and replay. It is not a unique
   hydration-cause measurement.
+- Handler milestones and existing HTTP calls inside that interceptor now inherit
+  only its allowlisted task/run/attempt identity through an async task context.
+  Concurrent tasks retain distinct contexts, and scope exit/error/cancellation
+  restores the previous context. The request path's bounded task ID is recorded
+  separately; it cannot replace or silently reconcile a conflicting interceptor
+  identity. Neither source reads request bodies or private claim tokens. Requests
+  made after interceptor exit have no inherited attempt, even if they address the
+  same task; the recorder does not substitute the most recently observed task.
+  These links do not establish a durable claim, successful decode/replay or a
+  publication receipt. Exact private/SQL/API linkage is still required.
 - The activity interceptor runs after argument decode. An absent activity
   handler milestone does not by itself identify a decode failure.
 - Submission metadata such as `recorded=false` must remain false. A returned
