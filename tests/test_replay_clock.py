@@ -785,6 +785,7 @@ def _check_successor_cancellation(
     # delivery step. A foreign resource, family, mode or out-of-order terminal
     # cannot prove that an earlier sequential call finished.
     openers: dict[int, dict[str, Any]] = {}
+    closed: set[int] = set()
     for event in events:
         payload = event["payload"]
         require(not any(payload.get(key) is not None for key in (
@@ -811,6 +812,8 @@ def _check_successor_cancellation(
                 and (not kind.startswith("Activity")
                      or payload["activity_type"] == opener["payload"]["activity_type"]),
                 "a terminal matches its recorded call's family, resource and mode")
+        require(sequence not in closed, "a recorded call has at most one terminal")
+        closed.add(sequence)
     step = delivered["sequence"]
     at_step = [event for event in events if event is not delivery and event["payload"].get("sequence") == step
                and event["event_type"] in REDRIVE_SUCCESSOR_STEP_EVENTS]

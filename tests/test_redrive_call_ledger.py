@@ -221,3 +221,39 @@ def test_grouped_and_scoped_rows_are_outside_the_model(field: str) -> None:
     _step_three_activity(doc["history"])["payload"][field] = "outside-scope"
     with pytest.raises(AssertionError):
         check_redrive_successor(doc["history"], doc["workflow"])
+
+
+@pytest.mark.parametrize(("family", "first", "second"), [
+    ("activity", "ActivityFailed", "ActivityCompleted"),
+    ("activity", "ActivityCompleted", "ActivityFailed"),
+    ("local_activity", "ActivityTimedOut", "ActivityCancelled"),
+    ("local_activity", "ActivityCancelled", "ActivityTimedOut"),
+    ("timer", "TimerCancelled", "TimerFired"),
+    ("timer", "TimerFired", "TimerCancelled"),
+    ("signal", "SignalApplied", "SignalApplied"),
+])
+@pytest.mark.parametrize("identical", [False, True], ids=["contradictory-or-duplicate", "identical-duplicate"])
+def test_one_opener_cannot_have_two_terminal_rows(family: str, first: str, second: str, identical: bool) -> None:
+    doc = document()
+    history = doc["history"]
+    opened = _step_three_activity(history)
+    if family == "local_activity":
+        opened["payload"]["local_activity"] = True
+    elif family == "timer":
+        opened.update(event_type="TimerScheduled", payload={"sequence": 3, "timer_id": "successor-timer"})
+    elif family == "signal":
+        opened.update(event_type="SignalWaitOpened", payload={
+            "sequence": 3, "signal_wait_id": "successor-signal", "signal_name": "wake",
+        })
+    _delivery(history)["payload"]["call_kind"] = family
+    row = terminal(doc, first, opened=opened)
+    if family == "signal":
+        row["payload"].update(signal_id="synthetic-signal", workflow_command_id="synthetic-signal-command")
+    check_redrive_successor(history, doc["workflow"])
+    duplicate = deepcopy(row)
+    if not identical:
+        duplicate["event_type"] = second
+    history.insert(history.index(row) + 1, duplicate)
+    _renumber(history)
+    with pytest.raises(AssertionError, match="one terminal"):
+        check_redrive_successor(history, doc["workflow"])
