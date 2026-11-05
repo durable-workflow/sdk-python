@@ -26,7 +26,12 @@ import { watchPublicStatus } from "./status.mjs";
     control.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
+        // Material also handles Enter globally; one activation changes the theme once.
+        event.stopPropagation();
         control.click();
+        requestAnimationFrame(() => {
+          document.querySelector('.md-header__option input:checked')?.nextElementSibling?.focus();
+        });
       }
     });
   });

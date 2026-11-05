@@ -189,6 +189,9 @@ def exercise_identity(page: Page, theme: str) -> None:
         toggle.focus()
         toggle.press("Enter")
         page.wait_for_function("document.body.dataset.mdColorScheme === 'slate'")
+        page.wait_for_function(
+            "document.querySelector('.md-header__option input:checked')?.nextElementSibling === document.activeElement",
+        )
         page.reload(wait_until="networkidle")
         page.wait_for_function("document.body.dataset.mdColorScheme === 'slate'")
     page.evaluate("document.fonts.ready")

@@ -1164,3 +1164,12 @@ body:has(.dw-landing) .md-content__inner {
 button[data-clipboard-target] {
   color: var(--dw-code-muted);
 }
+
+.md-code__nav {
+  background: var(--dw-code-background);
+}
+
+button[data-clipboard-target]:is(:hover, :focus-visible) {
+  background: var(--dw-code-background);
+  color: var(--dw-code-foreground);
+}

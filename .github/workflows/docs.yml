@@ -154,7 +154,7 @@ jobs:
         run: |
           pip install --only-binary=:all: -r requirements-docs.txt
           if [ -n "$STABLE_TAG" ]; then
-            pip install --no-deps --only-binary=:all: "$PUBLISHED_WHEEL_URL#sha256=$PUBLISHED_WHEEL_SHA256"
+            pip install --require-hashes --no-deps --only-binary=:all: "$PUBLISHED_WHEEL_URL#sha256=$PUBLISHED_WHEEL_SHA256"
           else
             pip install --no-deps --only-binary=:all: -e .
           fi
@@ -192,7 +192,7 @@ jobs:
           cp .docs-provenance.json site/deployment-audit.json
           cp .docs-api-inventory.json site/api-source-inventory.json
       - name: Retain rendered review screenshots
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: python-portal-review-${{ github.sha }}
           path: docs-review
