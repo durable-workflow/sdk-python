@@ -22,6 +22,11 @@ from durable_workflow.interceptors import (
 
 def route_name(request: httpx.Request) -> str:
     path = request.url.path.rstrip("/")
+    if "/worker/workflow-tasks/" in path:
+        task_path = path.rsplit("/worker/workflow-tasks/", 1)[1]
+        task_id, _, operation = task_path.partition("/")
+        if task_id and operation == "history":
+            return "workflow_history"
     for family in ("workflow", "activity", "query"):
         if path.endswith(f"/worker/{family}-tasks/poll"):
             return f"{family}_poll"
@@ -70,12 +75,19 @@ class WorkerObservation:
         self.max_elapsed: dict[str, float] = {}
         self.milestones: dict[str, dict[str, Any]] = {}
         self.clients: dict[int, str] = {}
+        self.omitted_completed = 0
+        self.evicted_active = 0
+        self.omitted_milestone_events = 0
+        self.response_metadata_states: Counter[str] = Counter()
 
     def note(self, phase: str, task: Any = None) -> None:
         if phase not in self.milestones and len(self.milestones) >= self.limit:
+            self.omitted_milestone_events += 1
             return
         entry = {"at": self.clock() - self.started, **task_identity(task)}
         milestone = self.milestones.setdefault(phase, {"count": 0, "first": entry})
+        if milestone["count"] >= 2:
+            self.omitted_milestone_events += 1
         milestone["count"] += 1
         milestone["last"] = entry
 
@@ -94,9 +106,11 @@ class WorkerObservation:
             entry: dict[str, Any] = {
                 "request": request_id, "client": self.clients.get(id(client), "additional"),
                 "method": method, "route": route, "started": started - self.started,
+                "response_metadata_state": "missing",
             }
             if len(self.active) == self.limit:
                 self.active.pop(next(iter(self.active)))
+                self.evicted_active += 1
             self.active[request_id] = entry
             self.active_count += 1
             try:
@@ -105,7 +119,7 @@ class WorkerObservation:
                 if 200 <= response.status_code < 300:
                     self.successful[f"{method} {route}"] += 1
                 if response.is_stream_consumed:
-                    self._response_metadata(entry, response)
+                    entry["response_metadata_state"] = self._response_metadata(entry, response)
                 return response
             except BaseException as error:
                 entry["exception"] = type(error).__name__
@@ -116,29 +130,39 @@ class WorkerObservation:
                 self.max_elapsed[key] = max(self.max_elapsed.get(key, 0), entry["elapsed"])
                 self.active_count -= 1
                 self.active.pop(request_id, None)
+                self.response_metadata_states[entry["response_metadata_state"]] += 1
+                if len(self.recent) == self.limit:
+                    self.omitted_completed += 1
                 self.recent.append(entry)
 
         monkeypatch.setattr(httpx.AsyncClient, "send", observed_send)
 
     @staticmethod
-    def _response_metadata(entry: dict[str, Any], response: httpx.Response) -> None:
+    def _response_metadata(entry: dict[str, Any], response: httpx.Response) -> str:
         if not response.headers.get("content-type", "").startswith("application/json"):
-            return
+            return "missing"
         try:
             if len(response.content) > 32_768:
-                return
+                return "truncated"
             body = response.json()
-        except (ValueError, httpx.ResponseNotRead):
-            return
+        except httpx.ResponseNotRead:
+            return "missing"
+        except ValueError:
+            return "invalid"
         if not isinstance(body, dict):
-            return
+            return "invalid"
+        state = "complete"
         if "task" in body:
             entry["task_state"] = (
                 "present" if isinstance(body["task"], dict) else "null" if body["task"] is None else "invalid"
             )
             entry.update(task_identity(body["task"]))
+            if entry["task_state"] == "invalid":
+                state = "invalid"
         if type(body.get("recorded")) is bool:
             entry["recorded"] = body["recorded"]
+        elif "recorded" in body:
+            state = "invalid"
         error = body.get("error")
         if isinstance(error, dict):
             code = error.get("code")
@@ -148,6 +172,7 @@ class WorkerObservation:
             value = body.get(field)
             if isinstance(value, str) and len(value) <= 80 and value.replace("_", "").isalnum():
                 entry[field] = value
+        return state
 
     def report(self, *, include_recent: bool = True) -> dict[str, Any]:
         return deepcopy({
@@ -158,6 +183,17 @@ class WorkerObservation:
             "active_count": self.active_count, "active": list(self.active.values()),
             "omitted_active": self.active_count - len(self.active),
             "recent": list(self.recent) if include_recent else [],
+            "completeness": {
+                "recent_http": "missing" if not include_recent and self.recent else (
+                    "truncated" if self.omitted_completed else "complete"
+                ),
+                "active_http": "truncated" if self.evicted_active else "complete",
+                "milestones": "truncated" if self.omitted_milestone_events else "complete",
+            },
+            "omitted_completed": self.omitted_completed,
+            "evicted_active": self.evicted_active,
+            "omitted_milestone_events": self.omitted_milestone_events,
+            "response_metadata_states": dict(self.response_metadata_states),
         })
 
 

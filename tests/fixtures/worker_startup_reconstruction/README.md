@@ -14,6 +14,16 @@ describes synthetic evidence and the limited conclusion each combination can
 support. The vectors are review inputs, not captured observations or an
 implemented classifier. Neither file is an execution manifest.
 
+The first observer-source slice now labels metadata as complete, missing,
+truncated or invalid, separates existing worker-history requests from
+submissions, and reports HTTP-buffer and milestone-event loss. These are
+availability/retention flags, not end-to-end phase verdicts. A complete JSON
+metadata record does not prove task identity, hydration, handler admission or
+publication. Additional clients remain grouped, and the before/after teardown
+SQL/API comparator and full phase linkage are still pending. The pinned sources
+in `proposal.json` remain the historical baseline; this revision is not a new
+historical execution input or qualification receipt.
+
 ## Reuse the existing driver
 
 Use `tests/integration/test_worker_task_families.py` and
