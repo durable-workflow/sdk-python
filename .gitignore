@@ -7,3 +7,11 @@ dist/
 build/
 site/
 *.egg-info/
+
+# Generated documentation source split and provenance
+.docs-sdk/
+.docs-stage-*/
+.docs-build.yml
+.docs-api-inventory.json
+.docs-provenance.json
+.docs-requirements.txt

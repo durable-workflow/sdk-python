@@ -30,6 +30,7 @@ def select_channel(
     root: Path, *, version: str = "2.14.1", tag: str = "", event: str = "workflow_dispatch",
     ref: str = "refs/heads/main", published: bool = True, lookup_exit: int = 0,
     matching_source: bool = True, registry: dict[str, Any] | None = None,
+    docs_version: str | None = None, matching_docs: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, str], str]:
     steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build"]["steps"]
     validation = next(step["run"] for step in steps if step.get("name") == "Validate the selected stable tag")
@@ -46,7 +47,8 @@ def select_channel(
     if registry is None:
         registry = {"info": {"name": "durable-workflow", "version": "2.14.1"}, "urls": [
             {"filename": "durable_workflow-2.14.1-py3-none-any.whl", "packagetype": "bdist_wheel",
-             "yanked": False, "digests": {"sha256": "1" * 64}},
+             "yanked": False, "digests": {"sha256": "1" * 64},
+             "url": "https://files.pythonhosted.org/packages/fixture/durable_workflow-2.14.1-py3-none-any.whl"},
             {"filename": "durable_workflow-2.14.1.tar.gz", "packagetype": "sdist",
              "yanked": False, "digests": {"sha256": "2" * 64}},
         ]}
@@ -81,8 +83,16 @@ def select_channel(
     git("add", "pyproject.toml")
     git("commit", "-m", "Fixture source")
     git("tag", "2.14.1")
+    git("worktree", "add", "--detach", ".docs-sdk", "2.14.1")
+    if docs_version is not None:
+        (root / "pyproject.toml").write_text(f'[project]\nversion = "{docs_version}"\n')
+        git("add", "pyproject.toml")
+        git("commit", "-m", "Documentation source successor")
     if not matching_source:
-        git("commit", "--allow-empty", "-m", "Unpublished successor")
+        git("-C", str(root / ".docs-sdk"), "commit", "--allow-empty", "-m", "Wrong API source")
+    environment["GITHUB_SHA"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    if not matching_docs:
+        environment["GITHUB_SHA"] = "0" * 40
     script = (validation + "\n" if tag else "") + selector
     result = subprocess.run(
         ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
@@ -96,14 +106,19 @@ def select_channel(
 def test_main_source_is_preview_even_with_a_numeric_version(tmp_path: Path, version: str) -> None:
     result, values, calls = select_channel(tmp_path, version=version, event="push")
     assert result.returncode == 0, result.stderr
-    assert values == {"stable": "false", "version": version}
+    assert values["stable"] == "false" and values["version"] == version
+    assert values["docs_revision"] == values["sdk_revision"]
+    assert len(values["docs_revision"]) == 40
     assert calls == ""
 
 
 def test_explicit_published_tag_with_exact_source_can_select_stable(tmp_path: Path) -> None:
     result, values, calls = select_channel(tmp_path, tag="2.14.1")
     assert result.returncode == 0, result.stderr
-    assert values == {"stable": "true", "version": "2.14.1"}
+    assert values["stable"] == "true" and values["version"] == "2.14.1"
+    assert values["docs_revision"] == values["sdk_revision"]
+    assert values["wheel_sha256"] == "1" * 64
+    assert values["wheel_url"].startswith("https://files.pythonhosted.org/packages/")
     assert "release view 2.14.1 --repo durable-workflow/sdk-python" in calls
 
 
@@ -134,3 +149,28 @@ def test_registry_identity_or_missing_artifacts_refuse_stable(tmp_path: Path, re
     result, values, _ = select_channel(tmp_path, tag="2.14.1", registry=registry)
     assert result.returncode != 0
     assert values.get("stable") != "true"
+
+
+def test_current_docs_can_select_the_separate_published_sdk(tmp_path: Path) -> None:
+    result, values, _ = select_channel(tmp_path, tag="2.14.1", docs_version="2.15.0")
+    assert result.returncode == 0, result.stderr
+    assert values["stable"] == "true" and values["version"] == "2.14.1"
+    assert values["docs_revision"] != values["sdk_revision"]
+
+
+def test_wrong_documentation_revision_refuses_before_publication_lookup(tmp_path: Path) -> None:
+    result, values, calls = select_channel(tmp_path, tag="2.14.1", matching_docs=False)
+    assert result.returncode != 0 and values.get("stable") != "true"
+    assert calls == ""
+
+
+def test_current_workflow_owns_docs_and_the_central_apt_floor() -> None:
+    steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build"]["steps"]
+    checkouts = [step for step in steps if step.get("uses", "").startswith("actions/checkout@")]
+    assert checkouts[0]["with"]["ref"] == "${{ github.sha }}"
+    assert checkouts[1]["with"]["path"] == ".docs-sdk"
+    assert all(step["with"]["persist-credentials"] is False for step in checkouts)
+    apt = next(i for i, step in enumerate(steps) if step.get("uses", "").startswith(
+        "durable-workflow/.github/.github/actions/require-fixed-apt@"))
+    chromium = next(i for i, step in enumerate(steps) if step.get("name") == "Install Chromium")
+    assert apt < chromium

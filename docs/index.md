@@ -53,12 +53,12 @@ of your application dependencies.
 A client asks the runtime to do durable work. A worker receives tasks and
 dispatches them to your workflow and activity code.
 
-<div class="dw-role-grid" role="list">
-  <a class="dw-role-card" data-sdk-role="client" href="reference/client/" role="listitem"><span class="dw-role-card__step">01</span><strong>Client</strong><span>Starts and controls workflow runs from your app.</span><span class="dw-role-card__link">Client API →</span></a>
-  <a class="dw-role-card" data-sdk-role="worker" href="reference/worker/" role="listitem"><span class="dw-role-card__step">02</span><strong>Worker</strong><span>Polls a task queue and dispatches registered handlers.</span><span class="dw-role-card__link">Worker API →</span></a>
-  <a class="dw-role-card" data-sdk-role="workflow" href="reference/workflow/" role="listitem"><span class="dw-role-card__step">03</span><strong>Workflow</strong><span>Describes replay-safe orchestration and durable decisions.</span><span class="dw-role-card__link">Workflow API →</span></a>
-  <a class="dw-role-card" data-sdk-role="activity" href="reference/activity/" role="listitem"><span class="dw-role-card__step">04</span><strong>Activity</strong><span>Performs side effects such as API calls and database work.</span><span class="dw-role-card__link">Activity API →</span></a>
-</div>
+<ul class="dw-role-grid" aria-label="SDK concepts">
+  <li><a class="dw-role-card" data-sdk-role="client" href="reference/client/" ><span class="dw-role-card__step">01</span><strong>Client</strong><span>Starts and controls workflow runs from your app.</span><span class="dw-role-card__link">Client API →</span></a></li>
+  <li><a class="dw-role-card" data-sdk-role="worker" href="reference/worker/" ><span class="dw-role-card__step">02</span><strong>Worker</strong><span>Polls a task queue and dispatches registered handlers.</span><span class="dw-role-card__link">Worker API →</span></a></li>
+  <li><a class="dw-role-card" data-sdk-role="workflow" href="reference/workflow/" ><span class="dw-role-card__step">03</span><strong>Workflow</strong><span>Describes replay-safe orchestration and durable decisions.</span><span class="dw-role-card__link">Workflow API →</span></a></li>
+  <li><a class="dw-role-card" data-sdk-role="activity" href="reference/activity/" ><span class="dw-role-card__step">04</span><strong>Activity</strong><span>Performs side effects such as API calls and database work.</span><span class="dw-role-card__link">Activity API →</span></a></li>
+</ul>
 
 </section>
 
@@ -201,14 +201,14 @@ endpoint, credentials, and operating boundary change.
     <span class="dw-tag">Available without an account</span>
     <h3>Self-hosted Server</h3>
     <p>Run the published Server image locally, then execute the complete Python journey below.</p>
-    <a class="dw-button dw-button--primary" data-docs-destination="self-hosted-quickstart" href="#first-workflow">Start locally <span aria-hidden="true">→</span></a>
+    <a class="dw-text-link" data-docs-destination="self-hosted-quickstart" href="#first-workflow">Start locally <span aria-hidden="true">→</span></a>
   </article>
   <article class="dw-runtime-card dw-runtime-card--secondary dw-cloud-promotion" data-runtime="cloud" data-access="limited" data-promotion-source="sdk-python-reference">
     <span class="dw-cloud-promotion__eyebrow dw-tag">Managed runtime · limited access</span>
     <h3>Durable Workflow Cloud</h3>
     <p>Connect the same program to a provisioned namespace with separate client and worker credentials.</p>
     <p class="dw-runtime-card__actions">
-      <a class="dw-button dw-button--secondary" data-docs-destination="cloud-quickstart" href="#managed-cloud">Connect a namespace</a>
+      <a class="dw-text-link" data-docs-destination="cloud-quickstart" href="#managed-cloud">Connect a namespace</a>
       <a class="dw-cloud-promotion__action" data-docs-destination="cloud-access" data-promotion-action="early-access" href="https://cloud.durable-workflow.com/early-access#source=sdk-python-reference">Request early access →</a>
     </p>
   </article>

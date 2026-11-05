@@ -11,6 +11,7 @@ on:
       - 'pyproject.toml'
       - 'scripts/check-docs-analytics.py'
       - 'scripts/check-docs-layout.py'
+      - 'scripts/prepare_portal.py'
       - 'scripts/docstring_cross_references.py'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
@@ -45,8 +46,9 @@ jobs:
           fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
-          ref: ${{ (inputs.stable_tag != '' && format('refs/tags/{0}', inputs.stable_tag)) || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.12"
@@ -54,27 +56,49 @@ jobs:
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
           clients: pip,python
+      - name: Check out the selected published SDK source
+        if: inputs.stable_tag != ''
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ format('refs/tags/{0}', inputs.stable_tag) }}
+          path: .docs-sdk
+          persist-credentials: false
       - name: Resolve the public documentation release channel
         id: release-channel
         env:
           STABLE_TAG: ${{ inputs.stable_tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          docs_revision=$(git rev-parse HEAD)
+          test "$docs_revision" = "$GITHUB_SHA"
+          sdk_revision=$docs_revision
+          project=pyproject.toml
+          if [ -n "$STABLE_TAG" ]; then
+            project=.docs-sdk/pyproject.toml
+          fi
+          version=$(python - "$project" <<'PY'
+          import sys
+          import tomllib
+          print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])
+          PY
+          )
           if [ -n "$STABLE_TAG" ]; then
             test "$GITHUB_EVENT_NAME" = workflow_dispatch
             test "$GITHUB_REF" = refs/heads/main
             test "$version" = "$STABLE_TAG"
             released=$(gh release view "$STABLE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '(.isDraft == false and .isPrerelease == false)')
             test "$released" = true
-            source_revision=$(git rev-parse HEAD)
+            sdk_revision=$(git -C .docs-sdk rev-parse HEAD)
             tag_revision=$(git rev-parse "refs/tags/$STABLE_TAG^{commit}")
-            test "$source_revision" = "$tag_revision"
+            test "$sdk_revision" = "$tag_revision"
             python - "$version" <<'PY'
           import json
           import re
           import sys
           import urllib.request
+          from urllib.parse import urlsplit
+          from pathlib import Path
+          import os
 
           version = sys.argv[1]
           with urllib.request.urlopen(
@@ -87,6 +111,7 @@ jobs:
           if package.get("info", {}).get("name") != "durable-workflow" or package["info"].get("version") != version:
               raise SystemExit("PyPI package identity differs from selected tag")
           kinds = set()
+          wheel = None
           for artifact in package.get("urls", []):
               if artifact.get("yanked") is not False:
                   continue
@@ -96,16 +121,50 @@ jobs:
               if not filename.startswith(f"durable_workflow-{version}-") and filename != f"durable_workflow-{version}.tar.gz":
                   raise SystemExit("PyPI artifact filename differs from selected package")
               kinds.add(artifact.get("packagetype"))
+              if filename == f"durable_workflow-{version}-py3-none-any.whl":
+                  if wheel is not None:
+                      raise SystemExit("Selected package has duplicate universal wheels")
+                  wheel = artifact
           if not {"bdist_wheel", "sdist"} <= kinds:
               raise SystemExit("Selected stable package has no unyanked wheel and sdist")
+          if wheel is None:
+              raise SystemExit("Selected package has no universal Python wheel")
+          url = urlsplit(wheel.get("url", ""))
+          if (url.scheme != "https" or url.netloc != "files.pythonhosted.org"
+                  or url.query or url.fragment or not url.path.startswith("/packages/")
+                  or not url.path.endswith("/" + wheel["filename"])
+                  or not re.fullmatch(r"[A-Za-z0-9/_.-]+", url.path)):
+              raise SystemExit("Published wheel URL is outside the package authority")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write(f"wheel_url={wheel['url']}\nwheel_sha256={wheel['digests']['sha256']}\n")
           PY
             echo stable=true >> "$GITHUB_OUTPUT"
           else
             echo stable=false >> "$GITHUB_OUTPUT"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "docs_revision=$docs_revision" >> "$GITHUB_OUTPUT"
+          echo "sdk_revision=$sdk_revision" >> "$GITHUB_OUTPUT"
       - name: Install package and documentation dependencies
-        run: pip install -e '.[docs]'
+        env:
+          STABLE_TAG: ${{ inputs.stable_tag }}
+          PUBLISHED_WHEEL_URL: ${{ steps.release-channel.outputs.wheel_url }}
+          PUBLISHED_WHEEL_SHA256: ${{ steps.release-channel.outputs.wheel_sha256 }}
+        run: |
+          if [ -n "$STABLE_TAG" ]; then
+            python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          dependencies = tomllib.loads(Path("pyproject.toml").read_text())["project"]["optional-dependencies"]["docs"]
+          Path(".docs-requirements.txt").write_text("\n".join(dependencies) + "\n")
+          PY
+            pip install --only-binary=:all: -r .docs-requirements.txt
+            pip install --only-binary=:all: "$PUBLISHED_WHEEL_URL#sha256=$PUBLISHED_WHEEL_SHA256"
+          else
+            pip install -e '.[docs]'
+          fi
+      - name: Require the accepted central APT floor before browser system dependencies
+        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a
       - name: Install Chromium
         env:
           NODE_OPTIONS: --use-openssl-ca
@@ -116,6 +175,9 @@ jobs:
       - name: Build and check the portal
         env:
           CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
+          STABLE_TAG: ${{ inputs.stable_tag }}
+          DOCS_WHEEL_SHA256: ${{ steps.release-channel.outputs.wheel_sha256 }}
+          PYTHONDONTWRITEBYTECODE: '1'
         run: |
           if ! printf '%s' "$CLOUDFLARE_WEB_ANALYTICS_TOKEN" | grep -Eq '^[a-f0-9]{32}$'; then
             echo 'CLOUDFLARE_WEB_ANALYTICS_TOKEN must be the canonical 32-character site token' >&2
@@ -123,29 +185,23 @@ jobs:
           fi
           sed -i "s/__CLOUDFLARE_WEB_ANALYTICS_TOKEN__/$CLOUDFLARE_WEB_ANALYTICS_TOKEN/" \
             docs/javascripts/analytics.js
-          mkdocs build --strict
+          python scripts/prepare_portal.py
+          mkdocs build --strict --config-file .docs-build.yml
           python scripts/docstring_cross_references.py --site site
           python scripts/check-docs-analytics.py site --require-token
-          python scripts/check-docs-layout.py site
+          python scripts/check-docs-layout.py site --screenshots docs-review
           test -s site/index.html
           test "$(cat site/CNAME)" = "python.durable-workflow.com"
-      - name: Bind Pages artifact to the exact source revision
-        env:
-          SDK_VERSION: ${{ steps.release-channel.outputs.version }}
+      - name: Bind the artifact to both documentation and SDK sources
         run: |
-          SOURCE_REVISION=$(git rev-parse HEAD)
-          export SOURCE_REVISION
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          Path("site/deployment-audit.json").write_text(json.dumps({
-              "schema": "durable-workflow.sdk-python.docs-deployment/v1",
-              "source_revision": os.environ["SOURCE_REVISION"],
-              "sdk_version": os.environ["SDK_VERSION"],
-          }) + "\n")
-          PY
+          cp .docs-provenance.json site/deployment-audit.json
+          cp .docs-api-inventory.json site/api-source-inventory.json
+      - name: Retain rendered review screenshots
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: python-portal-review-${{ github.sha }}
+          path: docs-review
+          retention-days: 7
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         if: github.server_url == 'https://github.com'
         with:

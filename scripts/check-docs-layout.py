@@ -74,7 +74,8 @@ def assert_rendered_health(page: Page, label: str, errors: list[str]) -> None:
               const style = getComputedStyle(element);
               const scrollable = ['auto', 'scroll'].includes(style.overflowX);
               return {
-                label: (element.getAttribute('aria-label') || element.textContent || element.tagName).trim().slice(0, 80),
+                label: (element.getAttribute('aria-label') || element.textContent || element.tagName)
+                  .trim().slice(0, 80),
                 left: box.left,
                 right: box.right,
                 clippedText: ['A', 'BUTTON', 'SUMMARY'].includes(element.tagName)
@@ -136,7 +137,13 @@ def assert_landing_contract(page: Page) -> None:
 
 
 def open_page(browser: Browser, base_url: str, path: str, viewport: dict[str, int]) -> tuple[Page, list[str]]:
-    page = browser.new_page(viewport=viewport)
+    page = browser.new_page(
+        viewport=viewport, color_scheme="dark", permissions=["clipboard-read", "clipboard-write"],
+    )
+    page.route(
+        "https://status.durable-workflow.com/api/current.json",
+        lambda route: route.fulfill(status=200, content_type="application/json", body="{}"),
+    )
     errors = runtime_errors(page)
     response = page.goto(f"{base_url}{path}", wait_until="networkidle")
     assert response is not None and response.ok, f"{path} returned a non-success response"
@@ -151,7 +158,8 @@ def exercise_mobile_controls(page: Page) -> None:
     drawer = page.locator(".md-sidebar--primary")
     assert drawer.is_visible(), "mobile navigation did not open"
     drawer_box = drawer.bounding_box()
-    assert drawer_box is not None and drawer_box["x"] >= -1 and drawer_box["width"] <= 390
+    width = page.viewport_size["width"] if page.viewport_size else 390
+    assert drawer_box is not None and drawer_box["x"] >= -1 and drawer_box["width"] <= width
     close_navigation = drawer.locator(".dw-navigation__close")
     close_navigation.click()
     page.wait_for_function("!document.querySelector('#__drawer').checked")
@@ -166,15 +174,70 @@ def exercise_mobile_controls(page: Page) -> None:
     page.wait_for_timeout(250)
     assert search_input.is_visible(), "mobile search did not open"
     search_box = page.locator(".md-search").bounding_box()
-    assert search_box is not None and search_box["x"] >= -1 and search_box["width"] <= 391
+    assert search_box is not None and search_box["x"] >= -1 and search_box["width"] <= width + 1
     page.locator(".md-search__icon[for='__search']").click()
     page.wait_for_function("!document.querySelector('#__search').checked")
     assert search.evaluate("element => element === document.activeElement"), "search focus was not restored"
 
 
+def exercise_identity(page: Page, theme: str) -> None:
+    page.wait_for_function("document.body.dataset.mdColorScheme === 'default'")
+    if theme == "dark":
+        toggle = page.get_by_role("button", name="Switch to dark mode", exact=True)
+        toggle.focus()
+        toggle.press("Enter")
+        page.wait_for_function("document.body.dataset.mdColorScheme === 'slate'")
+        page.reload(wait_until="networkidle")
+        page.wait_for_function("document.body.dataset.mdColorScheme === 'slate'")
+    page.evaluate("document.fonts.ready")
+    fonts = page.evaluate("[...document.fonts].filter(font => font.status === 'loaded').map(font => font.family)")
+    assert {"Inter", "Space Grotesk", "JetBrains Mono"} <= set(fonts), fonts
+    assert page.locator(".highlight").first.evaluate(
+        "element => getComputedStyle(element).backgroundColor",
+    ) == "rgb(15, 21, 19)"
+    switcher = page.locator("[data-sdk-switcher]")
+    trigger = switcher.locator("summary")
+    trigger.focus()
+    trigger.press("Enter")
+    page.wait_for_function("document.querySelector('[data-sdk-switcher]').open")
+    assert switcher.get_by_role("link", name="Rust", exact=True).get_attribute("href") == "https://rust.durable-workflow.com/"
+    trigger.press("Escape")
+    assert not switcher.evaluate("element => element.open")
+    assert trigger.evaluate("element => element === document.activeElement")
+    assert page.locator("[data-status-label]").text_content() == "Status unknown"
+    assert page.locator(".dw-global-actions .dw-button").is_visible()
+
+
+def exercise_copy_and_steps(page: Page) -> None:
+    spacing = page.locator(".dw-cloud-promotion__eyebrow").evaluate(
+        """element => {
+          const style = getComputedStyle(element);
+          return parseFloat(style.letterSpacing) / parseFloat(style.fontSize);
+        }""",
+    )
+    assert abs(spacing - 0.08) < 0.001, "Eyebrow tracking differs from the canonical design"
+    for selector in (".dw-install-card", ".dw-quickstart-code"):
+        block = page.locator(selector)
+        expected = block.locator("pre code").text_content()
+        # Never inspect a shared host's previous clipboard contents.
+        page.evaluate("navigator.clipboard.writeText('sdk-python-public-copy-control')")
+        block.locator("button[data-clipboard-target]").click()
+        copied = page.evaluate("navigator.clipboard.readText()")
+        assert copied.rstrip("\n") == expected.rstrip("\n"), "Copy changed or truncated the code"
+    assert page.locator("#start-server").count() == 1
+    assert page.locator("#save-greeter").count() == 1
+    assert page.locator("#run-greeter").count() == 1
+    assert page.locator(".dw-quickstart-copy a[href='#start-server']").count() == 1
+    assert page.locator(".dw-quickstart-copy a[href='#run-greeter']").count() == 1
+    code = page.locator(".dw-quickstart-code pre code").text_content() or ""
+    assert "asyncio.run(main())" in code and "workflows=[GreeterWorkflow]" in code
+    assert "activities=[greet]" in code and "task_queue=TASK_QUEUE" in code
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("site", nargs="?", type=Path, default=Path("site"))
+    parser.add_argument("--screenshots", type=Path)
     args = parser.parse_args()
     site = args.site.resolve()
     if not (site / "index.html").is_file():
@@ -183,22 +246,32 @@ def main() -> int:
     with serve(site) as base_url, sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         try:
-            desktop, desktop_errors = open_page(browser, base_url, "/", {"width": 1440, "height": 920})
-            assert_landing_contract(desktop)
-            assert_rendered_health(desktop, "desktop landing", desktop_errors)
-            desktop.close()
+            if args.screenshots:
+                args.screenshots.mkdir(parents=True, exist_ok=True)
+            for width in (1440, 1024, 390, 320):
+                for theme in ("light", "dark"):
+                    page, errors = open_page(browser, base_url, "/", {"width": width, "height": 920})
+                    exercise_identity(page, theme)
+                    assert_landing_contract(page)
+                    assert_rendered_health(page, f"{width} {theme} landing", errors)
+                    exercise_copy_and_steps(page)
+                    if width < 960:
+                        exercise_mobile_controls(page)
+                    assert_rendered_health(page, f"{width} {theme} controls", errors)
+                    if args.screenshots:
+                        page.screenshot(path=str(args.screenshots / f"python-{width}-{theme}.png"), full_page=True)
+                    page.close()
 
             for path in ("/sdk-reference/", "/reference/client/"):
-                page, errors = open_page(browser, base_url, path, {"width": 1440, "height": 920})
-                assert_rendered_health(page, f"desktop {path}", errors)
-                page.close()
+                for width in (1440, 390):
+                    for theme in ("light", "dark"):
+                        page, errors = open_page(browser, base_url, path, {"width": width, "height": 920})
+                        exercise_identity(page, theme)
+                        assert_rendered_health(page, f"{width} {theme} {path}", errors)
+                        if width < 960:
+                            exercise_mobile_controls(page)
+                        page.close()
 
-            mobile, mobile_errors = open_page(browser, base_url, "/", {"width": 390, "height": 844})
-            assert_landing_contract(mobile)
-            assert_rendered_health(mobile, "mobile landing", mobile_errors)
-            exercise_mobile_controls(mobile)
-            assert_rendered_health(mobile, "mobile controls", mobile_errors)
-            mobile.close()
         finally:
             browser.close()
 

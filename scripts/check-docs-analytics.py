@@ -13,12 +13,9 @@ args = parser.parse_args()
 
 build_directory = args.build_directory
 runtime = Path("docs/javascripts/analytics.js").read_text(encoding="utf-8")
-styles = Path("docs/stylesheets/layout.css").read_text(encoding="utf-8")
 
 if (build_directory / "javascripts/analytics.js").read_text(encoding="utf-8") != runtime:
     raise SystemExit("Rendered MkDocs analytics runtime is stale")
-if not re.search(r"\.dw-cloud-promotion__eyebrow\s*\{[^}]*letter-spacing:\s*0;", styles, re.DOTALL):
-    raise SystemExit("Promotion eyebrow letter spacing must remain zero")
 
 for required in (
     "https://static.cloudflareinsights.com/beacon.min.js",
