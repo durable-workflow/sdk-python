@@ -59,13 +59,13 @@
     "https://dev.mysql.com/doc/refman/8.0/en/time-zone-support.html"
   ],
   "normalized_row_decoder": {
-    "bytes": 7423,
+    "bytes": 7588,
     "capture_size_time_and_cancellation_enforced": false,
     "input": "explicit upstream state and exact normalized row dictionaries; no raw driver/transport",
     "normalization_proven": false,
     "path": "tests/worker_startup_snapshot.py",
     "phase_verdict": "unknown",
-    "sha256": "6adc599d9025d1f8e52249b45be486f0e60c8e7e82168c62719c9750adcdb20c"
+    "sha256": "dd02a5dae1fe2a777a802efbc431844d3e9ca8c646303776db9f7e134640c0e8"
   },
   "parameter_driver_selected": null,
   "private_binding_comparator_selected": null,

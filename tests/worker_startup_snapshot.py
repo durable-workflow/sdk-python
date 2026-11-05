@@ -76,7 +76,7 @@ def text(value: Any, limit: int) -> bool:
 
 
 def identity_fields(kind: str, identity: OriginalIdentity) -> dict[str, str]:
-    require(type(kind) is str and kind in {"task", "run"}, "UNKNOWN_PROJECTION")
+    require(type(kind) is str and len(kind) <= 4 and kind in {"task", "run"}, "UNKNOWN_PROJECTION")
     require(type(identity) is OriginalIdentity, "IDENTITY_INVALID")
     require(
         text(identity.namespace, 128)
@@ -141,7 +141,7 @@ def typed_row(kind: str, row: dict[str, Any], expected: dict[str, str]) -> dict[
     for field in ("session_time_zone", "system_time_zone"):
         require(text(row[field], 64) and bool(row[field]), "TIMEZONE_LABEL_INVALID", field)
     require(
-        type(row["status"]) is str and row["status"] in (TASK_STATUSES if kind == "task" else RUN_STATUSES),
+        text(row["status"], 32) and row["status"] in (TASK_STATUSES if kind == "task" else RUN_STATUSES),
         "STATUS_INVALID",
         "status",
     )
@@ -178,7 +178,9 @@ def decode_snapshot(
     try:
         expected = identity_fields(kind, identity)
         require(
-            type(source_state) is str and source_state in {"complete", "missing", "truncated", "invalid"},
+            type(source_state) is str
+            and len(source_state) <= 9
+            and source_state in {"complete", "missing", "truncated", "invalid"},
             "SOURCE_STATE_INVALID",
         )
         if source_state != "complete":
@@ -191,7 +193,8 @@ def decode_snapshot(
         row = rows[0]
         require(
             type(row) is dict
-            and all(type(key) is str for key in row)
+            and len(row) == len(TASK_FIELDS if kind == "task" else RUN_FIELDS)
+            and all(type(key) is str and len(key) <= 64 for key in row)
             and set(row) == (TASK_FIELDS if kind == "task" else RUN_FIELDS),
             "FIELD_SET_INVALID",
         )
