@@ -1,0 +1,173 @@
+# Bounded original-row collector source proposal
+
+This is the next unexecuted #123 design after the supplied-row decoder in #283.
+It specifies a fixture-only SQL collector, normalization and cancellation path;
+it supplies no driver, launcher, installed dependency, database connection or
+operating admission. `proposal.json` contains proposed transitions, bounds and
+vectors, not observed results. `driver-sources.json` binds public source files
+read as data, without importing them or retrieving a package archive.
+
+The historical SDK, Server and Core identities, six cases and original failure
+distinctions in `../proposal.json` remain authoritative. The updated observer and
+decoder are source preparation, not an overlay on the historical installed SDK.
+No #184 executor, acquisition source or blocked review is reused here.
+
+## Proposed driver boundary
+
+Use a dedicated observer process, with one connection and no retry, for each
+before/after SQL pair. The proposed driver family is PyMySQL 1.2.3, source commit
+`c990e86083c26493f3285b1e047902994c4b1811`. Its package archive, complete runtime
+import closure, authentication/TLS dependencies and installed input are **not
+selected or acquired**. Public release/source identity is only an input to this
+proposal; it does not establish a supported or qualified historical tuple.
+
+The process receives only the fixture identity and dedicated SELECT-only
+fixture connection parameters through the future owner's private input channel.
+Never obtain production endpoints, ambient credentials, config files, plugin
+credentials or a user's home defaults. Network membership, peer identity,
+authentication, grants and TLS trust must be fixed in the later input packet.
+No opportunistic RSA package installation, plaintext fallback, server-key fetch,
+reconnect, discovery or endpoint substitution is permitted.
+
+The driver source has consequential defaults:
+
+- Connection setup sends `SET NAMES`; setting `autocommit=None`, `sql_mode=None`
+  and `init_command=None` avoids its optional further setup commands. The
+  collector must inventory the actual handshake and this observer-session
+  character-set statement. Require the driver's latest authenticated OK status
+  to show autocommit before either SELECT; refuse an inherited false state
+  without changing it. No transaction or time-zone change is proposed.
+- Socket read/write timeouts bound socket operations, not the complete pair.
+  Buffered row reading and multipart packets have no proposed receive bound.
+  `max_allowed_packet` is not a receive-size limit.
+- Default converters produce Python values including datetimes. The proposed
+  raw path disables Unicode and type-code decoders, retaining only the driver's
+  parameter encoders. A tuple cursor preserves positional fields; dictionary
+  mapping must follow exact, unique column-description validation.
+
+These facts are bound to [connection source](https://github.com/PyMySQL/PyMySQL/blob/c990e86083c26493f3285b1e047902994c4b1811/pymysql/connections.py),
+[cursor source](https://github.com/PyMySQL/PyMySQL/blob/c990e86083c26493f3285b1e047902994c4b1811/pymysql/cursors.py)
+and [converter source](https://github.com/PyMySQL/PyMySQL/blob/c990e86083c26493f3285b1e047902994c4b1811/pymysql/converters.py).
+The future adapter is still missing; stock driver use alone satisfies none of
+the complete-read, byte-limit, absolute-deadline or cleanup obligations below.
+
+## SQL and raw normalization
+
+Keep the two accepted SELECT projections and original binary identity filters.
+At adapter construction, translate only the closed named placeholder tokens
+(`:namespace`, `:original_run_id`, `:original_task_id`,
+`:workflow_instance_id`) to the driver's `%(name)s` syntax. Require the exact
+expected token inventory in each immutable SQL text. Call `execute(query,
+parameters)` with the validated identity dictionary; never format values into
+SQL, quote them locally, log `mogrify`, or allow arbitrary SQL/token replacement.
+The driver's parameter API is documented [here](https://pymysql.readthedocs.io/en/latest/modules/cursors.html#pymysql.cursors.Cursor.execute).
+It performs driver escaping, not server-side prepared execution.
+
+The proposed raw reader checks each requested byte count **before** calling the
+pinned driver's `_read_bytes`. It refuses a request above 32 KiB or cumulative
+receive reservation above 64 KiB for the entire connection/pair, including
+handshake, setup, descriptions, rows and terminators. This also bounds multipart
+assembly: header reservations and every component body consume the same budget.
+A failed read does not refund that reservation or permit a retry. The adapter
+must be source-reviewed against this exact private method before adoption; it
+has not been implemented or exercised here.
+Construct with `defer_connect=True`, initialize the deadline/receive guard before
+any handshake, and connect only after fixture identity/input validation. The
+complete process lifetime and its output are also bounded by the owner. Send
+driver stdout/stderr to no retained log; only the selected framed channel may
+publish fixed codes and allowlisted projection data.
+
+Require the expected 23 task / 9 run descriptions, exact column order and unique
+ASCII aliases before constructing a dictionary. Require all row tuples to have
+the same exact length, at most two rows, and the complete expected result
+terminator with no extra result set. Protocol errors, premature EOF, unexpected
+LOCAL INFILE/auth exchange, extra results or changed metadata are refusals.
+No `fetchmany(2)` or SQL `LIMIT 2` is a substitute for complete bounded reading.
+
+Each scalar must be exactly bytes or null. Decode bytes as strict ASCII; refuse
+other Python types or malformed bytes without calling `str` or `repr`. Preserve
+null, empty bytes and literal `NULL` distinctly. Counters and presence bits stay
+canonical decimal text for the existing decoder. Retain timestamp text without
+timezone arithmetic; accept the declared 26-character microsecond form, or
+right-pad a valid 19-character whole-second form with `.000000`. Refuse partial
+fractions, date-only, zero/invalid dates and extra suffixes through the decoder.
+Right-padding records zero fractional digits, not a recovered clock sample.
+
+The capped raw capture is the selected projection's scalar bytes plus ordered
+column metadata and terminal/length flags, not a packet dump. Authentication,
+SQL parameter expansion, private lease-owner values, payloads and exception
+text must never enter it. Proposed framed output is at most 32 KiB, with one
+terminal document, exact byte length and no trailing output. Invalid output is
+not parsed partially. Resource termination is a refusal, never success.
+
+`capture_state` and `projection_state` remain separate. A complete zero-row
+result has complete capture but a missing projection and no database clock.
+Never promote a partial capture because the first row looks valid. Never borrow
+the task clock for a missing run, or overwrite a before result with an after
+result. Store the raw length/hash, normalized projection and fixed refusal code
+under the exact case/phase/read identity; expose no arbitrary driver errors.
+
+## One budget, monotonic brackets and teardown
+
+At case entry set its unchanged 30-second monotonic deadline. For each snapshot
+phase set `snapshot_deadline = min(case_deadline, phase_started + 5s,
+total_deadline)`. The same deadline covers connection/authentication/setup,
+both sequential SELECTs, normalization and output. Future registration/API
+reads must share this phase deadline, not receive another five seconds each.
+Record monotonic before/after brackets for the pair and each actual read, plus
+the returned database UTC/timezone context when present.
+
+An exhausted case budget makes a new before/after read unavailable. A started
+read that overruns or is interrupted is truncated. A known protocol/shape
+violation is invalid. None is complete. In particular, a failure at the case
+deadline cannot acquire a fresh diagnostic budget. Required evidence can remain
+missing: preserve the original failure and report an incomplete comparison.
+
+The original outer cleanup allowance remains ten seconds, ending no later than
+`min(case_deadline + 10s, total_deadline)`. It is a cleanup ceiling, not extra
+snapshot time. Retain before observation on success/failure, then bracket worker
+shutdown/drain, then attempt a separate same-original-row after observation
+only when the original case budget remains. Every action receives the existing
+absolute ceiling, without resetting it per connection/process/container.
+
+The future fixture owner must run blocking driver work in an owned process;
+thread cancellation or a timed-out coroutine does not prove a driver stopped.
+Before its deadline, ordinary close may send COM_QUIT within the remaining
+socket budget. At the deadline stop reading/draining, stop the exact child and
+close/reap it within the shared cleanup ceiling. Do not call cursor cleanup
+that consumes unread results after expiry. Independent owner-exit/deadline
+cleanup, confirmed process exit, and final fixture-resource absence are required
+before reporting cleanup complete. Any survivor retains an explicit incomplete
+cleanup result and owner escalation; it cannot be relabeled complete.
+Client exit/socket closure alone does not prove a server-side SELECT stopped.
+On an interrupted case, the fixture owner's existing cleanup must stop and
+verify absence of its owned backend within that same ceiling. Until then,
+server-side query termination remains unknown; add no KILL/session mutation or
+new query solely to manufacture a cancellation receipt.
+
+This describes an unimplemented #123 fixture owner. It selects no supervisor,
+platform-specific kill mechanism or reusable #184 custody implementation. Those
+exact sources and control results belong in the later operating packet.
+
+## Limits and next work
+
+Each SQL result is a separate view. A common connection, UTC sample, timezone
+label or nondecreasing monotonic bracket establishes no shared database/worker
+clock, atomic snapshot, DATETIME storage domain or lease/deadline comparison.
+Those comparisons remain unavailable until actual driver/session/storage/DST
+behavior is bound and qualified.
+
+Even complete task/run projections establish no current registration/private
+claim/owner/attempt binding, full cloned-client/body coverage, hydration,
+publication, cleanup causality or original root cause. Those independent parts
+of the accepted comparator still require implementation and explicit
+complete/missing/truncated/invalid states.
+
+sdk-python next implements the proposed raw reader, closed SQL-token adapter,
+normalizer and process/deadline integration with inert source controls from the
+vector list. Server reviews historical fields, views and timestamp limits;
+General owns later exact historical input/execution selection. Package/TLS/auth
+closure, byte-capped actual transport, owner cleanup, image/platform digests and
+historical installed-SDK provenance remain genuinely pending. No SQL/driver
+import, package solve/install, container, historical API or runtime invocation
+is authorized or performed by this source proposal.

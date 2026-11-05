@@ -1,0 +1,148 @@
+{
+  "status": "unexecuted-source-proposal-not-an-execution-manifest",
+  "issue": "https://github.com/durable-workflow/sdk-python/issues/123",
+  "owner": "sdk-python",
+  "accepted_contract": "../proposal.json",
+  "proposed_driver": {
+    "name": "PyMySQL",
+    "version": "1.2.3",
+    "source": "c990e86083c26493f3285b1e047902994c4b1811",
+    "archive": null,
+    "installed_input": null,
+    "adapter_source": null,
+    "selected_for_execution": false
+  },
+  "sql": {
+    "kind_order": [
+      "task",
+      "run"
+    ],
+    "connection_per_phase": 1,
+    "attempts_per_phase": 1,
+    "columns": {
+      "task": 23,
+      "run": 9
+    },
+    "row_limit": 2,
+    "closed_placeholder_translation": {
+      ":namespace": "%(namespace)s",
+      ":original_run_id": "%(original_run_id)s",
+      ":original_task_id": "%(original_task_id)s",
+      ":workflow_instance_id": "%(workflow_instance_id)s"
+    },
+    "parameter_values": "driver execute arguments only",
+    "extra_results": "refuse",
+    "missing_read_reuses_other_clock": false,
+    "transaction_or_timezone_change": false
+  },
+  "driver_configuration": {
+    "charset": "utf8mb4",
+    "use_unicode": false,
+    "converters": "parameter encoders only; no integer type-code decoders",
+    "cursor": "tuple; exact unique ordered aliases required before dictionary mapping",
+    "autocommit": null,
+    "inherited_autocommit_must_be_true": true,
+    "sql_mode": null,
+    "init_command": null,
+    "read_default_file": null,
+    "read_default_group": null,
+    "local_infile": false,
+    "multi_statements": false,
+    "debug": false,
+    "session_setup_inventory": [
+      "authentication handshake",
+      "driver SET NAMES on dedicated observer connection"
+    ],
+    "authentication_tls_and_grants": null,
+    "retry_reconnect_or_fallback": false,
+    "defer_connect": true,
+    "guard_initialized_before_connect": true,
+    "driver_stdout_stderr": "discard; fixed-code framed output only"
+  },
+  "proposed_bounds": {
+    "case_seconds": 30,
+    "snapshot_seconds_inside_case_window": 5,
+    "cleanup_seconds_after_case_deadline": 10,
+    "total_seconds_including_setup_cleanup": 900,
+    "receive_request_bytes": 32768,
+    "receive_reservation_bytes_per_phase": 65536,
+    "framed_output_bytes_per_phase": 32768,
+    "query_count_per_phase": 2,
+    "concurrent_observer_processes": 1,
+    "observer_within_original_runner_cpu": 1,
+    "observer_within_original_runner_memory_mib": 512,
+    "independent_observer_container": false,
+    "additional_resources_selected": false
+  },
+  "deadlines": {
+    "case": "case_started_monotonic + 30",
+    "phase": "min(case_deadline, phase_started_monotonic + 5, total_deadline)",
+    "cleanup": "min(case_deadline + 10, total_deadline)",
+    "read_extension_after_case_timeout": false,
+    "phase_budget_shared_with_future_registration_api": true,
+    "deadline_reset_per_action": false,
+    "blocking_driver_process": "unimplemented; source/input and exact exit/cleanup controls required",
+    "thread_or_coroutine_cancel_is_exit_proof": false,
+    "cleanup_complete_requires": "confirmed exact process exit and independent fixture-resource absence",
+    "client_exit_proves_server_query_exit": false,
+    "interrupted_case_backend_cleanup": "confirm owned backend absence within existing cleanup ceiling; no additional KILL/session command"
+  },
+  "capture_states": {
+    "complete": "all expected descriptions/rows/terminators; no extra result; byte/frame/absolute-time bounds satisfied",
+    "missing": "no complete read started or no remaining case budget",
+    "truncated": "read started but hit interruption/deadline/receive/output cap or premature EOF",
+    "invalid": "known protocol/metadata/shape/normalization refusal"
+  },
+  "normalization": {
+    "raw_types": [
+      "bytes",
+      "null"
+    ],
+    "encoding": "strict ASCII",
+    "unknown_native_types": "refuse without repr/str",
+    "null_empty_literal_NULL": "distinct",
+    "numeric_values": "retain canonical decimal text for the existing decoder",
+    "timestamps": [
+      "valid 26-character six-fractional-digit text unchanged",
+      "valid 19-character whole-second text gets .000000, without timezone conversion"
+    ],
+    "other_timestamps": "refuse",
+    "zero_rows": "complete capture, missing projection, no database clock",
+    "terminal_document": "one bounded exact-length frame without trailing output",
+    "raw_retention": "selected scalar projection and ordered descriptions only; no packet/auth/error dumps"
+  },
+  "linkage_limits": {
+    "phase_verdict": "unknown",
+    "globally_atomic_snapshot": false,
+    "timezone_labels_establish_utc_storage": false,
+    "private_claim_registration_api_linkage": "not implemented by this proposal",
+    "original_root_cause_established": false
+  },
+  "implementation_steps": [
+    "closed SQL-token adapter and raw tuple normalizer with pure byte fixtures",
+    "pinned private-reader receive guard with inert fragmented-packet controls",
+    "absolute-budget and framed-output owner integration with inert blocked/trickling child controls",
+    "exact-source/input/owner packet and independent cleanup controls before historical execution"
+  ],
+  "remaining_execution_inputs": {
+    "adapter_and_owner_source": null,
+    "driver_wheel_and_complete_offline_closure": null,
+    "fixture_auth_tls_grants_and_network": null,
+    "backend_runner_platform_digests": null,
+    "installed_historical_sdk_provenance": null,
+    "driver_session_storage_dst_qualification": null,
+    "registration_private_claim_api_linkage": null,
+    "independent_deadline_exit_cleanup_controls": null,
+    "complete_packet_review": null,
+    "general_exact_invocation_admission": null
+  },
+  "actual": {
+    "driver_imports": 0,
+    "package_archives_acquired": 0,
+    "sql_queries": 0,
+    "historical_api_requests": 0,
+    "containers_started": 0,
+    "execution_admitted": false,
+    "qualification_result": null
+  }
+}
