@@ -212,12 +212,13 @@ async def test_supervised_worker_preserves_received_context(owner: Any, configur
     worker.activities["remote"] = inspect_activity_context
     work = task()
     if configured:
-        work.update(attempt_number=3, workflow_id="0", run_id="017",
+        work.update(attempt_number=3, workflow_id="0", run_id="017", activity_execution_id="execution-017",
                     retry_policy={"max_attempts": 3, "future": [True, None]})
     assert await worker._run_activity_task(work) == "completed"
     client.fail_activity_task.assert_not_awaited()
     assert client.complete_activity_task.await_args.kwargs["result"] == {
         "workflow_id": "0" if configured else None, "run_id": "017" if configured else None,
+        "activity_execution_id": "execution-017" if configured else None,
         "attempt": 3 if configured else 1, "policy_provided": configured,
         "policy": {"max_attempts": 3, "future": [True, None]} if configured else None,
         "maximum": 3 if configured else None, "unlimited": False, "last": True if configured else None,

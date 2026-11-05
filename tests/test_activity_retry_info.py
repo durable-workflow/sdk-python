@@ -13,7 +13,8 @@ from durable_workflow import ActivityInfo, ActivityRetryInfo, activity
 def inspect_activity_context(_marker: str | None = None) -> dict[str, Any]:
     info = activity.context().info
     retry = info.retry_info
-    return {"workflow_id": info.workflow_id, "run_id": info.run_id, "attempt": retry.attempt_number,
+    return {"workflow_id": info.workflow_id, "run_id": info.run_id,
+            "activity_execution_id": info.activity_execution_id, "attempt": retry.attempt_number,
             "policy_provided": retry.policy_provided, "policy": retry.policy(), "maximum": retry.max_attempts(),
             "unlimited": retry.is_unlimited(), "last": retry.is_last_configured_attempt()}
 

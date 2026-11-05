@@ -1353,12 +1353,14 @@ class TestWorkflowTaskExecution:
         commands = await worker._run_workflow_task({
             "task_id": "local-task", "workflow_type": "local-worker-wf", "workflow_task_attempt": 1,
             "workflow_id": "0", "run_id": "017", "retry_policy": {"max_attempts": 9},
+            "activity_execution_id": "unrelated-parent-metadata",
             "history_events": [], "arguments": serializer.envelope(["ignored"]), "payload_codec": "avro",
         })
         assert commands is not None
         assert [command["type"] for command in commands] == ["record_local_activity", "complete_workflow"]
         assert serializer.decode_envelope(commands[-1]["result"]) == {
-            "workflow_id": "0", "run_id": "017", "attempt": 1, "policy_provided": False,
+            "workflow_id": "0", "run_id": "017", "activity_execution_id": None,
+            "attempt": 1, "policy_provided": False,
             "policy": None, "maximum": None, "unlimited": False, "last": None,
         }
         mock_client.fail_workflow_task.assert_not_awaited()
@@ -3341,7 +3343,7 @@ class TestActivityTaskExecution:
     @pytest.mark.parametrize("configured", [False, True])
     async def test_ordinary_worker_preserves_received_context(self, mock_client: AsyncMock, configured: bool) -> None:
         worker = Worker(mock_client, task_queue="q1", activities=[inspect_activity_context])
-        metadata = {"attempt_number": 3, "workflow_id": "0", "run_id": "017",
+        metadata = {"attempt_number": 3, "workflow_id": "0", "run_id": "017", "activity_execution_id": "execution-017",
                     "retry_policy": {"max_attempts": 3, "future": [True, None]}} if configured else {}
         task = {"task_id": "metadata-task", "activity_attempt_id": "metadata-attempt",
                 "activity_type": "context.metadata", "arguments": serializer.envelope([]), "payload_codec": "avro",
@@ -3350,6 +3352,7 @@ class TestActivityTaskExecution:
         mock_client.fail_activity_task.assert_not_awaited()
         assert mock_client.complete_activity_task.await_args.kwargs["result"] == {
             "workflow_id": "0" if configured else None, "run_id": "017" if configured else None,
+            "activity_execution_id": "execution-017" if configured else None,
             "attempt": 3 if configured else 1, "policy_provided": configured,
             "policy": {"max_attempts": 3, "future": [True, None]} if configured else None,
             "maximum": 3 if configured else None, "unlimited": False, "last": True if configured else None,

@@ -268,6 +268,53 @@ receipt = yield ctx.start_child_workflow(
 )
 ```
 
+## Activity execution identity (unreleased)
+
+Inside an activity, `activity.context().info.activity_execution_id` exposes the
+logical execution ID received from Server. `workflow_id` and `run_id` identify
+its owning workflow and run. The execution ID is the idempotency key for the
+logical call across retries. `task_id` and `activity_attempt_id` identify an
+attempt and must not replace it.
+
+Use the received key when calling an external service that supports idempotency:
+
+```python
+from durable_workflow import activity
+from durable_workflow.errors import NonRetryableError
+
+
+def current_idempotency_key() -> str:
+    execution_id = activity.context().info.activity_execution_id
+    if execution_id is None:
+        raise NonRetryableError("this operation requires a Server activity execution ID")
+    return execution_id
+```
+
+Pass that key to the external service's idempotency mechanism. Keep different
+external operations within one activity distinguishable using your own stable
+operation suffix. Idempotency still depends on the external service honoring
+the key.
+
+An execution ID is public idempotency metadata. Application code and tests can
+construct, copy or deserialize an `ActivityInfo` with matching IDs; this does
+not prove ownership of a live Server claim or authenticate or authorize an
+external effect. Keep the external service's credentials, current-attempt and
+heartbeat authority checks, per-effect key suffixes, and outcome
+compare-and-swap or reconciliation. The ID replaces none of those controls.
+
+The accessor is read-only. Missing, invalid or blank execution IDs are `None`,
+including on older claims, and are never derived from task, attempt or session
+IDs. Nonblank received strings are preserved exactly. Session-routed activities
+use their ordinary activity claim identity. Prepared local activities expose the
+validated admission receipt's execution ID. Inline local activities have no
+admitted execution ID and expose `None`, while retaining their parent workflow
+and run IDs. Server-free mocks do not create Server activity identity.
+
+This source addition is unreleased and is outside the current typed-value
+release candidate. Published-package retry identity and execution-guarantees
+guide acceptance remain tracked in
+[the shared identity issue](https://github.com/durable-workflow/.github/issues/211).
+
 ## Local activities
 
 Use a local activity for short work that should run in the workflow worker
@@ -998,6 +1045,38 @@ and attrs-style classes. Rebuild domain objects explicitly inside workflows or
 activities, for example `OrderInput(order_id=UUID(data["order_id"]), ...)`.
 Adapter output is part of the durable history contract, so changing that shape
 is a workflow compatibility change.
+
+## Whole run histories and workflow lists (unreleased)
+
+`Client.get_history(...)` and `Client.list_workflows(...)` each return one
+Server page. Use the lazy iterators to visit all pages without collecting
+them in memory:
+
+```python
+async for execution in client.iter_workflows(workflow_type="invoice", page_size=100):
+    print(execution.workflow_id)
+
+async for event in client.iter_history(workflow_id, run_id, page_size=100):
+    print(event["event_type"])
+```
+
+`WorkflowHandle.iter_history(...)` offers the same traversal when the handle
+has an explicit `run_id`. List iterators yield `WorkflowExecution` values;
+history iterators yield the event dictionaries from `get_history` in Server
+order. Filters, run identity, namespace and page size stay fixed. A supplied
+`next_page_token` resumes at that opaque continuation; do not parse or alter it.
+
+The next page is fetched only after consuming the current page. Stop or close
+the iterator to avoid later requests. Empty pages with a continuation are
+followed, while a missing or empty token ends traversal. HTTP errors,
+cancellation and malformed or cyclic continuations propagate, possibly after
+earlier items have been yielded. A changing namespace is refused before the
+next request. This traverses the Server's cursor results; it does not create a
+snapshot of a concurrently changing workflow list.
+
+These helpers are unreleased source tracked in
+[the shared paging issue](https://github.com/durable-workflow/.github/issues/247).
+Published-package and actual multi-page acceptance remain separate.
 
 ## Typed activity values
 
