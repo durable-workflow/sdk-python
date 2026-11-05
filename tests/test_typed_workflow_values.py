@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from durable_workflow import TypedValueError, serializer, workflow
+from durable_workflow.external_storage import LocalFilesystemExternalStorage
 from durable_workflow.workflow import (
     CompleteUpdate,
     CompleteWorkflow,
@@ -20,6 +21,7 @@ from durable_workflow.workflow import (
     StartChildWorkflow,
     WorkflowContext,
     apply_update,
+    commands_to_server_commands,
     query_state,
     replay,
 )
@@ -47,6 +49,12 @@ class Approval:
 
 ADA = Customer("Ada", Tier.GOLD, ["vip"])
 ADA_NEUTRAL = {"name": "Ada", "tier": "gold", "tags": ["vip"]}
+
+
+@workflow.defn(name="tests.replay.typed-terminal-result")
+class TypedTerminalResult:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        return (yield ctx.schedule_activity("tests.typed.echo", [], result_type=Customer))
 
 
 @workflow.defn(name="tests.replay.typed-workflow-values", typed=True)
@@ -166,6 +174,39 @@ def test_child_arguments_and_terminal_values_travel_as_neutral_bytes() -> None:
     assert ContinueAsNew(arguments=[ADA]).to_server_command("q")["arguments"] == serializer.envelope([ADA_NEUTRAL])
     # The command keeps the authored value; only the wire form is neutral.
     assert CompleteWorkflow(ADA).result is ADA
+
+
+@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize(("command", "key", "neutral"), [
+    (CompleteWorkflow(ADA), "result", ADA_NEUTRAL),
+    (CompleteUpdate("typed-update", {"customer": ADA, "tier": Tier.GOLD}),
+     "result", {"customer": ADA_NEUTRAL, "tier": "gold"}),
+    (ContinueAsNew(arguments=[ADA, Tier.GOLD]), "arguments", [ADA_NEUTRAL, "gold"]),
+    (CompleteWorkflow(ADA_NEUTRAL), "result", ADA_NEUTRAL),
+    (CompleteUpdate("plain-update", None), "result", None),
+    (ContinueAsNew(arguments=[ADA_NEUTRAL, "gold"]), "arguments", [ADA_NEUTRAL, "gold"]),
+])
+def test_worker_batch_preserves_typed_terminal_wire_contract(
+    tmp_path: Path, external: bool, command: Any, key: str, neutral: Any,
+) -> None:
+    storage = LocalFilesystemExternalStorage(tmp_path) if external else None
+    options = {"size_warning": None, "external_storage": storage,
+               "external_storage_threshold_bytes": 1 if external else None}
+    direct = command.to_server_command("q", **options)
+    authored = command.arguments if isinstance(command, ContinueAsNew) else command.result
+    before = CompleteWorkflow({"plain": [True, 0, b"bytes"]})
+    after = CompleteUpdate("tail", [None, 1.5])
+    batch = commands_to_server_commands([before, command, after], "q", **options)
+    assert len(batch) == 3
+    assert serializer.decode_envelope(batch[0]["result"], external_storage=storage) == before.result
+    assert serializer.decode_envelope(batch[2]["result"], external_storage=storage) == after.result
+    assert serializer.decode_envelope(batch[1][key], external_storage=storage) == neutral
+    assert {k: v for k, v in batch[1].items() if k != key} == {k: v for k, v in direct.items() if k != key}
+    if external:
+        assert "external_storage" in batch[1][key]
+    else:
+        assert batch[1] == direct
+    assert (command.arguments if isinstance(command, ContinueAsNew) else command.result) is authored
 
 
 def test_a_child_result_type_mismatch_is_raised_at_the_yield() -> None:
