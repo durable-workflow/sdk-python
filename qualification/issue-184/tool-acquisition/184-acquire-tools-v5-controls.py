@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from copy import deepcopy
 import hashlib
+import ast
 import importlib.util
 import io
 import json
@@ -399,23 +400,24 @@ def bootstrap_environment_countercontrol():
                 assert all(observed[0].get(key) == value for key, value in SENTINELS.items())
 
 
-def openssl_environment_control():
-    real_run = subprocess.run
-    observed = []
-    def child_probe(argv, **kwargs):
-        assert argv == ['/usr/bin/openssl', 'x509', '-noout', '-subject', '-nameopt', 'RFC2253']
-        assert kwargs['env'] == new.MINIMAL_ENV and kwargs['close_fds'] is True
-        # Exercise the effective child environment with local stdlib only; no tool wheel or CA/network work.
-        probe = real_run(['/usr/bin/python3', '-I', '-c',
-                          'import json,os; print(json.dumps(dict(os.environ)))'],
-                         env=kwargs['env'], close_fds=kwargs['close_fds'], capture_output=True,
-                         timeout=2, check=True)
-        observed.append(json.loads(probe.stdout))
-        return subprocess.CompletedProcess(argv, 0, stdout=b'subject=CN=Synthetic Control\n')
-    with patch.dict(os.environ, SENTINELS, clear=False), patch.object(new.subprocess, 'run', side_effect=child_probe):
-        assert new.ca_subject(b'synthetic non-PEM control') == 'CN=Synthetic Control'
-    assert observed == [new.MINIMAL_ENV]
-    assert not set(SENTINELS) & set(observed[0])
+def pinned_bundle_without_child_control():
+    ca = new.read_regular(new.CA_SOURCE, 300000)
+    with patch.dict(os.environ, SENTINELS, clear=False), \
+         patch.object(subprocess, 'run', side_effect=AssertionError('NO_CHILD_FOR_PINNED_CA')) as child:
+        proof = new.verify_ca_bundle(ca)
+        assert proof['sha256'] == new.CA_SHA and proof['certificates'] == 118 and proof['blocked_subjects'] == 0
+        refuses(lambda: new.verify_ca_bundle(ca+b'changed'), 'EXISTING_CLEAN_CA_PROVENANCE_CHANGED')
+        assert child.call_count == 0
+
+
+def owner_has_no_child_launch_api():
+    tree=ast.parse((BASE/'184-acquire-tools-v5.py').read_bytes())
+    for node in ast.walk(tree):
+        if isinstance(node,ast.Import):assert all(alias.name!='subprocess' for alias in node.names)
+        if isinstance(node,ast.ImportFrom):assert node.module!='subprocess'
+        if isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute) and isinstance(node.func.value,ast.Name):
+            assert not (node.func.value.id=='os' and (node.func.attr in {'system','popen','fork','forkpty','posix_spawn','posix_spawnp'}
+                        or node.func.attr.startswith(('exec','spawn'))))
 
 
 def ambient_owner_environment_refuses():
@@ -722,7 +724,8 @@ with patch.object(socket, 'create_connection', side_effect=AssertionError('NO_NE
     check('redirect-refusal-ledger-and-zero-archives', redirect_failure_cleans_prior_archive)
     check('v3-fdopen-leaks-archive-and-fd-v4-closes-and-removes', fdopen_failure_countercontrol)
     check('v3-bootstrap-inherits-sentinels-v4-closed-owner-env', bootstrap_environment_countercontrol)
-    check('openssl-child-actual-effective-closed-env', openssl_environment_control)
+    check('exact-reviewed-CA-reused-without-child-changed-bytes-refuse', pinned_bundle_without_child_control)
+    check('guarded-owner-has-no-child-launch-surface',owner_has_no_child_launch_api)
     check('owner-refuses-ambient-env-before-pool-or-network', ambient_owner_environment_refuses)
     check('cleanup-identity-collision-preserves-unknown-node-nonpass', cleanup_refuses_unknown_replacement)
     check('cleanup-directory-collision-preserves-unknown-tree-nonpass', cleanup_refuses_replaced_directory)

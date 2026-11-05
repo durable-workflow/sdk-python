@@ -1,11 +1,11 @@
 {
   "actual_failed_archive_cause_established": false,
-  "bootstrap_sha256": "00349dc4ff6bec00072bcdfd01fffe5c13730de64f78e8dc940324c755adfe20",
-  "cases": 85,
+  "bootstrap_sha256": "12679c567452dd4cdda7dbd789ac600ef0b5455a1225c95cf59d066fda472569",
+  "cases": 86,
   "downloaded_wheel_imports_or_installs": 0,
   "failed": 0,
   "original_source_sha256": "e0b8955c8c26c68333e1439c4eb195ef803d710d68f4a4b297b3dd17fcfd7c54",
-  "passed": 85,
+  "passed": 86,
   "real_network_requests": 0,
   "results": [
     {
@@ -185,7 +185,11 @@
       "outcome": "pass"
     },
     {
-      "id": "openssl-child-actual-effective-closed-env",
+      "id": "exact-reviewed-CA-reused-without-child-changed-bytes-refuse",
+      "outcome": "pass"
+    },
+    {
+      "id": "guarded-owner-has-no-child-launch-surface",
       "outcome": "pass"
     },
     {
@@ -351,5 +355,5 @@
   ],
   "scope": "synthetic source controls, not archive acquisition/SDK/runtime qualification",
   "simulated_transport_calls": 17,
-  "successor_source_sha256": "96d4a5b1b5687d11779a244a2a6946555c24020b3b54e93e43e61be2f6722e2c"
+  "successor_source_sha256": "234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb"
 }

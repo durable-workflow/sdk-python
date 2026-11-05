@@ -1,0 +1,86 @@
+{
+  "acquisition_accepted": false,
+  "cases": 18,
+  "downloaded_wheel_imports_or_installs": 0,
+  "failed": 0,
+  "new_general_decision": null,
+  "passed": 18,
+  "real_network_requests": 0,
+  "results": [
+    {
+      "id": "synthetic-owner-exit-independent-check-and-outer-readback",
+      "outcome": "pass"
+    },
+    {
+      "id": "owner-failure-is-refusal-zero-archives",
+      "outcome": "pass"
+    },
+    {
+      "id": "active-deadline-stops-and-reaps-exact-owner",
+      "outcome": "pass"
+    },
+    {
+      "id": "candidate-marker-required-before-preserve",
+      "outcome": "pass"
+    },
+    {
+      "id": "independent-readback-refusal-cleans-archives",
+      "outcome": "pass"
+    },
+    {
+      "id": "explicit-outer-abort-stops-owner-cleans-archives",
+      "outcome": "pass"
+    },
+    {
+      "id": "guardian-crash-outer-stops-exact-owner-cleans-archives",
+      "outcome": "pass"
+    },
+    {
+      "id": "survivor-keeps-all-custody-until-confirmed-deferred-exit",
+      "outcome": "pass"
+    },
+    {
+      "id": "actual-owner-and-terminal-compose-with-synthetic-six-tool-closure",
+      "outcome": "pass"
+    },
+    {
+      "id": "actual-owner-transport-timeout-refuses-integrated-preserve",
+      "outcome": "pass"
+    },
+    {
+      "id": "outer-disappears-before-arming-no-owner-work",
+      "outcome": "pass"
+    },
+    {
+      "id": "outer-disappears-with-blocked-owner-stops-before-work",
+      "outcome": "pass"
+    },
+    {
+      "id": "descriptor-frame-roundtrip-preserves-scoped-handle",
+      "outcome": "pass"
+    },
+    {
+      "id": "oversized-wire-frame-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "duplicate-frame-key-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "non-object-frame-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "actual-root-owned-interpreter-clean-env-I-S-startup",
+      "outcome": "pass"
+    },
+    {
+      "id": "missing-new-decision-refuses-before-authority-or-fork",
+      "outcome": "pass"
+    }
+  ],
+  "scope": "synthetic role-protocol controls; start/admitted-data API never called with a decision",
+  "selected_archives_acquired": 0,
+  "source_sha256": "08773d12f2fe52249907eae97af4cf4d97db43f47125436d41ccaa70b8db0994"
+}

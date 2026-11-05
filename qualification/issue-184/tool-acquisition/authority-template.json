@@ -1,0 +1,28 @@
+{
+  "cpu_affinity": null,
+  "decision": null,
+  "environment": {
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "PATH": "/usr/bin:/bin",
+    "TZ": "UTC"
+  },
+  "host": "lab4",
+  "inputs": {
+    "bootstrap": "12679c567452dd4cdda7dbd789ac600ef0b5455a1225c95cf59d066fda472569",
+    "ca": "2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b",
+    "guardian": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70",
+    "interpreter": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41",
+    "library": "982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87",
+    "owner": "234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb",
+    "selection": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c",
+    "terminal": "d050992a68c09db741fa4a0afda234c60e30a3412441b5dfce16be5e26efedce"
+  },
+  "io_seconds": 270,
+  "launcher_sha256": "08773d12f2fe52249907eae97af4cf4d97db43f47125436d41ccaa70b8db0994",
+  "pool_parent": "/home/lab4/fleet/tmp",
+  "retries": 0,
+  "selected_source": "14adc40b00b68cc8a3e1ae5647a885a42f273650",
+  "survivor_policy": "retain-custody-and-escalate",
+  "total_seconds": 300
+}

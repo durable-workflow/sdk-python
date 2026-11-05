@@ -1,0 +1,61 @@
+{
+  "cases": 12,
+  "downloaded_wheel_imports_or_installs": 0,
+  "failed": 0,
+  "new_general_decision": null,
+  "passed": 12,
+  "real_network_requests": 0,
+  "results": [
+    {
+      "id": "verified-inline-source-positive",
+      "outcome": "pass"
+    },
+    {
+      "id": "verified-inline-source-hash",
+      "outcome": "pass"
+    },
+    {
+      "id": "verified-inline-source-bound",
+      "outcome": "pass"
+    },
+    {
+      "id": "verified-inline-source-hardlink",
+      "outcome": "pass"
+    },
+    {
+      "id": "verified-inline-source-symlink",
+      "outcome": "pass"
+    },
+    {
+      "id": "ambient-credentials-or-wrong-startup-refuse-before-inputs",
+      "outcome": "pass"
+    },
+    {
+      "id": "affinity-empty-refuses-before-mutation",
+      "outcome": "pass"
+    },
+    {
+      "id": "affinity-too-many-refuses-before-mutation",
+      "outcome": "pass"
+    },
+    {
+      "id": "affinity-bool-refuses-before-mutation",
+      "outcome": "pass"
+    },
+    {
+      "id": "affinity-duplicate-refuses-before-mutation",
+      "outcome": "pass"
+    },
+    {
+      "id": "affinity-unavailable-refuses-before-mutation",
+      "outcome": "pass"
+    },
+    {
+      "id": "duplicate-authority-key-refused",
+      "outcome": "pass"
+    }
+  ],
+  "scope": "bootstrap file/refusal controls; no admitted start or selected archive access",
+  "selected_archives_acquired": 0,
+  "source_sha256": "9205ae8ea069fb12cc35ea28dbe5ced8a4ccbd2a1b12bb6d4ae76633816c2c36"
+}

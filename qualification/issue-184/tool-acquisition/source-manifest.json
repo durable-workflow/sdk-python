@@ -1,36 +1,37 @@
 {
   "actual_selected_archives": null,
+  "cpu_affinity": null,
   "downloaded_wheel_imports_or_installs": 0,
   "files": [
     {
-      "bytes": 44721,
-      "file": "184-acquire-tools-v5.py",
-      "sha256": "96d4a5b1b5687d11779a244a2a6946555c24020b3b54e93e43e61be2f6722e2c"
+      "bytes": 1898,
+      "file": "184-acquire-tools-v5-adapter-controls-result.json",
+      "sha256": "e4fd09a7e1ddf5dd56c1ed556fa5b3ae303a9d3b281640d8c3b6d6bf4a7d62c9"
+    },
+    {
+      "bytes": 10083,
+      "file": "184-acquire-tools-v5-adapter-controls.py",
+      "sha256": "7419231c1c1fd6dcba97fbb9de59d2fef454ea467c7f337d2068936065fcb7df"
     },
     {
       "bytes": 2975,
       "file": "184-acquire-tools-v5-bootstrap.py",
-      "sha256": "00349dc4ff6bec00072bcdfd01fffe5c13730de64f78e8dc940324c755adfe20"
+      "sha256": "12679c567452dd4cdda7dbd789ac600ef0b5455a1225c95cf59d066fda472569"
     },
     {
-      "bytes": 39547,
-      "file": "184-acquire-tools-v5-controls.py",
-      "sha256": "786fb0346a25d46a0eb75bc9f21f9dd6a455eee422ec08041cea83860d4a15a1"
-    },
-    {
-      "bytes": 8195,
+      "bytes": 8307,
       "file": "184-acquire-tools-v5-controls-result.json",
-      "sha256": "437f47ba42687bb80039a1915bb0b4d45d2055571554cea725a560cbfc67e5f7"
+      "sha256": "c5719cbd5a3bb89606d81582b24c7ad28d3b0fde2d5fc747cefaeb3744d63ccb"
     },
     {
-      "bytes": 9884,
-      "file": "184-acquire-tools-v5-adapter-controls.py",
-      "sha256": "840c8bd2237498abf2f333edc1d5af45dbb9c181cf60f4cad474d51f1176dd9f"
+      "bytes": 39730,
+      "file": "184-acquire-tools-v5-controls.py",
+      "sha256": "422a6de8471a1e2aca81b30cea13ab79cb1c5dc74cc0517492a5aabd0964c7f8"
     },
     {
-      "bytes": 1898,
-      "file": "184-acquire-tools-v5-adapter-controls-result.json",
-      "sha256": "529390459d99fc262ff84cd52f607034f2af72acaa11fea53d4ebe31cd2bc45a"
+      "bytes": 44676,
+      "file": "184-acquire-tools-v5.py",
+      "sha256": "234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb"
     },
     {
       "bytes": 11769,
@@ -38,40 +39,81 @@
       "sha256": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70"
     },
     {
-      "bytes": 11937,
-      "file": "184-acquisition-terminal-proposal.py",
-      "sha256": "45f1fc8224eff3f8811de00b07756b5f404c6924d798f2d1aac39ec8e69b6465"
-    },
-    {
-      "bytes": 11638,
-      "file": "184-acquisition-terminal-controls.py",
-      "sha256": "b32bcf3d3ac933e4abba1ddb002d72cf9b6fb16fa0b0718de3bd5fa01c84b47f"
-    },
-    {
-      "bytes": 1826,
-      "file": "184-acquisition-terminal-controls-result.json",
-      "sha256": "570abc1b842372e7e8773f8d7d64f22ac2d696940639f08d6e1cdd09a6facae3"
-    },
-    {
       "bytes": 1010,
       "file": "184-acquisition-interpreter-authority-proposal.json",
       "sha256": "cb819468f659c6235176fabcd29894dda552ffb85f0bf54664d83b7dcdd3d2e1"
     },
     {
+      "bytes": 1462,
+      "file": "184-acquisition-launcher-bootstrap-controls-result.json",
+      "sha256": "bb9e9256176a2bfbd40d820f83d1c4a2a31cf699a107cefbdf9aba4a4e1f2379"
+    },
+    {
+      "bytes": 3994,
+      "file": "184-acquisition-launcher-bootstrap-controls.py",
+      "sha256": "18cf6ba98a233721465afbffc74ee7e2a9bacbf8c321f893291de0b3f6d8f777"
+    },
+    {
+      "bytes": 4110,
+      "file": "184-acquisition-launcher-bootstrap-proposal.py",
+      "sha256": "9205ae8ea069fb12cc35ea28dbe5ced8a4ccbd2a1b12bb6d4ae76633816c2c36"
+    },
+    {
+      "bytes": 2219,
+      "file": "184-acquisition-session-controls-result.json",
+      "sha256": "05e16cd72a5b2c02006ef066197b82670fb9ef88d49c3cc90f0c97d18ec3cfbb"
+    },
+    {
+      "bytes": 16071,
+      "file": "184-acquisition-session-controls.py",
+      "sha256": "597023f6dea906fe4ac180380970725fb4d07be011c523b128ef19cf7704d38c"
+    },
+    {
+      "bytes": 31294,
+      "file": "184-acquisition-session-proposal.py",
+      "sha256": "08773d12f2fe52249907eae97af4cf4d97db43f47125436d41ccaa70b8db0994"
+    },
+    {
+      "bytes": 1826,
+      "file": "184-acquisition-terminal-controls-result.json",
+      "sha256": "107046c7d947343430782ce6a17d06df2b4ec967b50b613b76fe48cad53f366d"
+    },
+    {
+      "bytes": 11856,
+      "file": "184-acquisition-terminal-controls.py",
+      "sha256": "5dddcc0400bff258d471903c79cef9a868115cf2c14013a58e41a70f00739d24"
+    },
+    {
+      "bytes": 12225,
+      "file": "184-acquisition-terminal-proposal.py",
+      "sha256": "d050992a68c09db741fa4a0afda234c60e30a3412441b5dfce16be5e26efedce"
+    },
+    {
       "bytes": 4550,
       "file": "184-immutable-build-tool-input-proposal.json",
       "sha256": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c"
+    },
+    {
+      "bytes": 1175,
+      "file": "authority-template.json",
+      "sha256": "1ac57d2edb84b98d9e6699f5ce1e195c26f566262d396ee626c7ae8fdefe0720"
     }
   ],
-  "launcher": null,
   "new_general_decision": null,
   "new_sdk_wheel": null,
   "real_network_requests": 0,
+  "remaining_source_work": [
+    "post-fork pidfd prerequisite failure cleanup",
+    "unreported-owner-handle crash countercontrol",
+    "final exact composed source/input review packet"
+  ],
   "selected_sdk_source": "14adc40b00b68cc8a3e1ae5647a885a42f273650",
   "source_control_results": {
-    "independent_terminal_controls": 16,
-    "preallocated_adapter_controls": 16,
-    "retained_owner_controls": 85
+    "184-acquire-tools-v5-adapter-controls-result.json": 16,
+    "184-acquire-tools-v5-controls-result.json": 86,
+    "184-acquisition-launcher-bootstrap-controls-result.json": 12,
+    "184-acquisition-session-controls-result.json": 18,
+    "184-acquisition-terminal-controls-result.json": 16
   },
-  "stage": "UNEXECUTED source composition checkpoint; not launch ready"
+  "stage": "UNEXECUTED composed source checkpoint; prestart failure controls unfinished; not launch ready"
 }

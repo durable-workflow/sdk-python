@@ -14,7 +14,6 @@ import re
 import signal
 import ssl
 import stat
-import subprocess
 import sys
 import time
 import urllib.parse
@@ -144,11 +143,13 @@ def utc() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
-def ca_subject(cert: bytes) -> str:
-    check = subprocess.run(['/usr/bin/openssl', 'x509', '-noout', '-subject', '-nameopt', 'RFC2253'],
-                           input=cert, capture_output=True, timeout=2, check=True,
-                           env=dict(MINIMAL_ENV), close_fds=True)
-    return check.stdout.decode().removeprefix('subject=').strip()
+def verify_ca_bundle(ca: bytes) -> dict:
+    """Reuse the independently reviewed clean bundle only when every byte matches."""
+    require(sha(ca) == CA_SHA, 'existing clean CA provenance changed')
+    certs = re.findall(rb'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', ca, re.S)
+    require(len(certs) == 118, 'existing clean CA count changed')
+    return {'sha256': CA_SHA, 'certificates': 118, 'blocked_subjects': 0,
+            'subject_authority': 'previously reviewed exact immutable bundle bytes'}
 
 
 def encoded(value: object) -> bytes:
@@ -213,7 +214,7 @@ class Acquisition:
         self.started_utc = utc()
         self.io_deadline = self.started + 270
         self.ceiling = self.started + 300
-        self.pool = POOL_BASE / ('sdk-python-184-tools-guardian-' + admission.rsplit('-', 1)[-1])
+        self.pool = POOL_BASE / ('sdk-python-184-tools-guardian-14adc40b-' + admission.rsplit('-', 1)[-1])
         self.preallocated: dict[str, int] = {}
         self.guard_attached = False
         self.created = False
@@ -245,15 +246,18 @@ class Acquisition:
                 - (time.monotonic() - started)) < 2, 'guardian wall clock anchor changed')
         self.io_deadline, self.ceiling = started + 270, started + 300
         ids = proof.get('dir_ids')
-        require(isinstance(ids, dict) and set(ids) == {'.', 'wheelhouse'}, 'guardian directory proof shape')
-        for name in ('.', 'wheelhouse'):
+        require(isinstance(ids, dict) and set(ids) == {'.', 'metadata', 'wheelhouse', 'events'},
+                'guardian directory proof shape')
+        for name in ('.', 'metadata', 'wheelhouse', 'events'):
             path = self.pool if name == '.' else self.pool / name
             st = path.lstat()
             require(stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid()
                     and stat.S_IMODE(st.st_mode) == 0o700 and [st.st_dev, st.st_ino] == ids[name],
                     'guardian directory identity changed')
             self.dir_ids[name] = (st.st_dev, st.st_ino)
-        require(set(os.listdir(self.pool)) == {'wheelhouse'}, 'guardian root not initially exclusive')
+        require(set(os.listdir(self.pool)) == {'metadata', 'wheelhouse', 'events'}
+                and not os.listdir(self.pool / 'metadata') and not os.listdir(self.pool / 'events'),
+                'guardian root not initially exclusive')
         archives = proof.get('archive_fds')
         require(isinstance(archives, dict) and 1 <= len(archives) <= 6
                 and set(os.listdir(self.pool / 'wheelhouse')) == set(archives), 'guardian archive set changed')
@@ -280,10 +284,9 @@ class Acquisition:
             st = os.fstat(root)
             require((st.st_dev, st.st_ino) == self.dir_ids['.'], 'guardian root changed before adoption')
             for name in ('metadata', 'events'):
-                os.mkdir(name, 0o700, dir_fd=root)
                 st = os.stat(name, dir_fd=root, follow_symlinks=False)
-                require(stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid(), 'pool directory ownership')
-                self.dir_ids[name] = (st.st_dev, st.st_ino)
+                require(stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid()
+                        and (st.st_dev, st.st_ino) == self.dir_ids[name], 'pool directory ownership')
         finally:
             os.close(root)
 
@@ -652,13 +655,7 @@ class Acquisition:
         require(all(0 < tool['bytes'] <= FILE_CAP and Path(tool['filename']).name == tool['filename']
                     for tool in tools), 'selected archive bounds')
         ca = read_regular(CA_SOURCE, 300000)
-        require(sha(ca) == CA_SHA, 'existing clean CA provenance changed')
-        certs = re.findall(rb'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', ca, re.S)
-        require(len(certs) == 118, 'existing clean CA count changed')
-        for cert in certs:
-            subject = ca_subject(cert)
-            require(not any(re.search(r'(?:^|[,+])CN=' + re.escape(name) + r'(?:$|[,+])', subject)
-                            for name in BLOCKED), 'blocked CA subject')
+        trust_proof = verify_ca_bundle(ca)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_verify_locations(cadata=ca.decode('ascii'))
@@ -675,6 +672,7 @@ class Acquisition:
                    'io_seconds': 270, 'total_seconds': 300,
                    'hard_cutoff_utc': (dt.datetime.fromisoformat(self.started_utc) + dt.timedelta(seconds=300)).isoformat(),
                    'ca_sha256': CA_SHA, 'ca_certificates': 118, 'blocked_CA_subjects': 0,
+                   'CA_subject_authority': trust_proof['subject_authority'],
                    'CA_provenance': {'existing_pinned_wheel_sha256': CA_WHEEL_SHA,
                        'sealed_original_input': '/Users/lab3/fleet/tmp/sdk-python-2150-connected-v1-once-01a1a5ef/inputs/wheelhouse/certifi-2026.10.23-py3-none-any.whl',
                        'member': 'certifi/cacert.pem', 'member_sha256': CA_SHA},

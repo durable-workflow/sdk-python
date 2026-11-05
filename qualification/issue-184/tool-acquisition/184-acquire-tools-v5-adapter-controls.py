@@ -50,11 +50,15 @@ def refuses(operation,code):
 def fixture():
     with tempfile.TemporaryDirectory(prefix='sdk-python-184-adapter-controls-') as temporary:
         parent=Path(temporary)
-        custody=guard.ArchiveCustody(parent,'sdk-python-184-tools-guardian-9999999999',['one.whl','two.whl'])
+        custody=guard.ArchiveCustody(parent,'sdk-python-184-tools-guardian-14adc40b-9999999999',['one.whl','two.whl'])
+        ids={'.':list(custody.root_id),'wheelhouse':list(custody.wheelhouse_id)}
+        for name in ('metadata','events'):
+            (custody.path/name).mkdir(mode=0o700)
+            st=(custody.path/name).stat();ids[name]=[st.st_dev,st.st_ino]
         borrowed={name:custody.duplicate_for_owner(name) for name in custody.archive_nodes}
         proof={'pool':str(custody.path),'ready':True,'started_monotonic':time.monotonic(),
                'started_utc':dt.datetime.now(dt.timezone.utc).isoformat(),
-               'dir_ids':{'.':list(custody.root_id),'wheelhouse':list(custody.wheelhouse_id)},
+               'dir_ids':ids,
                'archive_fds':dict(borrowed)}
         with patch.object(owner,'POOL_BASE',parent):item=owner.Acquisition(REF)
         try:yield item,custody,proof
@@ -110,7 +114,7 @@ def full_filename_set_required():
     with fixture() as (item,custody,proof):
         item.attach_guarded_pool(proof)
         refuses(lambda:item.prepare_pool([{'filename':'one.whl'}]),'COMPLETE_GUARDIAN_ARCHIVE_CUSTODY_REQUIRED')
-        assert not (item.pool/'metadata').exists()
+        assert not list((item.pool/'metadata').iterdir())
 
 
 def fdopen_failure_closes_duplicate_cleans_all_preallocated():

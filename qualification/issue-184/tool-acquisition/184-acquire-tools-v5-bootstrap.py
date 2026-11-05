@@ -14,7 +14,7 @@ import stat
 from types import ModuleType
 
 OWNER_PATH = Path('/tmp/sdk-python-handoff/184-acquire-tools-v5.py')
-OWNER_SHA = '96d4a5b1b5687d11779a244a2a6946555c24020b3b54e93e43e61be2f6722e2c'
+OWNER_SHA = '234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb'
 OLD_ADMISSION = 'https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6649046802'
 MINIMAL_ENV = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'TZ': 'UTC'}
 

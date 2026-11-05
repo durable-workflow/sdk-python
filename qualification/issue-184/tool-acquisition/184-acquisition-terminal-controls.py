@@ -63,11 +63,15 @@ def candidate_pool():
     with tempfile.TemporaryDirectory(prefix='sdk-python-184-terminal-controls-') as temporary:
         selection,bodies,authorities=synthetic_selection();raw_selection=encoded(selection)
         parent=Path(temporary)
-        lease=g.ArchiveCustody(parent,'sdk-python-184-tools-guardian-9999999999',[tool['filename'] for tool in selection['tools']])
+        lease=g.ArchiveCustody(parent,'sdk-python-184-tools-guardian-14adc40b-9999999999',[tool['filename'] for tool in selection['tools']])
+        lease.dir_ids={'.':list(lease.root_id),'wheelhouse':list(lease.wheelhouse_id)}
+        for name in ('metadata','events'):
+            (lease.path/name).mkdir(mode=0o700)
+            st=(lease.path/name).stat();lease.dir_ids[name]=[st.st_dev,st.st_ino]
         borrowed={name:lease.duplicate_for_owner(name) for name in lease.archive_nodes}
         proof={'pool':str(lease.path),'ready':True,'started_monotonic':time.monotonic(),
                'started_utc':dt.datetime.now(dt.timezone.utc).isoformat(),
-               'dir_ids':{'.':list(lease.root_id),'wheelhouse':list(lease.wheelhouse_id)},'archive_fds':borrowed}
+               'dir_ids':lease.dir_ids,'archive_fds':borrowed}
         with patch.object(o,'POOL_BASE',parent),patch.object(o,'SELECTION_SHA',sha(raw_selection)), \
              patch.object(o,'ARCHIVE_BYTES',sum(tool['bytes'] for tool in selection['tools'])), \
              patch.object(o,'CA_SHA',sha(b'synthetic trust fixture')):

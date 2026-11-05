@@ -36,11 +36,14 @@ def parsed(raw):return json.loads(raw,object_pairs_hook=unique_pairs)
 def snapshot(custody, cap=4*1024**2):
     """Closed tree, pinned archive identities and stable no-follow regular-file reads."""
     custody.scope()
+    require(set(getattr(custody,'dir_ids',{}))=={'.','metadata','wheelhouse','events'},
+            'COMPLETE_GUARDIAN_DIRECTORY_PROOF_REQUIRED')
     rows={}
     with ExitStack() as stack:
         root=custody.root_fd
         st=os.fstat(root)
-        require(stat.S_IMODE(st.st_mode)==0o500,'ROOT_NOT_SEALED')
+        require(stat.S_IMODE(st.st_mode)==0o500
+                and [st.st_dev,st.st_ino]==custody.dir_ids['.'],'ROOT_NOT_SEALED')
         children=set(os.listdir(root))
         directories={'metadata','wheelhouse','events'}
         require(directories<=children,'MISSING_POOL_DIRECTORY')
@@ -51,7 +54,8 @@ def snapshot(custody, cap=4*1024**2):
                 parent=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=root)
                 stack.callback(os.close,parent)
                 st=os.fstat(parent)
-                require(st.st_uid==os.geteuid() and stat.S_IMODE(st.st_mode)==0o500,'DIRECTORY_NOT_SEALED')
+                require(st.st_uid==os.geteuid() and stat.S_IMODE(st.st_mode)==0o500
+                        and [st.st_dev,st.st_ino]==custody.dir_ids[directory],'DIRECTORY_NOT_SEALED')
                 names=set(os.listdir(parent))
             require(len(names)<=128,'FILE_COUNT_BOUND')
             for leaf in sorted(names):
