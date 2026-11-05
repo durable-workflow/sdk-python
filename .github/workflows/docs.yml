@@ -50,6 +50,10 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.12"
+      - name: Bootstrap patched pip trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python
       - name: Resolve the public documentation release channel
         id: release-channel
         env:
@@ -100,10 +104,6 @@ jobs:
             echo stable=false >> "$GITHUB_OUTPUT"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Bootstrap patched pip trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
-        with:
-          clients: pip,python
       - name: Install package and documentation dependencies
         run: pip install -e '.[docs]'
       - name: Install Chromium

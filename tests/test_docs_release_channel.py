@@ -16,6 +16,16 @@ pytestmark = pytest.mark.skipif(sys.version_info < (3, 11), reason="The portal s
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "docs.yml"
 
 
+def test_reviewed_python_trust_is_ready_before_publication_authority_reads() -> None:
+    steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build"]["steps"]
+    setup = next(i for i, step in enumerate(steps) if step.get("uses", "").startswith("actions/setup-python@"))
+    trust = next(i for i, step in enumerate(steps) if step.get("uses", "").startswith(
+        "durable-workflow/.github/.github/actions/bootstrap-patched-pip@"))
+    selector = next(i for i, step in enumerate(steps) if step.get("id") == "release-channel")
+    assert setup < trust < selector
+    assert steps[trust]["with"]["clients"] == "pip,python"
+
+
 def select_channel(
     root: Path, *, version: str = "2.14.1", tag: str = "", event: str = "workflow_dispatch",
     ref: str = "refs/heads/main", published: bool = True, lookup_exit: int = 0,
