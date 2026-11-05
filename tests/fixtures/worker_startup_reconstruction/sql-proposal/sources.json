@@ -2,7 +2,7 @@
   "accepted_contract": "https://github.com/durable-workflow/sdk-python/blob/78ff7a1857961f92e4b9ac277b83ca60ca53e3b7/tests/fixtures/worker_startup_reconstruction/proposal.json",
   "actual_queries_executed": 0,
   "collector_source_selected": null,
-  "database_dialect": "MySQL8.0, proposed only; no SQL engine/parser execution",
+  "database_dialect": "MySQL8.0 proposed SQL only; pure normalized-row controls are not SQL execution",
   "execution_admitted": false,
   "historical_schema_sources": [
     {
@@ -28,9 +28,45 @@
       "path": "app/Support/NamespaceWorkflowScope.php",
       "repository": "durable-workflow/server",
       "sha256": "3a093652cc41ed4ecb4d8454c38ef1abb1086159698e77a685a55e89cc0f6b84"
+    },
+    {
+      "blob": "17b3a5b1505765b431b448f9fb46ccf9f45718eb",
+      "bytes": 179,
+      "commit": "19a7a1cf33604c66f1f838e8b3db22563041f6b2",
+      "path": "src/V2/Enums/TaskType.php",
+      "repository": "durable-workflow/workflow",
+      "sha256": "979c36c386433a5cc6180e7db183f13dd6cb953e509adbf25d42ffefaeb350c5"
+    },
+    {
+      "blob": "e9d33f72d8ae0b575763e2702cb25c191bc989f7",
+      "bytes": 241,
+      "commit": "19a7a1cf33604c66f1f838e8b3db22563041f6b2",
+      "path": "src/V2/Enums/TaskStatus.php",
+      "repository": "durable-workflow/workflow",
+      "sha256": "a3ca4b86cd224814ab375cbd50b5a9846329d8e57ff934b3d9f74fca92ee882b"
+    },
+    {
+      "blob": "87822f31949dfabf9c46d4d45c23079360abd215",
+      "bytes": 813,
+      "commit": "19a7a1cf33604c66f1f838e8b3db22563041f6b2",
+      "path": "src/V2/Enums/RunStatus.php",
+      "repository": "durable-workflow/workflow",
+      "sha256": "008fc2e5f2f1c1c668d9ab57f10a9bd77781b3989b6657925cc45c4d9112fb2a"
     }
   ],
   "issue": "https://github.com/durable-workflow/sdk-python/issues/123",
+  "mysql_reference_documents": [
+    "https://dev.mysql.com/doc/refman/8.0/en/time-zone-support.html"
+  ],
+  "normalized_row_decoder": {
+    "bytes": 7423,
+    "capture_size_time_and_cancellation_enforced": false,
+    "input": "explicit upstream state and exact normalized row dictionaries; no raw driver/transport",
+    "normalization_proven": false,
+    "path": "tests/worker_startup_snapshot.py",
+    "phase_verdict": "unknown",
+    "sha256": "6adc599d9025d1f8e52249b45be486f0e60c8e7e82168c62719c9750adcdb20c"
+  },
   "parameter_driver_selected": null,
   "private_binding_comparator_selected": null,
   "registration_comparator_selected": null,
@@ -39,14 +75,14 @@
   "source_review_owner": "server",
   "sql_files": [
     {
-      "bytes": 585,
+      "bytes": 675,
       "file": "original-run.sql",
-      "sha256": "46f291d0cd698f693845aa999139342fb2b0e314b7eaf5aa1cd68231fe40382f"
+      "sha256": "025db37ab5311650d694f139941e206c2ae085d9b862426efa409a53ddd2ae13"
     },
     {
-      "bytes": 1047,
+      "bytes": 1140,
       "file": "original-task.sql",
-      "sha256": "41284331ea4ad06904cbe4312afc9aec5eff789e560e7910c50fe48397202725"
+      "sha256": "4385b4d0f08e22be9f053f282283111282f7215d12e9247d03ca0642e3e2b825"
     }
   ],
   "status": "unexecuted-source-proposal-not-a-complete-comparator"

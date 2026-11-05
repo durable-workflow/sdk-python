@@ -2,6 +2,8 @@
 -- This is an unexecuted proposal, not an installed comparator or driver.
 SELECT
     UTC_TIMESTAMP(6) AS database_time_utc,
+    @@session.time_zone AS session_time_zone,
+    @@system_time_zone AS system_time_zone,
     r.id AS original_run_id,
     r.workflow_instance_id,
     r.namespace,
