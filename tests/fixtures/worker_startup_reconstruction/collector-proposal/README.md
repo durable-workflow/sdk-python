@@ -30,9 +30,16 @@ text and calls the existing projection decoder. Its controls consume inert
 tuples only. They do not prove that a driver produced those types or that a read
 completed; the future collector must establish its bounded capture before using
 this transform. A complete supplied projection still has an unknown phase.
-No driver, raw receive/deadline guard, terminator validation, process owner,
-framing or cleanup is implemented by this slice. The collector vectors below
-remain unexecuted, and all operating inputs remain unselected.
+`tests/worker_startup_read_budget.py` adds the next pure callback wrapper. It
+reserves each requested count before the callback, enforces the proposed
+32-KiB/64-KiB limits, never refunds a failed read, refuses further calls after
+failure, and checks the same monotonic deadline before and after each callback.
+Synthetic callbacks exercise these rules without a driver or socket. The
+wrapper cannot interrupt a blocked callback. It is not wired to the pinned
+driver's private method and proves no actual handshake or receive coverage.
+No driver, terminator validation, process owner, framing or cleanup is
+implemented by these slices. The collector vectors below remain unexecuted,
+and all operating inputs remain unselected.
 
 The process receives only the fixture identity and dedicated SELECT-only
 fixture connection parameters through the future owner's private input channel.
