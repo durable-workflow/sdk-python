@@ -1,0 +1,173 @@
+{
+  "status": "proposed-not-executed",
+  "vectors": [
+    {
+      "id": "complete-original-pair",
+      "input": "complete terminal task and run projection",
+      "required": "capture complete; projections complete; phase unknown",
+      "observed_result": null
+    },
+    {
+      "id": "empty-original-task",
+      "input": "zero task rows with complete terminator",
+      "required": "task projection missing; no task clock; run retained separately",
+      "observed_result": null
+    },
+    {
+      "id": "empty-original-run",
+      "input": "zero run rows with complete terminator",
+      "required": "run projection missing; no borrowed task clock",
+      "observed_result": null
+    },
+    {
+      "id": "duplicate-row",
+      "input": "two original task rows",
+      "required": "projection invalid; no first-row selection",
+      "observed_result": null
+    },
+    {
+      "id": "identity-case-mismatch",
+      "input": "same IDs with different case in returned row",
+      "required": "projection invalid",
+      "observed_result": null
+    },
+    {
+      "id": "column-collision",
+      "input": "duplicate alias or unexpected column order",
+      "required": "invalid before dictionary construction",
+      "observed_result": null
+    },
+    {
+      "id": "raw-native-datetime",
+      "input": "driver returns native datetime rather than bytes",
+      "required": "invalid; no implicit conversion",
+      "observed_result": null
+    },
+    {
+      "id": "raw-null-empty-literal",
+      "input": "None, empty bytes and literal NULL bytes",
+      "required": "three distinct normalized values",
+      "observed_result": null
+    },
+    {
+      "id": "canonical-bits-counters",
+      "input": "zero, one and maximum counter as bytes",
+      "required": "accepted by existing field-specific decoder",
+      "observed_result": null
+    },
+    {
+      "id": "invalid-bits-counters",
+      "input": "bool/float/coerced or noncanonical number",
+      "required": "invalid",
+      "observed_result": null
+    },
+    {
+      "id": "whole-second-timestamp",
+      "input": "valid 19-character timestamp bytes",
+      "required": "append .000000; no timezone assertion",
+      "observed_result": null
+    },
+    {
+      "id": "partial-or-invalid-time",
+      "input": "partial fractions, invalid date, zero date or timezone suffix",
+      "required": "invalid",
+      "observed_result": null
+    },
+    {
+      "id": "fragmented-complete",
+      "input": "response arrives across several transport reads below all caps",
+      "required": "complete only after full terminator and exact frame",
+      "observed_result": null
+    },
+    {
+      "id": "oversize-first-body",
+      "input": "packet header requests more than 32768 bytes",
+      "required": "truncated; no body read or oversized allocation",
+      "observed_result": null
+    },
+    {
+      "id": "multipart-reservation",
+      "input": "small parts cumulatively exceed 65536 bytes",
+      "required": "truncated before next over-budget read; no refund or retry",
+      "observed_result": null
+    },
+    {
+      "id": "unexpected-raw-result",
+      "input": "extra result set, row-length mismatch or LOCAL INFILE",
+      "required": "invalid; no following command or local file read",
+      "observed_result": null
+    },
+    {
+      "id": "premature-eof",
+      "input": "valid first row followed by missing terminator",
+      "required": "truncated; never promote first row",
+      "observed_result": null
+    },
+    {
+      "id": "trickling-response",
+      "input": "each socket operation finishes but absolute phase deadline passes",
+      "required": "stop exact child; truncated; no fresh phase budget",
+      "observed_result": null
+    },
+    {
+      "id": "expired-before-capture",
+      "input": "case deadline reached before phase starts",
+      "required": "missing; issue no read and preserve original case failure",
+      "observed_result": null
+    },
+    {
+      "id": "expired-after-shutdown",
+      "input": "worker drains after original case deadline",
+      "required": "after snapshot missing; cleanup does not grant read time",
+      "observed_result": null
+    },
+    {
+      "id": "partial-read-plus-primary-failure",
+      "input": "original case fails while snapshot is partial",
+      "required": "preserve primary failure and separate truncated evidence",
+      "observed_result": null
+    },
+    {
+      "id": "cleanup-close-drain",
+      "input": "driver close/cursor drain would block after deadline",
+      "required": "no result draining; exact process exit required",
+      "observed_result": null
+    },
+    {
+      "id": "cleanup-survivor",
+      "input": "owner cannot confirm exact observer exit by cleanup deadline",
+      "required": "cleanup incomplete with owner escalation",
+      "observed_result": null
+    },
+    {
+      "id": "output-frame-overflow",
+      "input": "output over 32768 bytes, partial document or trailing bytes",
+      "required": "truncated or invalid; no partial JSON acceptance",
+      "observed_result": null
+    },
+    {
+      "id": "ambiguous-clock-domain",
+      "input": "complete SQL fields with timezone labels but unproved DATETIME domain",
+      "required": "projection complete; phase/lease/deadline comparison unknown",
+      "observed_result": null
+    },
+    {
+      "id": "unexpected-session-state",
+      "input": "inherited autocommit false or unexpected setup statement",
+      "required": "refuse before either original-row query",
+      "observed_result": null
+    },
+    {
+      "id": "parameter-quoting",
+      "input": "fixture namespace/instance contains quote or placeholder-like text",
+      "required": "one driver-bound parameter; no SQL structure change",
+      "observed_result": null
+    },
+    {
+      "id": "unselected-auth-input",
+      "input": "missing trust/grants/peer identity or auth requiring absent dependency",
+      "required": "fail setup; no fetch, plaintext fallback or alternate endpoint",
+      "observed_result": null
+    }
+  ]
+}

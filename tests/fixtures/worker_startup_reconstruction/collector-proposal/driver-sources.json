@@ -1,0 +1,97 @@
+{
+  "repository": "PyMySQL/PyMySQL",
+  "tag": "v1.2.3",
+  "commit": "c990e86083c26493f3285b1e047902994c4b1811",
+  "files": [
+    {
+      "path": "pymysql/connections.py",
+      "blob": "3de9fe0bcd62fff4132fa8a2e954a5e10361d45b",
+      "bytes": 57590,
+      "sha256": "cf3bf78cd872f87bbb95fab8e20579ccbb92b4a53d71ac34744bd16152f0dd64"
+    },
+    {
+      "path": "pymysql/cursors.py",
+      "blob": "5bc42bdfebcbd38742ce7623b401c3f79526fbc3",
+      "bytes": 16272,
+      "sha256": "53e045a28511dd8a5324cff98a8645f151fd76d20bbe2ebcefdc4b1ec32cbf75"
+    },
+    {
+      "path": "pymysql/converters.py",
+      "blob": "79000dba6ab297f9a2b7d6263c7e2e87c3400356",
+      "bytes": 10144,
+      "sha256": "f8adc54f4dabb1b8986d8697eaecca5df9ebc3bd90fcf6a1773a253c8356857d"
+    },
+    {
+      "path": "pymysql/protocol.py",
+      "blob": "52d149cba853c8d2449129c3bc64763380249f31",
+      "bytes": 11747,
+      "sha256": "a0b867ac55b3a82be794a15b63d900d834bfd883276a4ce1b4049a90bca5deb4"
+    },
+    {
+      "path": "pymysql/constants/FIELD_TYPE.py",
+      "blob": "b8b4486605fd1d712d3ad533df2c2ac137574b3d",
+      "bytes": 370,
+      "sha256": "cad1738009c699bf61bddb019672baf2a759bff6ba8d81485d3e954806fad33f"
+    },
+    {
+      "path": "pyproject.toml",
+      "blob": "e1afd4f8e5171aa139bc6ec3c41c9a38a7252ba8",
+      "bytes": 1492,
+      "sha256": "0c3fbc0b53bdaad91e4036c511662d282e7a858192a37e952c0a822a8bf8f7ca"
+    }
+  ],
+  "status": "public-source-only-unexecuted-driver-proposal",
+  "package_archive": null,
+  "installed_import_closure": null,
+  "authentication_and_tls_closure": null,
+  "sdk_source_inputs": [
+    {
+      "repository": "durable-workflow/sdk-python",
+      "commit": "92aee3f49a9fffcdcacef1d7d924b68789e5c928",
+      "path": "tests/worker_startup_snapshot.py",
+      "blob": "fe28e5ff082f46908b0636caf0813e6bf1e2f419",
+      "bytes": 7588,
+      "sha256": "dd02a5dae1fe2a777a802efbc431844d3e9ca8c646303776db9f7e134640c0e8"
+    },
+    {
+      "repository": "durable-workflow/sdk-python",
+      "commit": "92aee3f49a9fffcdcacef1d7d924b68789e5c928",
+      "path": "tests/worker_observation.py",
+      "blob": "2edff9fc10d66681b9fea16cecafe2d9a8949b16",
+      "bytes": 16350,
+      "sha256": "ddc924ccd349cc6bba39d4ab389f98ee5c8fb355462b909081cbc08bb9b71e70"
+    },
+    {
+      "repository": "durable-workflow/sdk-python",
+      "commit": "92aee3f49a9fffcdcacef1d7d924b68789e5c928",
+      "path": "tests/integration/test_worker_task_families.py",
+      "blob": "bdee744d351c41ddb2270021cf324ba946e71824",
+      "bytes": 6863,
+      "sha256": "ef2ed0d2356e6feafe19b0e26111409939b5f9dc796ac6f7198831b6217a900b"
+    },
+    {
+      "repository": "durable-workflow/sdk-python",
+      "commit": "92aee3f49a9fffcdcacef1d7d924b68789e5c928",
+      "path": "tests/fixtures/worker_startup_reconstruction/proposal.json",
+      "blob": "a69037595508d840b135796bbddcdd67600df4ea",
+      "bytes": 5939,
+      "sha256": "ac8420da83604f7f890984e07ffb08af2ba4263496d01db01bfa153fa3ee62cf"
+    },
+    {
+      "repository": "durable-workflow/sdk-python",
+      "commit": "92aee3f49a9fffcdcacef1d7d924b68789e5c928",
+      "path": "tests/fixtures/worker_startup_reconstruction/sql-proposal/original-task.sql",
+      "blob": "5a0585997c61bd78a7bf3690aaad461e94870aef",
+      "bytes": 1140,
+      "sha256": "4385b4d0f08e22be9f053f282283111282f7215d12e9247d03ca0642e3e2b825"
+    },
+    {
+      "repository": "durable-workflow/sdk-python",
+      "commit": "92aee3f49a9fffcdcacef1d7d924b68789e5c928",
+      "path": "tests/fixtures/worker_startup_reconstruction/sql-proposal/original-run.sql",
+      "blob": "571721293b482fdcc4b0f8fbc5f43eaf63812198",
+      "bytes": 675,
+      "sha256": "025db37ab5311650d694f139941e206c2ae085d9b862426efa409a53ddd2ae13"
+    }
+  ]
+}
