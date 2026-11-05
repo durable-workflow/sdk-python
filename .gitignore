@@ -15,3 +15,5 @@ site/
 .docs-api-inventory.json
 .docs-provenance.json
 .docs-requirements.txt
+
+.docs-published-wheel.txt

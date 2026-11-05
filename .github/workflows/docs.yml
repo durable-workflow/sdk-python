@@ -131,7 +131,7 @@ jobs:
           if wheel is None:
               raise SystemExit("Selected package has no universal Python wheel")
           url = urlsplit(wheel.get("url", ""))
-          if (url.scheme != "https" or url.netloc != "files.pythonhosted.org"
+          if (url.geturl() != wheel["url"] or url.scheme != "https" or url.netloc != "files.pythonhosted.org"
                   or url.query or url.fragment or not url.path.startswith("/packages/")
                   or not url.path.endswith("/" + wheel["filename"])
                   or not re.fullmatch(r"[A-Za-z0-9/_.-]+", url.path)):
@@ -154,7 +154,13 @@ jobs:
         run: |
           pip install --only-binary=:all: -r requirements-docs.txt
           if [ -n "$STABLE_TAG" ]; then
-            pip install --require-hashes --no-deps --only-binary=:all: "$PUBLISHED_WHEEL_URL#sha256=$PUBLISHED_WHEEL_SHA256"
+            python - <<'PY'
+          import os
+          from pathlib import Path
+          requirement = f"durable-workflow @ {os.environ['PUBLISHED_WHEEL_URL']} --hash=sha256:{os.environ['PUBLISHED_WHEEL_SHA256']}\n"
+          Path(".docs-published-wheel.txt").write_text(requirement)
+          PY
+            pip install --require-hashes --no-deps --only-binary=:all: -r .docs-published-wheel.txt
           else
             pip install --no-deps --only-binary=:all: -e .
           fi

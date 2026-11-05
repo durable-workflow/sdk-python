@@ -517,6 +517,7 @@ body:has(.dw-landing) .md-content__inner {
 }
 
 .dw-hero h1 {
+  margin: 0;
   font-size: 64px;
   line-height: 1;
   letter-spacing: -.03em;
@@ -886,6 +887,9 @@ body:has(.dw-landing) .md-content__inner {
 }
 
 @media (max-width: 1100px) {
+  .dw-role-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .dw-global-bar {
     flex-wrap: wrap;
     gap: 8px 24px;
@@ -978,7 +982,7 @@ body:has(.dw-landing) .md-content__inner {
     width: 100%;
   }
   .dw-role-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
   }
   .dw-section > h2 {
     font-size: 32px;
@@ -1144,7 +1148,8 @@ body:has(.dw-landing) .md-content__inner {
   }
 }
 
-.md-typeset .dw-role-grid {
+.md-typeset ul.dw-role-grid {
+  display: grid;
   margin: 0;
   padding: 0;
   list-style: none;

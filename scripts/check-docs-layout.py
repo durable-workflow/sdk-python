@@ -197,7 +197,7 @@ def exercise_identity(page: Page, theme: str) -> None:
     page.evaluate("document.fonts.ready")
     fonts = page.evaluate("[...document.fonts].filter(font => font.status === 'loaded').map(font => font.family)")
     assert {"Inter", "Space Grotesk", "JetBrains Mono"} <= set(fonts), fonts
-    assert page.locator(".highlight").first.evaluate(
+    assert page.locator(".highlight pre").first.evaluate(
         "element => getComputedStyle(element).backgroundColor",
     ) == "rgb(15, 21, 19)"
     switcher = page.locator("[data-sdk-switcher]")

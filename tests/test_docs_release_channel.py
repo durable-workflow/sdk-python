@@ -178,3 +178,20 @@ def test_current_workflow_owns_docs_and_the_central_apt_floor() -> None:
         "durable-workflow/.github/.github/actions/require-fixed-apt@"))
     chromium = next(i for i, step in enumerate(steps) if step.get("name") == "Install Chromium")
     assert apt < chromium
+
+
+@pytest.mark.parametrize("url", [
+    "https://files.pythonhosted.org/packages/fixture/durable_workflow-2.14.1-py3-none-any.whl?other=1",
+    "https://example.test/packages/fixture/durable_workflow-2.14.1-py3-none-any.whl",
+    "https://files.pythonhosted.org/packages/fixture/\ndurable_workflow-2.14.1-py3-none-any.whl",
+])
+def test_wheel_requirement_uses_only_an_exact_public_artifact_url(tmp_path: Path, url: str) -> None:
+    registry = {"info": {"name": "durable-workflow", "version": "2.14.1"}, "urls": [
+        {"filename": "durable_workflow-2.14.1-py3-none-any.whl", "packagetype": "bdist_wheel",
+         "yanked": False, "digests": {"sha256": "1" * 64}, "url": url},
+        {"filename": "durable_workflow-2.14.1.tar.gz", "packagetype": "sdist",
+         "yanked": False, "digests": {"sha256": "2" * 64}},
+    ]}
+    result, values, _ = select_channel(tmp_path, tag="2.14.1", registry=registry)
+    assert result.returncode != 0
+    assert values.get("stable") != "true"
