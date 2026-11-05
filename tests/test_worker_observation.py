@@ -17,6 +17,7 @@ from tests.worker_observation import (
     ObservationInterceptor,
     WorkerObservation,
     observe_and_drain,
+    request_task_identity,
     result_or_worker_error,
     stop_and_drain,
 )
@@ -550,6 +551,92 @@ async def test_interceptors_preserve_results_and_exceptions() -> None:
     assert report["milestones"]["activity_handler_error"]["count"] == 1
     assert report["milestones"]["workflow_task_enter"]["first"]["task_id"] == "original"
     assert "SECRET" not in json.dumps(report)
+
+
+@pytest.mark.asyncio
+async def test_handler_and_http_keep_scoped_task_and_request_identities_separate(monkeypatch: Any) -> None:
+    observation = WorkerObservation()
+    observation.install_http(monkeypatch)
+    interceptor = ObservationInterceptor(observation)
+    task = {"task_id": "original", "run_id": "run-original", "workflow_task_attempt": 0,
+            "task_token": "SECRET", "input": "SECRET"}
+    context = WorkflowTaskInterceptorContext(worker_id="worker", task_queue="queue", task=task)
+    expected = [{"type": "complete_workflow"}]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={}))) as client:
+        async def execute(context):
+            observation.note("workflow_handler_enter")
+            await client.post("https://example.test/api/worker/workflow-tasks/different/history?token=SECRET")
+            return expected
+
+        assert await interceptor.execute_workflow_task(context, execute) is expected
+        observation.note("outside_interceptor")
+        await client.post("https://example.test/api/worker/workflow-tasks/original/complete")
+    report = observation.report()
+    linked = report["milestones"]["workflow_handler_enter"]["first"]
+    assert {key: linked[key] for key in ("task_id", "run_id", "workflow_task_attempt")} == {
+        "task_id": "original", "run_id": "run-original", "workflow_task_attempt": 0,
+    }
+    history, completion = report["recent"]
+    assert history["request_task"] == {"family": "workflow", "task_id": "different"}
+    assert history["interceptor_task"] == {"task_id": "original", "run_id": "run-original", "workflow_task_attempt": 0}
+    assert completion["request_task"] == {"family": "workflow", "task_id": "original"}
+    assert "interceptor_task" not in completion, "a completed scope must not supply the last attempt to a later request"
+    assert "task_id" not in report["milestones"]["outside_interceptor"]["first"]
+    assert "SECRET" not in json.dumps(report)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_kind", [None, RuntimeError, asyncio.CancelledError])
+async def test_task_context_isolated_across_concurrent_tasks_and_reset_on_exit(
+    failure_kind: type[BaseException] | None,
+) -> None:
+    observation = WorkerObservation()
+    interceptor = ObservationInterceptor(observation)
+    failure = None if failure_kind is None else failure_kind("SECRET")
+    caught = []
+    returned = []
+
+    async def run(index: int):
+        task = {"task_id": f"original-{index}", "run_id": f"run-{index}", "workflow_task_attempt": index}
+        context = WorkflowTaskInterceptorContext(worker_id="worker", task_queue="queue", task=task)
+
+        async def execute(context):
+            await asyncio.sleep(0)
+            observation.note("workflow_handler_enter")
+            if index == 0 and failure is not None:
+                raise failure
+            return [{"type": "complete_workflow"}]
+
+        try:
+            returned.append(await interceptor.execute_workflow_task(context, execute))
+        except BaseException as error:
+            caught.append(error)
+        observation.note("outside_interceptor")
+
+    await asyncio.gather(run(0), run(1))
+    assert caught == ([] if failure is None else [failure])
+    assert len(returned) == (2 if failure is None else 1)
+    report = observation.report()
+    handler = report["milestones"]["workflow_handler_enter"]
+    assert {handler[where]["task_id"] for where in ("first", "last")} == {"original-0", "original-1"}
+    for where in ("first", "last"):
+        identity = handler[where]
+        assert identity["run_id"] == f"run-{identity['workflow_task_attempt']}"
+        assert "task_id" not in report["milestones"]["outside_interceptor"][where]
+    assert "SECRET" not in json.dumps(report)
+
+
+@pytest.mark.parametrize(("path", "expected"), [
+    ("/api/worker/activity-tasks/original/complete", {"family": "activity", "task_id": "original"}),
+    ("/api/worker/query-tasks/original/complete", {"family": "query", "task_id": "original"}),
+    ("/api/worker/workflow-tasks/poll", {}),
+    ("/api/worker/workflow-tasks//history", {}),
+    ("/api/worker/workflow-tasks/original/other/history", {}),
+    ("/api/worker/workflow-tasks/original%2Fother/history", {}),
+    ("/api/worker/workflow-tasks/" + "x" * 161 + "/history", {}),
+])
+def test_request_task_identity_is_bounded_and_ignores_non_task_routes(path: str, expected: dict[str, str]) -> None:
+    assert request_task_identity(httpx.Request("POST", "https://example.test" + path + "?token=SECRET")) == expected
 
 
 @pytest.mark.parametrize(("method", "path", "expected"), [

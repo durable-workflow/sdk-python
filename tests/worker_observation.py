@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import time
 import weakref
 from collections import Counter, deque
 from collections.abc import Callable, Coroutine
+from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any
 
@@ -62,6 +64,19 @@ def task_identity(task: Any) -> dict[str, str | int]:
     }
 
 
+def request_task_identity(request: httpx.Request) -> dict[str, str]:
+    path = request.url.path.rstrip("/")
+    for family in ("workflow", "activity", "query"):
+        marker = f"/worker/{family}-tasks/"
+        if marker not in path:
+            continue
+        task_id, separator, operation = path.rsplit(marker, 1)[1].partition("/")
+        if (separator and re.fullmatch(r"[A-Za-z0-9_-]{1,160}", task_id)
+                and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", operation)):
+            return {"family": family, "task_id": task_id}
+    return {}
+
+
 class WorkerObservation:
     def __init__(self, *, clock: Callable[[], float] = time.monotonic, limit: int = 32) -> None:
         if limit < 1:
@@ -86,8 +101,13 @@ class WorkerObservation:
         self._client_instances: dict[int, tuple[weakref.ReferenceType[httpx.AsyncClient], str]] = {}
         self.client_instances: dict[str, dict[str, Any]] = {}
         self.unattributed_client_requests = 0
+        self._task_context: ContextVar[dict[str, str | int] | None] = ContextVar(
+            "worker_observation_task", default=None,
+        )
 
     def note(self, phase: str, task: Any = None) -> None:
+        if task is None:
+            task = self._task_context.get()
         with self._lock:
             if phase not in self.milestones and len(self.milestones) >= self.limit:
                 self.omitted_milestone_events += 1
@@ -124,6 +144,8 @@ class WorkerObservation:
             route = route_name(request)
             method = request.method if request.method in {"GET", "POST", "PUT", "PATCH", "DELETE"} else "OTHER"
             key = f"{method} {route}"
+            request_task = request_task_identity(request)
+            interceptor_task = task_identity(self._task_context.get())
             with self._lock:
                 self.total += 1
                 request_id = self.total
@@ -136,6 +158,10 @@ class WorkerObservation:
                     "method": method, "route": route, "started": started - self.started,
                     "response_metadata_state": "missing",
                 }
+                if request_task:
+                    entry["request_task"] = request_task
+                if interceptor_task:
+                    entry["interceptor_task"] = interceptor_task
                 if len(self.active) == self.limit:
                     self.active.pop(next(iter(self.active)))
                     self.evicted_active += 1
@@ -328,14 +354,18 @@ class ObservationInterceptor(PassthroughWorkerInterceptor):
     async def execute_workflow_task(
         self, context: WorkflowTaskInterceptorContext, next: WorkflowTaskHandler,
     ) -> list[dict[str, Any]] | None:
-        self.observation.note("workflow_task_enter", context.task)
+        token = self.observation._task_context.set(task_identity(context.task))
         try:
-            result = await next(context)
-            self.observation.note("workflow_task_return", context.task)
-            return result
-        except BaseException:
-            self.observation.note("workflow_task_error", context.task)
-            raise
+            self.observation.note("workflow_task_enter", context.task)
+            try:
+                result = await next(context)
+                self.observation.note("workflow_task_return", context.task)
+                return result
+            except BaseException:
+                self.observation.note("workflow_task_error", context.task)
+                raise
+        finally:
+            self.observation._task_context.reset(token)
 
     async def execute_activity(self, context: ActivityInterceptorContext, next: ActivityHandler) -> Any:
         self.observation.note("activity_handler_enter", context.task)
