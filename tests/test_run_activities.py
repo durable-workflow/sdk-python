@@ -155,6 +155,7 @@ async def test_handle_binds_its_selected_run(use_explicit_run: bool) -> None:
 async def test_handle_without_run_refuses_before_request() -> None:
     requests: list[httpx.Request] = []
     async with client_for(response(), requests) as client:
+        handle = client.get_workflow_handle("workflow/one")
         with pytest.raises(ValueError, match="run_id"):
-            await client.get_workflow_handle("workflow/one").get_activities()
+            await handle.get_activities()
     assert not requests
