@@ -19,8 +19,9 @@ truncated or invalid, separates existing worker-history requests from
 submissions, and reports HTTP-buffer and milestone-event loss. These are
 availability/retention flags, not end-to-end phase verdicts. A complete JSON
 metadata record does not prove task identity, hydration, handler admission or
-publication. Additional clients remain grouped, and the before/after teardown
-SQL/API comparator and full phase linkage are still pending. The pinned sources
+publication. HTTP clients now have separate bounded instance labels as well as
+the existing role labels. Before/after teardown SQL/API collection and full
+phase linkage are still pending. The pinned sources
 in `proposal.json` remain the historical baseline; this revision is not a new
 historical execution input or qualification receipt.
 
@@ -71,10 +72,18 @@ incompatible harness is a setup finding, not permission to patch the SDK.
   handler, a sent request or a response without an authoritative recorded result
   does not prove durable publication. Match the original task/attempt/run against
   the Server comparator and terminal history.
-- Existing primary HTTP clients have explicit labels; all other clients share
-  the label `additional`. Capture their actual discovery/query-poll coverage,
-  while retaining that limit on per-client attribution. A missing cloned-client
-  trace cannot count as full coverage.
+- Existing primary HTTP clients have explicit role labels; other clients keep
+  the role `additional`. A separate weak-reference registry gives each observed
+  HTTP client a stable instance label and counts its routes, without retaining
+  the client or treating a reused integer object ID as the same instance. Its
+  lifetime count is capped at the observation limit. Requests beyond that cap
+  have no instance label and explicitly truncate client attribution. Known
+  clients retain their labels after overflow; no unknown request is merged into
+  one. Recorder updates and bounded snapshot copies share a lock across the
+  query and workflow threads; no network await is performed while holding it.
+  These are observed HTTP identities, not proof of a Client clone's parent,
+  worker registration or an expected-but-unobserved cloned-client trace. Missing
+  clone coverage still cannot count as complete end-to-end observation.
 
 The driver now captures the same bounded observation before and after shutdown
 on success and failure. Each capture has its own monotonic bracket; capture

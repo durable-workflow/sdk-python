@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
+import weakref
 from collections import Counter, deque
 from collections.abc import Callable, Coroutine
 from copy import deepcopy
@@ -80,17 +82,37 @@ class WorkerObservation:
         self.evicted_active = 0
         self.omitted_milestone_events = 0
         self.response_metadata_states: Counter[str] = Counter()
+        self._lock = threading.Lock()
+        self._client_instances: dict[int, tuple[weakref.ReferenceType[httpx.AsyncClient], str]] = {}
+        self.client_instances: dict[str, dict[str, Any]] = {}
+        self.unattributed_client_requests = 0
 
     def note(self, phase: str, task: Any = None) -> None:
-        if phase not in self.milestones and len(self.milestones) >= self.limit:
-            self.omitted_milestone_events += 1
-            return
-        entry = {"at": self.clock() - self.started, **task_identity(task)}
-        milestone = self.milestones.setdefault(phase, {"count": 0, "first": entry})
-        if milestone["count"] >= 2:
-            self.omitted_milestone_events += 1
-        milestone["count"] += 1
-        milestone["last"] = entry
+        with self._lock:
+            if phase not in self.milestones and len(self.milestones) >= self.limit:
+                self.omitted_milestone_events += 1
+                return
+            entry = {"at": self.clock() - self.started, **task_identity(task)}
+            milestone = self.milestones.setdefault(phase, {"count": 0, "first": entry})
+            if milestone["count"] >= 2:
+                self.omitted_milestone_events += 1
+            milestone["count"] += 1
+            milestone["last"] = entry
+
+    def _client_instance(self, client: httpx.AsyncClient, key: str) -> str | None:
+        """Called under the lock; weak references never keep an HTTP client alive."""
+        previous = self._client_instances.get(id(client))
+        if previous is not None and previous[0]() is client:
+            label = previous[1]
+        elif len(self.client_instances) < self.limit:
+            label = f"http-{len(self.client_instances) + 1}"
+            self._client_instances[id(client)] = (weakref.ref(client), label)
+            self.client_instances[label] = {"counts": Counter()}
+        else:
+            self.unattributed_client_requests += 1
+            return None
+        self.client_instances[label]["counts"][key] += 1
+        return label
 
     def install_http(self, monkeypatch: Any) -> None:
         original_send = httpx.AsyncClient.send
@@ -98,43 +120,51 @@ class WorkerObservation:
         async def observed_send(
             client: httpx.AsyncClient, request: httpx.Request, *args: Any, **kwargs: Any,
         ) -> httpx.Response:
-            self.total += 1
-            request_id = self.total
             started = self.clock()
             route = route_name(request)
             method = request.method if request.method in {"GET", "POST", "PUT", "PATCH", "DELETE"} else "OTHER"
-            self.counts[f"{method} {route}"] += 1
-            entry: dict[str, Any] = {
-                "request": request_id, "client": self.clients.get(id(client), "additional"),
-                "method": method, "route": route, "started": started - self.started,
-                "response_metadata_state": "missing",
-            }
-            if len(self.active) == self.limit:
-                self.active.pop(next(iter(self.active)))
-                self.evicted_active += 1
-            self.active[request_id] = entry
-            self.active_count += 1
+            key = f"{method} {route}"
+            with self._lock:
+                self.total += 1
+                request_id = self.total
+                self.counts[key] += 1
+                instance = self._client_instance(client, key)
+                entry: dict[str, Any] = {
+                    "request": request_id, "client": self.clients.get(id(client), "additional"),
+                    "client_instance": instance,
+                    "client_instance_state": "complete" if instance is not None else "truncated",
+                    "method": method, "route": route, "started": started - self.started,
+                    "response_metadata_state": "missing",
+                }
+                if len(self.active) == self.limit:
+                    self.active.pop(next(iter(self.active)))
+                    self.evicted_active += 1
+                self.active[request_id] = entry
+                self.active_count += 1
             try:
                 response = await original_send(client, request, *args, **kwargs)
-                entry["status"] = response.status_code
-                if 200 <= response.status_code < 300:
-                    self.successful[f"{method} {route}"] += 1
+                metadata: dict[str, Any] = {"status": response.status_code}
                 if response.is_stream_consumed:
-                    entry["response_metadata_state"] = self._response_metadata(entry, response)
+                    metadata["response_metadata_state"] = self._response_metadata(metadata, response)
+                with self._lock:
+                    entry.update(metadata)
+                    if 200 <= response.status_code < 300:
+                        self.successful[key] += 1
                 return response
             except BaseException as error:
-                entry["exception"] = type(error).__name__
+                with self._lock:
+                    entry["exception"] = type(error).__name__
                 raise
             finally:
-                entry["elapsed"] = self.clock() - started
-                key = f"{method} {route}"
-                self.max_elapsed[key] = max(self.max_elapsed.get(key, 0), entry["elapsed"])
-                self.active_count -= 1
-                self.active.pop(request_id, None)
-                self.response_metadata_states[entry["response_metadata_state"]] += 1
-                if len(self.recent) == self.limit:
-                    self.omitted_completed += 1
-                self.recent.append(entry)
+                with self._lock:
+                    entry["elapsed"] = self.clock() - started
+                    self.max_elapsed[key] = max(self.max_elapsed.get(key, 0), entry["elapsed"])
+                    self.active_count -= 1
+                    self.active.pop(request_id, None)
+                    self.response_metadata_states[entry["response_metadata_state"]] += 1
+                    if len(self.recent) == self.limit:
+                        self.omitted_completed += 1
+                    self.recent.append(entry)
 
         monkeypatch.setattr(httpx.AsyncClient, "send", observed_send)
 
@@ -176,6 +206,10 @@ class WorkerObservation:
         return state
 
     def report(self, *, include_recent: bool = True) -> dict[str, Any]:
+        with self._lock:
+            return self._report(include_recent=include_recent)
+
+    def _report(self, *, include_recent: bool) -> dict[str, Any]:
         return deepcopy({
             "elapsed": self.clock() - self.started, "requests": self.total,
             "counts": dict(self.counts), "milestones": self.milestones,
@@ -190,11 +224,14 @@ class WorkerObservation:
                 ),
                 "active_http": "truncated" if self.evicted_active else "complete",
                 "milestones": "truncated" if self.omitted_milestone_events else "complete",
+                "client_attribution": "truncated" if self.unattributed_client_requests else "complete",
             },
             "omitted_completed": self.omitted_completed,
             "evicted_active": self.evicted_active,
             "omitted_milestone_events": self.omitted_milestone_events,
             "response_metadata_states": dict(self.response_metadata_states),
+            "client_instances": self.client_instances,
+            "unattributed_client_requests": self.unattributed_client_requests,
         })
 
 
