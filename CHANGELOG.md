@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Worker batch encoding converts dataclass and Enum workflow results, update results and continue-as-new arguments to neutral Avro values, matching individual command encoding. Typed results previously failed during real Worker submission. (#184)
+
 ### Added
 
 - Unreleased typed run-activity visibility through `Client.get_run_activities` and `WorkflowHandle.get_activities`, with activity/attempt metadata, exact run/namespace binding, explicit unavailable fields and preserved diagnostic authority. Standalone activity listing is unchanged. Shared delivery remains tracked in durable-workflow/.github#235.
