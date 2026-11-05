@@ -18,8 +18,8 @@ from durable_workflow import Client, Worker, activity, workflow
 from tests.worker_observation import (
     ObservationInterceptor,
     WorkerObservation,
+    observe_and_drain,
     result_or_worker_error,
-    stop_and_drain,
 )
 
 current_observation: ContextVar[WorkerObservation] = ContextVar("task_family_observation")
@@ -128,21 +128,10 @@ async def test_workers_execute_without_polling_empty_task_families(
             assert ("activity_handler_enter" in observation.milestones) is (mode != "timer")
         except BaseException as error:
             primary_error = error
-            print(json.dumps({
-                **identity, "phase": "before_shutdown", "exception": type(error).__name__,
-                "observation": observation.report(),
-            }), flush=True)
             raise
         finally:
             try:
-                await stop_and_drain(workers, runners)
-            except BaseException as error:
-                print(json.dumps({
-                    **identity, "phase": "shutdown", "exception": type(error).__name__,
-                    "observation": observation.report(),
-                }), flush=True)
-                if primary_error is None:
-                    raise
+                await observe_and_drain(observation, identity, workers, runners, primary_error=primary_error)
             finally:
                 current_observation.reset(context_token)
 

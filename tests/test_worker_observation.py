@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 from typing import Any
 
@@ -12,6 +13,7 @@ from durable_workflow.interceptors import ActivityInterceptorContext, WorkflowTa
 from tests.worker_observation import (
     ObservationInterceptor,
     WorkerObservation,
+    observe_and_drain,
     result_or_worker_error,
     stop_and_drain,
 )
@@ -301,6 +303,91 @@ async def test_stop_failure_still_drains_original_runner() -> None:
         await stop_and_drain(workers, runners)
     assert raised.value is failure
     assert drained == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary_kind", [None, RuntimeError, asyncio.CancelledError])
+@pytest.mark.parametrize("failure_phase", [None, "report", "emit", "shutdown"])
+async def test_boundary_observation_always_drains_and_preserves_primary_error(
+    monkeypatch: pytest.MonkeyPatch, primary_kind: type[BaseException] | None, failure_phase: str | None,
+) -> None:
+    observation = WorkerObservation()
+    primary = None if primary_kind is None else primary_kind("SECRET primary")
+    secondary = ValueError("SECRET secondary")
+    stopped = asyncio.Event()
+    drained = []
+    records: list[dict[str, Any]] = []
+    original_report = observation.report
+    report_calls = 0
+
+    def report():
+        nonlocal report_calls
+        report_calls += 1
+        if failure_phase == "report" and report_calls == 1:
+            raise secondary
+        return original_report()
+
+    def emit(record):
+        records.append(record)
+        if failure_phase == "emit" and len(records) == 1:
+            raise secondary
+
+    class Worker:
+        async def stop(self):
+            observation.note("stop_requested")
+            stopped.set()
+            if failure_phase == "shutdown":
+                raise secondary
+
+    async def run():
+        await stopped.wait()
+        drained.append(True)
+
+    monkeypatch.setattr(observation, "report", report)
+    runner = asyncio.create_task(run())
+
+    async def case():
+        try:
+            if primary is not None:
+                raise primary
+        finally:
+            await observe_and_drain(observation, {"run_id": "original-run"}, [Worker()], [runner],
+                                    primary_error=primary, emit=emit)
+
+    expected = primary if primary is not None else secondary if failure_phase is not None else None
+    if expected is None:
+        await case()
+    else:
+        with pytest.raises(type(expected)) as raised:
+            await case()
+        assert raised.value is expected
+    assert stopped.is_set() and runner.done() and drained == [True]
+    assert records[0]["phase"] == "before_shutdown" and records[-1]["phase"] == "after_shutdown"
+    assert "stop_requested" not in records[0].get("observation", {}).get("milestones", {})
+    assert records[-1]["observation"]["milestones"]["stop_requested"]["count"] == 1
+    assert all(record["run_id"] == "original-run" for record in records)
+    assert records[0]["observation_capture_state"] == ("invalid" if failure_phase == "report" else "complete")
+    assert "SECRET" not in json.dumps(records)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_snapshots_bracket_cleanup_and_do_not_share_mutable_state() -> None:
+    ticks = itertools.count()
+    observation = WorkerObservation(clock=lambda: float(next(ticks)))
+    records: list[dict[str, Any]] = []
+
+    class Worker:
+        async def stop(self):
+            observation.note("stop_requested")
+
+    await observe_and_drain(observation, {}, [Worker()], [], emit=records.append)
+    before, after = records
+    stop_at = after["observation"]["milestones"]["stop_requested"]["first"]["at"] + observation.started
+    before_report_at = before["observation"]["elapsed"] + observation.started
+    assert before["monotonic_before"] <= before_report_at <= before["monotonic_after"]
+    assert before["monotonic_after"] <= stop_at <= after["monotonic_before"] <= after["monotonic_after"]
+    assert "stop_requested" not in before["observation"]["milestones"]
+    assert before["observation_capture_state"] == after["observation_capture_state"] == "complete"
 
 
 @pytest.mark.asyncio
