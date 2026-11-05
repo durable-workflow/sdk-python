@@ -777,7 +777,7 @@
 }
 
 /* One Identity: shared chrome and Python documentation components. */
-:root {
+:root, [data-md-color-scheme="default"], [data-md-color-scheme="slate"] {
   --md-text-font: var(--dw-font-body);
   --md-code-font: var(--dw-font-mono);
   --md-default-fg-color: var(--dw-ink);
@@ -962,3 +962,10 @@ body:has(.dw-landing) .md-content__inner { margin: 0 24px; padding: 0; }
   .dw-channel-label { display: none; }
   .dw-role-grid { grid-template-columns: 1fr; }
 }
+.dw-status-pill[data-public-status="operational"] { color: var(--dw-action); background: var(--dw-tint); }
+.dw-status-pill[data-public-status="degraded"] { color: #8c5600; background: #fff0d6; }
+.dw-status-pill[data-public-status="incident"] { color: #b3261e; background: #fce8e8; }
+.dw-status-pill[data-public-status="maintenance"] { color: #3f51b5; background: #e7edff; }
+[data-md-color-scheme="slate"] .dw-status-pill[data-public-status="degraded"] { color: #f2c46d; background: #3b2d17; }
+[data-md-color-scheme="slate"] .dw-status-pill[data-public-status="incident"] { color: #ffaaa5; background: #3c211f; }
+[data-md-color-scheme="slate"] .dw-status-pill[data-public-status="maintenance"] { color: #b6c4ff; background: #242a43; }

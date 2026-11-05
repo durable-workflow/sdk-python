@@ -1,3 +1,5 @@
+import { watchPublicStatus } from "./status.mjs";
+
 /* Native disclosure semantics retain links and keyboard navigation without JS. */
 (() => {
   const close = (switcher, restoreFocus) => {
@@ -15,5 +17,51 @@
     document.addEventListener("click", (event) => {
       if (!switcher.contains(event.target)) close(switcher, false);
     });
+  });
+
+  document.querySelectorAll('.md-header__option label[for^="__palette_"]').forEach((control) => {
+    control.setAttribute("role", "button");
+    control.setAttribute("aria-label", control.title);
+    control.tabIndex = 0;
+    control.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        control.click();
+      }
+    });
+  });
+
+  const pill = document.querySelector("[data-public-status]");
+  if (!pill) return;
+  const labels = {
+    operational: "All systems operational",
+    degraded: "Degraded performance",
+    incident: "Service incident",
+    maintenance: "Maintenance",
+    stale: "Status stale",
+    unverified: "Status unverified",
+    unavailable: "Status unavailable",
+    unknown: "Status unknown",
+  };
+  const renderStatus = (state) => {
+    const safeState = Object.hasOwn(labels, state) ? state : "unknown";
+    if (pill.dataset.publicStatus === safeState) return;
+    pill.dataset.publicStatus = safeState;
+    pill.querySelector("[data-status-label]").textContent = labels[safeState];
+  };
+  let stopStatus;
+  const startStatus = () => {
+    stopStatus?.();
+    renderStatus("unknown");
+    stopStatus = watchPublicStatus(renderStatus);
+  };
+  startStatus();
+  window.addEventListener("pagehide", () => {
+    stopStatus?.();
+    stopStatus = undefined;
+    renderStatus("unknown");
+  });
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) startStatus();
   });
 })();

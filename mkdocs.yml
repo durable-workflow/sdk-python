@@ -20,21 +20,25 @@ theme:
   palette:
     - scheme: default
       primary: custom
+      accent: custom
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
     - scheme: slate
       primary: custom
+      accent: custom
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
 
 extra_javascript:
-  - javascripts/identity.js
+  - path: javascripts/identity.js
+    type: module
   - path: javascripts/analytics.js
     type: module
 extra_css:
   - stylesheets/identity-tokens.css
+  - stylesheets/identity-fonts.css
   - stylesheets/layout.css
 
 plugins:
