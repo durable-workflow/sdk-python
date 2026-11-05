@@ -129,6 +129,7 @@ async def test_streamed_response_is_not_consumed_by_observer(monkeypatch: Any) -
         response = await client.send(client.build_request("GET", "https://example.test/stream"), stream=True)
         assert reads == []
         assert "task_state" not in observation.report()["recent"][0]
+        assert observation.report()["recent"][0]["response_metadata_state"] == "missing"
         assert await response.aread() == b'{"task":null}'
         await response.aclose()
 
@@ -145,6 +146,10 @@ async def test_observation_bounds_completed_records_and_milestones(monkeypatch: 
     assert report["requests"] == 5
     assert len(report["recent"]) == 2
     assert len(report["milestones"]) == 2
+    assert report["omitted_completed"] == 3
+    assert report["omitted_milestone_events"] == 3
+    assert report["completeness"]["recent_http"] == "truncated"
+    assert report["completeness"]["milestones"] == "truncated"
     assert "SECRET" not in json.dumps(report)
 
 
@@ -171,11 +176,67 @@ async def test_active_record_limit_keeps_the_actual_inflight_count(monkeypatch: 
             assert report["active_count"] == 5
             assert len(report["active"]) == 2
             assert report["omitted_active"] == 3
+            assert report["evicted_active"] == 3
+            assert report["completeness"]["active_http"] == "truncated"
         finally:
             for runner in runners:
                 runner.cancel()
             await asyncio.gather(*runners, return_exceptions=True)
     assert observation.report()["active_count"] == 0
+    assert observation.report()["completeness"]["active_http"] == "truncated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("body", "content_type", "expected"), [
+    (b'{"task":null,"recorded":false,"input":"SECRET"}', "application/json", "complete"),
+    (b"SECRET", "text/plain", "missing"),
+    (b'{"input":"' + b"x" * 32_768 + b'"}', "application/json", "truncated"),
+    (b'{"input":"SECRET"', "application/json", "invalid"),
+    (b'["SECRET"]', "application/json", "invalid"),
+    (b'{"task":"SECRET"}', "application/json", "invalid"),
+    (b'{"recorded":"SECRET"}', "application/json", "invalid"),
+])
+async def test_http_metadata_omissions_have_explicit_states(
+    monkeypatch: Any, body: bytes, content_type: str, expected: str,
+) -> None:
+    observation = WorkerObservation()
+    observation.install_http(monkeypatch)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, content=body, headers={"Content-Type": content_type}),
+    )) as client:
+        response = await client.post("https://example.test/api/worker/workflow-tasks/original/history")
+        assert response.content == body
+    report = observation.report()
+    assert report["counts"] == {"POST workflow_history": 1}
+    assert report["recent"][0]["response_metadata_state"] == expected
+    assert report["response_metadata_states"] == {expected: 1}
+    assert "SECRET" not in json.dumps(report)
+
+
+def test_middle_milestone_loss_and_summary_omission_are_explicit() -> None:
+    observation = WorkerObservation()
+    for task_id in ("first", "middle", "last"):
+        observation.note("workflow_task_enter", {"task_id": task_id})
+    report = observation.report()
+    assert report["milestones"]["workflow_task_enter"]["first"]["task_id"] == "first"
+    assert report["milestones"]["workflow_task_enter"]["last"]["task_id"] == "last"
+    assert report["omitted_milestone_events"] == 1
+    assert report["completeness"]["milestones"] == "truncated"
+
+
+@pytest.mark.asyncio
+async def test_recent_records_suppressed_in_report_are_missing_not_complete(monkeypatch: Any) -> None:
+    observation = WorkerObservation()
+    observation.install_http(monkeypatch)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={}),
+    )) as client:
+        await client.get("https://example.test/result")
+    report = observation.report(include_recent=False)
+    assert report["recent"] == []
+    assert report["omitted_completed"] == 0
+    assert report["completeness"]["recent_http"] == "missing"
+    assert report["response_metadata_states"] == {"complete": 1}
 
 
 @pytest.mark.asyncio
@@ -304,6 +365,11 @@ async def test_interceptors_preserve_results_and_exceptions() -> None:
     ("POST", "/api/worker/registrations/worker/deregister", "deregistration"),
     ("DELETE", "/api/worker/registrations/worker", "deregistration"),
     ("GET", "/api/worker/registrations/worker", "registration"),
+    ("POST", "/api/worker/workflow-tasks/original/history", "workflow_history"),
+    ("GET", "/api/worker/workflow-tasks/original/history", "workflow_history"),
+    ("POST", "/api/worker/workflow-tasks/original/events", "workflow_submission"),
+    ("POST", "/api/worker/workflow-tasks/original/other/history", "workflow_submission"),
+    ("POST", "/api/worker/workflow-tasks//history", "workflow_submission"),
 ])
 def test_registration_and_deregistration_are_counted_separately(method: str, path: str, expected: str) -> None:
     from tests.worker_observation import route_name
