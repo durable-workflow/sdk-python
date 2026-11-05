@@ -1,0 +1,77 @@
+{
+  "actual_selected_archives": null,
+  "downloaded_wheel_imports_or_installs": 0,
+  "files": [
+    {
+      "bytes": 44721,
+      "file": "184-acquire-tools-v5.py",
+      "sha256": "96d4a5b1b5687d11779a244a2a6946555c24020b3b54e93e43e61be2f6722e2c"
+    },
+    {
+      "bytes": 2975,
+      "file": "184-acquire-tools-v5-bootstrap.py",
+      "sha256": "00349dc4ff6bec00072bcdfd01fffe5c13730de64f78e8dc940324c755adfe20"
+    },
+    {
+      "bytes": 39547,
+      "file": "184-acquire-tools-v5-controls.py",
+      "sha256": "786fb0346a25d46a0eb75bc9f21f9dd6a455eee422ec08041cea83860d4a15a1"
+    },
+    {
+      "bytes": 8195,
+      "file": "184-acquire-tools-v5-controls-result.json",
+      "sha256": "437f47ba42687bb80039a1915bb0b4d45d2055571554cea725a560cbfc67e5f7"
+    },
+    {
+      "bytes": 9884,
+      "file": "184-acquire-tools-v5-adapter-controls.py",
+      "sha256": "840c8bd2237498abf2f333edc1d5af45dbb9c181cf60f4cad474d51f1176dd9f"
+    },
+    {
+      "bytes": 1898,
+      "file": "184-acquire-tools-v5-adapter-controls-result.json",
+      "sha256": "529390459d99fc262ff84cd52f607034f2af72acaa11fea53d4ebe31cd2bc45a"
+    },
+    {
+      "bytes": 11769,
+      "file": "184-acquisition-custody-guardian-v2-proposal.py",
+      "sha256": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70"
+    },
+    {
+      "bytes": 11937,
+      "file": "184-acquisition-terminal-proposal.py",
+      "sha256": "45f1fc8224eff3f8811de00b07756b5f404c6924d798f2d1aac39ec8e69b6465"
+    },
+    {
+      "bytes": 11638,
+      "file": "184-acquisition-terminal-controls.py",
+      "sha256": "b32bcf3d3ac933e4abba1ddb002d72cf9b6fb16fa0b0718de3bd5fa01c84b47f"
+    },
+    {
+      "bytes": 1826,
+      "file": "184-acquisition-terminal-controls-result.json",
+      "sha256": "570abc1b842372e7e8773f8d7d64f22ac2d696940639f08d6e1cdd09a6facae3"
+    },
+    {
+      "bytes": 1010,
+      "file": "184-acquisition-interpreter-authority-proposal.json",
+      "sha256": "cb819468f659c6235176fabcd29894dda552ffb85f0bf54664d83b7dcdd3d2e1"
+    },
+    {
+      "bytes": 4550,
+      "file": "184-immutable-build-tool-input-proposal.json",
+      "sha256": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c"
+    }
+  ],
+  "launcher": null,
+  "new_general_decision": null,
+  "new_sdk_wheel": null,
+  "real_network_requests": 0,
+  "selected_sdk_source": "14adc40b00b68cc8a3e1ae5647a885a42f273650",
+  "source_control_results": {
+    "independent_terminal_controls": 16,
+    "preallocated_adapter_controls": 16,
+    "retained_owner_controls": 85
+  },
+  "stage": "UNEXECUTED source composition checkpoint; not launch ready"
+}

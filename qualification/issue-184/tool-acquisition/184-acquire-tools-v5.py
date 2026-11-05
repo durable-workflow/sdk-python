@@ -1,0 +1,762 @@
+"""One admitted data-only acquisition; never import/install any acquired wheel."""
+from __future__ import annotations
+
+import ast
+from contextlib import ExitStack
+import datetime as dt
+import email.parser
+import hashlib
+import io
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import signal
+import ssl
+import stat
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+import zipfile
+
+SELECTION = Path('/tmp/sdk-python-handoff/184-immutable-build-tool-input-proposal.json')
+SELECTION_SHA = 'e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c'
+CA_SOURCE = Path('/home/lab4/fleet/sessions/sdk-python/20261105-010242-eef95b/.venv/lib/python3.14/site-packages/certifi/cacert.pem')
+CA_SHA = '2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b'
+CA_WHEEL_SHA = 'e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1'
+SOURCE = '14adc40b00b68cc8a3e1ae5647a885a42f273650'
+POOL_BASE = Path('/home/lab4/fleet/tmp')
+OLD_ADMISSION = 'https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6649046802'
+VERIFIED_SOURCE_SHA256 = globals().get('VERIFIED_SOURCE_SHA256')
+ARCHIVE_BYTES = 2901292
+FILE_CAP, ARCHIVE_CAP, POOL_CAP = 2 * 1024**2, 3 * 1024**2, 4 * 1024**2
+JSON_CAP, ZIP_MEMBER_CAP = 65536, 65536
+BLOCKED = ('AAA Certificate Services', 'emSign ECC Root CA - G3')
+MINIMAL_ENV = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'TZ': 'UTC'}
+
+
+class Refusal(ValueError):
+    def __init__(self, message: str) -> None:
+        self.code = re.sub(r'[^A-Za-z0-9]+', '_', message).strip('_').upper()
+        if not self.code or len(self.code) > 128:
+            raise ValueError('invalid authored refusal code')
+        super().__init__(self.code)
+
+
+def require(value: bool, message: str) -> None:
+    if not value:
+        raise Refusal(message)
+
+
+MARKER_ENV = {
+    'python_version': '3.13', 'python_full_version': '3.13.0', 'implementation_version': '3.13.0',
+    'implementation_name': 'cpython', 'platform_python_implementation': 'CPython',
+    'os_name': 'posix', 'sys_platform': 'linux', 'platform_system': 'Linux',
+    'platform_machine': 'x86_64', 'extra': '',
+}
+VERSION_MARKERS = {'python_version', 'python_full_version', 'implementation_version'}
+
+
+def marker_tree(text: str):
+    tree = ast.parse(text.strip(), mode='eval').body
+    allowed = (ast.BoolOp, ast.And, ast.Or, ast.Compare, ast.Name, ast.Load, ast.Constant,
+               ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn)
+    require(all(isinstance(node, allowed) for node in ast.walk(tree)), 'unsupported marker syntax')
+    require(all(node.id in MARKER_ENV for node in ast.walk(tree) if isinstance(node, ast.Name)),
+            'unsupported marker variable')
+    require(all(isinstance(node.value, str) for node in ast.walk(tree) if isinstance(node, ast.Constant)),
+            'unsupported marker literal')
+    return tree
+
+
+def requirement_parts(text: str) -> tuple:
+    """Bounded syntax normalization, not a resolver or execution of marker code."""
+    require(isinstance(text, str) and len(text) <= 2048, 'requirement text bound')
+    body, separator, marker = text.partition(';')
+    match = re.fullmatch(r'\s*([A-Za-z0-9_.-]+)(?:\[([^\]]+)\])?\s*(.*?)\s*', body)
+    require(match is not None and '@' not in body, 'unsupported requirement form')
+    name = re.sub(r'[-_.]+', '-', match[1]).lower()
+    extras = tuple(sorted(re.sub(r'[-_.]+', '-', value.strip()).lower()
+                          for value in (match[2] or '').split(',') if value.strip()))
+    spec = match[3].strip()
+    if spec.startswith('(') and spec.endswith(')'):
+        spec = spec[1:-1]
+    specs = tuple(sorted(value.strip().replace(' ', '') for value in spec.split(',') if value.strip()))
+    parsed_marker = marker_tree(marker) if separator else None
+    normalized_marker = ast.dump(parsed_marker, include_attributes=False) if parsed_marker is not None else ''
+    return name, extras, specs, normalized_marker
+
+
+def marker_active(text: str) -> bool:
+    _, separator, marker = text.partition(';')
+    if not separator:
+        return True
+    tree = marker_tree(marker)
+    def value(node):
+        if isinstance(node, ast.Name):
+            require(node.id in MARKER_ENV, 'unsupported marker variable')
+            return MARKER_ENV[node.id]
+        require(isinstance(node, ast.Constant) and isinstance(node.value, str), 'unsupported marker operand')
+        return node.value
+    def evaluate(node):
+        if isinstance(node, ast.BoolOp):
+            require(isinstance(node.op, (ast.And, ast.Or)), 'unsupported marker boolean')
+            return all(evaluate(child) for child in node.values) if isinstance(node.op, ast.And) \
+                else any(evaluate(child) for child in node.values)
+        require(isinstance(node, ast.Compare) and len(node.ops) == len(node.comparators) == 1,
+                'unsupported marker comparison')
+        left, right = value(node.left), value(node.comparators[0])
+        op = node.ops[0]
+        version = any(isinstance(part, ast.Name) and part.id in VERSION_MARKERS
+                      for part in (node.left, node.comparators[0]))
+        if version and not isinstance(op, (ast.In, ast.NotIn)):
+            require(bool(re.fullmatch(r'\d+(?:\.\d+)*', left))
+                    and bool(re.fullmatch(r'\d+(?:\.\d+)*', right)), 'unsupported marker version')
+            first, second = tuple(map(int, left.split('.'))), tuple(map(int, right.split('.')))
+            full_version = any(isinstance(part, ast.Name) and part.id in {
+                'python_full_version', 'implementation_version',
+            } for part in (node.left, node.comparators[0]))
+            if full_version:
+                literal = node.comparators[0] if isinstance(node.left, ast.Name) else node.left
+                require(not isinstance(literal, ast.Constant) or not literal.value.startswith('3.13'),
+                        'patch sensitive marker requires exact runtime version')
+            length = max(len(first), len(second))
+            left, right = first + (0,) * (length - len(first)), second + (0,) * (length - len(second))
+        if isinstance(op, ast.Eq): return left == right
+        if isinstance(op, ast.NotEq): return left != right
+        if isinstance(op, ast.Lt): return left < right
+        if isinstance(op, ast.LtE): return left <= right
+        if isinstance(op, ast.Gt): return left > right
+        if isinstance(op, ast.GtE): return left >= right
+        if isinstance(op, ast.In): return left in right
+        if isinstance(op, ast.NotIn): return left not in right
+        raise Refusal('unsupported marker operator')
+    return bool(evaluate(tree))
+
+
+def sha(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def utc() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def ca_subject(cert: bytes) -> str:
+    check = subprocess.run(['/usr/bin/openssl', 'x509', '-noout', '-subject', '-nameopt', 'RFC2253'],
+                           input=cert, capture_output=True, timeout=2, check=True,
+                           env=dict(MINIMAL_ENV), close_fds=True)
+    return check.stdout.decode().removeprefix('subject=').strip()
+
+
+def encoded(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, indent=2) + '\n').encode()
+
+
+def pairs(values: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in values:
+        require(key not in result, 'duplicate JSON key')
+        result[key] = value
+    return result
+
+
+def validate_authority(authority: dict, tool: dict) -> None:
+    require(isinstance(authority, dict) and isinstance(authority.get('info'), dict)
+            and isinstance(authority.get('urls'), list) and len(authority['urls']) <= 16,
+            'versioned metadata structure changed')
+    info = authority['info']
+    normalize = lambda text: re.sub(r'[-_.]+', '-', text).lower()
+    require(isinstance(info.get('name'), str) and normalize(info['name']) == normalize(tool['name'])
+            and info.get('version') == tool['version'] and info.get('requires_python') == tool['requires_python'],
+            'versioned metadata identity changed')
+    require(all(isinstance(row, dict) for row in authority['urls']), 'versioned metadata file shape')
+    matches = [row for row in authority['urls'] if row.get('filename') == tool['filename']]
+    require(len(matches) == 1, 'versioned metadata archive cardinality')
+    row = matches[0]
+    require(row.get('url') == tool['url'] and type(row.get('size')) is int and row['size'] == tool['bytes']
+            and isinstance(row.get('digests'), dict) and row['digests'].get('sha256') == tool['sha256']
+            and type(row.get('yanked')) is bool and row['yanked'] is False,
+            'versioned archive tuple yank state changed')
+
+
+def read_regular(path: Path, cap: int) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.geteuid()
+                and before.st_size <= cap, 'invalid existing data file')
+        raw = stream.read(cap + 1)
+        after = os.fstat(stream.fileno())
+        require((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns),
+                'existing data changed while reading')
+        require(len(raw) == before.st_size, 'existing data size mismatch')
+    return raw
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        refusal = Refusal('redirect refused no second request')
+        refusal.http_status = code
+        raise refusal
+
+
+class Acquisition:
+    def __init__(self, admission: str) -> None:
+        require(bool(re.fullmatch(r'https://github\.com/durable-workflow/sdk-python/issues/184#issuecomment-[1-9][0-9]{5,17}', admission))
+                and admission != OLD_ADMISSION, 'new admission required old attempt cannot retry')
+        self.admission = admission
+        self.started = time.monotonic()
+        self.started_utc = utc()
+        self.io_deadline = self.started + 270
+        self.ceiling = self.started + 300
+        self.pool = POOL_BASE / ('sdk-python-184-tools-guardian-' + admission.rsplit('-', 1)[-1])
+        self.preallocated: dict[str, int] = {}
+        self.guard_attached = False
+        self.created = False
+        self.used = 0
+        self.archive_used = 0
+        self.requests: list[dict] = []
+        self.files: set[str] = set()
+        self.written_hashes: dict[str, str] = {}
+        self.written_sizes: dict[str, int] = {}
+        self.archive_nodes: dict[str, tuple[int, int]] = {}
+        self.archive_facts: list[dict] = []
+        self.archive_opened = self.archive_written = self.archive_removed = 0
+        self.current_tool = None
+        self.dir_ids: dict[str, tuple[int, int]] = {}
+        self.phase = 'selection-and-existing-trust'
+
+    def attach_guarded_pool(self, proof: dict) -> None:
+        """Called only after the reviewed launcher receives independent guardian readiness."""
+        require(not self.guard_attached and not self.created and not self.files, 'guardian already attached')
+        require(proof.get('pool') == str(self.pool) and proof.get('ready') is True,
+                'guardian pool proof mismatch')
+        started = proof.get('started_monotonic')
+        require(type(started) in (int, float) and 0 < started <= time.monotonic() < started + 270,
+                'guardian start deadline invalid')
+        self.started = started
+        self.started_utc = proof['started_utc']
+        parsed = dt.datetime.fromisoformat(self.started_utc)
+        require(parsed.tzinfo is not None and abs((dt.datetime.now(dt.timezone.utc) - parsed).total_seconds()
+                - (time.monotonic() - started)) < 2, 'guardian wall clock anchor changed')
+        self.io_deadline, self.ceiling = started + 270, started + 300
+        ids = proof.get('dir_ids')
+        require(isinstance(ids, dict) and set(ids) == {'.', 'wheelhouse'}, 'guardian directory proof shape')
+        for name in ('.', 'wheelhouse'):
+            path = self.pool if name == '.' else self.pool / name
+            st = path.lstat()
+            require(stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid()
+                    and stat.S_IMODE(st.st_mode) == 0o700 and [st.st_dev, st.st_ino] == ids[name],
+                    'guardian directory identity changed')
+            self.dir_ids[name] = (st.st_dev, st.st_ino)
+        require(set(os.listdir(self.pool)) == {'wheelhouse'}, 'guardian root not initially exclusive')
+        archives = proof.get('archive_fds')
+        require(isinstance(archives, dict) and 1 <= len(archives) <= 6
+                and set(os.listdir(self.pool / 'wheelhouse')) == set(archives), 'guardian archive set changed')
+        require(all(type(fd) is int and fd >= 3 for fd in archives.values())
+                and len(set(archives.values())) == len(archives), 'guardian descriptor set invalid')
+        for filename, fd in archives.items():
+            require(Path(filename).name == filename and filename.endswith('.whl'), 'guardian archive filename invalid')
+            node = os.fstat(fd)
+            named = (self.pool / 'wheelhouse' / filename).lstat()
+            require(stat.S_ISREG(node.st_mode) and node.st_uid == os.geteuid() and node.st_nlink == 1
+                    and node.st_size == 0 and stat.S_IMODE(node.st_mode) == 0o600
+                    and (named.st_dev, named.st_ino) == (node.st_dev, node.st_ino),
+                    'guardian archive descriptor identity changed')
+            self.preallocated[filename] = fd
+            self.archive_nodes['wheelhouse/' + filename] = (node.st_dev, node.st_ino)
+        self.archive_opened = len(self.archive_nodes)
+        self.created = self.guard_attached = True
+
+    def prepare_pool(self, tools: list[dict]) -> None:
+        require(self.guard_attached and set(self.preallocated) == {tool['filename'] for tool in tools},
+                'complete guardian archive custody required')
+        root = os.open(self.pool, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            st = os.fstat(root)
+            require((st.st_dev, st.st_ino) == self.dir_ids['.'], 'guardian root changed before adoption')
+            for name in ('metadata', 'events'):
+                os.mkdir(name, 0o700, dir_fd=root)
+                st = os.stat(name, dir_fd=root, follow_symlinks=False)
+                require(stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid(), 'pool directory ownership')
+                self.dir_ids[name] = (st.st_dev, st.st_ino)
+        finally:
+            os.close(root)
+
+    def write(self, name: str, raw: bytes) -> None:
+        require(name not in self.files and len(raw) + self.used <= POOL_CAP - (0 if name == 'failure.json' else 65536),
+                'pool output bound or collision')
+        parts = PurePosixPath(name)
+        require(not parts.is_absolute() and '..' not in parts.parts and '\\' not in name
+                and str(parts) == name and len(parts.parts) in (1, 2)
+                and (len(parts.parts) == 1 or parts.parts[0] in {'metadata', 'wheelhouse', 'events'}),
+                'invalid output path')
+        with ExitStack() as stack:
+            root_fd = os.open(self.pool, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            stack.callback(os.close, root_fd)
+            current = os.fstat(root_fd)
+            require((current.st_dev, current.st_ino) == self.dir_ids.get('.'), 'pool directory changed')
+            parent_fd = root_fd
+            if len(parts.parts) == 2:
+                parent_fd = os.open(parts.parts[0], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+                stack.callback(os.close, parent_fd)
+                current = os.fstat(parent_fd)
+                require((current.st_dev, current.st_ino) == self.dir_ids.get(parts.parts[0]),
+                        'pool subdirectory changed')
+            allocated = name.startswith('wheelhouse/') and self.guard_attached
+            if allocated:
+                expected = self.archive_nodes.get(name)
+                named = os.stat(parts.parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+                require(stat.S_ISREG(named.st_mode) and named.st_nlink == 1 and named.st_uid == os.geteuid()
+                        and (named.st_dev, named.st_ino) == expected and named.st_size == 0,
+                        'guarded archive name changed before write')
+                fd = os.dup(self.preallocated[parts.parts[-1]])
+            else:
+                fd = os.open(parts.parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=parent_fd)
+            try:
+                node = os.fstat(fd)
+                if name.startswith('wheelhouse/'):
+                    require(not allocated or (node.st_dev, node.st_ino) == self.archive_nodes[name],
+                            'guarded archive fd changed before write')
+                    self.archive_nodes[name] = (node.st_dev, node.st_ino)
+                    if not allocated:
+                        self.archive_opened += 1
+                    else:
+                        os.lseek(fd, 0, os.SEEK_SET)
+                stream = os.fdopen(fd, 'wb')
+            except BaseException:
+                os.close(fd)
+                raise
+            stack.callback(stream.close)
+            require(stream.write(raw) == len(raw), 'short output write')
+            stream.flush()
+            os.fchmod(stream.fileno(), 0o400)
+            os.fsync(stream.fileno())
+        self.used += len(raw)
+        self.files.add(name)
+        self.written_hashes[name] = sha(raw)
+        self.written_sizes[name] = len(raw)
+        if name.startswith('wheelhouse/'):
+            self.archive_written += 1
+
+    def remove_new_archives(self) -> dict:
+        """Unlink only archive names exclusively created by this owner, including partial writes."""
+        result = {'complete': False, 'removed': 0, 'remaining_owned': len(self.archive_nodes)}
+        if not self.created:
+            require(not self.archive_nodes, 'archive tracking without owned pool')
+            return dict(result, complete=True)
+        with ExitStack() as stack:
+            root = os.open(self.pool, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            stack.callback(os.close, root)
+            st = os.fstat(root)
+            require((st.st_dev, st.st_ino) == self.dir_ids.get('.'), 'cleanup pool directory changed')
+            directory = os.open('wheelhouse', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+            stack.callback(os.close, directory)
+            st = os.fstat(directory)
+            require((st.st_dev, st.st_ino) == self.dir_ids.get('wheelhouse'), 'cleanup archive directory changed')
+            os.fchmod(directory, 0o700)
+            for name, identity in list(self.archive_nodes.items()):
+                leaf = PurePosixPath(name).name
+                st = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+                require(stat.S_ISREG(st.st_mode) and st.st_uid == os.geteuid() and st.st_nlink == 1
+                        and (st.st_dev, st.st_ino) == identity, 'cleanup archive identity collision')
+                os.unlink(leaf, dir_fd=directory)
+                del self.archive_nodes[name]
+                self.used -= self.written_sizes.pop(name, 0)
+                self.written_hashes.pop(name, None)
+                self.files.discard(name)
+                self.archive_removed += 1
+                result['removed'] += 1
+            self.archive_used = sum(self.written_sizes.get(name, 0) for name in self.archive_nodes)
+            result['remaining_owned'] = len(self.archive_nodes)
+            result['complete'] = not self.archive_nodes and not os.listdir(directory)
+        return result
+
+    def failure_result(self, error: BaseException) -> dict:
+        """Keep the original failure primary even if cleanup or diagnostic custody also refuses."""
+        code = error.code if isinstance(error, Refusal) else 'EXCEPTION_' + type(error).__name__.upper()
+        result = {'outcome': 'fail', 'pool': str(self.pool), 'phase': self.phase,
+                  'failure_type': type(error).__name__, 'refusal_code': code,
+                  'current_tool': self.current_tool, 'finished_at_utc': utc(),
+                  'http_requests': self.requests, 'archive_facts': self.archive_facts,
+                  'elapsed_seconds': time.monotonic() - self.started, 'retries': 0,
+                  'import_install_container_SDK_build': False,
+                  'failure_record_written': False, 'custody_seal_complete': False}
+        try:
+            result['archive_cleanup'] = self.remove_new_archives()
+        except BaseException as cleanup_error:
+            result['archive_cleanup'] = {'complete': False,
+                'remaining_owned': len(self.archive_nodes),
+                'refusal_code': cleanup_error.code if isinstance(cleanup_error, Refusal)
+                                else 'EXCEPTION_' + type(cleanup_error).__name__.upper()}
+        result['archive_nodes'] = {'opened': self.archive_opened, 'written': self.archive_written,
+                                   'removed': self.archive_removed, 'remaining_owned': len(self.archive_nodes)}
+        if self.created and time.monotonic() < self.ceiling:
+            try:
+                raw = encoded(dict(result, failure_record_written=True))
+                require(len(raw) <= 65536, 'failure diagnostic size bound')
+                self.write('failure.json', raw)
+                result['failure_record_written'] = True
+            except BaseException as record_error:
+                result['failure_record_refusal_code'] = record_error.code if isinstance(record_error, Refusal) \
+                    else 'EXCEPTION_' + type(record_error).__name__.upper()
+            try:
+                self.seal()
+                result['custody_seal_complete'] = True
+            except BaseException as seal_error:
+                result['custody_seal_refusal_code'] = seal_error.code if isinstance(seal_error, Refusal) \
+                    else 'EXCEPTION_' + type(seal_error).__name__.upper()
+        return result
+
+    def check_pool(self) -> list[dict]:
+        entries = []
+        with ExitStack() as stack:
+            root = os.open(self.pool, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            stack.callback(os.close, root)
+            st = os.fstat(root)
+            require((st.st_dev, st.st_ino) == self.dir_ids.get('.'), 'pool directory changed')
+            directories = {'metadata', 'wheelhouse', 'events'}
+            expected_root = directories | {name for name in self.files if '/' not in name}
+            require(set(os.listdir(root)) == expected_root, 'extra or missing pool output')
+            for directory in ('.', 'metadata', 'wheelhouse', 'events'):
+                parent = root
+                if directory != '.':
+                    parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+                    stack.callback(os.close, parent)
+                    st = os.fstat(parent)
+                    require((st.st_dev, st.st_ino) == self.dir_ids[directory], 'pool subdirectory changed')
+                expected = {name for name in self.files if '/' not in name} if directory == '.' else {
+                    name.split('/', 1)[1] for name in self.files if name.startswith(directory + '/')}
+                if directory != '.':
+                    require(set(os.listdir(parent)) == expected, 'extra or missing pool output')
+                require(len(expected) <= 128, 'pool file count bound')
+                for leaf in sorted(expected):
+                    name = leaf if directory == '.' else directory + '/' + leaf
+                    fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                    with os.fdopen(fd, 'rb') as stream:
+                        st = os.fstat(stream.fileno())
+                        require(stat.S_ISREG(st.st_mode) and st.st_nlink == 1 and st.st_uid == os.geteuid()
+                                and stat.S_IMODE(st.st_mode) == 0o400 and st.st_size <= POOL_CAP,
+                                'custody type mode or size mismatch')
+                        raw = stream.read(POOL_CAP + 1)
+                        after = os.fstat(stream.fileno())
+                        require((st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+                                == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                                and len(raw) == st.st_size and sha(raw) == self.written_hashes[name],
+                                'written pool bytes changed')
+                    entries.append({'path': name, 'bytes': len(raw), 'sha256': sha(raw),
+                                    'device': st.st_dev, 'inode': st.st_ino, 'mode': '0400', 'links': st.st_nlink})
+        require(sum(row['bytes'] for row in entries) == self.used <= POOL_CAP, 'pool accounting mismatch')
+        return sorted(entries, key=lambda row: row['path'])
+
+    def seal(self) -> None:
+        with ExitStack() as stack:
+            root = os.open(self.pool, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            stack.callback(os.close, root)
+            st = os.fstat(root)
+            require((st.st_dev, st.st_ino) == self.dir_ids.get('.'), 'pool directory changed')
+            for name in ('metadata', 'wheelhouse', 'events'):
+                fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+                stack.callback(os.close, fd)
+                st = os.fstat(fd)
+                require((st.st_dev, st.st_ino) == self.dir_ids[name], 'pool subdirectory changed')
+                os.fchmod(fd, 0o500)
+            os.fchmod(root, 0o500)
+
+    def get(self, url: str, cap: int, kind: str, size: int | None = None) -> bytes:
+        require(kind in {'metadata', 'archive'} and 0 < cap <= (JSON_CAP if kind == 'metadata' else FILE_CAP),
+                'invalid request kind or bound')
+        require(kind != 'archive' or type(size) is int and 0 < size <= cap, 'invalid archive request size')
+        parsed = urllib.parse.urlsplit(url)
+        allowed = 'pypi.org' if kind == 'metadata' else 'files.pythonhosted.org'
+        require(parsed.scheme == 'https' and parsed.hostname == allowed and not parsed.username
+                and not parsed.password and parsed.port is None and not parsed.query and not parsed.fragment,
+                'unexpected public authority')
+        remaining = self.io_deadline - time.monotonic()
+        require(remaining > 0, 'acquisition I/O deadline')
+        number = len(self.requests) + 1
+        entry = {'number': number, 'kind': kind, 'url': url, 'attempt': 1, 'stage': 'before-open'}
+        self.requests.append(entry)
+        self.write(f'events/{number:02d}-request.json', encoded(entry))
+        signal.setitimer(signal.ITIMER_REAL, min(20, remaining))
+        try:
+            request = urllib.request.Request(url, headers={
+                'User-Agent': 'sdk-python-source-input/1', 'Accept-Encoding': 'identity',
+                'Accept': 'application/json' if kind == 'metadata' else 'application/octet-stream',
+            })
+            with self.opener.open(request, timeout=min(15, remaining)) as response:
+                entry['stage'] = 'headers-received'
+                header_length = response.headers.get('Content-Length')
+                header_encoding = response.headers.get('Content-Encoding', 'identity')
+                self.write(f'events/{number:02d}-headers.json', encoded({
+                    'number': number, 'status': response.status,
+                    'same_selected_url': response.geturl() == url,
+                    'content_length': int(header_length) if header_length and header_length.isdecimal()
+                                      and len(header_length) < 12 else 'missing-or-invalid',
+                    'content_encoding': header_encoding if re.fullmatch(r'[A-Za-z0-9_.-]{0,32}', header_encoding)
+                                        else 'invalid',
+                }))
+                require(response.status == 200 and response.geturl() == url, 'unexpected HTTP result')
+                require(response.headers.get('Content-Encoding', 'identity') == 'identity', 'encoded body refused')
+                length = response.headers.get('Content-Length')
+                if length is not None:
+                    require(length.isdecimal() and int(length) <= cap, 'HTTP body exceeds bound')
+                if size is not None:
+                    require(length is not None and int(length) == size, 'archive HTTP size changed')
+                raw = bytearray()
+                digest = hashlib.sha256()
+                entry['stage'] = 'body-reading'
+                while True:
+                    require(time.monotonic() < self.io_deadline, 'acquisition I/O deadline')
+                    chunk = response.read(min(65536, cap + 1 - len(raw)))
+                    if not chunk:
+                        break
+                    raw.extend(chunk)
+                    digest.update(chunk)
+                    entry['bytes_received'] = len(raw)
+                    entry['partial_body_sha256'] = digest.hexdigest()
+                    require(len(raw) <= cap, 'HTTP body exceeds bound')
+                require(length is None or len(raw) == int(length), 'HTTP body length mismatch')
+                entry.update(stage='body-complete', bytes_received=len(raw), body_sha256=sha(raw))
+                self.write(f'events/{number:02d}-complete.json', encoded(entry))
+                return bytes(raw)
+        except BaseException as error:
+            code = error.code if isinstance(error, Refusal) else 'EXCEPTION_' + type(error).__name__.upper()
+            try:
+                self.write(f'events/{number:02d}-refusal.json', encoded({
+                    'number': number, 'stage': entry['stage'], 'bytes_received': entry.get('bytes_received', 0),
+                    'refusal_code': code,
+                    'http_status': getattr(error, 'http_status', None)
+                                   if isinstance(getattr(error, 'http_status', None), int)
+                                   else getattr(error, 'code', None) if type(getattr(error, 'code', None)) is int else None,
+                }))
+            except BaseException:
+                entry['diagnostic_write_failed'] = True
+            raise
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+
+    def cached(self, tool: dict) -> tuple[bytes | None, str | None]:
+        roots = sorted([*Path('/tmp').glob('sdk-python-184-tools*14adc40b-*'),
+                        *POOL_BASE.glob('sdk-python-184-tools*14adc40b-*')])
+        require(len(roots) <= 32, 'named cache search bound')
+        for root in roots:
+            if root == self.pool:
+                continue
+            require(not root.is_symlink() and root.is_dir() and root.stat().st_uid == os.geteuid(),
+                    'named cache ownership collision')
+            directory = root / 'wheelhouse'
+            require(not directory.is_symlink(), 'named cache directory symlink')
+            path = directory / tool['filename']
+            if not path.exists() and not path.is_symlink():
+                continue
+            raw = read_regular(path, FILE_CAP)
+            require(len(raw) == tool['bytes'] and sha(raw) == tool['sha256'], 'named cache tuple mismatch')
+            return raw, str(path)
+        return None, None
+
+    def inspect_wheel(self, raw: bytes, tool: dict, authority: dict) -> dict:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            entries = archive.infolist()
+            require(0 < len(entries) <= 4096 and sum(row.file_size for row in entries) <= 64 * 1024**2,
+                    'ZIP member/count size bound')
+            names: set[str] = set()
+            for row in entries:
+                path = PurePosixPath(row.filename)
+                require(row.filename not in names and not path.is_absolute() and '..' not in path.parts
+                        and str(path) == row.filename.rstrip('/') and not row.filename.endswith('//')
+                        and len(row.filename.encode('utf-8')) <= 512
+                        and '\\' not in row.filename and ':' not in row.filename
+                        and not any(ord(c) < 32 for c in row.filename)
+                        and not row.flag_bits & 1, 'unsafe ZIP member')
+                mode = stat.S_IFMT(row.external_attr >> 16)
+                require(mode in (0, stat.S_IFDIR) if row.is_dir() else mode in (0, stat.S_IFREG),
+                        'ZIP special/link member')
+                names.add(row.filename)
+            metadata = [name for name in names if name.count('/') == 1 and name.endswith('.dist-info/METADATA')]
+            wheel = [name for name in names if name.count('/') == 1 and name.endswith('.dist-info/WHEEL')]
+            require(len(metadata) == len(wheel) == 1, 'ambiguous wheel metadata')
+            require(metadata[0].rsplit('/', 1)[0] == wheel[0].rsplit('/', 1)[0], 'wheel metadata root mismatch')
+            for name in metadata + wheel:
+                require(archive.getinfo(name).file_size <= ZIP_MEMBER_CAP, 'wheel metadata size bound')
+            msg = email.parser.BytesParser().parsebytes(archive.read(metadata[0]))
+            whl = email.parser.BytesParser().parsebytes(archive.read(wheel[0]))
+            require(all(len(msg.get_all(key, [])) == 1 for key in ('Name', 'Version', 'Requires-Python')),
+                    'wheel critical metadata cardinality')
+            normalize = lambda value: re.sub(r'[-_.]+', '-', value).lower()
+            require(normalize(msg['Name']) == normalize(tool['name']) and msg['Version'] == tool['version'],
+                    'wheel name/version mismatch')
+            require(msg['Requires-Python'] == tool['requires_python'], 'wheel Python bound mismatch')
+            actual = sorted(requirement_parts(value) for value in msg.get_all('Requires-Dist', []))
+            published = sorted(requirement_parts(value) for value in authority['info'].get('requires_dist') or [])
+            require(actual == published, 'wheel dependency metadata mismatch')
+            active = sorted(requirement_parts(value)[:3] for value in msg.get_all('Requires-Dist', [])
+                            if marker_active(value))
+            expected_active = sorted(requirement_parts(value)[:3] for value in tool['active_requirements'])
+            require(active == expected_active, 'approved active dependency graph changed')
+            require(whl.get_all('Tag', []) == ['py3-none-any'] and whl['Root-Is-Purelib'] == 'true',
+                    'unexpected tool platform tag')
+            return {'name': tool['name'], 'version': tool['version'], 'metadata_member': metadata[0],
+                    'metadata_sha256': sha(archive.read(metadata[0])), 'requires_python': msg['Requires-Python'],
+                    'requires_dist': msg.get_all('Requires-Dist', []),
+                    'approved_active_requirements': tool['active_requirements'],
+                    'wheel_tags': whl.get_all('Tag', []), 'members': len(entries),
+                    'uncompressed_header_bytes': sum(row.file_size for row in entries),
+                    'extracted_or_imported': False}
+
+    def retain_and_inspect(self, raw: bytes, tool: dict, authority: dict, cache_source=None) -> dict:
+        facts = {'name': tool['name'], 'filename': tool['filename'], 'expected_size': tool['bytes'],
+                 'bytes_received': len(raw), 'hash_started': False, 'hash_complete': False,
+                 'zip_started': False, 'zip_complete': False, 'cache_source': cache_source}
+        self.archive_facts.append(facts)
+        require(0 < len(raw) <= FILE_CAP, 'archive per file bound')
+        facts['hash_started'] = True
+        facts['hash_matches'] = sha(raw) == tool['sha256']
+        facts['hash_complete'] = True
+        require(len(raw) == tool['bytes'] and facts['hash_matches'], 'archive bytes/hash mismatch')
+        require(self.archive_used + len(raw) <= ARCHIVE_CAP, 'combined archive size bound')
+        self.write('wheelhouse/' + tool['filename'], raw)
+        self.archive_used += len(raw)
+        self.phase = 'archive/' + tool['name'] + '/retained-before-semantic-validation'
+        facts['zip_started'] = True
+        try:
+            inspected = self.inspect_wheel(raw, tool, authority)
+        except BaseException:
+            try:
+                facts['archive_cleanup'] = self.remove_new_archives()
+            except BaseException as error:
+                facts['cleanup_refusal_code'] = error.code if isinstance(error, Refusal) \
+                    else 'EXCEPTION_' + type(error).__name__.upper()
+            raise
+        facts['zip_complete'] = True
+        inspected['cache_source'] = cache_source
+        return inspected
+
+    def run(self) -> dict:
+        require(isinstance(VERIFIED_SOURCE_SHA256, str)
+                and bool(re.fullmatch(r'[0-9a-f]{64}', VERIFIED_SOURCE_SHA256)), 'verified source bootstrap required')
+        require(dict(os.environ) == MINIMAL_ENV, 'closed owner environment required')
+        require(self.guard_attached, 'independent guardian custody required before network')
+        selection_raw = read_regular(SELECTION, 32768)
+        require(sha(selection_raw) == SELECTION_SHA, 'selected tuple source changed')
+        selection = json.loads(selection_raw, object_pairs_hook=pairs)
+        require(selection['source'] == SOURCE and len(selection['tools']) == 6, 'wrong selected source/tool set')
+        tools = selection['tools']
+        require(sum(tool['bytes'] for tool in tools) == ARCHIVE_BYTES <= ARCHIVE_CAP,
+                'selected total archive size changed')
+        require(all(0 < tool['bytes'] <= FILE_CAP and Path(tool['filename']).name == tool['filename']
+                    for tool in tools), 'selected archive bounds')
+        ca = read_regular(CA_SOURCE, 300000)
+        require(sha(ca) == CA_SHA, 'existing clean CA provenance changed')
+        certs = re.findall(rb'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', ca, re.S)
+        require(len(certs) == 118, 'existing clean CA count changed')
+        for cert in certs:
+            subject = ca_subject(cert)
+            require(not any(re.search(r'(?:^|[,+])CN=' + re.escape(name) + r'(?:$|[,+])', subject)
+                            for name in BLOCKED), 'blocked CA subject')
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_verify_locations(cadata=ca.decode('ascii'))
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                      urllib.request.HTTPSHandler(context=context), NoRedirect())
+        require(POOL_BASE.is_dir() and not POOL_BASE.is_symlink() and POOL_BASE.stat().st_uid == os.geteuid(),
+                'persistent pool parent unavailable')
+        self.prepare_pool(tools)
+        self.write('selection.json', selection_raw)
+        self.write('ca.pem', ca)
+        self.write('launch.json', encoded({'started_at_utc': self.started_utc, 'owner_pid': os.getpid(),
+                   'pool': str(self.pool), 'admission': self.admission, 'source': SOURCE,
+                   'verified_acquisition_source_sha256': VERIFIED_SOURCE_SHA256,
+                   'io_seconds': 270, 'total_seconds': 300,
+                   'hard_cutoff_utc': (dt.datetime.fromisoformat(self.started_utc) + dt.timedelta(seconds=300)).isoformat(),
+                   'ca_sha256': CA_SHA, 'ca_certificates': 118, 'blocked_CA_subjects': 0,
+                   'CA_provenance': {'existing_pinned_wheel_sha256': CA_WHEEL_SHA,
+                       'sealed_original_input': '/Users/lab3/fleet/tmp/sdk-python-2150-connected-v1-once-01a1a5ef/inputs/wheelhouse/certifi-2026.10.23-py3-none-any.whl',
+                       'member': 'certifi/cacert.pem', 'member_sha256': CA_SHA},
+                   'cache_policy': 'byte-verify existing regular named SDK archive or one request per missing archive',
+                   'credentials_proxy_default_trust': False}))
+        print(json.dumps({'phase': 'launched', 'pool': str(self.pool), 'started_at_utc': self.started_utc}), flush=True)
+        authorities = {}
+        self.phase = 'official-versioned-metadata-recheck'
+        for index, tool in enumerate(tools, 1):
+            self.current_tool = {'index': index, 'name': tool['name'], 'filename': tool['filename']}
+            self.phase = 'metadata/' + tool['name'] + '/request'
+            raw = self.get(tool['metadata_source'], JSON_CAP, 'metadata')
+            self.write('metadata/' + tool['name'] + '.json', raw)
+            self.phase = 'metadata/' + tool['name'] + '/retained-before-parse'
+            authority = json.loads(raw, object_pairs_hook=pairs)
+            validate_authority(authority, tool)
+            authorities[tool['name']] = authority
+        actual_metadata = []
+        self.phase = 'six-exact-archive-requests'
+        for index, tool in enumerate(tools, 1):
+            self.current_tool = {'index': index, 'name': tool['name'], 'filename': tool['filename']}
+            self.phase = 'archive/' + tool['name'] + '/cache-or-request'
+            raw, cache_source = self.cached(tool)
+            if raw is None:
+                raw = self.get(tool['url'], FILE_CAP, 'archive', tool['bytes'])
+            actual_metadata.append(self.retain_and_inspect(raw, tool, authorities[tool['name']], cache_source))
+        require(self.archive_used == ARCHIVE_BYTES, 'archive total mismatch')
+        self.write('wheel-metadata.json', encoded({'environment': 'CPython3.13 Linux amd64; no extras',
+                   'tools': actual_metadata, 'actual_requires_dist_matches_versioned_authority': True,
+                   'active_dependency_edges_match_approved_metadata_selection': True}))
+        require(time.monotonic() < self.ceiling, 'total acquisition deadline')
+        self.phase = 'sealing-custody'
+        self.write('acquisition-observation.json', encoded({'status': 'collected-before-final-custody-check', 'finished_at_utc': utc(),
+                   'elapsed_seconds': time.monotonic() - self.started, 'archive_bytes': self.archive_used,
+                   'http_requests': self.requests, 'archive_requests': sum(row['kind'] == 'archive' for row in self.requests),
+                   'retries': 0, 'import_install_container_SDK_build': False}))
+        entries = self.check_pool()
+        inventory_raw = encoded({'source': SOURCE, 'entries': entries, 'inventory_excludes_self': True})
+        self.write('inventory.json', inventory_raw)
+        self.seal()
+        self.check_pool()
+        require(self.used <= POOL_CAP and time.monotonic() < self.ceiling, 'final pool/time bound')
+        return {'outcome': 'candidate', 'pool': str(self.pool), 'source': SOURCE, 'files': len(self.files),
+                'whole_pool_bytes': self.used, 'archive_bytes': self.archive_used,
+                'inventory_sha256': sha(inventory_raw), 'finished_at_utc': utc(),
+                'elapsed_seconds': time.monotonic() - self.started,
+                'import_install_container_SDK_build': False}
+
+
+def alarm(signum, frame):
+    raise TimeoutError('bounded request deadline')
+
+
+def run_once(admission: str) -> None:
+    signal.signal(signal.SIGALRM, alarm)
+    owner = Acquisition(admission)
+    try:
+        result = owner.run()
+    except BaseException as error:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        result = owner.failure_result(error)
+        print(json.dumps(result), flush=True)
+        sys.exit(1)
+    print(json.dumps(result), flush=True)
+
+
+def run_guarded_once(admission: str, proof: dict) -> dict:
+    """Return a candidate only; independent terminal acceptance is required."""
+    signal.signal(signal.SIGALRM, alarm)
+    owner = Acquisition(admission)
+    try:
+        owner.attach_guarded_pool(proof)
+        result = owner.run()
+    except BaseException as error:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        result = owner.failure_result(error)
+    finally:
+        for fd in set(proof.get('archive_fds', {}).values()):
+            if type(fd) is int and fd >= 3:
+                os.close(fd)
+    return result
+
+
+if __name__ == '__main__':
+    raise SystemExit('VERIFIED_SOURCE_BOOTSTRAP_AND_NEW_ADMISSION_REQUIRED; proposal not launched')
