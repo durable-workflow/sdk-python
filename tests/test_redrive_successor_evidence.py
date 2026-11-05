@@ -746,11 +746,12 @@ def test_the_next_call_requires_a_resolution_of_the_recorded_timer_or_signal(
         _delivery(history)["payload"]["sequence"] = 4
         _renumber(history)
 
+    history = changed(CANCELLATION, mutate)
     if state == "resolved":
-        check(CANCELLATION, changed(CANCELLATION, mutate))
+        check(CANCELLATION, history)
     else:
         with pytest.raises(AssertionError, match="the successor reached|no opened wait|terminal matches"):
-            check(CANCELLATION, changed(CANCELLATION, mutate))
+            check(CANCELLATION, history)
 
 
 @pytest.mark.parametrize("mutation", ["open", "resolved-after-delivery", "foreign-resolution", "skipped-step"])
@@ -773,8 +774,9 @@ def test_an_unscheduled_delivery_cannot_skip_an_unreached_call(mutation: str) ->
             _delivery(history)["payload"]["sequence"] = 5
         _renumber(history)
 
+    history = changed(CANCELLATION, mutate)
     with pytest.raises(AssertionError, match="the successor reached|terminal matches"):
-        check(CANCELLATION, changed(CANCELLATION, mutate))
+        check(CANCELLATION, history)
 
 
 def test_selection_handle_delivery_remains_outside_the_successor_model() -> None:
