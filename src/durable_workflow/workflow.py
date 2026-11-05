@@ -1856,7 +1856,7 @@ def commands_to_server_commands(
             envelope_jobs.append((
                 len(server_commands) - 1,
                 "result",
-                command.result,
+                to_payload_value(command.result),
                 _payload_warning_context(
                     warning_context,
                     kind="workflow_result",
@@ -1870,7 +1870,7 @@ def commands_to_server_commands(
             envelope_jobs.append((
                 len(server_commands) - 1,
                 "result",
-                command.result,
+                to_payload_value(command.result),
                 _payload_warning_context(
                     warning_context,
                     kind="update_result",
@@ -1888,7 +1888,7 @@ def commands_to_server_commands(
             envelope_jobs.append((
                 len(server_commands) - 1,
                 "arguments",
-                command.arguments,
+                to_payload_values(list(command.arguments)),
                 _payload_warning_context(
                     warning_context,
                     kind="continue_as_new_input",
