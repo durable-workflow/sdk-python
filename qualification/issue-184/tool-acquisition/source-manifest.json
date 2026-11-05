@@ -1,5 +1,7 @@
 {
+  "actual_authority_sha256": null,
   "actual_selected_archives": null,
+  "all_source_control_processes_verified_absent": true,
   "cpu_affinity": null,
   "downloaded_wheel_imports_or_installs": 0,
   "files": [
@@ -9,24 +11,24 @@
       "sha256": "e4fd09a7e1ddf5dd56c1ed556fa5b3ae303a9d3b281640d8c3b6d6bf4a7d62c9"
     },
     {
-      "bytes": 10083,
+      "bytes": 10474,
       "file": "184-acquire-tools-v5-adapter-controls.py",
-      "sha256": "7419231c1c1fd6dcba97fbb9de59d2fef454ea467c7f337d2068936065fcb7df"
+      "sha256": "bc7696baf8582fef27cfc0c7005d564fe3d613bb615035daee50b2cb21db79d7"
     },
     {
-      "bytes": 2975,
+      "bytes": 2875,
       "file": "184-acquire-tools-v5-bootstrap.py",
-      "sha256": "12679c567452dd4cdda7dbd789ac600ef0b5455a1225c95cf59d066fda472569"
+      "sha256": "6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed"
     },
     {
-      "bytes": 8307,
+      "bytes": 8301,
       "file": "184-acquire-tools-v5-controls-result.json",
-      "sha256": "c5719cbd5a3bb89606d81582b24c7ad28d3b0fde2d5fc747cefaeb3744d63ccb"
+      "sha256": "2a84c6612fcd2fd57235f4844face425420dafb3217be7d6e82ef57cc6fab1cd"
     },
     {
-      "bytes": 39730,
+      "bytes": 40590,
       "file": "184-acquire-tools-v5-controls.py",
-      "sha256": "422a6de8471a1e2aca81b30cea13ab79cb1c5dc74cc0517492a5aabd0964c7f8"
+      "sha256": "61a08e8538b8b7ec7448c6d30a3c929d99d45771411d296e0b6e5b9224e64c59"
     },
     {
       "bytes": 44676,
@@ -44,49 +46,49 @@
       "sha256": "cb819468f659c6235176fabcd29894dda552ffb85f0bf54664d83b7dcdd3d2e1"
     },
     {
-      "bytes": 1462,
+      "bytes": 1665,
       "file": "184-acquisition-launcher-bootstrap-controls-result.json",
-      "sha256": "bb9e9256176a2bfbd40d820f83d1c4a2a31cf699a107cefbdf9aba4a4e1f2379"
+      "sha256": "0cf4499e090e8b70ed884feb44697a14c86a9036b93ef77a89a0d31f2ca9e0d7"
     },
     {
-      "bytes": 3994,
+      "bytes": 6183,
       "file": "184-acquisition-launcher-bootstrap-controls.py",
-      "sha256": "18cf6ba98a233721465afbffc74ee7e2a9bacbf8c321f893291de0b3f6d8f777"
+      "sha256": "dd18efdc3d5e3cac03281be93fe55f7f0a68c2629bd06fb1b25105a328d2fa22"
     },
     {
-      "bytes": 4110,
+      "bytes": 6104,
       "file": "184-acquisition-launcher-bootstrap-proposal.py",
-      "sha256": "9205ae8ea069fb12cc35ea28dbe5ced8a4ccbd2a1b12bb6d4ae76633816c2c36"
+      "sha256": "1eeb491accbb7f129c8e4c329c238a26ef6cd929a6204e949d16becc604621a4"
     },
     {
-      "bytes": 2219,
+      "bytes": 2641,
       "file": "184-acquisition-session-controls-result.json",
-      "sha256": "05e16cd72a5b2c02006ef066197b82670fb9ef88d49c3cc90f0c97d18ec3cfbb"
+      "sha256": "8a7b2fba91965fa10b97a60083bdc9e87b1d0d118b2bd88bd3ffad770e2a37a2"
     },
     {
-      "bytes": 16071,
+      "bytes": 22445,
       "file": "184-acquisition-session-controls.py",
-      "sha256": "597023f6dea906fe4ac180380970725fb4d07be011c523b128ef19cf7704d38c"
+      "sha256": "9716b0ca70ac8ec3d6495e930c9c347f7c6d39c210b300a669576637b856bca8"
     },
     {
-      "bytes": 31294,
+      "bytes": 35654,
       "file": "184-acquisition-session-proposal.py",
-      "sha256": "08773d12f2fe52249907eae97af4cf4d97db43f47125436d41ccaa70b8db0994"
+      "sha256": "e92aa088b9de553cbe2d0ec76dcb6d097d07148f6a9e9a751f80ab4680cc9c48"
     },
     {
       "bytes": 1826,
       "file": "184-acquisition-terminal-controls-result.json",
-      "sha256": "107046c7d947343430782ce6a17d06df2b4ec967b50b613b76fe48cad53f366d"
+      "sha256": "32a30a3767d760befae96f77f906431f234dd2733c28b17c3deadb71921f3be0"
     },
     {
-      "bytes": 11856,
+      "bytes": 12198,
       "file": "184-acquisition-terminal-controls.py",
-      "sha256": "5dddcc0400bff258d471903c79cef9a868115cf2c14013a58e41a70f00739d24"
+      "sha256": "bf13c83983567ae04e21fe871625817f85b3bef0b3524b85576296e1267e3dff"
     },
     {
-      "bytes": 12225,
+      "bytes": 12215,
       "file": "184-acquisition-terminal-proposal.py",
-      "sha256": "d050992a68c09db741fa4a0afda234c60e30a3412441b5dfce16be5e26efedce"
+      "sha256": "7e75b0929e612ec8605d095956fd446c2ad779a8f8b7e8403563f2764b1e70bf"
     },
     {
       "bytes": 4550,
@@ -94,26 +96,126 @@
       "sha256": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c"
     },
     {
+      "bytes": 6094,
+      "file": "README.md",
+      "sha256": "db6a476c92b7341f68ca06a31e30e8c8de4a6508adf7308e55449835b0b8dd8e"
+    },
+    {
       "bytes": 1175,
       "file": "authority-template.json",
-      "sha256": "1ac57d2edb84b98d9e6699f5ce1e195c26f566262d396ee626c7ae8fdefe0720"
+      "sha256": "df29ae23e96d0321204cebda714523a8a9489b9602c40ef902471c4de86b6c33"
+    },
+    {
+      "bytes": 1170,
+      "file": "control-inputs/historical-source/manifest.json",
+      "sha256": "9ab040cbd1ecfe0890ff1a257bca76a411e8d8d0b4e05481cd4d3da652504e81"
+    },
+    {
+      "bytes": 17804,
+      "file": "control-inputs/historical-source/original-owner.source",
+      "sha256": "e0b8955c8c26c68333e1439c4eb195ef803d710d68f4a4b297b3dd17fcfd7c54"
+    },
+    {
+      "bytes": 34138,
+      "file": "control-inputs/historical-source/v2-owner.source",
+      "sha256": "16200705aee523e1171ad9c2c1f8522fa089c3479c18d474fdd5ff6ed7b29ff7"
+    },
+    {
+      "bytes": 2769,
+      "file": "control-inputs/historical-source/v3-bootstrap.source",
+      "sha256": "8797366c75b3f55d61c21c19ac3e98ba0bed5b65bbf0a04e4bf3e2b73d326fcc"
+    },
+    {
+      "bytes": 39357,
+      "file": "control-inputs/historical-source/v3-owner.source",
+      "sha256": "0d25554f8f15409141708073060798478185a1d9990ac0383cf1cf5661f05997"
+    },
+    {
+      "bytes": 1482,
+      "file": "control-inputs/metadata/build.json",
+      "sha256": "62e815fa9001a01e6a0457352003698d07256ec1b2fc55d5cb783b3a16f27d26"
+    },
+    {
+      "bytes": 1162,
+      "file": "control-inputs/metadata/packaging.json",
+      "sha256": "e48bbd4c46efbf4eff638602526c3a8f2fbb1e8193d4df86a76f3df0fb258b1b"
+    },
+    {
+      "bytes": 1145,
+      "file": "control-inputs/metadata/pip.json",
+      "sha256": "586b7008e21ba663b15a5af3c531bc3c0dfc25d43e228100cbb70a9524241ff3"
+    },
+    {
+      "bytes": 1195,
+      "file": "control-inputs/metadata/pyproject-hooks.json",
+      "sha256": "77baa40515e7d727d63c7b33d5cce32ad506039aacd255bcb12ab978d69a893b"
+    },
+    {
+      "bytes": 3785,
+      "file": "control-inputs/metadata/setuptools.json",
+      "sha256": "82f7804d38814b9a27a9cb0dbaf3ad70fa57e990cd3dc6486abb654afae40ccb"
+    },
+    {
+      "bytes": 1177,
+      "file": "control-inputs/metadata/wheel.json",
+      "sha256": "cf6a86abed869134225400ca2dc4f5b2974c40cff2bbb768049e26709e4ec647"
+    },
+    {
+      "bytes": 2568,
+      "file": "control-inputs/provenance.json",
+      "sha256": "52296697e2f155f17bfd5f38ef21c9f3fc1a19c25961a1ed00cb667bc5dcead2"
+    },
+    {
+      "bytes": 4550,
+      "file": "control-inputs/selection.json",
+      "sha256": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c"
+    },
+    {
+      "bytes": 4886,
+      "file": "review-packet.json",
+      "sha256": "d036d702a0fae12c46de62fd47bc5cad2fef5f40f597eac092f97afa8551a5fa"
     }
   ],
+  "manifest_excludes_self": true,
   "new_general_decision": null,
   "new_sdk_wheel": null,
+  "original_failed_pool_all_ten_hashes_unchanged": true,
   "real_network_requests": 0,
-  "remaining_source_work": [
-    "post-fork pidfd prerequisite failure cleanup",
-    "unreported-owner-handle crash countercontrol",
-    "final exact composed source/input review packet"
+  "remaining_gates": [
+    "Security whole-source/input disposition",
+    "General exact new data decision and CPU assignment",
+    "filled authority bytes/hash and exact invocation binding",
+    "fresh host/input/root/cache and consumed-decision rechecks",
+    "one admitted invocation and independent terminal actual-pool/role readback"
   ],
+  "sdk_source_or_feature_cohort_changed": false,
   "selected_sdk_source": "14adc40b00b68cc8a3e1ae5647a885a42f273650",
   "source_control_results": {
-    "184-acquire-tools-v5-adapter-controls-result.json": 16,
-    "184-acquire-tools-v5-controls-result.json": 86,
-    "184-acquisition-launcher-bootstrap-controls-result.json": 12,
-    "184-acquisition-session-controls-result.json": 18,
-    "184-acquisition-terminal-controls-result.json": 16
+    "184-acquire-tools-v5-adapter-controls-result.json": {
+      "cases": 16,
+      "passed": 16,
+      "sha256": "e4fd09a7e1ddf5dd56c1ed556fa5b3ae303a9d3b281640d8c3b6d6bf4a7d62c9"
+    },
+    "184-acquire-tools-v5-controls-result.json": {
+      "cases": 86,
+      "passed": 86,
+      "sha256": "2a84c6612fcd2fd57235f4844face425420dafb3217be7d6e82ef57cc6fab1cd"
+    },
+    "184-acquisition-launcher-bootstrap-controls-result.json": {
+      "cases": 14,
+      "passed": 14,
+      "sha256": "0cf4499e090e8b70ed884feb44697a14c86a9036b93ef77a89a0d31f2ca9e0d7"
+    },
+    "184-acquisition-session-controls-result.json": {
+      "cases": 22,
+      "passed": 22,
+      "sha256": "8a7b2fba91965fa10b97a60083bdc9e87b1d0d118b2bd88bd3ffad770e2a37a2"
+    },
+    "184-acquisition-terminal-controls-result.json": {
+      "cases": 16,
+      "passed": 16,
+      "sha256": "32a30a3767d760befae96f77f906431f234dd2733c28b17c3deadb71921f3be0"
+    }
   },
-  "stage": "UNEXECUTED composed source checkpoint; prestart failure controls unfinished; not launch ready"
+  "stage": "UNEXECUTED composed whole-source/input review packet; no operational admission"
 }

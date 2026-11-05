@@ -1,0 +1,83 @@
+{
+  "info": {
+    "name": "setuptools",
+    "requires_dist": [
+      "pytest!=8.1.*,>=6; extra == \"test\"",
+      "virtualenv>=13.0.0; extra == \"test\"",
+      "wheel>=0.44.0; extra == \"test\"",
+      "pip>=19.1; extra == \"test\"",
+      "packaging>=26.3; extra == \"test\"",
+      "jaraco.envs>=2.2; extra == \"test\"",
+      "pytest-xdist>=3; extra == \"test\"",
+      "jaraco.path>=3.7.2; extra == \"test\"",
+      "build[virtualenv]>=1.0.3; extra == \"test\"",
+      "filelock>=3.4.0; extra == \"test\"",
+      "ini2toml[lite]>=0.14; extra == \"test\"",
+      "tomli-w>=1.0.0; extra == \"test\"",
+      "pytest-timeout; extra == \"test\"",
+      "pytest-perf; sys_platform != \"cygwin\" and extra == \"test\"",
+      "jaraco.develop>=7.21; (python_version >= \"3.9\" and sys_platform != \"cygwin\") and extra == \"test\"",
+      "pytest-home>=0.5; extra == \"test\"",
+      "pytest-subprocess; extra == \"test\"",
+      "pyproject-hooks!=1.1; extra == \"test\"",
+      "jaraco.test>=5.5; extra == \"test\"",
+      "sphinx>=3.5; extra == \"doc\"",
+      "jaraco.packaging>=9.3; extra == \"doc\"",
+      "rst.linker>=1.9; extra == \"doc\"",
+      "furo; extra == \"doc\"",
+      "sphinx-lint; extra == \"doc\"",
+      "jaraco.tidelift>=1.4; extra == \"doc\"",
+      "pygments-github-lexers==0.0.5; extra == \"doc\"",
+      "sphinx-favicon; extra == \"doc\"",
+      "sphinx-inline-tabs; extra == \"doc\"",
+      "sphinx-reredirects; extra == \"doc\"",
+      "sphinxcontrib-towncrier; extra == \"doc\"",
+      "sphinx-notfound-page<2,>=1; extra == \"doc\"",
+      "pyproject-hooks!=1.1; extra == \"doc\"",
+      "towncrier<24.7; extra == \"doc\"",
+      "packaging>=26.3; extra == \"core\"",
+      "more_itertools>=8.8; extra == \"core\"",
+      "jaraco.text>=3.7; extra == \"core\"",
+      "importlib_metadata>=6; python_version < \"3.10\" and extra == \"core\"",
+      "tomli>=2.0.1; python_version < \"3.11\" and extra == \"core\"",
+      "wheel>=0.43.0; extra == \"core\"",
+      "jaraco.functools>=4; extra == \"core\"",
+      "more_itertools; extra == \"core\"",
+      "pytest-checkdocs>=2.14; extra == \"check\"",
+      "pytest-ruff>=0.2.1; sys_platform != \"cygwin\" and extra == \"check\"",
+      "ruff>=0.13.0; sys_platform != \"cygwin\" and extra == \"check\"",
+      "pytest-cov; extra == \"cover\"",
+      "pytest-enabler>=3.4; extra == \"enabler\"",
+      "pytest-mypy>=1.0.1; platform_python_implementation != \"PyPy\" and extra == \"type\"",
+      "mypy==1.18.*; extra == \"type\"",
+      "importlib_metadata>=7.0.2; python_version < \"3.10\" and extra == \"type\"",
+      "jaraco.develop>=7.21; sys_platform != \"cygwin\" and extra == \"type\""
+    ],
+    "requires_python": ">=3.10",
+    "version": "84.2.1"
+  },
+  "urls": [
+    {
+      "digests": {
+        "blake2b_256": "ef556dc6d6bb953bdfc52519a0059592c52b6e3b8ad51cf8256dffceb55b0610",
+        "md5": "d16d3f1f25175cbc466dd5dfe938ac6b",
+        "sha256": "ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2"
+      },
+      "filename": "setuptools-84.2.1-py3-none-any.whl",
+      "size": 876263,
+      "url": "https://files.pythonhosted.org/packages/ef/55/6dc6d6bb953bdfc52519a0059592c52b6e3b8ad51cf8256dffceb55b0610/setuptools-84.2.1-py3-none-any.whl",
+      "yanked": false
+    },
+    {
+      "digests": {
+        "blake2b_256": "70b3c19426f783614d625699a4b247faf628ea9ab1db228674491767b417f9e1",
+        "md5": "251cbfc8f83414155e0e595cc4cffdd2",
+        "sha256": "3ff8b3b5492a0aa66960f4419365a86b84e013070d4313e4d4a6894f5d64d6bc"
+      },
+      "filename": "setuptools-84.2.1.tar.gz",
+      "size": 1230289,
+      "url": "https://files.pythonhosted.org/packages/70/b3/c19426f783614d625699a4b247faf628ea9ab1db228674491767b417f9e1/setuptools-84.2.1.tar.gz",
+      "yanked": false
+    }
+  ]
+}

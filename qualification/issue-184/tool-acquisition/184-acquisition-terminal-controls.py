@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from copy import deepcopy
 import datetime as dt
 import hashlib
 import importlib.util
@@ -19,7 +18,7 @@ import zipfile
 
 sys.dont_write_bytecode=True
 BASE=Path('/tmp/sdk-python-handoff')
-FAILED=Path('/tmp/sdk-python-184-tools-14adc40b-20261105T035512Z-6d90ccfb71')
+FAILED=BASE/'control-inputs'
 REF='https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-9999999999'
 
 
@@ -183,5 +182,14 @@ report={'scope':'synthetic six-tool terminal readback, not actual input acquisit
         'passed':sum(row['outcome']=='pass' for row in results),'failed':sum(row['outcome']=='fail' for row in results),
         'results':results,'real_network_requests':0,'selected_archives_acquired':0,'downloaded_wheel_imports_or_installs':0,
         'new_general_decision':None,'launcher_pending':True}
-(BASE/'184-acquisition-terminal-controls-result.json').write_text(json.dumps(report,sort_keys=True,indent=2)+'\n')
+report_path=BASE/'184-acquisition-terminal-controls-result.json'
+report_bytes=(json.dumps(report,sort_keys=True,indent=2)+'\n').encode()
+if report_path.exists():
+    if report_path.read_bytes()!=report_bytes:
+        print(json.dumps(report,indent=2))
+        raise SystemExit('CONTROL_RESULT_COLLISION; prior record preserved')
+else:
+    descriptor=os.open(report_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+    with os.fdopen(descriptor,'wb') as stream:
+        assert stream.write(report_bytes)==len(report_bytes)
 print(json.dumps(report,indent=2));raise SystemExit(bool(report['failed']))

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from copy import deepcopy
 import datetime as dt
 import hashlib
 import importlib.util
@@ -193,6 +192,15 @@ report={'scope':'synthetic owner adapter, not integrated acquisition or launcher
         'failed':sum(row['outcome']=='fail' for row in results),'results':results,
         'real_network_requests':0,'downloaded_wheel_imports_or_installs':0,
         'terminal_acceptance_and_exact_launcher_pending':True}
-(BASE/'184-acquire-tools-v5-adapter-controls-result.json').write_text(json.dumps(report,sort_keys=True,indent=2)+'\n')
+report_path=BASE/'184-acquire-tools-v5-adapter-controls-result.json'
+report_bytes=(json.dumps(report,sort_keys=True,indent=2)+'\n').encode()
+if report_path.exists():
+    if report_path.read_bytes()!=report_bytes:
+        print(json.dumps(report,indent=2))
+        raise SystemExit('CONTROL_RESULT_COLLISION; prior record preserved')
+else:
+    descriptor=os.open(report_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+    with os.fdopen(descriptor,'wb') as stream:
+        assert stream.write(report_bytes)==len(report_bytes)
 print(json.dumps(report,indent=2))
 raise SystemExit(bool(report['failed']))

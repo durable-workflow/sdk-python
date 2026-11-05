@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import io
+from contextlib import redirect_stdout
 import importlib.util
 import json
 import os
@@ -54,6 +56,34 @@ def affinity_refusal(value):
         refuses(lambda:b.configure_resources(value),'EXACT_AVAILABLE_CPU_AFFINITY_REQUIRED')
 
 
+def report_keeps_nonterminal_session():
+    class Session:
+        finished=False;pid=123;owner_pid=456;expected_pool='/synthetic/owned-pool'
+        def reconcile_retained(self):
+            self.finished=True
+            return {'result':{'quiescent_after_failed_bound':True,'terminal_cleanup_complete':False,'acquisition_accepted':False}}
+    session=Session();output=io.StringIO()
+    with patch.object(b,'launch',return_value=(session,{'result':{'status':'SURVIVOR_CUSTODY_REQUIRED'}})),redirect_stdout(output):
+        result=b.run_and_report('/synthetic','0'*64,None,'0'*64)
+    phases=[json.loads(line)['phase'] for line in output.getvalue().splitlines()]
+    assert phases==['RESULT','CUSTODY_REQUIRED','POST_BOUND_QUIESCENT_NONPASS']
+    assert session.finished and result['result']['acquisition_accepted'] is False
+
+
+def report_never_returns_unresolved_unknown():
+    class Session:
+        finished=False;pid=123;owner_pid=None;expected_pool='/synthetic/owned-pool'
+        def reconcile_retained(self):return None
+    class BoundedControlStop(Exception):pass
+    session=Session()
+    with patch.object(b,'launch',return_value=(session,{'result':{'status':'OUTER_CUSTODY_REQUIRED'}})), \
+         patch.object(b.time,'sleep',side_effect=BoundedControlStop),redirect_stdout(io.StringIO()):
+        try:b.run_and_report('/synthetic','0'*64,None,'0'*64)
+        except BoundedControlStop:pass
+        else:raise AssertionError('unresolved custody returned to a disposable caller')
+    assert not session.finished
+
+
 def check(name,operation):
     try:operation()
     except BaseException as error:results.append({'id':name,'outcome':'fail','type':type(error).__name__,'detail':str(error)[:160]})
@@ -67,11 +97,22 @@ with patch.object(socket,'create_connection',side_effect=AssertionError('NO_NETW
     for name,value in [('empty',[]),('too-many',[0,1,2]),('bool',[True]),('duplicate',[0,0]),('unavailable',[max(os.sched_getaffinity(0))+1])]:
         check('affinity-'+name+'-refuses-before-mutation',lambda value=value:affinity_refusal(value))
     check('duplicate-authority-key-refused',lambda:refuses(lambda:b.pairs([('decision','one'),('decision','two')]),'DUPLICATE_AUTHORITY_KEY'))
+    check('nonterminal-session-held-until-quiescent-late-nonpass',report_keeps_nonterminal_session)
+    check('unknown-custody-is-not-returned-or-discarded',report_never_returns_unresolved_unknown)
 
 report={'scope':'bootstrap file/refusal controls; no admitted start or selected archive access',
         'source_sha256':hashlib.sha256(SOURCE.read_bytes()).hexdigest(),'cases':len(results),
         'passed':sum(row['outcome']=='pass' for row in results),'failed':sum(row['outcome']=='fail' for row in results),
         'results':results,'real_network_requests':0,'selected_archives_acquired':0,
         'downloaded_wheel_imports_or_installs':0,'new_general_decision':None}
-(BASE/'184-acquisition-launcher-bootstrap-controls-result.json').write_text(json.dumps(report,sort_keys=True,indent=2)+'\n')
+report_path=BASE/'184-acquisition-launcher-bootstrap-controls-result.json'
+report_bytes=(json.dumps(report,sort_keys=True,indent=2)+'\n').encode()
+if report_path.exists():
+    if report_path.read_bytes()!=report_bytes:
+        print(json.dumps(report,indent=2))
+        raise SystemExit('CONTROL_RESULT_COLLISION; prior record preserved')
+else:
+    descriptor=os.open(report_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+    with os.fdopen(descriptor,'wb') as stream:
+        assert stream.write(report_bytes)==len(report_bytes)
 print(json.dumps(report,indent=2));raise SystemExit(bool(report['failed']))

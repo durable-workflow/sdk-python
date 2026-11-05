@@ -30,12 +30,18 @@ INTERPRETER='/usr/bin/python3.14'
 INTERPRETER_SHA='52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41'
 LIBRARY='/usr/lib/x86_64-linux-gnu/libpython3.14.so.1.0'
 LIBRARY_SHA='982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87'
-PINNED={'owner': '234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb', 'bootstrap': '12679c567452dd4cdda7dbd789ac600ef0b5455a1225c95cf59d066fda472569', 'guardian': 'afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70', 'terminal': 'd050992a68c09db741fa4a0afda234c60e30a3412441b5dfce16be5e26efedce', 'selection': 'e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c', 'interpreter': '52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41', 'library': '982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87', 'ca': '2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b'}
+PINNED={'owner': '234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb', 'bootstrap': '6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed', 'guardian': 'afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70', 'terminal': '7e75b0929e612ec8605d095956fd446c2ad779a8f8b7e8403563f2764b1e70bf', 'selection': 'e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c', 'interpreter': '52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41', 'library': '982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87', 'ca': '2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b'}
 FRAME_CAP=65536
 POOL_CAP=4*1024**2
 
 
 class Refusal(ValueError):pass
+
+
+class OwnerSetupRefusal(Refusal):
+    def __init__(self,role,stop):
+        super().__init__('OWNER_PIDFD_PREREQUISITE_FAILED')
+        self.role,self.stop=role,stop
 
 
 def require(value,code):
@@ -82,6 +88,7 @@ def verify_startup():
             'CLOSED_ISOLATED_NO_SITE_STARTUP_REQUIRED')
     require(Path(sys.executable).resolve()==Path(INTERPRETER),'EXACT_INTERPRETER_REQUIRED')
     require(1<=len(os.sched_getaffinity(0))<=2,'BOUNDED_CPU_AFFINITY_REQUIRED')
+    require(signal.getsignal(signal.SIGCHLD)==signal.SIG_DFL,'WAITABLE_CHILD_DISPOSITION_REQUIRED')
     require(resource.getrlimit(resource.RLIMIT_AS)==(128*1024**2,384*1024**2)
             and resource.getrlimit(resource.RLIMIT_CPU)==(30,60)
             and resource.getrlimit(resource.RLIMIT_NOFILE)==(128,128)
@@ -158,7 +165,7 @@ def progress_bound(custody):
     return total
 
 
-def spawn_owner(bootstrap,decision,proof,custody):
+def spawn_owner(bootstrap,decision,proof,custody,cleanup_ceiling):
     status_read,status_write=os.pipe2(os.O_CLOEXEC)
     gate_read,gate_write=os.pipe2(os.O_CLOEXEC)
     borrowed={name:custody.duplicate_for_owner(name) for name in custody.archive_nodes}
@@ -194,17 +201,49 @@ def spawn_owner(bootstrap,decision,proof,custody):
     os.close(status_write);os.close(gate_read)
     for fd in borrowed.values():os.close(fd)
     os.set_blocking(status_read,False)
-    return {'pid':pid,'pidfd':os.pidfd_open(pid),'status':status_read,'gate':gate_write}
+    role={'pid':pid,'pidfd':None,'status':status_read,'gate':gate_write}
+    try:
+        role['pidfd']=os.pidfd_open(pid)
+    except BaseException:
+        # No RUN/G byte has been sent. This exact, unreaped child PID is reserved
+        # by this single-threaded parent, so cleanup cannot target a reused PID.
+        os.close(gate_write);role['gate']=-1
+        stop_refusal=None
+        try:os.kill(pid,signal.SIGKILL)
+        except ProcessLookupError:pass
+        except OSError as error:stop_refusal='RESERVED_CHILD_STOP_ERRNO_'+str(error.errno)
+        limit=min(time.monotonic()+5,cleanup_ceiling)
+        while time.monotonic()<limit:
+            waited,status=os.waitpid(pid,os.WNOHANG)
+            if waited:
+                raise OwnerSetupRefusal(role,{'owner_exited':True,'owner_exit_code':os.waitstatus_to_exitcode(status),
+                                             'stop_refusal_code':stop_refusal})
+            time.sleep(0.01)
+        raise OwnerSetupRefusal(role,{'owner_exited':False,'owner_exit_code':None,'stop_refusal_code':stop_refusal})
+    return role
 
 
 def stop_owner(role,ceiling):
+    stop_refusal=None
     if not select.select([role['pidfd']],[],[],0)[0]:
         try:signal.pidfd_send_signal(role['pidfd'],signal.SIGKILL)
         except ProcessLookupError:pass
+        except OSError as error:stop_refusal='PIDFD_STOP_ERRNO_'+str(error.errno)
     exited=bool(select.select([role['pidfd']],[],[],max(0,min(5,ceiling-time.monotonic())))[0])
-    if not exited:return {'owner_exited':False,'owner_exit_code':None}
+    if not exited:return {'owner_exited':False,'owner_exit_code':None,'stop_refusal_code':stop_refusal}
     _,status=os.waitpid(role['pid'],0)
-    return {'owner_exited':True,'owner_exit_code':os.waitstatus_to_exitcode(status)}
+    return {'owner_exited':True,'owner_exit_code':os.waitstatus_to_exitcode(status),'stop_refusal_code':stop_refusal}
+
+
+def confirm_reaped_pidfd(fd,ceiling):
+    """A guardian crash may orphan the exited owner; verify kernel task removal."""
+    if not select.select([fd],[],[],0)[0]:return False
+    limit=min(time.monotonic()+1,ceiling)
+    while True:
+        info=Path(f'/proc/self/fdinfo/{fd}').read_text()
+        if re.search(r'^Pid:\s*-1\s*$',info,re.M):return True
+        if time.monotonic()>=limit:return False
+        time.sleep(0.01)
 
 
 def record_terminal(custody,result,authority_raw,label='guardian-result.json'):
@@ -312,7 +351,7 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
         channel.settimeout(max(0.001,min(10,active-time.monotonic())))
         message,received=recv_frame(channel)
         require(not received and message=={'type':'ARM'},'GUARDIAN_ARM_MISMATCH')
-        role=spawn_owner(bootstrap,authority['decision'],proof,custody)
+        role=spawn_owner(bootstrap,authority['decision'],proof,custody,ceiling)
         send_frame(channel,{'type':'OWNER','pid':role['pid']},[role['pidfd']])
         message,received=recv_frame(channel)
         require(not received and message=={'type':'RUN'},'OWNER_RUN_MISMATCH')
@@ -351,6 +390,7 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
         raise Refusal(reason)
     except BaseException as error:
         code=getattr(error,'code',None)
+        if isinstance(error,OwnerSetupRefusal):role,stop=error.role,error.stop
         if not isinstance(code,str):
             code=str(error) if isinstance(error,(Refusal,guard.Refusal,terminal.Refusal)) else ''
         reason=code if re.fullmatch(r'[A-Z0-9_]{1,128}',code) else 'GUARDIAN_'+type(error).__name__.upper()
@@ -362,6 +402,11 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
             result['owner_was_allocated']=False;result['owner_process_exited']=None
         else:result=cleanup_after_exit(custody,stop,reason,ceiling)
         if isinstance(owner_result,dict):result['owner_result']=owner_result
+        if role is not None:
+            result['owner_pid']=role['pid'];result['owner_pidfd_available']=role['pidfd'] is not None
+            result['owner_exit_confirmation']=('pidfd-and-parent-waitpid' if role['pidfd'] is not None
+                                               else 'reserved-child-waitpid') if stop['owner_exited'] else 'unconfirmed'
+            if stop.get('stop_refusal_code'):result['stop_refusal_code']=stop['stop_refusal_code']
         if custody is not None and (role is None or stop['owner_exited']):
             try:
                 record_terminal(custody,result,authority_raw);result['retained_terminal_record_written']=True
@@ -373,8 +418,15 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
             # Custody only: no work/retry or acceptance beyond the failed bound.
             # The separately admitted survivor policy must allow this keeper;
             # the outer session already holds duplicate inode and pidfd handles.
-            while not select.select([role['pidfd']],[],[],60)[0]:pass
-            stop=stop_owner(role,time.monotonic()+1)
+            if role['pidfd'] is None:
+                while True:
+                    waited,status=os.waitpid(role['pid'],os.WNOHANG)
+                    if waited:
+                        stop={'owner_exited':True,'owner_exit_code':os.waitstatus_to_exitcode(status)};break
+                    time.sleep(1)
+            else:
+                while not select.select([role['pidfd']],[],[],60)[0]:pass
+                stop=stop_owner(role,time.monotonic()+1)
             final=cleanup_after_exit(custody,stop,'DEFERRED_EXACT_OWNER_EXIT',ceiling)
             try:record_terminal(custody,final,authority_raw)
             except BaseException:final['terminal_cleanup_complete']=False
@@ -384,7 +436,7 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
     finally:
         if role is not None:
             for name in ('status','gate','pidfd'):
-                if role[name]>=0:os.close(role[name])
+                if type(role[name]) is int and role[name]>=0:os.close(role[name])
         if custody is not None:custody.close()
 
 
@@ -435,6 +487,8 @@ class Session:
                 require(('Pid:\t'+str(message['pid'])+'\n') in info,'EXACT_OWNER_PIDFD_REQUIRED')
                 self.owner_pidfd=fds[0];self.owner_pid=message['pid'];self.stack.callback(os.close,fds[0]);adopted=True
                 send_frame(self.channel,{'type':'RUN'})
+                print(json.dumps({'phase':'OWNER_ARMED','owner_pid':self.owner_pid,'guardian_pid':self.pid,
+                                  'pool':self.expected_pool}),flush=True)
             elif message.get('type') in {'TERMINAL','DEFERRED_CLEANUP'}:
                 require(not fds,'UNEXPECTED_TERMINAL_DESCRIPTORS')
                 result=message['result']
@@ -467,18 +521,35 @@ class Session:
             code=str(error) if isinstance(error,Refusal) else ''
             return self.abort('OUTER_'+(code if re.fullmatch(r'[A-Z0-9_]{1,128}',code) else type(error).__name__.upper()))
 
+    def reconcile_retained(self):
+        """Custody-only reconciliation, never a retry or late operation acceptance."""
+        if self.finished:return None
+        if self.owner_pidfd is None:return None
+        if not select.select([self.pidfd],[],[],0)[0] or not select.select([self.owner_pidfd],[],[],0)[0]:return None
+        result=self.abort('POST_BOUND_CUSTODY_RECONCILIATION')
+        record=result['result']
+        if record.get('archive_cleanup',{}).get('complete') and record.get('retained_custody_sealed'):
+            self.finished=True;self.stack.close()
+            record['quiescent_after_failed_bound']=True
+            record['terminal_cleanup_complete']=False;record['acquisition_accepted']=False
+        return result
+
     def abort(self,reason):
         """Keep custody if either writer/guardian exit or exact cleanup is unproved."""
+        stop_refusal=None
         try:send_frame(self.channel,{'type':'ABORT'})
         except BaseException:pass
         guardian_gone=bool(select.select([self.pidfd],[],[],max(0,self.ceiling-time.monotonic()))[0])
         owner_gone=self.owner_pidfd is not None and bool(select.select([self.owner_pidfd],[],[],0)[0])
-        if guardian_gone and not owner_gone:
+        if guardian_gone and not owner_gone and self.owner_pidfd is not None:
             try:signal.pidfd_send_signal(self.owner_pidfd,signal.SIGKILL)
             except ProcessLookupError:pass
+            except OSError as error:stop_refusal='OUTER_PIDFD_STOP_ERRNO_'+str(error.errno)
             owner_gone=bool(select.select([self.owner_pidfd],[],[],max(0,min(5,self.ceiling-time.monotonic())))[0])
         if guardian_gone and not self.guardian_reaped:
             os.waitpid(self.pid,0);self.guardian_reaped=True
+        if guardian_gone and owner_gone and self.owner_pidfd is not None:
+            owner_gone=confirm_reaped_pidfd(self.owner_pidfd,self.ceiling)
         if guardian_gone and owner_gone and self.custody is not None:
             result=cleanup_after_exit(self.custody,{'owner_exited':True,'owner_exit_code':None},reason,self.ceiling)
             if self.authority_raw is not None:
@@ -489,8 +560,10 @@ class Session:
             else:result['outer_owner_custody_required']=True
         else:
             result={'status':'OUTER_CUSTODY_REQUIRED','stop_reason':reason,'terminal_cleanup_complete':False,
-                    'owner_process_exited':owner_gone,'guardian_process_exited':guardian_gone,
+                    'owner_process_exited':owner_gone if self.owner_pidfd is not None else None,
+                    'owner_handle_reported':self.owner_pidfd is not None,'guardian_process_exited':guardian_gone,
                     'outer_owner_custody_required':True,'acquisition_accepted':False}
+        if stop_refusal is not None:result['stop_refusal_code']=stop_refusal
         return {'type':'TERMINAL','result':result}
 
 
@@ -515,6 +588,8 @@ def start(authority_path,expected_sha,expected_decision,expected_session_sha,sta
     bootstrap=module('reviewed_owner_bootstrap','184-acquire-tools-v5-bootstrap.py',PINNED['bootstrap'])
     terminal=module('reviewed_terminal','184-acquisition-terminal-proposal.py',PINNED['terminal'])
     require(bootstrap.OWNER_SHA==PINNED['owner'],'BOOTSTRAP_OWNER_AUTHORITY_CHANGED')
+    require(owner.CA_SHA==PINNED['ca'] and owner.SELECTION_SHA==PINNED['selection']
+            and owner.SOURCE==SOURCE,'OWNER_DECLARED_INPUT_AUTHORITY_CHANGED')
     selection_raw=checked_bytes(owner.SELECTION,owner.SELECTION_SHA,32768,os.geteuid())
     selection=json.loads(selection_raw,object_pairs_hook=pairs)
     checked_bytes(owner.CA_SOURCE,owner.CA_SHA,300000,os.geteuid())

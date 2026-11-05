@@ -1,9 +1,9 @@
 {
-  "cases": 12,
+  "cases": 14,
   "downloaded_wheel_imports_or_installs": 0,
   "failed": 0,
   "new_general_decision": null,
-  "passed": 12,
+  "passed": 14,
   "real_network_requests": 0,
   "results": [
     {
@@ -53,9 +53,17 @@
     {
       "id": "duplicate-authority-key-refused",
       "outcome": "pass"
+    },
+    {
+      "id": "nonterminal-session-held-until-quiescent-late-nonpass",
+      "outcome": "pass"
+    },
+    {
+      "id": "unknown-custody-is-not-returned-or-discarded",
+      "outcome": "pass"
     }
   ],
   "scope": "bootstrap file/refusal controls; no admitted start or selected archive access",
   "selected_archives_acquired": 0,
-  "source_sha256": "9205ae8ea069fb12cc35ea28dbe5ced8a4ccbd2a1b12bb6d4ae76633816c2c36"
+  "source_sha256": "1eeb491accbb7f129c8e4c329c238a26ef6cd929a6204e949d16becc604621a4"
 }

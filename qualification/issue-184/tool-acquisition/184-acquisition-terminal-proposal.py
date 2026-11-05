@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 from pathlib import PurePosixPath
-import re
 import stat
 import time
 

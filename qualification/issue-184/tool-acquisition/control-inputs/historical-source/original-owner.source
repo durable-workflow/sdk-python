@@ -1,0 +1,313 @@
+"""One admitted data-only acquisition; never import/install any acquired wheel."""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import email.parser
+import hashlib
+import io
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import secrets
+import signal
+import ssl
+import stat
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+import zipfile
+
+SELECTION = Path('/tmp/sdk-python-handoff/184-immutable-build-tool-input-proposal.json')
+SELECTION_SHA = 'e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c'
+CA_SOURCE = Path('/home/lab4/fleet/sessions/sdk-python/20261105-010242-eef95b/.venv/lib/python3.14/site-packages/certifi/cacert.pem')
+CA_SHA = '2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b'
+CA_WHEEL_SHA = 'e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1'
+SOURCE = '14adc40b00b68cc8a3e1ae5647a885a42f273650'
+ADMISSION = 'https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6649046802'
+ARCHIVE_BYTES = 2901292
+FILE_CAP, ARCHIVE_CAP, POOL_CAP = 2 * 1024**2, 3 * 1024**2, 4 * 1024**2
+JSON_CAP, ZIP_MEMBER_CAP = 65536, 65536
+BLOCKED = ('AAA Certificate Services', 'emSign ECC Root CA - G3')
+
+
+def require(value: bool, message: str) -> None:
+    if not value:
+        raise ValueError(message)
+
+
+def sha(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def utc() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def encoded(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, indent=2) + '\n').encode()
+
+
+def pairs(values: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in values:
+        require(key not in result, 'duplicate JSON key')
+        result[key] = value
+    return result
+
+
+def read_regular(path: Path, cap: int) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.geteuid()
+                and before.st_size <= cap, 'invalid existing data file')
+        raw = stream.read(cap + 1)
+        after = os.fstat(stream.fileno())
+        require((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns),
+                'existing data changed while reading')
+        require(len(raw) == before.st_size, 'existing data size mismatch')
+    return raw
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError('redirect refused; no second request')
+
+
+class Acquisition:
+    def __init__(self) -> None:
+        self.started = time.monotonic()
+        self.started_utc = utc()
+        self.io_deadline = self.started + 270
+        self.ceiling = self.started + 300
+        self.pool = Path('/tmp') / ('sdk-python-184-tools-14adc40b-' +
+                    dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + secrets.token_hex(5))
+        self.used = 0
+        self.archive_used = 0
+        self.requests: list[dict] = []
+        self.files: set[str] = set()
+        self.phase = 'selection-and-existing-trust'
+
+    def write(self, name: str, raw: bytes) -> None:
+        require(name not in self.files and len(raw) + self.used <= POOL_CAP, 'pool output bound or collision')
+        parts = PurePosixPath(name)
+        require(not parts.is_absolute() and '..' not in parts.parts and '\\' not in name,
+                'invalid output path')
+        target = self.pool / name
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            require(stream.write(raw) == len(raw), 'short output write')
+            stream.flush()
+            os.fsync(stream.fileno())
+        target.chmod(0o400)
+        self.used += len(raw)
+        self.files.add(name)
+
+    def get(self, url: str, cap: int, kind: str, size: int | None = None) -> bytes:
+        parsed = urllib.parse.urlsplit(url)
+        allowed = 'pypi.org' if kind == 'metadata' else 'files.pythonhosted.org'
+        require(parsed.scheme == 'https' and parsed.hostname == allowed and not parsed.username
+                and not parsed.password and parsed.port is None and not parsed.query and not parsed.fragment,
+                'unexpected public authority')
+        remaining = self.io_deadline - time.monotonic()
+        require(remaining > 0, 'acquisition I/O deadline')
+        self.requests.append({'kind': kind, 'url': url, 'attempt': 1})
+        signal.setitimer(signal.ITIMER_REAL, min(20, remaining))
+        try:
+            request = urllib.request.Request(url, headers={
+                'User-Agent': 'sdk-python-source-input/1', 'Accept-Encoding': 'identity',
+                'Accept': 'application/json' if kind == 'metadata' else 'application/octet-stream',
+            })
+            with self.opener.open(request, timeout=min(15, remaining)) as response:
+                require(response.status == 200 and response.geturl() == url, 'unexpected HTTP result')
+                require(response.headers.get('Content-Encoding', 'identity') == 'identity', 'encoded body refused')
+                length = response.headers.get('Content-Length')
+                if length is not None:
+                    require(length.isdecimal() and int(length) <= cap, 'HTTP body exceeds bound')
+                if size is not None:
+                    require(length is not None and int(length) == size, 'archive HTTP size changed')
+                raw = bytearray()
+                while True:
+                    require(time.monotonic() < self.io_deadline, 'acquisition I/O deadline')
+                    chunk = response.read(min(65536, cap + 1 - len(raw)))
+                    if not chunk:
+                        break
+                    raw.extend(chunk)
+                    require(len(raw) <= cap, 'HTTP body exceeds bound')
+                return bytes(raw)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+
+    def inspect_wheel(self, raw: bytes, tool: dict, authority: dict) -> dict:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            entries = archive.infolist()
+            require(0 < len(entries) <= 4096 and sum(row.file_size for row in entries) <= 64 * 1024**2,
+                    'ZIP member/count size bound')
+            names: set[str] = set()
+            for row in entries:
+                path = PurePosixPath(row.filename)
+                require(row.filename not in names and not path.is_absolute() and '..' not in path.parts
+                        and str(path) == row.filename.rstrip('/') and not row.filename.endswith('//')
+                        and len(row.filename.encode('utf-8')) <= 512
+                        and '\\' not in row.filename and ':' not in row.filename
+                        and not any(ord(c) < 32 for c in row.filename)
+                        and not row.flag_bits & 1, 'unsafe ZIP member')
+                mode = stat.S_IFMT(row.external_attr >> 16)
+                require(mode in (0, stat.S_IFDIR) if row.is_dir() else mode in (0, stat.S_IFREG),
+                        'ZIP special/link member')
+                names.add(row.filename)
+            metadata = [name for name in names if name.count('/') == 1 and name.endswith('.dist-info/METADATA')]
+            wheel = [name for name in names if name.count('/') == 1 and name.endswith('.dist-info/WHEEL')]
+            require(len(metadata) == len(wheel) == 1, 'ambiguous wheel metadata')
+            require(metadata[0].rsplit('/', 1)[0] == wheel[0].rsplit('/', 1)[0], 'wheel metadata root mismatch')
+            for name in metadata + wheel:
+                require(archive.getinfo(name).file_size <= ZIP_MEMBER_CAP, 'wheel metadata size bound')
+            msg = email.parser.BytesParser().parsebytes(archive.read(metadata[0]))
+            whl = email.parser.BytesParser().parsebytes(archive.read(wheel[0]))
+            normalize = lambda value: re.sub(r'[-_.]+', '-', value).lower()
+            require(normalize(msg['Name']) == normalize(tool['name']) and msg['Version'] == tool['version'],
+                    'wheel name/version mismatch')
+            require(msg['Requires-Python'] == tool['requires_python'], 'wheel Python bound mismatch')
+            actual = sorted(' '.join(value.split()) for value in msg.get_all('Requires-Dist', []))
+            published = sorted(' '.join(value.split()) for value in authority['info'].get('requires_dist') or [])
+            require(actual == published, 'wheel dependency metadata mismatch')
+            require(whl.get_all('Tag', []) == ['py3-none-any'] and whl['Root-Is-Purelib'] == 'true',
+                    'unexpected tool platform tag')
+            return {'name': tool['name'], 'version': tool['version'], 'metadata_member': metadata[0],
+                    'metadata_sha256': sha(archive.read(metadata[0])), 'requires_python': msg['Requires-Python'],
+                    'requires_dist': msg.get_all('Requires-Dist', []),
+                    'approved_active_requirements': tool['active_requirements'],
+                    'wheel_tags': whl.get_all('Tag', []), 'members': len(entries),
+                    'uncompressed_header_bytes': sum(row.file_size for row in entries),
+                    'extracted_or_imported': False}
+
+    def run(self) -> dict:
+        selection_raw = read_regular(SELECTION, 32768)
+        require(sha(selection_raw) == SELECTION_SHA, 'selected tuple source changed')
+        selection = json.loads(selection_raw, object_pairs_hook=pairs)
+        require(selection['source'] == SOURCE and len(selection['tools']) == 6, 'wrong selected source/tool set')
+        tools = selection['tools']
+        require(sum(tool['bytes'] for tool in tools) == ARCHIVE_BYTES <= ARCHIVE_CAP,
+                'selected total archive size changed')
+        require(all(0 < tool['bytes'] <= FILE_CAP and Path(tool['filename']).name == tool['filename']
+                    for tool in tools), 'selected archive bounds')
+        ca = read_regular(CA_SOURCE, 300000)
+        require(sha(ca) == CA_SHA, 'existing clean CA provenance changed')
+        certs = re.findall(rb'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', ca, re.S)
+        require(len(certs) == 118, 'existing clean CA count changed')
+        for cert in certs:
+            check = subprocess.run(['/usr/bin/openssl', 'x509', '-noout', '-subject', '-nameopt', 'RFC2253'],
+                                   input=cert, capture_output=True, timeout=2, check=True)
+            subject = check.stdout.decode().removeprefix('subject=').strip()
+            require(not any(re.search(r'(?:^|[,+])CN=' + re.escape(name) + r'(?:$|[,+])', subject)
+                            for name in BLOCKED), 'blocked CA subject')
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_verify_locations(cadata=ca.decode('ascii'))
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                      urllib.request.HTTPSHandler(context=context), NoRedirect())
+        os.mkdir(self.pool, 0o700)
+        os.mkdir(self.pool / 'metadata', 0o700)
+        os.mkdir(self.pool / 'wheelhouse', 0o700)
+        self.write('selection.json', selection_raw)
+        self.write('ca.pem', ca)
+        self.write('launch.json', encoded({'started_at_utc': self.started_utc, 'owner_pid': os.getpid(),
+                   'pool': str(self.pool), 'admission': ADMISSION, 'source': SOURCE,
+                   'io_seconds': 270, 'total_seconds': 300,
+                   'hard_cutoff_utc': (dt.datetime.fromisoformat(self.started_utc) + dt.timedelta(seconds=300)).isoformat(),
+                   'ca_sha256': CA_SHA, 'ca_certificates': 118, 'blocked_CA_subjects': 0,
+                   'CA_provenance': {'existing_pinned_wheel_sha256': CA_WHEEL_SHA,
+                       'sealed_original_input': '/Users/lab3/fleet/tmp/sdk-python-2150-connected-v1-once-01a1a5ef/inputs/wheelhouse/certifi-2026.10.23-py3-none-any.whl',
+                       'member': 'certifi/cacert.pem', 'member_sha256': CA_SHA},
+                   'local_named_archive_cache_scan': {'roots': ['/home/lab4/.cache', '/tmp'], 'matching_selected_archives': 0},
+                   'credentials_proxy_default_trust': False}))
+        print(json.dumps({'phase': 'launched', 'pool': str(self.pool), 'started_at_utc': self.started_utc}), flush=True)
+        authorities = {}
+        self.phase = 'official-versioned-metadata-recheck'
+        for tool in tools:
+            raw = self.get(tool['metadata_source'], JSON_CAP, 'metadata')
+            authority = json.loads(raw, object_pairs_hook=pairs)
+            matches = [row for row in authority['urls'] if row['filename'] == tool['filename']]
+            require(authority['info']['version'] == tool['version'] and len(matches) == 1,
+                    'versioned metadata identity changed')
+            row = matches[0]
+            require(row['url'] == tool['url'] and type(row['size']) is int and row['size'] == tool['bytes']
+                    and row['digests']['sha256'] == tool['sha256']
+                    and type(row['yanked']) is bool and row['yanked'] is False,
+                    'versioned archive tuple/yank state changed')
+            authorities[tool['name']] = authority
+            self.write('metadata/' + tool['name'] + '.json', raw)
+        actual_metadata = []
+        self.phase = 'six-exact-archive-requests'
+        for tool in tools:
+            raw = self.get(tool['url'], FILE_CAP, 'archive', tool['bytes'])
+            require(len(raw) == tool['bytes'] and sha(raw) == tool['sha256'], 'archive bytes/hash mismatch')
+            require(self.archive_used + len(raw) <= ARCHIVE_CAP, 'combined archive size bound')
+            actual_metadata.append(self.inspect_wheel(raw, tool, authorities[tool['name']]))
+            self.write('wheelhouse/' + tool['filename'], raw)
+            self.archive_used += len(raw)
+        require(self.archive_used == ARCHIVE_BYTES, 'archive total mismatch')
+        self.write('wheel-metadata.json', encoded({'environment': 'CPython3.13 Linux amd64; no extras',
+                   'tools': actual_metadata, 'actual_requires_dist_matches_versioned_authority': True,
+                   'active_dependency_edges_match_approved_metadata_selection': True}))
+        require(time.monotonic() < self.ceiling, 'total acquisition deadline')
+        self.phase = 'sealing-custody'
+        self.write('acquisition-observation.json', encoded({'status': 'collected-before-final-custody-check', 'finished_at_utc': utc(),
+                   'elapsed_seconds': time.monotonic() - self.started, 'archive_bytes': self.archive_used,
+                   'http_requests': self.requests, 'archive_requests': sum(row['kind'] == 'archive' for row in self.requests),
+                   'retries': 0, 'import_install_container_SDK_build': False}))
+        entries = []
+        for name in sorted(self.files):
+            p = self.pool / name
+            st = p.lstat()
+            require(stat.S_ISREG(st.st_mode) and st.st_nlink == 1 and st.st_uid == os.geteuid()
+                    and stat.S_IMODE(st.st_mode) == 0o400, 'custody type/mode mismatch')
+            raw = read_regular(p, POOL_CAP)
+            entries.append({'path': name, 'bytes': len(raw), 'sha256': sha(raw),
+                            'device': st.st_dev, 'inode': st.st_ino, 'mode': '0400', 'links': st.st_nlink})
+        inventory_raw = encoded({'source': SOURCE, 'entries': entries, 'inventory_excludes_self': True})
+        self.write('inventory.json', inventory_raw)
+        for p in (self.pool / 'metadata', self.pool / 'wheelhouse', self.pool):
+            p.chmod(0o500)
+        actual_names = {str(p.relative_to(self.pool)) for p in self.pool.rglob('*') if p.is_file()}
+        require(actual_names == self.files and self.used == sum((self.pool / name).stat().st_size for name in self.files),
+                'extra output or pool accounting mismatch')
+        require(self.used <= POOL_CAP and time.monotonic() < self.ceiling, 'final pool/time bound')
+        return {'outcome': 'pass', 'pool': str(self.pool), 'source': SOURCE, 'files': len(self.files),
+                'whole_pool_bytes': self.used, 'archive_bytes': self.archive_used,
+                'inventory_sha256': sha(inventory_raw), 'finished_at_utc': utc(),
+                'elapsed_seconds': time.monotonic() - self.started,
+                'import_install_container_SDK_build': False}
+
+
+def alarm(signum, frame):
+    raise TimeoutError('bounded request deadline')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--admitted-data-only', action='store_true', required=True)
+    parser.parse_args()
+    signal.signal(signal.SIGALRM, alarm)
+    owner = Acquisition()
+    try:
+        result = owner.run()
+    except BaseException as error:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        result = {'outcome': 'fail', 'pool': str(owner.pool), 'phase': owner.phase,
+                  'failure_type': type(error).__name__, 'finished_at_utc': utc(),
+                  'elapsed_seconds': time.monotonic() - owner.started, 'retries': 0,
+                  'import_install_container_SDK_build': False}
+        if owner.pool.is_dir() and time.monotonic() < owner.ceiling:
+            try:
+                owner.write('failure.json', encoded(result))
+            except BaseException:
+                pass
+        print(json.dumps(result), flush=True)
+        sys.exit(1)
+    print(json.dumps(result), flush=True)

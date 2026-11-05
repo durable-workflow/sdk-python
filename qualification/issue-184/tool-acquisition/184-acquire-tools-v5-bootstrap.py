@@ -5,7 +5,6 @@ bootstrap. The syntax guard below does not itself grant authorization.
 """
 from __future__ import annotations
 
-import argparse
 import hashlib
 import os
 from pathlib import Path
@@ -59,7 +58,4 @@ def launch(admission: str, proof: dict | None = None) -> dict:
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--new-general-admission', required=True)
-    args = parser.parse_args()
-    launch(args.new_general_admission)
+    raise SystemExit('UNEXECUTED_OWNER_ROLE_ONLY; independent guardian proof and reviewed launcher required')

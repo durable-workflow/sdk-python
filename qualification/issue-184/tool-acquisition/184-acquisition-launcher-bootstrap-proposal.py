@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import resource
+import signal
 import stat
 import sys
 import time
@@ -58,6 +59,7 @@ def configure_resources(affinity):
     resource.setrlimit(resource.RLIMIT_CPU,(30,60))
     resource.setrlimit(resource.RLIMIT_NOFILE,(128,128))
     resource.setrlimit(resource.RLIMIT_FSIZE,(4*1024**2,4*1024**2))
+    signal.signal(signal.SIGCHLD,signal.SIG_DFL)
 
 
 def launch(authority_path,expected_authority_sha,expected_decision,expected_session_sha):
@@ -77,10 +79,40 @@ def launch(authority_path,expected_authority_sha,expected_decision,expected_sess
     exec(compile(code_raw,'<verified-reviewed-acquisition-session>','exec'),module.__dict__)
     session=module.start(authority_path,expected_authority_sha,expected_decision,expected_session_sha,
                          started,started_utc)
+    anchor=dt.datetime.fromisoformat(started_utc)
+    print(json.dumps({'phase':'SESSION_CREATED','controller_pid':os.getpid(),'guardian_pid':session.pid,
+                      'pool':session.expected_pool,'started_at_utc':started_utc,
+                      'active_cutoff_utc':(anchor+dt.timedelta(seconds=270)).isoformat(),
+                      'cleanup_ceiling_utc':(anchor+dt.timedelta(seconds=300)).isoformat(),
+                      'authority_sha256':expected_authority_sha,'decision':expected_decision}),flush=True)
     result=session.wait()
     # A survivor/incomplete record retains the live Session object and all outer
     # descriptor/process handles. The caller must escalate; it cannot finalize.
     return session,result
+
+
+def run_and_report(authority_path,expected_authority_sha,expected_decision,expected_session_sha):
+    """The only proposed invocation wrapper; retain custody until proved quiescent.
+
+    CUSTODY_REQUIRED must be escalated immediately by the invoking agent/operator.
+    No automatic data retry, admission expansion or hidden work occurs here.
+    Unknown ownership can require explicit operator stop/manual reconciliation.
+    """
+    session,result=launch(authority_path,expected_authority_sha,expected_decision,expected_session_sha)
+    print(json.dumps({'phase':'RESULT','record':result}),flush=True)
+    if not session.finished:
+        print(json.dumps({'phase':'CUSTODY_REQUIRED','controller_pid':os.getpid(),'guardian_pid':session.pid,
+                          'owner_pid':session.owner_pid,'pool':session.expected_pool,
+                          'terminal_cleanup_complete':False,'acquisition_accepted':False}),flush=True)
+    while not session.finished:
+        # This is the separately proposed failed-operation custody keeper, not
+        # acquisition work. Its policy must be explicitly admitted in authority.
+        later=session.reconcile_retained()
+        if later is not None:
+            result=later
+            if session.finished:print(json.dumps({'phase':'POST_BOUND_QUIESCENT_NONPASS','record':later}),flush=True)
+        if not session.finished:time.sleep(1)
+    return result
 
 
 if __name__=='__main__':

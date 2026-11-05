@@ -44,11 +44,12 @@ class SyntheticBootstrap:
     def __init__(self,mode):self.mode=mode
     def launch(self,decision,proof):
         assert dict(os.environ)==s.MINIMAL_ENV and decision==REF
+        signal.signal(signal.SIGALRM,signal.SIG_DFL);signal.alarm(5)
         if self.mode=='fail':raise RuntimeError('synthetic failure only')
-        if self.mode in {'block','abort','guardian-crash'}:
+        if self.mode in {'block','abort','guardian-crash','late-reconcile'}:
             os.write(next(iter(proof['archive_fds'].values())),b'synthetic partial')
             signal.pause()
-        if self.mode=='survivor':
+        if self.mode in {'survivor','stop-refusal'}:
             os.write(next(iter(proof['archive_fds'].values())),b'synthetic retained partial')
             time.sleep(0.8)
         for fd in proof['archive_fds'].values():
@@ -80,7 +81,7 @@ class Response:
 def integrated_closure(parent,mode):
     selected=json.loads((BASE/'184-immutable-build-tool-input-proposal.json').read_text())
     bodies={};archive_urls=set()
-    failed=Path('/tmp/sdk-python-184-tools-14adc40b-20261105T035512Z-6d90ccfb71')
+    failed=BASE/'control-inputs'
     for tool in selected['tools']:
         authority=json.loads((failed/'metadata'/(tool['name']+'.json')).read_text())
         metadata=f"Metadata-Version: 2.4\nName: {tool['name']}\nVersion: {tool['version']}\nRequires-Python: {tool['requires_python']}\n"
@@ -131,6 +132,12 @@ def run_protocol(mode,disconnect=None):
             try:
                 outer.close();os.environ.clear();os.environ.update(s.MINIMAL_ENV)
                 s.POOL_PARENT=parent
+                if mode=='pidfd-fail':
+                    def failed_pidfd(pid):raise OSError('synthetic pidfd prerequisite refusal')
+                    s.os.pidfd_open=failed_pidfd
+                if mode=='stop-refusal':
+                    def refused_stop(*args):raise PermissionError(1,'synthetic stop refusal')
+                    s.signal.pidfd_send_signal=refused_stop
                 if mode=='survivor':
                     real_stop=s.stop_owner;calls=[0]
                     def stop_with_one_survivor(role,ceiling):
@@ -139,7 +146,7 @@ def run_protocol(mode,disconnect=None):
                         return real_stop(role,ceiling)
                     s.stop_owner=stop_with_one_survivor
                 code=s.guardian_job(inner,authority_raw,authority,started,dt.datetime.now(dt.timezone.utc).isoformat(),
-                    modules,bounds=(0.05 if mode=='survivor' else 1 if mode.startswith('integrated-') else 0.35,3))
+                    modules,bounds=(0.05 if mode in {'survivor','stop-refusal'} else 1 if mode.startswith('integrated-') else 0.35,3))
                 inner.close();os._exit(code)
             except BaseException:os._exit(3)
         inner.close();pidfd=os.pidfd_open(child);session=None;received=[];owner_pidfd=None;reaped=False
@@ -169,10 +176,21 @@ def run_protocol(mode,disconnect=None):
                     assert session.receive() is None and session.receive() is None
                     signal.pidfd_send_signal(session.pidfd,signal.SIGKILL)
                     message=session.wait()
+                elif mode=='late-reconcile':
+                    assert session.receive() is None and session.receive() is None
+                    session.ceiling=time.monotonic()+0.02
+                    first=session.wait()
+                    assert not first['result']['terminal_cleanup_complete'] and not session.finished
+                    assert select.select([session.pidfd],[],[],2)[0]
+                    message=session.reconcile_retained()
                 else:message=session.wait()
                 reaped=session.guardian_reaped
                 result=message['result'];assert not result['acquisition_accepted']
-                if mode=='survivor':
+                if mode=='late-reconcile':
+                    assert result['quiescent_after_failed_bound'] and not result['terminal_cleanup_complete']
+                    assert not result['acquisition_accepted'] and session.finished
+                    assert not list((expected_pool/'wheelhouse').iterdir())
+                elif mode=='survivor':
                     assert result['status']=='SURVIVOR_CUSTODY_REQUIRED' and result['outer_owner_custody_required']
                     assert not result['terminal_cleanup_complete'] and not session.finished
                     assert not select.select([session.owner_pidfd],[],[],0)[0]
@@ -189,6 +207,10 @@ def run_protocol(mode,disconnect=None):
                     assert result['terminal_cleanup_complete'] and result['retained_custody_sealed']
                     assert not list((expected_pool/'wheelhouse').iterdir())
                     assert session.finished
+                    if mode=='pidfd-fail':
+                        assert result['stop_reason']=='OWNER_PIDFD_PREREQUISITE_FAILED'
+                        assert result['owner_process_exited'] and not result['owner_pidfd_available']
+                    if mode=='stop-refusal':assert result['stop_refusal_code']=='PIDFD_STOP_ERRNO_1'
                 assert select.select([pidfd],[],[],0)[0] if not session.finished else True
         finally:
             if not reaped:
@@ -215,6 +237,63 @@ def frame_control(raw,code):
     finally:one.close();two.close()
 
 
+def unreported_live_owner_keeps_custody():
+    """A separate private pipe gives only this test the missing actor's ground truth."""
+    with tempfile.TemporaryDirectory(prefix='sdk-python-184-unreported-owner-control-') as temporary:
+        parent=Path(temporary);pool=parent/'sdk-python-184-tools-guardian-14adc40b-9999999999'
+        outer,inner=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
+        side_read,side_write=os.pipe();child=os.fork()
+        if child==0:
+            try:
+                outer.close();os.close(side_read);os.environ.clear();os.environ.update(s.MINIMAL_ENV)
+                custody=s.prepare_tree(g,parent,pool.name,filenames);custody.metadata_names=set(metadata)
+                proof={'pool':str(pool),'ready':True,'started_monotonic':time.monotonic(),
+                       'started_utc':dt.datetime.now(dt.timezone.utc).isoformat(),'dir_ids':custody.dir_ids}
+                fds=[custody.parent_fd,*[custody.directory_fds[d] for d in ('.','wheelhouse','metadata','events')],
+                     *[custody.archive_nodes[name]['fd'] for name in filenames]]
+                s.send_frame(inner,{'type':'REGISTERED','proof':proof,'filenames':filenames,'metadata_names':sorted(metadata)},fds)
+                message,received=s.recv_frame(inner);assert message=={'type':'ARM'} and not received
+                hidden=os.fork()
+                if hidden==0:
+                    inner.close();os.close(side_write)
+                    signal.signal(signal.SIGALRM,signal.SIG_DFL);signal.alarm(5)
+                    os.write(next(iter(custody.archive_nodes.values()))['fd'],b'synthetic live holder')
+                    signal.pause();os._exit(2)
+                os.write(side_write,str(hidden).encode());os.close(side_write)
+                # Fault boundary: guardian exits without publishing OWNER/pidfd.
+                custody.close();inner.close();os._exit(0)
+            except BaseException:os._exit(3)
+        inner.close();os.close(side_write)
+        guardian_pidfd=os.pidfd_open(child)
+        session=s.Session(outer,child,guardian_pidfd,g,t,time.monotonic()+5,pool,filenames,metadata,b'{}')
+        unknown_pidfd=None
+        try:
+            assert session.receive() is None
+            hidden=int(os.read(side_read,64));unknown_pidfd=os.pidfd_open(hidden)
+            message=session.wait();result=message['result']
+            assert result['status']=='OUTER_CUSTODY_REQUIRED' and result['guardian_process_exited']
+            assert not result['owner_process_exited'] and not result['terminal_cleanup_complete']
+            assert session.owner_pidfd is None and not session.finished
+            assert not select.select([unknown_pidfd],[],[],0)[0]
+            assert len(list((pool/'wheelhouse').iterdir()))==6
+            assert all(os.fstat(row['fd']).st_nlink==1 for row in session.custody.archive_nodes.values())
+            # Only the independent test knows/reconciles the missing exact handle.
+            signal.pidfd_send_signal(unknown_pidfd,signal.SIGKILL)
+            assert select.select([unknown_pidfd],[],[],2)[0]
+            session.owner_pidfd=os.dup(unknown_pidfd);session.owner_pid=hidden
+            session.stack.callback(os.close,session.owner_pidfd)
+            final=session.abort('SYNTHETIC_INDEPENDENT_HANDLE_RECONCILIATION')
+            assert final['result']['terminal_cleanup_complete'] and session.finished
+            assert not list((pool/'wheelhouse').iterdir())
+        finally:
+            if unknown_pidfd is not None:
+                if not select.select([unknown_pidfd],[],[],0)[0]:signal.pidfd_send_signal(unknown_pidfd,signal.SIGKILL)
+                assert select.select([unknown_pidfd],[],[],2)[0];os.close(unknown_pidfd)
+            if not session.guardian_reaped:
+                signal.pidfd_send_signal(guardian_pidfd,signal.SIGKILL);os.waitpid(child,0)
+            session.stack.close();os.close(side_read);cleanup_directory(parent)
+
+
 def fd_frame_roundtrip():
     one,two=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
     read,write=os.pipe();received=[]
@@ -230,7 +309,7 @@ def fd_frame_roundtrip():
 def actual_closed_startup():
     # Only trusted local stdlib/controller source, not a data operation or tool wheel.
     cpus=sorted(os.sched_getaffinity(0))[:2]
-    code="import pathlib,types; b=pathlib.Path('/tmp/sdk-python-handoff/184-acquisition-launcher-bootstrap-proposal.py'); bootstrap=types.ModuleType('resource_source_control'); exec(compile(b.read_bytes(),str(b),'exec'),bootstrap.__dict__); bootstrap.configure_resources("+repr(cpus)+"); p=pathlib.Path('/tmp/sdk-python-handoff/184-acquisition-session-proposal.py'); m=types.ModuleType('source_startup_control'); m.__file__=str(p); exec(compile(p.read_bytes(),str(p),'exec'),m.__dict__); m.verify_startup(); print('CLOSED_STARTUP_OK')"
+    code="import pathlib,types,signal; b=pathlib.Path('/tmp/sdk-python-handoff/184-acquisition-launcher-bootstrap-proposal.py'); bootstrap=types.ModuleType('resource_source_control'); exec(compile(b.read_bytes(),str(b),'exec'),bootstrap.__dict__); signal.signal(signal.SIGCHLD,signal.SIG_IGN); bootstrap.configure_resources("+repr(cpus)+"); p=pathlib.Path('/tmp/sdk-python-handoff/184-acquisition-session-proposal.py'); m=types.ModuleType('source_startup_control'); m.__file__=str(p); exec(compile(p.read_bytes(),str(p),'exec'),m.__dict__); m.verify_startup(); print('CLOSED_STARTUP_OK')"
     run=subprocess.run([s.INTERPRETER,'-I','-S','-c',code],env=s.MINIMAL_ENV,close_fds=True,
                        capture_output=True,timeout=5,check=True)
     assert run.stdout==b'CLOSED_STARTUP_OK\n'
@@ -260,6 +339,10 @@ with patch.object(socket,'create_connection',side_effect=AssertionError('NO_NETW
     check('survivor-keeps-all-custody-until-confirmed-deferred-exit',lambda:run_protocol('survivor'))
     check('actual-owner-and-terminal-compose-with-synthetic-six-tool-closure',lambda:run_protocol('integrated-positive'))
     check('actual-owner-transport-timeout-refuses-integrated-preserve',lambda:run_protocol('integrated-timeout'))
+    check('post-fork-pidfd-failure-exits-reserved-child-before-cleanup',lambda:run_protocol('pidfd-fail'))
+    check('unreported-live-owner-is-unknown-retains-custody',unreported_live_owner_keeps_custody)
+    check('stop-permission-refusal-still-requires-confirmed-exit',lambda:run_protocol('stop-refusal'))
+    check('late-quiescence-releases-custody-without-late-pass',lambda:run_protocol('late-reconcile'))
     check('outer-disappears-before-arming-no-owner-work',lambda:run_protocol('positive','register'))
     check('outer-disappears-with-blocked-owner-stops-before-work',lambda:run_protocol('positive','owner'))
     check('descriptor-frame-roundtrip-preserves-scoped-handle',fd_frame_roundtrip)
@@ -275,5 +358,14 @@ report={'scope':'synthetic role-protocol controls; start/admitted-data API never
         'failed':sum(row['outcome']=='fail' for row in results),'results':results,
         'real_network_requests':0,'selected_archives_acquired':0,'downloaded_wheel_imports_or_installs':0,
         'new_general_decision':None,'acquisition_accepted':False}
-(BASE/'184-acquisition-session-controls-result.json').write_text(json.dumps(report,sort_keys=True,indent=2)+'\n')
+report_path=BASE/'184-acquisition-session-controls-result.json'
+report_bytes=(json.dumps(report,sort_keys=True,indent=2)+'\n').encode()
+if report_path.exists():
+    if report_path.read_bytes()!=report_bytes:
+        print(json.dumps(report,indent=2))
+        raise SystemExit('CONTROL_RESULT_COLLISION; prior record preserved')
+else:
+    descriptor=os.open(report_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+    with os.fdopen(descriptor,'wb') as stream:
+        assert stream.write(report_bytes)==len(report_bytes)
 print(json.dumps(report,indent=2));raise SystemExit(bool(report['failed']))

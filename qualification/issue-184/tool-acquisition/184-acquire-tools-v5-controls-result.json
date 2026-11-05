@@ -1,6 +1,6 @@
 {
   "actual_failed_archive_cause_established": false,
-  "bootstrap_sha256": "12679c567452dd4cdda7dbd789ac600ef0b5455a1225c95cf59d066fda472569",
+  "bootstrap_sha256": "6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed",
   "cases": 86,
   "downloaded_wheel_imports_or_installs": 0,
   "failed": 0,
@@ -13,7 +13,7 @@
       "outcome": "pass"
     },
     {
-      "id": "retained-authority-tuple-build",
+      "id": "derived-authority-tuple-build",
       "outcome": "pass"
     },
     {
@@ -21,7 +21,7 @@
       "outcome": "pass"
     },
     {
-      "id": "retained-authority-tuple-packaging",
+      "id": "derived-authority-tuple-packaging",
       "outcome": "pass"
     },
     {
@@ -29,7 +29,7 @@
       "outcome": "pass"
     },
     {
-      "id": "retained-authority-tuple-pip",
+      "id": "derived-authority-tuple-pip",
       "outcome": "pass"
     },
     {
@@ -37,7 +37,7 @@
       "outcome": "pass"
     },
     {
-      "id": "retained-authority-tuple-pyproject-hooks",
+      "id": "derived-authority-tuple-pyproject-hooks",
       "outcome": "pass"
     },
     {
@@ -45,7 +45,7 @@
       "outcome": "pass"
     },
     {
-      "id": "retained-authority-tuple-setuptools",
+      "id": "derived-authority-tuple-setuptools",
       "outcome": "pass"
     },
     {
@@ -53,7 +53,7 @@
       "outcome": "pass"
     },
     {
-      "id": "retained-authority-tuple-wheel",
+      "id": "derived-authority-tuple-wheel",
       "outcome": "pass"
     },
     {

@@ -1,0 +1,63 @@
+{
+  "origin": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6649346255",
+  "original_failed_pool_modified": false,
+  "records": [
+    {
+      "derived_fixture_bytes": 1482,
+      "derived_fixture_sha256": "62e815fa9001a01e6a0457352003698d07256ec1b2fc55d5cb783b3a16f27d26",
+      "original_record_bytes": 7720,
+      "original_record_sha256": "064e9dcb80e948b5de7a841c3fd9b5644a980eb27bb644fb7f562b7d773b157b",
+      "tool": "build"
+    },
+    {
+      "derived_fixture_bytes": 1162,
+      "derived_fixture_sha256": "e48bbd4c46efbf4eff638602526c3a8f2fbb1e8193d4df86a76f3df0fb258b1b",
+      "original_record_bytes": 5748,
+      "original_record_sha256": "4f190d2f0b312b3086058cee64ab4333bf3ce67fb78b4c2bdb43899049b29f4d",
+      "tool": "packaging"
+    },
+    {
+      "derived_fixture_bytes": 1145,
+      "derived_fixture_sha256": "586b7008e21ba663b15a5af3c531bc3c0dfc25d43e228100cbb70a9524241ff3",
+      "original_record_bytes": 6683,
+      "original_record_sha256": "d0b07879e414dc3347bf20a492a9e8a15cfb1962e3cae3843b93453d9940f5f9",
+      "tool": "pip"
+    },
+    {
+      "derived_fixture_bytes": 1195,
+      "derived_fixture_sha256": "77baa40515e7d727d63c7b33d5cce32ad506039aacd255bcb12ab978d69a893b",
+      "original_record_bytes": 3545,
+      "original_record_sha256": "ef47170935f8a098c070a3cd65d637d5bbf646158d9559eebac9c465b83d0401",
+      "tool": "pyproject-hooks"
+    },
+    {
+      "derived_fixture_bytes": 3785,
+      "derived_fixture_sha256": "82f7804d38814b9a27a9cb0dbaf3ad70fa57e990cd3dc6486abb654afae40ccb",
+      "original_record_bytes": 8162,
+      "original_record_sha256": "d75de8ba0d3304a3d74484fb9f340edb87ef02712da4fa02a2ed92e71b0572dd",
+      "tool": "setuptools"
+    },
+    {
+      "derived_fixture_bytes": 1177,
+      "derived_fixture_sha256": "cf6a86abed869134225400ca2dc4f5b2974c40cff2bbb768049e26709e4ec647",
+      "original_record_bytes": 4390,
+      "original_record_sha256": "03f655da3a6dd010d9ac41d4771d5d973109cb662a1e10eb9d967535ffd145f8",
+      "tool": "wheel"
+    }
+  ],
+  "retained_fields": [
+    "info.name",
+    "info.version",
+    "info.requires_python",
+    "info.requires_dist",
+    "urls.filename",
+    "urls.url",
+    "urls.size",
+    "urls.digests",
+    "urls.yanked"
+  ],
+  "scope": "derived semantic source-control fixtures, not original HTTP records or qualified archives",
+  "selected_archive_retrieval": false,
+  "selection_sha256": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c",
+  "source_acquisition_classification": "NONPASSING; exact original failure cause unproved"
+}

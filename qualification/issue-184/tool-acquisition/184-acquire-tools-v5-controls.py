@@ -14,6 +14,7 @@ import socket
 import sys
 import subprocess
 import tempfile
+from types import ModuleType
 import urllib.error
 import urllib.request
 from unittest.mock import patch
@@ -21,21 +22,29 @@ import zipfile
 
 sys.dont_write_bytecode = True
 BASE = Path('/tmp/sdk-python-handoff')
-FAILED = Path('/tmp/sdk-python-184-tools-14adc40b-20261105T035512Z-6d90ccfb71')
+FAILED = BASE / 'control-inputs'
 NEW_REF = 'https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-9999999999'
 
 
 def load(name, path):
+    if path.suffix=='.source':
+        manifest=json.loads((path.parent/'manifest.json').read_text())
+        expected=next(row['sha256'] for row in manifest['records'] if row['file']==path.name)
+        raw=path.read_bytes();assert hashlib.sha256(raw).hexdigest()==expected
+        result=ModuleType(name);result.__file__=str(path)
+        exec(compile(raw,str(path),'exec'),result.__dict__)
+        return result
     spec = importlib.util.spec_from_file_location(name, path)
     result = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(result)
     return result
 
 
-old = load('original_acquisition_source_only', BASE / '184-acquire-tools.py')
+HISTORICAL = FAILED / 'historical-source'
+old = load('original_acquisition_source_only', HISTORICAL / 'original-owner.source')
 new = load('successor_acquisition_source_only', BASE / '184-acquire-tools-v5.py')
 bootstrap = load('successor_bootstrap_source_only', BASE / '184-acquire-tools-v5-bootstrap.py')
-assert hashlib.sha256((BASE / '184-acquire-tools.py').read_bytes()).hexdigest() \
+assert hashlib.sha256((HISTORICAL / 'original-owner.source').read_bytes()).hexdigest() \
     == 'e0b8955c8c26c68333e1439c4eb195ef803d710d68f4a4b297b3dd17fcfd7c54'
 assert hashlib.sha256((BASE / '184-acquire-tools-v5.py').read_bytes()).hexdigest() == bootstrap.OWNER_SHA
 selection = json.loads((FAILED / 'selection.json').read_text())
@@ -293,7 +302,7 @@ def untracked_failure_record_collision_cleanup():
 
 
 def v2_semantic_refusal_countercontrol():
-    previous = load('unexecuted_v2_source_only', BASE / '184-acquire-tools-v2.py')
+    previous = load('unexecuted_v2_source_only', HISTORICAL / 'v2-owner.source')
     raw, tool, authority = synthetic_wheel()
     authority['info']['requires_dist'] = ['different>=1']
     with owner() as item:
@@ -330,7 +339,7 @@ def redirect_failure_cleans_prior_archive():
 
 
 def fdopen_failure_countercontrol():
-    previous = load('held_v3_source_only', BASE / '184-acquire-tools-v3.py')
+    previous = load('held_v3_source_only', HISTORICAL / 'v3-owner.source')
     for controller, expect_closed, expect_empty in ((previous, False, False), (new, True, True)):
         with owner() as scope:
             item = controller.Acquisition(NEW_REF)
@@ -375,7 +384,7 @@ SENTINELS = {
 
 
 def bootstrap_environment_countercontrol():
-    previous = load('held_v3_bootstrap_source_only', BASE / '184-acquire-tools-v3-bootstrap.py')
+    previous = load('held_v3_bootstrap_source_only', HISTORICAL / 'v3-bootstrap.source')
     with tempfile.TemporaryDirectory(prefix='sdk-python-184-bootstrap-env-control-') as temporary:
         source = Path(temporary) / 'trusted-synthetic-owner.py'
         # Only names, never even sentinel values, leave the synthetic owner.
@@ -684,7 +693,7 @@ with patch.object(socket, 'create_connection', side_effect=AssertionError('NO_NE
      patch.object(urllib.request, 'urlopen', side_effect=AssertionError('NO_NETWORK_IN_SOURCE_CONTROLS')):
     check('old-refuses-equivalent-marker-quotes-new-accepts', old_quote_control)
     for name in tools:
-        check('retained-authority-tuple-' + name, lambda name=name: new.validate_authority(authorities[name], tools[name]))
+        check('derived-authority-tuple-' + name, lambda name=name: new.validate_authority(authorities[name], tools[name]))
         def headers_for_name(name=name):
             raw, tool, authority = synthetic_wheel(name, single_quotes=True)
             with owner() as item:
@@ -780,13 +789,22 @@ with patch.object(socket, 'create_connection', side_effect=AssertionError('NO_NE
         lambda: new.marker_active("foo; unknown == 'yes'"), 'UNSUPPORTED_MARKER_VARIABLE'))
 
 report = {'scope': 'synthetic source controls, not archive acquisition/SDK/runtime qualification',
-          'original_source_sha256': hashlib.sha256((BASE / '184-acquire-tools.py').read_bytes()).hexdigest(),
+          'original_source_sha256': hashlib.sha256((HISTORICAL / 'original-owner.source').read_bytes()).hexdigest(),
           'successor_source_sha256': bootstrap.OWNER_SHA,
           'bootstrap_sha256': hashlib.sha256((BASE / '184-acquire-tools-v5-bootstrap.py').read_bytes()).hexdigest(),
           'cases': len(results), 'passed': sum(row['outcome'] == 'pass' for row in results),
           'failed': sum(row['outcome'] == 'fail' for row in results), 'results': results,
           'simulated_transport_calls': fake_calls, 'real_network_requests': 0,
           'downloaded_wheel_imports_or_installs': 0, 'actual_failed_archive_cause_established': False}
-(BASE / '184-acquire-tools-v5-controls-result.json').write_text(json.dumps(report, sort_keys=True, indent=2)+'\n')
+report_path=BASE/'184-acquire-tools-v5-controls-result.json'
+report_bytes=(json.dumps(report,sort_keys=True,indent=2)+'\n').encode()
+if report_path.exists():
+    if report_path.read_bytes()!=report_bytes:
+        print(json.dumps(report,indent=2))
+        raise SystemExit('CONTROL_RESULT_COLLISION; prior record preserved')
+else:
+    descriptor=os.open(report_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+    with os.fdopen(descriptor,'wb') as stream:
+        assert stream.write(report_bytes)==len(report_bytes)
 print(json.dumps(report, indent=2))
 raise SystemExit(bool(report['failed']))
