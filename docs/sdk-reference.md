@@ -131,6 +131,48 @@ For a fuller deployable example, see
 [`examples/order_processing`](https://github.com/durable-workflow/sdk-python/tree/main/examples/order_processing), which runs a
 multi-activity order workflow against a local server with Docker Compose.
 
+## Inspect a run's activities (unreleased)
+
+Read a run's activities alongside its description, without parsing raw history:
+
+```python
+handle = client.get_workflow_handle(workflow_id, run_id=run_id)
+description = await handle.describe_run()
+activities = await handle.get_activities()
+print(description.status)
+
+for item in activities.activities:
+    print(item.id, item.activity_type, item.status, item.history_authority)
+    if item.attempts is None:
+        print("attempt metadata unavailable")
+        continue
+    for attempt in item.attempts:
+        print(attempt.attempt_number, attempt.status, attempt.last_heartbeat_at)
+```
+
+`Client.get_run_activities(workflow_id, run_id)` returns the same
+`WorkflowActivityList`. A handle needs a stored run ID or an explicit
+`get_activities(run_id)` argument. The request binds to that exact workflow/run
+and the Client's namespace. `list_activities()` remains the separate standalone
+job API.
+
+`WorkflowActivity` and `WorkflowActivityAttempt` preserve status, attempt,
+heartbeat, retry, local/parallel and history-authority metadata. The response's
+`type` and `class` fields are exposed as `activity_type` and `activity_class`.
+`raw` retains the complete received activity or attempt, including future
+fields. Missing optional metadata is `None`; it does not mean zero, healthy or
+no cancellation. An explicitly empty list is distinct from missing metadata.
+Unknown status strings and Server's `diagnostic_only`, `history_authority` and
+`history_unsupported_reason` values remain visible. These visibility fields do
+not grant permission to continue an activity attempt.
+
+Malformed collections or known field types and a response for another run
+raise rather than manufacturing an empty view. HTTP errors propagate normally.
+The wrapper performs no payload fetch or decoding. Published-package and actual
+Server acceptance remain tracked in
+[the shared run-activity issue](https://github.com/durable-workflow/.github/issues/235).
+This source addition is outside the current typed-value release candidate.
+
 ## Schedule visibility and paging
 
 `list_schedules()` returns one typed `ScheduleList` page. Status and workflow
