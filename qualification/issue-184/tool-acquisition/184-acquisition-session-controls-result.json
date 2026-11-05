@@ -1,12 +1,48 @@
 {
   "acquisition_accepted": false,
-  "cases": 22,
+  "cases": 31,
   "downloaded_wheel_imports_or_installs": 0,
   "failed": 0,
   "new_general_decision": null,
-  "passed": 22,
+  "passed": 31,
   "real_network_requests": 0,
   "results": [
+    {
+      "id": "retention-deadline-boundary-0",
+      "outcome": "pass"
+    },
+    {
+      "id": "retention-deadline-boundary-300",
+      "outcome": "pass"
+    },
+    {
+      "id": "retention-deadline-boundary-301",
+      "outcome": "pass"
+    },
+    {
+      "id": "retention-deadline-boundary-86400",
+      "outcome": "pass"
+    },
+    {
+      "id": "retention-deadline-boundary-86401",
+      "outcome": "pass"
+    },
+    {
+      "id": "alloc-after-root-root-custody-is-not-discarded",
+      "outcome": "pass"
+    },
+    {
+      "id": "alloc-after-wheelhouse-root-custody-is-not-discarded",
+      "outcome": "pass"
+    },
+    {
+      "id": "alloc-after-metadata-root-custody-is-not-discarded",
+      "outcome": "pass"
+    },
+    {
+      "id": "alloc-unknown-root-custody-is-not-discarded",
+      "outcome": "pass"
+    },
     {
       "id": "synthetic-owner-exit-independent-check-and-outer-readback",
       "outcome": "pass"
@@ -98,5 +134,5 @@
   ],
   "scope": "synthetic role-protocol controls; start/admitted-data API never called with a decision",
   "selected_archives_acquired": 0,
-  "source_sha256": "e92aa088b9de553cbe2d0ec76dcb6d097d07148f6a9e9a751f80ab4680cc9c48"
+  "source_sha256": "3ef6df413565d36f63b2e4722c7ee0bd9eb5c62a29a1d79b450acfa0b5ae8d3d"
 }

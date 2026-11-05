@@ -35,6 +35,29 @@ def pairs(values):
     return result
 
 
+def reject_constant(value):
+    raise ValueError('NONFINITE_AUTHORITY_NUMBER')
+
+
+def parse_authority(raw):
+    authority=json.loads(raw.decode('utf-8'),object_pairs_hook=pairs,parse_constant=reject_constant)
+    require(type(authority) is dict and set(authority)=={
+        'decision','selected_source','inputs','environment','host','total_seconds','io_seconds',
+        'retries','survivor_policy','pool_parent','launcher_sha256','cpu_affinity',
+        'retention_deadline_utc'},'EXACT_AUTHORITY_SCHEMA_REQUIRED')
+    require(type(authority['inputs']) is dict and set(authority['inputs'])=={
+        'owner','bootstrap','guardian','terminal','selection','interpreter','library','ca'}
+        and all(type(value) is str and re.fullmatch(r'[0-9a-f]{64}',value)
+                for value in authority['inputs'].values()),'EXACT_INPUT_SCHEMA_REQUIRED')
+    require(type(authority['environment']) is dict and authority['environment']==ENV
+            and all(type(value) is str for value in authority['environment'].values()),'EXACT_ENVIRONMENT_SCHEMA_REQUIRED')
+    require(all(type(authority[key]) is int for key in ('total_seconds','io_seconds','retries')),
+            'INTEGER_AUTHORITY_LIMITS_REQUIRED')
+    require(all(type(authority[key]) is str for key in ('decision','selected_source','host',
+        'survivor_policy','pool_parent','launcher_sha256','retention_deadline_utc')),'EXACT_AUTHORITY_VALUE_TYPES_REQUIRED')
+    return authority
+
+
 def read_verified(path,expected,cap):
     fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
     with os.fdopen(fd,'rb') as stream:
@@ -70,7 +93,7 @@ def launch(authority_path,expected_authority_sha,expected_decision,expected_sess
             and re.fullmatch(r'https://github\.com/durable-workflow/sdk-python/issues/184#issuecomment-[1-9][0-9]{5,17}',expected_decision),
             'EXACT_NEW_GENERAL_DECISION_REQUIRED')
     raw=read_verified(Path(authority_path),expected_authority_sha,32768)
-    authority=json.loads(raw,object_pairs_hook=pairs)
+    authority=parse_authority(raw)
     require(authority.get('decision')==expected_decision
             and authority.get('launcher_sha256')==expected_session_sha,'EXACT_AUTHORITY_BINDING_CHANGED')
     code_raw=read_verified(SESSION,expected_session_sha,65536)

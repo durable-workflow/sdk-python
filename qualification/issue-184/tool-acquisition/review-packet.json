@@ -7,8 +7,16 @@
   "connected_retry_admission": null,
   "cpu_affinity": null,
   "downloaded_wheel_imports_or_installs": 0,
+  "guardian_later_findings": {
+    "issues": [
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6660476483",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662253657"
+    ],
+    "predecessor_v2_sha256": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70",
+    "proposed_successor": "guardian-v3; whole-packet source review pending"
+  },
   "host": "lab4, subject to fresh capacity/input/cache/name checks",
-  "inline_launcher_bootstrap_sha256": "1eeb491accbb7f129c8e4c329c238a26ef6cd929a6204e949d16becc604621a4",
+  "inline_launcher_bootstrap_sha256": "0cd9d5309b1dd3314e5a7f288f7462c784e2bcf4cea9618eeff4aa401f516aaf",
   "interpreter": "/usr/bin/python3.14 CPython3.14.4 root-owned, observed and pinned; host OS/stdlib remain trusted provisioned base",
   "new_general_decision": null,
   "new_sdk_wheel": null,
@@ -35,6 +43,15 @@
   "proposed_invocation": null,
   "real_network_requests": 0,
   "release_tag_publish_guide_or_adoption": false,
+  "retained_tree_policy": {
+    "explicit_new_General_admission_required": true,
+    "maximum_retention_seconds": 86400,
+    "operation_retention_deadline": null,
+    "outer_owner_custody_required": true,
+    "process_handles_close_only_after_exact_exit_and_full_inventory_readback": true,
+    "retention_owner": "sdk-python",
+    "terminal_cleanup_complete": false
+  },
   "role_address_space_soft_bytes": {
     "guardian": 134217728,
     "outer": 134217728,
@@ -43,7 +60,7 @@
   "runtime_source_inputs": {
     "bootstrap": "6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed",
     "ca": "2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b",
-    "guardian": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70",
+    "guardian": "79ddc82b0095872885aceb943cbf9daa1eb3a05048bc08f9ee9cd093511de187",
     "interpreter": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41",
     "library": "982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87",
     "owner": "234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb",
@@ -55,27 +72,32 @@
   "selected_archive_bytes": 2901292,
   "selected_archives_acquired": 0,
   "selected_sdk_source": "14adc40b00b68cc8a3e1ae5647a885a42f273650",
-  "session_sha256": "e92aa088b9de553cbe2d0ec76dcb6d097d07148f6a9e9a751f80ab4680cc9c48",
+  "session_sha256": "3ef6df413565d36f63b2e4722c7ee0bd9eb5c62a29a1d79b450acfa0b5ae8d3d",
   "source_control_results": {
     "184-acquire-tools-v5-adapter-controls-result.json": {
       "cases": 16,
       "passed": 16,
-      "sha256": "e4fd09a7e1ddf5dd56c1ed556fa5b3ae303a9d3b281640d8c3b6d6bf4a7d62c9"
+      "sha256": "bd63b42f53a018ca93ce9c115dd667c074a7cbace2a7213cf1fe6bbb6d465150"
     },
     "184-acquire-tools-v5-controls-result.json": {
       "cases": 86,
       "passed": 86,
       "sha256": "2a84c6612fcd2fd57235f4844face425420dafb3217be7d6e82ef57cc6fab1cd"
     },
+    "184-acquisition-guardian-v3-controls-result.json": {
+      "cases": 53,
+      "passed": 53,
+      "sha256": "30c7d4815ea68410ac839351bab09f10ff9591e9395151d26ce1a917d293b65d"
+    },
     "184-acquisition-launcher-bootstrap-controls-result.json": {
-      "cases": 14,
-      "passed": 14,
-      "sha256": "0cf4499e090e8b70ed884feb44697a14c86a9036b93ef77a89a0d31f2ca9e0d7"
+      "cases": 27,
+      "passed": 27,
+      "sha256": "874b1b868975690e56818147c72b1eb7db197c51a961b42da0f1ae00312452b1"
     },
     "184-acquisition-session-controls-result.json": {
-      "cases": 22,
-      "passed": 22,
-      "sha256": "8a7b2fba91965fa10b97a60083bdc9e87b1d0d118b2bd88bd3ffad770e2a37a2"
+      "cases": 31,
+      "passed": 31,
+      "sha256": "df2cfe26d296769d938d446a202f3dcfab780c30d3b9894dd348fee943e9de81"
     },
     "184-acquisition-terminal-controls-result.json": {
       "cases": 16,

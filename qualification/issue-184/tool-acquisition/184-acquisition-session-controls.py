@@ -31,7 +31,7 @@ def load(name,path):
 
 
 s=load('trusted_session_protocol_control',BASE/'184-acquisition-session-proposal.py')
-g=load('trusted_guard_protocol_control',BASE/'184-acquisition-custody-guardian-v2-proposal.py')
+g=load('trusted_guard_protocol_control',BASE/'184-acquisition-custody-guardian-v3-proposal.py')
 t=load('trusted_terminal_protocol_control',BASE/'184-acquisition-terminal-proposal.py')
 o=load('trusted_owner_protocol_control',BASE/'184-acquire-tools-v5.py')
 selection=json.loads((BASE/'184-immutable-build-tool-input-proposal.json').read_text())
@@ -124,6 +124,7 @@ def run_protocol(mode,disconnect=None):
         parent=Path(temporary);outer,inner=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
         started=time.monotonic();ceiling=started+3
         authority={'decision':REF};authority_raw=s.encoded({'scope':'synthetic protocol only','decision':REF})
+        expected_pool=parent/'sdk-python-184-tools-guardian-14adc40b-9999999999'
         modules=(g,o,SyntheticBootstrap(mode),fake_terminal(mode))
         if mode.startswith('integrated-'):
             real_owner,bootstrap,terminal=integrated_closure(parent,mode);modules=(g,real_owner,bootstrap,terminal)
@@ -132,6 +133,17 @@ def run_protocol(mode,disconnect=None):
             try:
                 outer.close();os.environ.clear();os.environ.update(s.MINIMAL_ENV)
                 s.POOL_PARENT=parent
+                if mode.startswith('alloc-'):
+                    real_mkdir=os.mkdir;real_open=os.open
+                    def allocated_mkdir(path,mode_bits=0o777,*,dir_fd=None):
+                        if (path=='wheelhouse' and mode in {'alloc-after-root','alloc-unknown'}) or (path=='events' and mode=='alloc-after-metadata'):
+                            if mode=='alloc-unknown':(expected_pool/'unknown-root-member').write_bytes(b'synthetic unknown stays')
+                            raise OSError('synthetic allocation refusal')
+                        return real_mkdir(path,mode_bits,dir_fd=dir_fd)
+                    def allocated_open(path,flags,mode_bits=0o777,*,dir_fd=None):
+                        if path==filenames[0] and mode=='alloc-after-wheelhouse':raise OSError('synthetic archive allocation refusal')
+                        return real_open(path,flags,mode_bits,dir_fd=dir_fd)
+                    s.os.mkdir=allocated_mkdir;s.os.open=allocated_open
                 if mode=='pidfd-fail':
                     def failed_pidfd(pid):raise OSError('synthetic pidfd prerequisite refusal')
                     s.os.pidfd_open=failed_pidfd
@@ -186,7 +198,16 @@ def run_protocol(mode,disconnect=None):
                 else:message=session.wait()
                 reaped=session.guardian_reaped
                 result=message['result'];assert not result['acquisition_accepted']
-                if mode=='late-reconcile':
+                if mode=='alloc-unknown':
+                    assert not session.finished and result['outer_owner_custody_required']
+                    assert not result['terminal_cleanup_complete'] and not result.get('retained_forensic_custody_ready')
+                    assert not select.select([pidfd],[],[],0)[0], 'partial allocation guardian lost custody'
+                    assert (expected_pool/'unknown-root-member').read_bytes()==b'synthetic unknown stays'
+                elif mode.startswith('alloc-'):
+                    assert result['status']=='ALLOCATION_REFUSED' and result['terminal_cleanup_complete']
+                    assert result['allocation_cleanup']['complete'] and session.finished
+                    assert not expected_pool.exists(), 'outer independently verifies allocation root absence'
+                elif mode=='late-reconcile':
                     assert result['quiescent_after_failed_bound'] and not result['terminal_cleanup_complete']
                     assert not result['acquisition_accepted'] and session.finished
                     assert not list((expected_pool/'wheelhouse').iterdir())
@@ -196,7 +217,7 @@ def run_protocol(mode,disconnect=None):
                     assert not select.select([session.owner_pidfd],[],[],0)[0]
                     assert all(os.fstat(row['fd']).st_nlink==1 for row in session.custody.archive_nodes.values())
                     message=session.wait();result=message['result'];reaped=session.guardian_reaped
-                    assert message['type']=='DEFERRED_CLEANUP' and result['terminal_cleanup_complete']
+                    assert message['type']=='DEFERRED_CLEANUP' and result['retained_forensic_custody_ready'] and not result['terminal_cleanup_complete']
                     assert session.finished and not list((expected_pool/'wheelhouse').iterdir())
                 elif mode in {'positive','integrated-positive'}:
                     assert result['status']=='COLLECTED_FOR_OUTER_READBACK' and session.finished
@@ -204,14 +225,16 @@ def run_protocol(mode,disconnect=None):
                     assert (expected_pool/'operation-authority.json').read_bytes()==authority_raw
                 else:
                     assert result['status']=='REFUSED',result
-                    assert result['terminal_cleanup_complete'] and result['retained_custody_sealed']
+                    assert not result['terminal_cleanup_complete'] and result['retained_custody_sealed']
+                    assert result['outer_owner_custody_required'] and result['retention_owner']=='sdk-python'
+                    assert result['retained_tree_inventory_verified'] and result['root_tree_retained']
                     assert not list((expected_pool/'wheelhouse').iterdir())
                     assert session.finished
                     if mode=='pidfd-fail':
                         assert result['stop_reason']=='OWNER_PIDFD_PREREQUISITE_FAILED'
                         assert result['owner_process_exited'] and not result['owner_pidfd_available']
                     if mode=='stop-refusal':assert result['stop_refusal_code']=='PIDFD_STOP_ERRNO_1'
-                assert select.select([pidfd],[],[],0)[0] if not session.finished else True
+                assert select.select([pidfd],[],[],0)[0] if not session.finished and mode!='alloc-unknown' else True
         finally:
             if not reaped:
                 try:os.kill(child,signal.SIGKILL)
@@ -283,7 +306,8 @@ def unreported_live_owner_keeps_custody():
             session.owner_pidfd=os.dup(unknown_pidfd);session.owner_pid=hidden
             session.stack.callback(os.close,session.owner_pidfd)
             final=session.abort('SYNTHETIC_INDEPENDENT_HANDLE_RECONCILIATION')
-            assert final['result']['terminal_cleanup_complete'] and session.finished
+            assert final['result']['retained_tree_inventory_verified'] and session.finished
+            assert not final['result']['terminal_cleanup_complete'] and final['result']['outer_owner_custody_required']
             assert not list((pool/'wheelhouse').iterdir())
         finally:
             if unknown_pidfd is not None:
@@ -322,6 +346,15 @@ def live_start_refuses_no_decision():
         else:raise AssertionError('missing admission accepted')
 
 
+def retention_boundary(seconds,accepted):
+    now=1800000000
+    value=dt.datetime.fromtimestamp(now+seconds,dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    try:s.verify_retention_deadline(value,now)
+    except s.Refusal as error:
+        assert not accepted and str(error)=='BOUNDED_FUTURE_RETENTION_REQUIRED'
+    else:assert accepted
+
+
 def check(name,operation):
     try:operation()
     except BaseException as error:results.append({'id':name,'outcome':'fail','type':type(error).__name__,'detail':str(error)[:600]})
@@ -329,6 +362,10 @@ def check(name,operation):
 
 
 with patch.object(socket,'create_connection',side_effect=AssertionError('NO_NETWORK_IN_SESSION_CONTROLS')):
+    for seconds,accepted in [(0,False),(300,False),(301,True),(86400,True),(86401,False)]:
+        check('retention-deadline-boundary-'+str(seconds),lambda seconds=seconds,accepted=accepted:retention_boundary(seconds,accepted))
+    for mode in ('alloc-after-root','alloc-after-wheelhouse','alloc-after-metadata','alloc-unknown'):
+        check(mode+'-root-custody-is-not-discarded',lambda mode=mode:run_protocol(mode))
     check('synthetic-owner-exit-independent-check-and-outer-readback',lambda:run_protocol('positive'))
     check('owner-failure-is-refusal-zero-archives',lambda:run_protocol('fail'))
     check('active-deadline-stops-and-reaps-exact-owner',lambda:run_protocol('block'))

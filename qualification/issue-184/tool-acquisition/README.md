@@ -29,13 +29,21 @@ their original identities. Whole-source PASS does not qualify or replace them.
 - `184-acquisition-terminal-proposal.py`: independently verifies successful owner
   exit, all six raw/ZIP/METADATA/WHEEL/dependency tuples, exact request/event
   linkage, clean trust, sealed inode/byte inventory and stable second readback.
-- The accepted guardian-v2 primitive remains byte-identical to bounded source
-  PASS6658714041. That prior component PASS is not whole-packet acceptance.
+- Guardian-v3 closes the two later findings6660476483/6662253657: full root-tree
+  cleanup and partial-allocation custody, plus unambiguous authority schemas.
+  Frozen guardian-v2 remains byte-identical as a predecessor countercontrol. Its
+  earlier owner-exit-only PASS does not clear these later findings or this packet.
 
 Normal preservation requires owner exit0, independent full input readback,
 guardian exit and a second outer inventory comparison. Result is collected for
 review with acquisition_accepted=false. Actual tool-pool acceptance and any later
 SDK artifact production remain separate review/decision steps.
+
+The guardian authority parser rejects duplicate keys at every depth (including
+escaped-equivalent names), non-finite constants, unknown/missing top-level or
+nested input/environment fields, and float/bool/string limits. Exact raw SHA
+binding remains required. The inline bootstrap applies the same lexical/schema
+refusals before resource setup; the session binds the exact selected values.
 
 ## Bounds and failure custody
 
@@ -51,6 +59,20 @@ Confirmed exact exit precedes external archive cleanup. Failure to allocate a
 pidfd consumes setup: the still-reserved child is stopped/reaped before cleanup,
 with no RUN/data fallback. Missing/unreported handles mean unknown ownership.
 Unknown roots/inodes stay untouched; incomplete custody cannot report completion.
+Allocation failures surface a custody-bearing exception. Exact empty root and
+wheelhouse removal is independently checked; unknown allocation siblings retain
+the guardian and outer process handle instead of escaping constructor unwinding.
+
+The primitive's full cleanup removes identity-verified empty owned directories.
+The composed session instead intentionally retains sealed diagnostic trees after
+an exited owner. Those results explicitly keep root_tree_retained=true,
+outer_owner_custody_required=true, retention_owner=sdk-python, and
+terminal_cleanup_complete=false. Both roles verify the complete retained tree
+inventory before process/fd custody can close. Unknown members cannot take that
+retention path. Closing a quiescent role transfers the recorded forensic-tree
+retention obligation to sdk-python; it does not assert removal or acquisition
+acceptance. A separately admitted operation must bind its retention deadline (after the
+300s operation bound and at most24h ahead). The template leaves it null.
 
 The authority proposes `retain-custody-and-escalate`. If exact exit/ownership
 cannot be confirmed at the failed bound, the caller prints CUSTODY_REQUIRED and
@@ -67,8 +89,9 @@ admit this residual policy; it is not permission supplied by these sources.
 | Owner |86| parser, transport, trust, custody and no-child boundary |
 | Preallocated adapter |16| readiness, descriptors, inode collisions and partial writes |
 | Independent readback |16| synthetic six-tool tuples, metadata, ledger and inventory |
-| Role protocol |22| real local roles, EOF/deadline, guardian loss, survivors, setup refusal, unknown owner, late nonpass and integrated fake HTTP |
-| Launcher bootstrap |14| exact reads, startup refusals, resource affinity and custody wrapper |
+| Guardian successor |53| actual v2 counterexamples, authority grammar/types, whole-tree removal, allocation failure and unknown-member retention |
+| Role protocol |31| real local roles, allocation rollback/custody, EOF/deadline, guardian loss, survivors, setup refusal, unknown owner, late nonpass and integrated fake HTTP |
+| Launcher bootstrap |27| exact reads, authority schemas, startup refusals, resource affinity and custody wrapper |
 
 These are source controls, not acquired-package or SDK/runtime qualification.
 The data start API is never called with a decision by the controls. All control

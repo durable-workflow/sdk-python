@@ -84,6 +84,29 @@ def report_never_returns_unresolved_unknown():
     assert not session.finished
 
 
+def authority_shape_control(mode):
+    row=json.loads((BASE/'authority-template.json').read_bytes())
+    row['decision']=REF;row['cpu_affinity']=[0]
+    row['retention_deadline_utc']='2099-01-01T00:00:00Z'
+    raw=json.dumps(row,separators=(',',':')).encode()
+    if mode=='positive':assert b.parse_authority(raw)==row;return
+    if mode=='extra':row['unreviewed_future_semantics']={}
+    elif mode=='missing':del row['io_seconds']
+    elif mode=='nested-extra':row['inputs']['unreviewed']='0'*64
+    elif mode=='nested-missing':del row['inputs']['ca']
+    elif mode=='environment-extra':row['environment']['GH_TOKEN']='synthetic'
+    elif mode.startswith('limit-'):
+        row['retries']={'float':0.0,'bool':False,'string':'0','nonfinite':float('nan')}[mode[6:]]
+    elif mode in {'duplicate','escaped-duplicate'}:
+        key='decision' if mode=='duplicate' else 'decis\\u0069on'
+        raw=('{"'+key+'":"earlier",').encode()+raw[1:]
+    elif mode=='nested-duplicate':raw=raw.replace(b'"inputs":{',b'"inputs":{"ca":"earlier",',1)
+    if mode not in {'duplicate','escaped-duplicate','nested-duplicate'}:raw=json.dumps(row).encode()
+    try:b.parse_authority(raw)
+    except ValueError:pass
+    else:raise AssertionError('bootstrap ambiguous authority accepted: '+mode)
+
+
 def check(name,operation):
     try:operation()
     except BaseException as error:results.append({'id':name,'outcome':'fail','type':type(error).__name__,'detail':str(error)[:160]})
@@ -91,6 +114,10 @@ def check(name,operation):
 
 
 with patch.object(socket,'create_connection',side_effect=AssertionError('NO_NETWORK_IN_BOOTSTRAP_CONTROLS')):
+    for mode in ('positive','extra','missing','nested-extra','nested-missing','environment-extra',
+                 'limit-float','limit-bool','limit-string','limit-nonfinite',
+                 'duplicate','escaped-duplicate','nested-duplicate'):
+        check('bootstrap-exact-authority-schema-'+mode,lambda mode=mode:authority_shape_control(mode))
     for mode in ('positive','hash','bound','hardlink','symlink'):
         check('verified-inline-source-'+mode,lambda mode=mode:read_control(mode))
     check('ambient-credentials-or-wrong-startup-refuse-before-inputs',env_gate)

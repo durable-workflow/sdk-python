@@ -26,9 +26,9 @@ def load(name,path):
 
 
 owner=load('trusted_v5_owner_adapter',BASE/'184-acquire-tools-v5.py')
-guard=load('trusted_reviewed_guard_custody',BASE/'184-acquisition-custody-guardian-v2-proposal.py')
-assert hashlib.sha256((BASE/'184-acquisition-custody-guardian-v2-proposal.py').read_bytes()).hexdigest()== \
-    'afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70'
+guard=load('trusted_reviewed_guard_custody',BASE/'184-acquisition-custody-guardian-v3-proposal.py')
+assert hashlib.sha256((BASE/'184-acquisition-custody-guardian-v3-proposal.py').read_bytes()).hexdigest()== \
+    '79ddc82b0095872885aceb943cbf9daa1eb3a05048bc08f9ee9cd093511de187'
 results=[]
 
 
@@ -132,7 +132,7 @@ def fdopen_failure_closes_duplicate_cleans_all_preallocated():
         result=item.failure_result(OSError('synthetic wrap failure'))
         assert result['archive_cleanup']['complete'] and not list((item.pool/'wheelhouse').iterdir())
         assert result['archive_nodes']=={'opened':2,'written':0,'removed':2,'remaining_owned':0}
-        assert custody.cleanup()['complete']
+        assert custody.cleanup_archives()['complete']
 
 
 def late_failure_cleans_unused_preallocations():
@@ -140,7 +140,7 @@ def late_failure_cleans_unused_preallocations():
         prepare(item,proof);item.write('wheelhouse/one.whl',b'first synthetic bytes')
         result=item.failure_result(owner.Refusal('synthetic late refusal'))
         assert result['archive_cleanup']['complete'] and result['archive_nodes']['removed']==2
-        assert not list((item.pool/'wheelhouse').iterdir()) and custody.cleanup()['complete']
+        assert not list((item.pool/'wheelhouse').iterdir()) and custody.cleanup_archives()['complete']
 
 
 def replaced_archive_not_written():
@@ -187,7 +187,7 @@ with patch.object(socket,'create_connection',side_effect=AssertionError('NO_NETW
 
 report={'scope':'synthetic owner adapter, not integrated acquisition or launcher',
         'owner_sha256':hashlib.sha256((BASE/'184-acquire-tools-v5.py').read_bytes()).hexdigest(),
-        'guardian_sha256':hashlib.sha256((BASE/'184-acquisition-custody-guardian-v2-proposal.py').read_bytes()).hexdigest(),
+        'guardian_sha256':hashlib.sha256((BASE/'184-acquisition-custody-guardian-v3-proposal.py').read_bytes()).hexdigest(),
         'cases':len(results),'passed':sum(row['outcome']=='pass' for row in results),
         'failed':sum(row['outcome']=='fail' for row in results),'results':results,
         'real_network_requests':0,'downloaded_wheel_imports_or_installs':0,

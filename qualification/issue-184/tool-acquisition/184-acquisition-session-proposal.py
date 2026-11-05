@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from array import array
 from contextlib import ExitStack
+import datetime as dt
 import hashlib
 import json
 import os
@@ -30,7 +31,7 @@ INTERPRETER='/usr/bin/python3.14'
 INTERPRETER_SHA='52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41'
 LIBRARY='/usr/lib/x86_64-linux-gnu/libpython3.14.so.1.0'
 LIBRARY_SHA='982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87'
-PINNED={'owner': '234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb', 'bootstrap': '6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed', 'guardian': 'afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70', 'terminal': '7e75b0929e612ec8605d095956fd446c2ad779a8f8b7e8403563f2764b1e70bf', 'selection': 'e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c', 'interpreter': '52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41', 'library': '982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87', 'ca': '2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b'}
+PINNED={'owner': '234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb', 'bootstrap': '6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed', 'guardian': '79ddc82b0095872885aceb943cbf9daa1eb3a05048bc08f9ee9cd093511de187', 'terminal': '7e75b0929e612ec8605d095956fd446c2ad779a8f8b7e8403563f2764b1e70bf', 'selection': 'e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c', 'interpreter': '52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41', 'library': '982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87', 'ca': '2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b'}
 FRAME_CAP=65536
 POOL_CAP=4*1024**2
 
@@ -127,12 +128,28 @@ def prepare_tree(guard,parent,leaf,filenames):
     try:
         for name in ('metadata','events'):
             os.mkdir(name,0o700,dir_fd=custody.root_fd)
+            st=os.stat(name,dir_fd=custody.root_fd,follow_symlinks=False)
+            custody.dir_ids[name]=[st.st_dev,st.st_ino]
             fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=custody.root_fd)
             custody.stack.callback(os.close,fd)
-            st=os.fstat(fd);custody.dir_ids[name]=[st.st_dev,st.st_ino];custody.directory_fds[name]=fd
+            st=os.fstat(fd)
+            require([st.st_dev,st.st_ino]==custody.dir_ids[name],'DIRECTORY_ALLOCATION_COLLISION')
+            custody.directory_fds[name]=fd
         return custody
-    except BaseException:
-        custody.cleanup();custody.close();raise
+    except BaseException as error:
+        # No owner exists. Roll back only identity-verified, empty extra dirs.
+        # On any collision the partial object/handles must escape to the keeper.
+        try:
+            for name in ('events','metadata'):
+                if name not in custody.dir_ids:continue
+                st=os.stat(name,dir_fd=custody.root_fd,follow_symlinks=False)
+                require([st.st_dev,st.st_ino]==custody.dir_ids[name],'ALLOCATION_ROLLBACK_COLLISION')
+                os.rmdir(name,dir_fd=custody.root_fd)
+            cleanup=custody.cleanup()
+        except BaseException as rollback_error:
+            cleanup={'complete':False,'outer_owner_custody_required':True,
+                     'refusal_code':type(rollback_error).__name__}
+        raise guard.AllocationRefusal(custody,cleanup,error) from error
 
 
 def progress_bound(custody):
@@ -307,7 +324,7 @@ def cleanup_after_exit(custody,stop,reason,ceiling):
                 'archive_cleanup':{'complete':False,'refusal_code':'OWNER_EXIT_UNCONFIRMED'},
                 'terminal_cleanup_complete':False,'outer_owner_custody_required':True,
                 'retained_owned_names':sorted(custody.archive_nodes),'acquisition_accepted':False}
-    try:cleanup=custody.cleanup()
+    try:cleanup=custody.cleanup_archives()
     except BaseException as error:
         cleanup={'complete':False,'refusal_code':str(error) if isinstance(error,ValueError) else type(error).__name__}
     try:sealed=seal_retained(custody)
@@ -316,7 +333,22 @@ def cleanup_after_exit(custody,stop,reason,ceiling):
     return {'status':'REFUSED','stop_reason':reason,'owner_process_exited':True,
             'owner_exit_code':stop['owner_exit_code'],'archive_cleanup':cleanup,
             'within_cleanup_ceiling':within,'retained_custody_sealed':sealed,
-            'terminal_cleanup_complete':bool(cleanup['complete']) and sealed and within,'acquisition_accepted':False}
+            'terminal_cleanup_complete':False,'root_tree_retained':True,
+            'outer_owner_custody_required':True,'retention_owner':'sdk-python',
+            'retained_forensic_custody_ready':bool(cleanup['complete']) and sealed,
+            'acquisition_accepted':False}
+
+
+def retained_inventory(custody,terminal):
+    current=terminal.snapshot(custody)
+    return {name:{key:value for key,value in row.items() if key!='raw'} for name,row in current.items()}
+
+
+def verify_retention_deadline(value,wall_now=None):
+    now=time.time() if wall_now is None else wall_now
+    require(type(value) is str,'EXACT_RETENTION_DEADLINE_REQUIRED')
+    retention=dt.datetime.strptime(value,'%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=dt.timezone.utc)
+    require(now+300<retention.timestamp()<=now+86400,'BOUNDED_FUTURE_RETENTION_REQUIRED')
 
 
 def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bounds=(270,300)):
@@ -327,7 +359,7 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
     selection=json.loads(selection_raw,object_pairs_hook=pairs)
     filenames=[tool['filename'] for tool in selection['tools']]
     leaf='sdk-python-184-tools-guardian-14adc40b-'+authority['decision'].rsplit('-',1)[-1]
-    custody=None;role=None;stop=None;owner_result=None
+    custody=None;role=None;stop=None;owner_result=None;allocation_error=None
     try:
         custody=prepare_tree(guard,POOL_PARENT,leaf,filenames)
         custody.metadata_names={tool['name']+'.json' for tool in selection['tools']}
@@ -380,7 +412,10 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
                 readback=terminal.validate_candidate(custody,result,selection_raw,owner,PINNED['owner'],
                     authority['decision'],stop['owner_exited'],stop['owner_exit_code'],ceiling)
                 terminal_record={'status':'COLLECTED_FOR_OUTER_READBACK','readback':readback,
-                                 'owner_process_exited':True,'owner_exit_code':0,'acquisition_accepted':False}
+                                 'owner_process_exited':True,'owner_exit_code':0,'acquisition_accepted':False,
+                                 'terminal_cleanup_complete':False,'root_tree_retained':True,
+                                 'outer_owner_custody_required':True,'retention_owner':'sdk-python',
+                                 'retention_deadline_utc':authority.get('retention_deadline_utc')}
                 record_terminal(custody,terminal_record,authority_raw)
                 snapshot=terminal.snapshot(custody)
                 public={name:{key:value for key,value in row.items() if key!='raw'} for name,row in snapshot.items()}
@@ -390,30 +425,46 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
         raise Refusal(reason)
     except BaseException as error:
         code=getattr(error,'code',None)
+        if isinstance(error,guard.AllocationRefusal):
+            allocation_error=error;custody=error.custody
         if isinstance(error,OwnerSetupRefusal):role,stop=error.role,error.stop
         if not isinstance(code,str):
             code=str(error) if isinstance(error,(Refusal,guard.Refusal,terminal.Refusal)) else ''
         reason=code if re.fullmatch(r'[A-Z0-9_]{1,128}',code) else 'GUARDIAN_'+type(error).__name__.upper()
         if role is not None and stop is None:stop=stop_owner(role,ceiling)
-        if custody is None:
+        if allocation_error is not None:
+            result={'status':'ALLOCATION_REFUSED','stop_reason':reason,
+                    'allocation_cleanup':allocation_error.cleanup,'owner_was_allocated':False,
+                    'terminal_cleanup_complete':bool(allocation_error.cleanup['complete']),
+                    'outer_owner_custody_required':not allocation_error.cleanup['complete'],
+                    'acquisition_accepted':False}
+        elif custody is None:
             result={'status':'SETUP_REFUSED','stop_reason':reason,'terminal_cleanup_complete':False,'acquisition_accepted':False}
         elif role is None:
             result=cleanup_after_exit(custody,{'owner_exited':True,'owner_exit_code':None},reason,ceiling)
             result['owner_was_allocated']=False;result['owner_process_exited']=None
         else:result=cleanup_after_exit(custody,stop,reason,ceiling)
         if isinstance(owner_result,dict):result['owner_result']=owner_result
+        result['retention_deadline_utc']=authority.get('retention_deadline_utc')
         if role is not None:
             result['owner_pid']=role['pid'];result['owner_pidfd_available']=role['pidfd'] is not None
             result['owner_exit_confirmation']=('pidfd-and-parent-waitpid' if role['pidfd'] is not None
                                                else 'reserved-child-waitpid') if stop['owner_exited'] else 'unconfirmed'
             if stop.get('stop_refusal_code'):result['stop_refusal_code']=stop['stop_refusal_code']
-        if custody is not None and (role is None or stop['owner_exited']):
+        inventory=None
+        if allocation_error is None and custody is not None and (role is None or stop['owner_exited']):
             try:
                 record_terminal(custody,result,authority_raw);result['retained_terminal_record_written']=True
+                if result.get('retained_forensic_custody_ready'):
+                    inventory=retained_inventory(custody,terminal)
             except BaseException:
-                result['retained_terminal_record_written']=False;result['terminal_cleanup_complete']=False
-        try:send_frame(channel,{'type':'TERMINAL','result':result})
+                result['retained_terminal_record_written']=False;result['retained_forensic_custody_ready']=False
+        try:send_frame(channel,{'type':'TERMINAL','result':result,'inventory':inventory})
         except BaseException:pass
+        if allocation_error is not None and not allocation_error.cleanup['complete']:
+            # Exact partial handles remain with this guardian. Unknown names are
+            # never removed; the outer keeps this guardian handle and escalates.
+            while True:time.sleep(1)
         if role is not None and not stop['owner_exited']:
             # Custody only: no work/retry or acceptance beyond the failed bound.
             # The separately admitted survivor policy must allow this keeper;
@@ -428,9 +479,13 @@ def guardian_job(channel,authority_raw,authority,started,started_utc,modules,bou
                 while not select.select([role['pidfd']],[],[],60)[0]:pass
                 stop=stop_owner(role,time.monotonic()+1)
             final=cleanup_after_exit(custody,stop,'DEFERRED_EXACT_OWNER_EXIT',ceiling)
-            try:record_terminal(custody,final,authority_raw)
-            except BaseException:final['terminal_cleanup_complete']=False
-            try:send_frame(channel,{'type':'DEFERRED_CLEANUP','result':final})
+            final['retention_deadline_utc']=authority.get('retention_deadline_utc')
+            inventory=None
+            try:
+                record_terminal(custody,final,authority_raw)
+                if final.get('retained_forensic_custody_ready'):inventory=retained_inventory(custody,terminal)
+            except BaseException:final['retained_forensic_custody_ready']=False
+            try:send_frame(channel,{'type':'DEFERRED_CLEANUP','result':final,'inventory':inventory})
             except BaseException:pass
         return 1
     finally:
@@ -448,6 +503,8 @@ class Session:
         self.expected_pool,self.expected_names=str(expected_pool),list(expected_names)
         self.expected_metadata=set(expected_metadata)
         self.authority_raw=authority_raw
+        self.retention_deadline_utc=(None if authority_raw is None else
+                                     json.loads(authority_raw,object_pairs_hook=pairs).get('retention_deadline_utc'))
         self.custody=None;self.owner_pidfd=None;self.owner_pid=None
         self.stack=ExitStack();self.stack.callback(channel.close);self.stack.callback(os.close,pidfd)
         self.finished=False;self.guardian_reaped=False
@@ -503,6 +560,22 @@ class Session:
                     current=self.terminal.snapshot(self.custody)
                     public={name:{key:value for key,value in row.items() if key!='raw'} for name,row in current.items()}
                     require(public==message.get('inventory'),'OUTER_INVENTORY_READBACK_CHANGED')
+                elif result.get('status')=='ALLOCATION_REFUSED' and result.get('terminal_cleanup_complete'):
+                    require(result.get('owner_was_allocated') is False,'ALLOCATION_OWNER_STATE_CHANGED')
+                    if result['allocation_cleanup'].get('exclusive_root_created') is not False:
+                        require(not os.path.lexists(self.expected_pool),'ALLOCATION_ROOT_RETAINED')
+                elif result.get('retained_forensic_custody_ready'):
+                    require(result.get('owner_process_exited') is True or result.get('owner_was_allocated') is False,
+                            'RETENTION_OWNER_EXIT_UNPROVEN')
+                    if self.owner_pidfd is not None:
+                        require(select.select([self.owner_pidfd],[],[],0)[0],'RETAINED_OWNER_STILL_LIVE')
+                    elif result.get('owner_was_allocated') is not False:
+                        require(result.get('owner_exit_confirmation')=='reserved-child-waitpid'
+                                and result.get('owner_pidfd_available') is False,'RETENTION_OWNER_HANDLE_UNPROVEN')
+                    require(retained_inventory(self.custody,self.terminal)==message.get('inventory'),
+                            'OUTER_RETAINED_INVENTORY_CHANGED')
+                    result['retained_tree_inventory_verified']=True
+                    result['outer_owner_custody_required']=True
                 elif not result.get('terminal_cleanup_complete',False):
                     result['outer_owner_custody_required']=True;return message
                 self.finished=True;self.stack.close();return message
@@ -528,7 +601,7 @@ class Session:
         if not select.select([self.pidfd],[],[],0)[0] or not select.select([self.owner_pidfd],[],[],0)[0]:return None
         result=self.abort('POST_BOUND_CUSTODY_RECONCILIATION')
         record=result['result']
-        if record.get('archive_cleanup',{}).get('complete') and record.get('retained_custody_sealed'):
+        if record.get('retained_tree_inventory_verified'):
             self.finished=True;self.stack.close()
             record['quiescent_after_failed_bound']=True
             record['terminal_cleanup_complete']=False;record['acquisition_accepted']=False
@@ -554,8 +627,15 @@ class Session:
             result=cleanup_after_exit(self.custody,{'owner_exited':True,'owner_exit_code':None},reason,self.ceiling)
             if self.authority_raw is not None:
                 try:record_terminal(self.custody,result,self.authority_raw,'outer-result.json')
-                except BaseException:result['terminal_cleanup_complete']=False
-            if result['terminal_cleanup_complete']:
+                except BaseException:result['retained_forensic_custody_ready']=False
+            if result.get('retained_forensic_custody_ready'):
+                try:
+                    first=retained_inventory(self.custody,self.terminal)
+                    require(first==retained_inventory(self.custody,self.terminal),'OUTER_RETAINED_INVENTORY_CHANGED')
+                    result['retained_tree_inventory_verified']=True
+                    result['retained_inventory']=first
+                except BaseException:result['retained_forensic_custody_ready']=False
+            if result.get('retained_tree_inventory_verified'):
                 self.finished=True;self.stack.close()
             else:result['outer_owner_custody_required']=True
         else:
@@ -564,6 +644,7 @@ class Session:
                     'owner_handle_reported':self.owner_pidfd is not None,'guardian_process_exited':guardian_gone,
                     'outer_owner_custody_required':True,'acquisition_accepted':False}
         if stop_refusal is not None:result['stop_refusal_code']=stop_refusal
+        result['retention_deadline_utc']=self.retention_deadline_utc
         return {'type':'TERMINAL','result':result}
 
 
@@ -573,8 +654,7 @@ def start(authority_path,expected_sha,expected_decision,expected_session_sha,sta
     require(PINNED and expected_decision is not None,'UNFROZEN_OR_UNADMITTED_PACKET')
     checked_bytes(Path(__file__),expected_session_sha,65536,os.geteuid())
     raw=checked_bytes(Path(authority_path),expected_sha,32768,os.geteuid())
-    json.loads(raw,object_pairs_hook=pairs)
-    guard=module('reviewed_guardian','184-acquisition-custody-guardian-v2-proposal.py',PINNED['guardian'])
+    guard=module('reviewed_guardian','184-acquisition-custody-guardian-v3-proposal.py',PINNED['guardian'])
     authority=guard.bind_authority(raw,expected_sha,expected_decision,PINNED)
     require(authority.get('survivor_policy')=='retain-custody-and-escalate'
             and authority.get('pool_parent')==str(POOL_PARENT)
@@ -583,7 +663,9 @@ def start(authority_path,expected_sha,expected_decision,expected_session_sha,sta
             and all(type(cpu) is int for cpu in authority['cpu_affinity'])
             and set(authority['cpu_affinity'])==os.sched_getaffinity(0),'OUTER_CUSTODY_POLICY_REQUIRED')
     require(set(authority)=={'decision','selected_source','inputs','environment','host','total_seconds','io_seconds',
-                            'retries','survivor_policy','pool_parent','launcher_sha256','cpu_affinity'},'UNKNOWN_AUTHORITY_FIELD')
+                            'retries','survivor_policy','pool_parent','launcher_sha256','cpu_affinity',
+                            'retention_deadline_utc'},'UNKNOWN_AUTHORITY_FIELD')
+    verify_retention_deadline(authority['retention_deadline_utc'])
     owner=module('reviewed_guarded_owner','184-acquire-tools-v5.py',PINNED['owner'])
     bootstrap=module('reviewed_owner_bootstrap','184-acquire-tools-v5-bootstrap.py',PINNED['bootstrap'])
     terminal=module('reviewed_terminal','184-acquisition-terminal-proposal.py',PINNED['terminal'])

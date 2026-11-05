@@ -1,11 +1,63 @@
 {
-  "cases": 14,
+  "cases": 27,
   "downloaded_wheel_imports_or_installs": 0,
   "failed": 0,
   "new_general_decision": null,
-  "passed": 14,
+  "passed": 27,
   "real_network_requests": 0,
   "results": [
+    {
+      "id": "bootstrap-exact-authority-schema-positive",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-exact-authority-schema-extra",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-exact-authority-schema-missing",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-exact-authority-schema-nested-extra",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-exact-authority-schema-nested-missing",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-exact-authority-schema-environment-extra",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-exact-authority-schema-limit-float",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-exact-authority-schema-limit-bool",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-exact-authority-schema-limit-string",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-exact-authority-schema-limit-nonfinite",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-exact-authority-schema-duplicate",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-exact-authority-schema-escaped-duplicate",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-exact-authority-schema-nested-duplicate",
+      "outcome": "pass"
+    },
     {
       "id": "verified-inline-source-positive",
       "outcome": "pass"
@@ -65,5 +117,5 @@
   ],
   "scope": "bootstrap file/refusal controls; no admitted start or selected archive access",
   "selected_archives_acquired": 0,
-  "source_sha256": "1eeb491accbb7f129c8e4c329c238a26ef6cd929a6204e949d16becc604621a4"
+  "source_sha256": "0cd9d5309b1dd3314e5a7f288f7462c784e2bcf4cea9618eeff4aa401f516aaf"
 }
