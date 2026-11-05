@@ -24,8 +24,10 @@ from this proposal. The field `lease_owner_present` says only that the column
 is non-null. Error-present booleans also mean non-null, including an empty
 string; they do not establish an error's contents, severity or cause.
 
-Each query returns its own database UTC sample. The future collector must bracket
-each read with observer monotonic times, retain the session timezone used to
+Each returned row includes that query's database UTC sample. Zero rows also
+means no clock sample from that query: mark it missing rather than borrowing the
+other query's timestamp. The future collector must bracket each read with
+observer monotonic times, retain the session timezone used to
 decode timestamp columns, and keep before/after-teardown reads distinct.
 `UTC_TIMESTAMP(6)` does not make those views atomic or establish a shared clock.
 The row cap does not bound database work or wall time, particularly with binary
