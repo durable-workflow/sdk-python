@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import itertools
 import json
+import threading
+import weakref
 from typing import Any
 
 import httpx
@@ -52,6 +55,108 @@ async def test_http_observation_covers_additional_clients_without_exposing_paylo
     assert report["recent"][1]["reason"] == "backend_lock_pressure"
     assert report["recent"][1]["recorded"] is False
     assert "SECRET" not in json.dumps(report)
+
+
+@pytest.mark.asyncio
+async def test_additional_clients_have_stable_distinct_bounded_instance_labels(monkeypatch: Any) -> None:
+    observation = WorkerObservation()
+    observation.install_http(monkeypatch)
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"task": None}))
+    async with httpx.AsyncClient(transport=transport) as first, httpx.AsyncClient(transport=transport) as second:
+        await first.get("https://example.test/api/cluster/info?token=SECRET")
+        await first.post("https://example.test/api/worker/query-tasks/poll")
+        await second.post("https://example.test/api/worker/query-tasks/poll")
+    report = observation.report()
+    assert [entry["client"] for entry in report["recent"]] == ["additional"] * 3
+    assert [entry["client_instance"] for entry in report["recent"]] == ["http-1", "http-1", "http-2"]
+    assert report["client_instances"] == {
+        "http-1": {"counts": {"GET discovery": 1, "POST query_poll": 1}},
+        "http-2": {"counts": {"POST query_poll": 1}},
+    }
+    assert report["completeness"]["client_attribution"] == "complete"
+    assert "SECRET" not in json.dumps(report)
+
+
+@pytest.mark.asyncio
+async def test_client_registry_does_not_retain_clients_or_reuse_their_labels(monkeypatch: Any) -> None:
+    observation = WorkerObservation()
+    observation.install_http(monkeypatch)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200))) as first:
+        await first.get("https://example.test/api/cluster/info")
+    original = weakref.ref(first)
+    del first
+    gc.collect()
+    assert original() is None
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200))) as second:
+        # Reproduce a reused integer ID without relying on allocator timing.
+        observation._client_instances[id(second)] = (original, "http-1")
+        await second.get("https://example.test/api/cluster/info")
+    report = observation.report()
+    assert [entry["client_instance"] for entry in report["recent"]] == ["http-1", "http-2"]
+    assert len(report["client_instances"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_client_attribution_limit_never_groups_new_clients_as_a_known_instance(monkeypatch: Any) -> None:
+    observation = WorkerObservation(limit=1)
+    observation.install_http(monkeypatch)
+    transport = httpx.MockTransport(lambda request: httpx.Response(200))
+    async with httpx.AsyncClient(transport=transport) as first, httpx.AsyncClient(transport=transport) as second:
+        await first.get("https://example.test/api/cluster/info")
+        await second.get("https://example.test/api/cluster/info")
+        overflow = observation.report()
+        assert overflow["recent"][0]["client_instance"] is None
+        assert overflow["recent"][0]["client_instance_state"] == "truncated"
+        await first.get("https://example.test/api/cluster/info")
+    report = observation.report()
+    assert report["recent"][0]["client_instance"] == "http-1"
+    assert report["recent"][0]["client_instance_state"] == "complete"
+    assert report["completeness"]["client_attribution"] == "truncated"
+    assert len(report["client_instances"]) == 1 and report["unattributed_client_requests"] == 1
+    assert overflow["client_instances"]["http-1"]["counts"]["GET discovery"] == 1
+
+
+def test_query_thread_and_workflow_thread_share_consistent_snapshots(monkeypatch: Any) -> None:
+    observation = WorkerObservation()
+    observation.install_http(monkeypatch)
+    entered = [threading.Event(), threading.Event()]
+    release = threading.Event()
+    errors: list[BaseException] = []
+
+    def run(index: int, family: str) -> None:
+        async def execute():
+            def reply(request: httpx.Request) -> httpx.Response:
+                entered[index].set()
+                assert release.wait(5)
+                return httpx.Response(200, json={"task": None})
+            async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+                await client.post(f"https://example.test/api/worker/{family}-tasks/poll")
+                observation.note("request_returned")
+        try:
+            asyncio.run(execute())
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=run, args=(index, family))
+               for index, family in enumerate(("workflow", "query"))]
+    try:
+        for thread in threads:
+            thread.start()
+        assert all(event.wait(5) for event in entered)
+        before = observation.report()
+        assert before["active_count"] == len(before["active"]) == 2
+        assert len({entry["client_instance"] for entry in before["active"]}) == 2
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(5)
+    assert not errors and not any(thread.is_alive() for thread in threads)
+    after = observation.report()
+    assert after["requests"] == 2 and after["active_count"] == 0
+    assert after["counts"] == {"POST workflow_poll": 1, "POST query_poll": 1}
+    assert after["milestones"]["request_returned"]["count"] == 2
+    assert {entry["request"] for entry in after["recent"]} == {1, 2}
+    assert before["active_count"] == 2 and not before["milestones"]
 
 
 @pytest.mark.asyncio
