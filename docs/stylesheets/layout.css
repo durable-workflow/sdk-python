@@ -1158,6 +1158,7 @@ body:has(.dw-landing) .md-content__inner {
   display: flex;
   min-width: 0;
   margin: 0;
+  padding: 0;
 }
 .dw-role-card {
   min-height: 190px;
