@@ -1,0 +1,112 @@
+{
+  "status": "unexecuted-source-proposal-not-an-execution-manifest",
+  "issue": "https://github.com/durable-workflow/sdk-python/issues/123",
+  "source_authoring_decision": "https://github.com/durable-workflow/sdk-python/issues/123#issuecomment-6646875083",
+  "server_comparator": "https://github.com/durable-workflow/sdk-python/issues/123#issuecomment-6646942397",
+  "owner": "sdk-python",
+  "historical_facts": {
+    "sdk": {
+      "version": "2.5.6",
+      "wheel_sha256": "8bfa26ac97840bd1d93eb6dbed872281e1ee28ad50f4d285a2cbaaca37502496",
+      "source": "7da889ce010b92c00d2b998d1b45dccf4ee4f4f0"
+    },
+    "server": {
+      "version": "2.6.0",
+      "published_index": "sha256:8cc64fd0b577ebe02ac4dc49856585f1d6295363d2c16083d008e699dfc4b0b6",
+      "source": "8709feb28f1b85853de1d9ad15152d961860926f"
+    },
+    "core": {"version": "2.5.12", "source": "19a7a1cf33604c66f1f838e8b3db22563041f6b2"},
+    "other_versions": {"python": "3.12", "httpx": "0.28.1", "fastavro": "1.13.1", "mysql": "8.0", "redis": "7"},
+    "original_backend_runner_platform_host_digests": null,
+    "original_failed_phase_trace": null,
+    "original_timer": {"attempt_after_shutdown": 1, "repair_observed": true, "cause_established": false},
+    "original_mixed": {"attempt_after_shutdown": 0, "registration_header_wait_observed": true, "cause_established": false},
+    "later_passes_explain_original_failure": false
+  },
+  "reused_sources": {
+    "commit": "5f51d0c8e1bb86c8ce7cac021c3b81c5bf607132",
+    "files": [
+      {
+        "path": "tests/integration/test_worker_task_families.py",
+        "blob": "9e6a82c102d687673efc70ef8d0ff750c61239ee",
+        "sha256": "b5a0c80d1a0c2ef78ce6620585bbcde73442ddde27fa5f90b1c4bc975dc55b6f"
+      },
+      {
+        "path": "tests/worker_observation.py",
+        "blob": "8d38a4e04c785ff5f371df74e341717d9614de97",
+        "sha256": "754227f1871d17b1f61e8e9a00440880106ce4c85e4cea4141b18c7bf5172c30"
+      }
+    ],
+    "current_sources_have_complete_proposed_observation": false,
+    "required_reconstruction_adapter_changes": [
+      "retain successful and failed discovery, registration, poll and existing history-request phases",
+      "link original task/run/owner/attempt through claim delivery, hydration, handler and publication",
+      "identify cloned query-client coverage without subclassing Client or changing Worker behavior",
+      "add complete/missing/truncated/invalid flags and refuse conclusions from incomplete evidence",
+      "emit bounded before-teardown snapshots on success and failure, preserving the primary exception",
+      "bracket teardown and independently compare the same original rows after cleanup"
+    ],
+    "source_compatibility_is_runtime_proof": false,
+    "sdk_overlay_or_editable_install": false
+  },
+  "cases": [
+    {"mode": "split", "entry_point": "run"},
+    {"mode": "mixed", "entry_point": "run"},
+    {"mode": "timer", "entry_point": "run"},
+    {"mode": "split", "entry_point": "run_until"},
+    {"mode": "mixed", "entry_point": "run_until"},
+    {"mode": "timer", "entry_point": "run_until"}
+  ],
+  "bounds": {
+    "case_invocations": 1,
+    "case_order": "sequential",
+    "result_timeout_seconds": 30,
+    "run_until_timeout_seconds": 30,
+    "poll_timeout_seconds": 0.5,
+    "result_poll_interval_seconds": 0.1,
+    "run_until_poll_interval_seconds": 0.05,
+    "timer_seconds": 2,
+    "shutdown_setting_seconds": 10,
+    "runner_drain_wait_seconds": 10,
+    "proposed_outer_case_cleanup_seconds": 10,
+    "proposed_snapshot_seconds_inside_case_window": 5,
+    "proposed_total_seconds_including_setup_cleanup": 900,
+    "retry_or_extension": false
+  },
+  "snapshot_contract": {
+    "identity": ["namespace", "workflow_instance_id", "original_run_id", "original_task_id", "original_attempt"],
+    "task": ["type", "status", "queue_compatibility", "available_at", "leased_at", "lease_expiry", "attempt_count", "repair_count", "dispatch_times", "repair_availability", "error_present"],
+    "run": ["namespace", "instance", "status", "execution_deadline_at", "run_deadline_at"],
+    "registration": ["status", "routing_build_type_capability_compatibility", "heartbeat_times", "freshness_boundary", "current_incarnation_match"],
+    "private_binding_output": ["match", "missing", "invalid"],
+    "api": "existing run-scoped GET describe/history only",
+    "additional_observer_mutations": false,
+    "clock_brackets": ["monotonic_before", "monotonic_after", "database_or_server_time_sample"],
+    "complete_states": ["complete", "missing", "truncated", "invalid"],
+    "globally_atomic_or_shared_clock_assumption": false,
+    "before_teardown_required_on_success_and_failure": true,
+    "after_teardown_same_original_rows_required": true
+  },
+  "future_execution_inputs_not_selected": {
+    "backend_platform_digests": null,
+    "runner_platform_digest": null,
+    "server_platform_digest": null,
+    "complete_offline_dependency_closure": null,
+    "revised_observer_comparator_source_hashes": null,
+    "bounded_owner_source_hash": null,
+    "host_capacity_and_overlap_receipt": null,
+    "security_exact_packet_review": null,
+    "general_exact_invocation_admission": null
+  },
+  "future_requirements": [
+    "label new backend/platform/host pins reconstruction, never recovered original provenance",
+    "prove every normally installed SDK file, metadata and RECORD against the public wheel before import",
+    "fail setup on missing historical API without patching the package or increasing timeouts",
+    "fixture-only credentials/state, bounded logs/PIDs, no production credentials or endpoints",
+    "one owned handle, independent stop/deadline cleanup and final process/container/network/volume absence",
+    "return revised exact source and input hashes for Server, Security and General review before execution"
+  ],
+  "execution_admitted": false,
+  "original_root_cause_established": false,
+  "frozen_215_qualification_or_publication_carry": false
+}

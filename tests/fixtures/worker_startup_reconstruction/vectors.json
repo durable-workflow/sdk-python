@@ -1,0 +1,92 @@
+{
+  "status": "synthetic-review-vectors-not-captured-observations-or-an-executable-classifier",
+  "all_vectors_explain_the_original_execution": false,
+  "default_missing_evidence_conclusion": "unknown; do not assign a product or runner cause",
+  "vectors": [
+    {
+      "id": "attempt-zero-before-teardown",
+      "given": ["complete original-row snapshot before teardown", "attempt_count remains zero", "no matching delivered task"],
+      "conclusion": "no committed claim visible in this snapshot",
+      "must_not_conclude": ["no claim ever happened", "SDK handler stalled", "original failure explained"]
+    },
+    {
+      "id": "committed-claim-without-history-delivery",
+      "given": ["same original task/run has incremented attempt and matching lease owner", "current registration and poll binding match", "complete relevant HTTP coverage including cloned client, body/stream completeness and non-truncated observation buffers for the bracketed interval", "no completed history-bearing response within that observed interval"],
+      "conclusion": "claim/delivery gap within the completely observed interval; hydration or transport cause still unknown",
+      "missing_coverage_conclusion": "incomplete/unknown observational gap only, not a completed phase verdict",
+      "must_not_conclude": ["task was never claimed", "handler admitted", "history fetch succeeded"]
+    },
+    {
+      "id": "registration-latency",
+      "given": ["discovery completion recorded", "registration send and response boundaries recorded", "case deadline expires before registration completes"],
+      "conclusion": "registration interval exceeded the case budget",
+      "must_not_conclude": ["backend admission refusal", "specific network or database cause from aggregate send time"]
+    },
+    {
+      "id": "explicit-routing-refusal",
+      "given": ["complete current registration/freshness comparator", "existing poll response records a typed matching refusal", "same queue/build/type/capability identities linked"],
+      "conclusion": "observed matching refusal for this poll and registration",
+      "must_not_conclude": ["transport stall", "original failure explained"]
+    },
+    {
+      "id": "stale-or-replaced-registration",
+      "given": ["registration row exists and says active", "freshness or current-incarnation comparison is stale, missing or invalid"],
+      "conclusion": "registration eligibility/current incarnation is not established",
+      "must_not_conclude": ["active row proves routable fresh worker", "empty poll proves no committed claim"]
+    },
+    {
+      "id": "complete-task-with-missing-hydration-link",
+      "given": ["complete poll task body matches original task/run/attempt", "workflow_task_enter observed", "no exact history-load/decode boundary evidence"],
+      "conclusion": "task entered the interceptor; hydration/handler interval remains unresolved",
+      "must_not_conclude": ["hydration completed", "handler stalled", "decode failed"]
+    },
+    {
+      "id": "hydration-failure",
+      "given": ["original task/attempt linked", "existing history request start and failed completion observed", "handler entry absent", "observer completeness established"],
+      "conclusion": "observed history-hydration failure before handler entry",
+      "must_not_conclude": ["specific transport/backend cause without further phase evidence", "original failure explained"]
+    },
+    {
+      "id": "handler-open-at-deadline",
+      "given": ["exact task/attempt hydration completed", "handler entry recorded", "handler return/error absent at unchanged deadline", "phase buffer complete"],
+      "conclusion": "handler interval remained open at the deadline",
+      "must_not_conclude": ["publication failure", "network stall", "performance regression from this single case"]
+    },
+    {
+      "id": "publication-refused",
+      "given": ["handler returned for exact original task/attempt", "existing submission response has recorded=false", "authoritative task/run/history comparator matches"],
+      "conclusion": "observed publication refusal for that attempt",
+      "must_not_conclude": ["handler return proves durable completion", "recorded=false is success"]
+    },
+    {
+      "id": "complete-publication",
+      "given": ["task/run/attempt linked across hydration, handler and submission", "recorded=true", "same-run terminal API/history and SQL state reconcile before teardown"],
+      "conclusion": "this reconstructed case completed and published",
+      "must_not_conclude": ["historical untraced failure explained", "current supported tuple qualified", "performance acceptance"]
+    },
+    {
+      "id": "cleanup-induced-repair",
+      "given": ["pre-teardown original attempt/lease and registration snapshot complete", "teardown start and deregistration recovery boundaries recorded", "same original attempt binding, repair command/event identity and cleanup path reconcile", "post-teardown original task ready and registration absent"],
+      "conclusion": "that exact repair is attributable to the observed cleanup path",
+      "must_not_conclude": ["ready after shutdown proves no claim", "registration was absent before teardown"]
+    },
+    {
+      "id": "repair-near-cleanup-only",
+      "given": ["RepairRequested timestamp near shutdown", "original attempt or command/event/path binding missing"],
+      "conclusion": "repair origin unknown",
+      "must_not_conclude": ["cleanup caused repair", "worker lease was never acquired"]
+    },
+    {
+      "id": "incomplete-observation",
+      "given": ["HTTP success may exist", "one or more task bodies, phase links, clone coverage, buffer entries or original-row snapshots are missing/truncated/invalid"],
+      "conclusion": "incomplete; no end-to-end phase verdict",
+      "must_not_conclude": ["complete observation", "no handler because no milestone survived", "substitute latest task/run", "retry or extend the case"]
+    },
+    {
+      "id": "snapshot-clock-and-teardown-gap",
+      "given": ["API and SQL snapshots have separate monotonic brackets", "server/DB time differs or cleanup overlaps either bracket"],
+      "conclusion": "non-atomic views; retain each interval and mark causal linkage unknown",
+      "must_not_conclude": ["globally atomic state", "cross-clock ordering from raw timestamps", "extra worker execution to finish observation"]
+    }
+  ]
+}
