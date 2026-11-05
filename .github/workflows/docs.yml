@@ -58,11 +58,43 @@ jobs:
         run: |
           version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
           if [ -n "$STABLE_TAG" ]; then
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            test "$GITHUB_REF" = refs/heads/main
             test "$version" = "$STABLE_TAG"
-            test "$(gh release view "$STABLE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '(.isDraft == false and .isPrerelease == false)')" = true
-            test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$STABLE_TAG^{commit}")"
-          fi
-          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            released=$(gh release view "$STABLE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '(.isDraft == false and .isPrerelease == false)')
+            test "$released" = true
+            source_revision=$(git rev-parse HEAD)
+            tag_revision=$(git rev-parse "refs/tags/$STABLE_TAG^{commit}")
+            test "$source_revision" = "$tag_revision"
+            python - "$version" <<'PY'
+          import json
+          import re
+          import sys
+          import urllib.request
+
+          version = sys.argv[1]
+          with urllib.request.urlopen(
+              f"https://pypi.org/pypi/durable-workflow/{version}/json", timeout=15,
+          ) as response:
+              payload = response.read(1_048_577)
+          if len(payload) > 1_048_576:
+              raise SystemExit("PyPI metadata exceeds size bound")
+          package = json.loads(payload)
+          if package.get("info", {}).get("name") != "durable-workflow" or package["info"].get("version") != version:
+              raise SystemExit("PyPI package identity differs from selected tag")
+          kinds = set()
+          for artifact in package.get("urls", []):
+              if artifact.get("yanked") is not False:
+                  continue
+              if not re.fullmatch(r"[0-9a-f]{64}", artifact.get("digests", {}).get("sha256", "")):
+                  raise SystemExit("PyPI artifact digest is missing or invalid")
+              filename = artifact.get("filename", "")
+              if not filename.startswith(f"durable_workflow-{version}-") and filename != f"durable_workflow-{version}.tar.gz":
+                  raise SystemExit("PyPI artifact filename differs from selected package")
+              kinds.add(artifact.get("packagetype"))
+          if not {"bdist_wheel", "sdist"} <= kinds:
+              raise SystemExit("Selected stable package has no unyanked wheel and sdist")
+          PY
             echo stable=true >> "$GITHUB_OUTPUT"
           else
             echo stable=false >> "$GITHUB_OUTPUT"
