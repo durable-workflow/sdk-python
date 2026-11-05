@@ -594,9 +594,10 @@ def test_a_whitespace_requester_value_is_accepted_as_core_does(name: str) -> Non
     check(name, changed(name, _context("both", lambda context: context["requester"].__setitem__("label", " "))))
 
 
-@pytest.mark.parametrize("call_kind", ["activity", "timer", "child", "service_operation"])
-def test_a_delivery_to_the_unscheduled_resume_step_may_name_any_single_call(call_kind: str) -> None:
-    # Core lets a delivery consume a call not yet scheduled; its shape is open.
+@pytest.mark.parametrize("call_kind", ["activity", "local_activity", "timer", "signal"])
+def test_an_unscheduled_delivery_may_name_an_admitted_single_call(call_kind: str) -> None:
+    # Core also supports condition/child/service calls, but this deliberately
+    # narrower model cannot qualify their event/resource/terminal ledgers.
     name = "redrive-successor-reused-upserts-cancellation-clock"
     check(name, changed(name, lambda history: _delivery(history)["payload"].__setitem__("call_kind", call_kind)))
 
@@ -748,7 +749,7 @@ def test_the_next_call_requires_a_resolution_of_the_recorded_timer_or_signal(
     if state == "resolved":
         check(CANCELLATION, changed(CANCELLATION, mutate))
     else:
-        with pytest.raises(AssertionError, match="the successor reached|no opened wait"):
+        with pytest.raises(AssertionError, match="the successor reached|no opened wait|terminal matches"):
             check(CANCELLATION, changed(CANCELLATION, mutate))
 
 
@@ -772,7 +773,7 @@ def test_an_unscheduled_delivery_cannot_skip_an_unreached_call(mutation: str) ->
             _delivery(history)["payload"]["sequence"] = 5
         _renumber(history)
 
-    with pytest.raises(AssertionError, match="the successor reached"):
+    with pytest.raises(AssertionError, match="the successor reached|terminal matches"):
         check(CANCELLATION, changed(CANCELLATION, mutate))
 
 

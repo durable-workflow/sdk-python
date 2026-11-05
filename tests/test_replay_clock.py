@@ -497,9 +497,12 @@ REDRIVE_EVENT_IDENTITY: dict[str, tuple[str, ...]] = {
     # followed by the reused TimerFired.
     "ActivityScheduled": ("sequence", "activity_type", "activity_execution_id"),
     "ActivityCompleted": ("sequence", "activity_type", "activity_execution_id"),
+    "ActivityFailed": ("sequence", "activity_type", "activity_execution_id"),
+    "ActivityTimedOut": ("sequence", "activity_type", "activity_execution_id"),
     "ActivityCancelled": ("sequence", "activity_type", "activity_execution_id"),
     "TimerScheduled": ("sequence", "timer_id"),
     "TimerFired": ("sequence", "timer_id"),
+    "TimerCancelled": ("sequence", "timer_id"),
     "SideEffectRecorded": ("sequence",),
     "VersionMarkerRecorded": ("sequence", "change_id"),
 }
@@ -513,7 +516,8 @@ REDRIVE_STEP_SHAPES = {
 # Successor events that occupy a workflow step of their own.
 REDRIVE_SUCCESSOR_STEP_EVENTS = frozenset({
     "MemoUpserted", "SearchAttributesUpserted", "SignalWaitOpened", "SignalApplied", "ActivityScheduled",
-    "ActivityCompleted", "ActivityCancelled", "TimerScheduled", "TimerFired", "SideEffectRecorded",
+    "ActivityCompleted", "ActivityFailed", "ActivityTimedOut", "ActivityCancelled", "TimerScheduled", "TimerFired",
+    "TimerCancelled", "SideEffectRecorded",
     "VersionMarkerRecorded", "CooperativeCancellationDelivered",
 })
 
@@ -566,29 +570,44 @@ def redrive_time(value: Any) -> datetime:
     return parsed
 
 
-# Events a successor cancellation can be delivered to: a call the successor
-# recorded itself and that waits.
-REDRIVE_CANCELLABLE_EVENTS = frozenset({"ActivityScheduled", "TimerScheduled", "SignalWaitOpened"})
+# This is a deliberately smaller model than Core's CALL_SHAPES. Condition,
+# child, service-operation and internal timeout calls need their own identity
+# and terminal ledgers before they can qualify here. Grouped/scoped calls are
+# also excluded. A supported call has one opener and matching later terminals.
+# Core 28893f97: WorkflowStepHistory and CooperativeCancellationDelivery.
+REDRIVE_CALL_LEDGER = {
+    "activity": ("ActivityScheduled", "activity_execution_id", frozenset({
+        "ActivityCompleted", "ActivityFailed", "ActivityTimedOut", "ActivityCancelled",
+    })),
+    "local_activity": ("ActivityScheduled", "activity_execution_id", frozenset({
+        "ActivityCompleted", "ActivityFailed", "ActivityTimedOut", "ActivityCancelled",
+    })),
+    "timer": ("TimerScheduled", "timer_id", frozenset({"TimerFired", "TimerCancelled"})),
+    "signal": ("SignalWaitOpened", "signal_wait_id", frozenset({"SignalApplied"})),
+}
+REDRIVE_CANCELLABLE_EVENTS = frozenset(shape[0] for shape in REDRIVE_CALL_LEDGER.values())
+REDRIVE_DELIVERY_CALL_KINDS = frozenset(REDRIVE_CALL_LEDGER)
+REDRIVE_RESOLUTION_EVENTS = frozenset(kind for shape in REDRIVE_CALL_LEDGER.values() for kind in shape[2])
 
 
 def _recorded_call_kind(event: dict[str, Any]) -> str:
-    """The call_kind Core CooperativeCancellationDelivery::callKindAt derives."""
+    """The admitted shape, including Core WorkflowStepHistory's local mode."""
     payload = event["payload"]
-    if event["event_type"] == "ActivityScheduled":
-        return "local_activity" if payload.get("local_activity") is True else "activity"
-    if event["event_type"] == "TimerScheduled":
-        return {"condition_timeout": "condition", "signal_timeout": "signal"}.get(payload.get("timer_kind"), "timer")
+    if event["event_type"].startswith("Activity"):
+        return "local_activity" if payload.get("local_activity") is True or payload.get("execution_mode") == "local" \
+            else "activity"
+    if event["event_type"].startswith("Timer"):
+        return "timer"
     return "signal"
-# Core CooperativeCancellationDelivery::CALL_SHAPES: single-call delivery kinds.
-REDRIVE_DELIVERY_CALL_KINDS = frozenset({
-    "activity", "local_activity", "timer", "condition", "signal", "child", "service_operation",
-})
-# Core CooperativeCancellationDelivery::RESOLUTION_TYPES this check can see.
-REDRIVE_RESOLUTION_EVENTS = frozenset({"ActivityCompleted", "ActivityCancelled", "TimerFired", "SignalApplied"})
 
 
 def check_redrive_successor(history: list[dict[str, Any]], workflow: dict[str, Any]) -> None:
-    """Require a successor Workflow 2.19 can write for this fixture's workflow."""
+    """Check the fixture's redrive identity/prefix and admitted single-call ledger.
+
+    This is bounded evidence validation, not a full Core history validator or
+    proof that arbitrary workflow code can reach every structurally valid row.
+    The concrete positive replay witnesses remain separate from this model.
+    """
 
     def require(condition: bool, message: str) -> None:
         if not condition:
@@ -701,7 +720,8 @@ def _check_successor_cancellation(
     CancellationContext (CancellationContext::fromArray), and
     CooperativeCancellationDelivery::record and ::validateCallBoundary write
     and gate the delivery. Parallel and selection_handle deliveries are
-    deliberately refused: no successor fixture uses those shapes.
+    deliberately refused, as are condition/child/service and internal-timeout
+    rows: no complete resource/terminal ledger is modeled for those shapes.
     """
 
     def require(condition: bool, message: str) -> None:
@@ -761,6 +781,36 @@ def _check_successor_cancellation(
     require(call_kind in REDRIVE_DELIVERY_CALL_KINDS, "the delivery's call_kind is a single call kind")
     require(not any(key in delivered for key in ("sequence_span", "operation_sequence", "operation_sequence_span")),
             "the delivery is one single call")
+    # Validate the whole admitted successor ledger, not just rows at the
+    # delivery step. A foreign resource, family, mode or out-of-order terminal
+    # cannot prove that an earlier sequential call finished.
+    openers: dict[int, dict[str, Any]] = {}
+    for event in events:
+        payload = event["payload"]
+        require(not any(payload.get(key) is not None for key in (
+            "parallel_group_id", "selection_group_id", "cancellation_scope_id",
+        )), "grouped and scoped rows are outside the single-call model")
+        require(not (event["event_type"].startswith("Timer") and payload.get("timer_kind") in {
+            "condition_timeout", "signal_timeout",
+        }), "internal timeout rows are outside the plain-timer model")
+        kind = event["event_type"]
+        if kind not in REDRIVE_CANCELLABLE_EVENTS | REDRIVE_RESOLUTION_EVENTS:
+            continue
+        sequence = payload["sequence"]
+        if kind in REDRIVE_CANCELLABLE_EVENTS:
+            require(sequence not in openers, "one sequential call occupies each successor step")
+            openers[sequence] = event
+            continue
+        opener = openers.get(sequence)
+        require(opener is not None, "a terminal follows its recorded opener at the same step")
+        assert opener is not None
+        opener_kind = _recorded_call_kind(opener)
+        _, identity, terminals = REDRIVE_CALL_LEDGER[opener_kind]
+        require(kind in terminals and _recorded_call_kind(event) == opener_kind
+                and payload.get(identity) == opener["payload"].get(identity)
+                and (not kind.startswith("Activity")
+                     or payload["activity_type"] == opener["payload"]["activity_type"]),
+                "a terminal matches its recorded call's family, resource and mode")
     step = delivered["sequence"]
     at_step = [event for event in events if event is not delivery and event["payload"].get("sequence") == step
                and event["event_type"] in REDRIVE_SUCCESSOR_STEP_EVENTS]
@@ -781,15 +831,10 @@ def _check_successor_cancellation(
                            and event["event_type"] in REDRIVE_SUCCESSOR_STEP_EVENTS]
         next_step = max((event["payload"]["sequence"] for event in before_delivery), default=resume - 1) + 1
         require(step == next_step and not at_step, "the delivery targets a successor step the successor reached")
-        resolutions = {
-            "ActivityScheduled": ("activity_execution_id", {"ActivityCompleted", "ActivityCancelled"}),
-            "TimerScheduled": ("timer_id", {"TimerFired"}),
-            "SignalWaitOpened": ("signal_wait_id", {"SignalApplied"}),
-        }
         for earlier in before_delivery:
-            if earlier["event_type"] not in resolutions:
+            if earlier["event_type"] not in REDRIVE_CANCELLABLE_EVENTS:
                 continue
-            identity, kinds = resolutions[earlier["event_type"]]
+            _, identity, kinds = REDRIVE_CALL_LEDGER[_recorded_call_kind(earlier)]
             require(any(
                 terminal["sequence"] > earlier["sequence"] and terminal["event_type"] in kinds
                 and terminal["payload"]["sequence"] == earlier["payload"]["sequence"]
