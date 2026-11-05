@@ -17,17 +17,24 @@
     "passed": 62,
     "sha256": "2c7ee85f4b7b814cab4a9c78c1d150723d86f9cb8b78185644031cd775dc7a73"
   },
+  "frozen_v5_control_result": {
+    "cases": 66,
+    "passed": 66,
+    "sha256": "3ec6b52657fd172c3db493c8f16df677c473a688f44fcfc5af579b3c9f149394"
+  },
   "guardian_later_findings": {
     "issues": [
       "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6660476483",
       "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662253657",
       "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663237183",
-      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663491930"
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663491930",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663692366"
     ],
     "predecessor_v2_sha256": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70",
     "predecessor_v3_sha256": "79ddc82b0095872885aceb943cbf9daa1eb3a05048bc08f9ee9cd093511de187",
     "predecessor_v4_sha256": "d52bb389127cb81b5b0303b3a593ee1af74f8c4835793d67f08d0bf182e2101c",
-    "proposed_successor": "guardian-v5; raw archive fd/name custody before identity reads; partial raw archive unlink proof; exact successor review pending",
+    "predecessor_v5_sha256": "4c92d889d89dbef2502ef5e9bc923d00c0314821b42aa77d4c0ee92080aba41e",
+    "proposed_successor": "guardian-v6; explicit idempotent descriptor close independent of callback registration; exact successor review pending",
     "superseded_whole_source_PASS": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662795537"
   },
   "host": "lab4, subject to fresh capacity/input/cache/name checks",
@@ -75,7 +82,7 @@
   "runtime_source_inputs": {
     "bootstrap": "6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed",
     "ca": "2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b",
-    "guardian": "4c92d889d89dbef2502ef5e9bc923d00c0314821b42aa77d4c0ee92080aba41e",
+    "guardian": "cbb1672855a0dec48c7d952f02be49ab3c0935d9bd7b1cf467638d73fc543e4c",
     "interpreter": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41",
     "library": "982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87",
     "owner": "234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb",
@@ -87,22 +94,22 @@
   "selected_archive_bytes": 2901292,
   "selected_archives_acquired": 0,
   "selected_sdk_source": "14adc40b00b68cc8a3e1ae5647a885a42f273650",
-  "session_sha256": "2f30889987dfe5c1d7030f3ce9146c327cfc512f241ca2ddefe3cb2d10e017ef",
+  "session_sha256": "e721bba90c8cf7fae9eede4b3a2df2b7abb25b59f84b62f8ee5be5b9ee381e89",
   "source_control_results": {
     "184-acquire-tools-v5-adapter-controls-result.json": {
       "cases": 16,
       "passed": 16,
-      "sha256": "56cb21ef101edc34f8b9a6527b6ccfc85160b9509c1a1c24b3c81a09d6066420"
+      "sha256": "b49570665353a9202701af61b98d117eee45023f851616d4a460d5ac29c923ea"
     },
     "184-acquire-tools-v5-controls-result.json": {
       "cases": 86,
       "passed": 86,
       "sha256": "2a84c6612fcd2fd57235f4844face425420dafb3217be7d6e82ef57cc6fab1cd"
     },
-    "184-acquisition-guardian-v5-controls-result.json": {
-      "cases": 66,
-      "passed": 66,
-      "sha256": "3ec6b52657fd172c3db493c8f16df677c473a688f44fcfc5af579b3c9f149394"
+    "184-acquisition-guardian-v6-controls-result.json": {
+      "cases": 73,
+      "passed": 73,
+      "sha256": "f1b504d920d26468dff0f882b6f2e0041529bf3c0f0c4ecb9f88842bd239f4e4"
     },
     "184-acquisition-launcher-bootstrap-controls-result.json": {
       "cases": 27,
@@ -110,9 +117,9 @@
       "sha256": "874b1b868975690e56818147c72b1eb7db197c51a961b42da0f1ae00312452b1"
     },
     "184-acquisition-session-controls-result.json": {
-      "cases": 31,
-      "passed": 31,
-      "sha256": "3729dce8f4c78beb940d68e75db87fdaa0ff4036f69ea8c57a02c6f80bc5996d"
+      "cases": 33,
+      "passed": 33,
+      "sha256": "2ac6e635fa7f8ba76091e85548e98db6d9f4cd1fd0313400702edfdf429c5974"
     },
     "184-acquisition-terminal-controls-result.json": {
       "cases": 16,

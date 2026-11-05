@@ -31,7 +31,7 @@ def load(name,path):
 
 
 s=load('trusted_session_protocol_control',BASE/'184-acquisition-session-proposal.py')
-g=load('trusted_guard_protocol_control',BASE/'184-acquisition-custody-guardian-v5-proposal.py')
+g=load('trusted_guard_protocol_control',BASE/'184-acquisition-custody-guardian-v6-proposal.py')
 t=load('trusted_terminal_protocol_control',BASE/'184-acquisition-terminal-proposal.py')
 o=load('trusted_owner_protocol_control',BASE/'184-acquire-tools-v5.py')
 selection=json.loads((BASE/'184-immutable-build-tool-input-proposal.json').read_text())
@@ -355,6 +355,31 @@ def retention_boundary(seconds,accepted):
     else:assert accepted
 
 
+def preparation_callback_failure_closes(directory):
+    with tempfile.TemporaryDirectory(prefix='sdk-python-184-extra-dir-close-control-') as temporary:
+        parent=Path(temporary);opened=[];held=None;real_open=os.open;real_callback=g.ExitStack.callback
+        def allocated_open(path,*args,**kwargs):
+            fd=real_open(path,*args,**kwargs)
+            if path==directory:opened.append(fd)
+            return fd
+        def callback(stack,function,*args,**kwargs):
+            if args and args[0] in opened:raise MemoryError('synthetic extra-directory callback failure')
+            return real_callback(stack,function,*args,**kwargs)
+        try:
+            with patch.object(s.os,'open',side_effect=allocated_open),patch.object(g.ExitStack,'callback',new=callback):
+                try:s.prepare_tree(g,parent,'sdk-python-184-tools-guardian-extra-dir-close',filenames)
+                except g.AllocationRefusal as error:held=error.custody;cleanup=error.cleanup
+                else:raise AssertionError('directory callback failure not exercised')
+            assert len(opened)==1 and held.directory_fds[directory]==opened[0]
+            assert cleanup['complete'] and not held.path.exists()
+            held.close();held.close()
+            try:os.fstat(opened[0])
+            except OSError as error:assert error.errno==9
+            else:raise AssertionError('extra directory descriptor leaked')
+        finally:
+            if held is not None:held.close()
+
+
 def check(name,operation):
     try:operation()
     except BaseException as error:results.append({'id':name,'outcome':'fail','type':type(error).__name__,'detail':str(error)[:600]})
@@ -362,6 +387,8 @@ def check(name,operation):
 
 
 with patch.object(socket,'create_connection',side_effect=AssertionError('NO_NETWORK_IN_SESSION_CONTROLS')):
+    for directory in ('metadata','events'):
+        check(directory+'-callback-failure-closes-recorded-directory-fd',lambda directory=directory:preparation_callback_failure_closes(directory))
     for seconds,accepted in [(0,False),(300,False),(301,True),(86400,True),(86401,False)]:
         check('retention-deadline-boundary-'+str(seconds),lambda seconds=seconds,accepted=accepted:retention_boundary(seconds,accepted))
     for mode in ('alloc-after-root','alloc-after-wheelhouse','alloc-after-metadata','alloc-unknown'):

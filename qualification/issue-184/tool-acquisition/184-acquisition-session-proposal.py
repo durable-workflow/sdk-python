@@ -31,7 +31,7 @@ INTERPRETER='/usr/bin/python3.14'
 INTERPRETER_SHA='52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41'
 LIBRARY='/usr/lib/x86_64-linux-gnu/libpython3.14.so.1.0'
 LIBRARY_SHA='982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87'
-PINNED={'owner': '234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb', 'bootstrap': '6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed', 'guardian': '4c92d889d89dbef2502ef5e9bc923d00c0314821b42aa77d4c0ee92080aba41e', 'terminal': '7e75b0929e612ec8605d095956fd446c2ad779a8f8b7e8403563f2764b1e70bf', 'selection': 'e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c', 'interpreter': '52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41', 'library': '982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87', 'ca': '2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b'}
+PINNED={'owner': '234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb', 'bootstrap': '6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed', 'guardian': 'cbb1672855a0dec48c7d952f02be49ab3c0935d9bd7b1cf467638d73fc543e4c', 'terminal': '7e75b0929e612ec8605d095956fd446c2ad779a8f8b7e8403563f2764b1e70bf', 'selection': 'e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c', 'interpreter': '52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41', 'library': '982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87', 'ca': '2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b'}
 FRAME_CAP=65536
 POOL_CAP=4*1024**2
 
@@ -132,10 +132,10 @@ def prepare_tree(guard,parent,leaf,filenames):
             st=os.stat(name,dir_fd=custody.root_fd,follow_symlinks=False)
             custody.dir_ids[name]=[st.st_dev,st.st_ino]
             fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=custody.root_fd)
-            custody.stack.callback(os.close,fd)
+            custody.directory_fds[name]=fd
+            custody.stack.callback(custody.close_owned_fd,fd)
             st=os.fstat(fd)
             require([st.st_dev,st.st_ino]==custody.dir_ids[name],'DIRECTORY_ALLOCATION_COLLISION')
-            custody.directory_fds[name]=fd
         return custody
     except BaseException as error:
         # No owner exists. Roll back only identity-verified, empty extra dirs.
@@ -655,7 +655,7 @@ def start(authority_path,expected_sha,expected_decision,expected_session_sha,sta
     require(PINNED and expected_decision is not None,'UNFROZEN_OR_UNADMITTED_PACKET')
     checked_bytes(Path(__file__),expected_session_sha,65536,os.geteuid())
     raw=checked_bytes(Path(authority_path),expected_sha,32768,os.geteuid())
-    guard=module('reviewed_guardian','184-acquisition-custody-guardian-v5-proposal.py',PINNED['guardian'])
+    guard=module('reviewed_guardian','184-acquisition-custody-guardian-v6-proposal.py',PINNED['guardian'])
     authority=guard.bind_authority(raw,expected_sha,expected_decision,PINNED)
     require(authority.get('survivor_policy')=='retain-custody-and-escalate'
             and authority.get('pool_parent')==str(POOL_PARENT)

@@ -29,7 +29,14 @@ their original identities. Whole-source PASS does not qualify or replace them.
 - `184-acquisition-terminal-proposal.py`: independently verifies successful owner
   exit, all six raw/ZIP/METADATA/WHEEL/dependency tuples, exact request/event
   linkage, clean trust, sealed inode/byte inventory and stable second readback.
-- Guardian-v5 additionally proposes the archive-allocation correction6663491930.
+- Guardian-v6 additionally proposes the close-path correction6663692366.
+  Public close explicitly closes tracked archive/directory descriptors even if
+  callback registration failed. Callbacks use the same idempotent closer, so a
+  second close cannot close an unrelated descriptor reusing the number. Closed
+  descriptor numbers cannot re-enter unlink proof. Closing handles never deletes
+  or accepts a linked uncertain node. Extra directories are recorded before
+  callback registration too.
+- Guardian-v5's archive-allocation correction6663491930 remains preserved.
   Every exclusively opened archive name/raw descriptor enters custody before
   callback/identity reads. A pending identity forbids handoff or named-node
   removal. Completion requires type/UID/zero-link proof for that held raw fd,
@@ -39,7 +46,7 @@ their original identities. Whole-source PASS does not qualify or replace them.
   be unlinked. Moved children and directories created before their identity can
   be read remain unproved custody. V4's pre-registration gap is retained as an
   actual predecessor countercontrol; fully-unlinked partial archives are positives.
-- Frozen guardian-v2/v3/v4 remain byte-identical predecessor countercontrols.
+- Frozen guardian-v2/v3/v4/v5 remain byte-identical predecessor countercontrols.
   V3 closed findings6660476483/6662253657 (partial allocation and authority
   parsing), but its later moved-child HOLD supersedes whole-packet PASS6662795537.
   Exact successor review is pending; no earlier PASS carries to this packet.
@@ -99,8 +106,8 @@ admit this residual policy; it is not permission supplied by these sources.
 | Owner |86| parser, transport, trust, custody and no-child boundary |
 | Preallocated adapter |16| readiness, descriptors, inode collisions and partial writes |
 | Independent readback |16| synthetic six-tool tuples, metadata, ledger and inventory |
-| Guardian successor |66| retained62, actual v4 pre-archive-identity false completion/current refusal, and partial-archive fully-unlinked positives with root present/absent |
-| Role protocol |31| real local roles, allocation rollback/custody, EOF/deadline, guardian loss, survivors, setup refusal, unknown owner, late nonpass and integrated fake HTTP |
+| Guardian successor |73| retained66 plus actual v5 callback leak/current idempotent close, descriptor reuse, and parent/root/wheelhouse callback failures |
+| Role protocol |33| retained31 plus metadata/events callback failure and independent tracked-directory closure |
 | Launcher bootstrap |27| exact reads, authority schemas, startup refusals, resource affinity and custody wrapper |
 
 These are source controls, not acquired-package or SDK/runtime qualification.

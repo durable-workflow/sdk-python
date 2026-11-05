@@ -1,12 +1,20 @@
 {
   "acquisition_accepted": false,
-  "cases": 31,
+  "cases": 33,
   "downloaded_wheel_imports_or_installs": 0,
   "failed": 0,
   "new_general_decision": null,
-  "passed": 31,
+  "passed": 33,
   "real_network_requests": 0,
   "results": [
+    {
+      "id": "metadata-callback-failure-closes-recorded-directory-fd",
+      "outcome": "pass"
+    },
+    {
+      "id": "events-callback-failure-closes-recorded-directory-fd",
+      "outcome": "pass"
+    },
     {
       "id": "retention-deadline-boundary-0",
       "outcome": "pass"
@@ -134,5 +142,5 @@
   ],
   "scope": "synthetic role-protocol controls; start/admitted-data API never called with a decision",
   "selected_archives_acquired": 0,
-  "source_sha256": "2f30889987dfe5c1d7030f3ce9146c327cfc512f241ca2ddefe3cb2d10e017ef"
+  "source_sha256": "e721bba90c8cf7fae9eede4b3a2df2b7abb25b59f84b62f8ee5be5b9ee381e89"
 }
