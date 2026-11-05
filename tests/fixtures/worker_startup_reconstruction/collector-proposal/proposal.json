@@ -57,7 +57,8 @@
     "retry_reconnect_or_fallback": false,
     "defer_connect": true,
     "guard_initialized_before_connect": true,
-    "driver_stdout_stderr": "discard; fixed-code framed output only"
+    "driver_stdout_stderr": "discard; fixed-code framed output only",
+    "tcp_tls": "explicit SSLContext with selected CA, certificate and hostname verification; default preferred mode refused"
   },
   "proposed_bounds": {
     "case_seconds": 30,

@@ -28,6 +28,11 @@ credentials or a user's home defaults. Network membership, peer identity,
 authentication, grants and TLS trust must be fixed in the later input packet.
 No opportunistic RSA package installation, plaintext fallback, server-key fetch,
 reconnect, discovery or endpoint substitution is permitted.
+For the proposed TCP path, supply an explicit SSLContext with the selected CA,
+certificate verification and hostname verification. This pinned driver makes
+explicit SSL configuration required, while its default preferred mode can fall
+back to plaintext. Default TLS options are therefore inadmissible. The exact
+context, peer and authentication closure still require selection and controls.
 
 The driver source has consequential defaults:
 
