@@ -1,0 +1,32 @@
+{
+  "architecture": "x86_64",
+  "binary_and_library": [
+    {
+      "bytes": 7477160,
+      "gid": 0,
+      "mode": "0o755",
+      "path": "/usr/bin/python3.14",
+      "resolved": "/usr/bin/python3.14",
+      "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41",
+      "uid": 0
+    },
+    {
+      "bytes": 8247200,
+      "gid": 0,
+      "mode": "0o644",
+      "path": "/usr/lib/x86_64-linux-gnu/libpython3.14.so",
+      "resolved": "/usr/lib/x86_64-linux-gnu/libpython3.14.so.1.0",
+      "sha256": "982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87",
+      "uid": 0
+    }
+  ],
+  "implementation": "CPython",
+  "launch_invocation": null,
+  "new_general_decision": null,
+  "real_executable": "/usr/bin/python3.14",
+  "record": "read-only interpreter authority proposal; no data invocation",
+  "requested_executable": "/usr/bin/python3",
+  "stdlib": "/usr/lib/python3.14",
+  "symlink_target": "python3.14",
+  "version": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]"
+}

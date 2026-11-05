@@ -1,0 +1,35 @@
+{
+  "records": [
+    {
+      "bytes": 17804,
+      "durable_source": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6649346694",
+      "file": "original-owner.source",
+      "sha256": "e0b8955c8c26c68333e1439c4eb195ef803d710d68f4a4b297b3dd17fcfd7c54"
+    },
+    {
+      "bytes": 34138,
+      "durable_source": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6649812366",
+      "file": "v2-owner.source",
+      "sha256": "16200705aee523e1171ad9c2c1f8522fa089c3479c18d474fdd5ff6ed7b29ff7"
+    },
+    {
+      "bytes": 39357,
+      "durable_source": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6655818641",
+      "file": "v3-owner.source",
+      "sha256": "0d25554f8f15409141708073060798478185a1d9990ac0383cf1cf5661f05997"
+    },
+    {
+      "bytes": 2769,
+      "durable_source": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6655819896",
+      "file": "v3-bootstrap.source",
+      "sha256": "8797366c75b3f55d61c21c19ac3e98ba0bed5b65bbf0a04e4bf3e2b73d326fcc"
+    },
+    {
+      "bytes": 41341,
+      "durable_source": "https://github.com/durable-workflow/sdk-python/tree/d42e510952f945e9de68cdd8a18b4f5cf8969987/qualification/issue-184/tool-acquisition/184-acquisition-session-proposal.py",
+      "file": "session-v6.source",
+      "sha256": "e721bba90c8cf7fae9eede4b3a2df2b7abb25b59f84b62f8ee5be5b9ee381e89"
+    }
+  ],
+  "scope": "historical inert source countercontrols; never job entrypoints or current admissions"
+}

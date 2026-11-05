@@ -1,0 +1,359 @@
+{
+  "actual_failed_archive_cause_established": false,
+  "bootstrap_sha256": "6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed",
+  "cases": 86,
+  "downloaded_wheel_imports_or_installs": 0,
+  "failed": 0,
+  "original_source_sha256": "e0b8955c8c26c68333e1439c4eb195ef803d710d68f4a4b297b3dd17fcfd7c54",
+  "passed": 86,
+  "real_network_requests": 0,
+  "results": [
+    {
+      "id": "old-refuses-equivalent-marker-quotes-new-accepts",
+      "outcome": "pass"
+    },
+    {
+      "id": "derived-authority-tuple-build",
+      "outcome": "pass"
+    },
+    {
+      "id": "authority-derived-synthetic-headers-build",
+      "outcome": "pass"
+    },
+    {
+      "id": "derived-authority-tuple-packaging",
+      "outcome": "pass"
+    },
+    {
+      "id": "authority-derived-synthetic-headers-packaging",
+      "outcome": "pass"
+    },
+    {
+      "id": "derived-authority-tuple-pip",
+      "outcome": "pass"
+    },
+    {
+      "id": "authority-derived-synthetic-headers-pip",
+      "outcome": "pass"
+    },
+    {
+      "id": "derived-authority-tuple-pyproject-hooks",
+      "outcome": "pass"
+    },
+    {
+      "id": "authority-derived-synthetic-headers-pyproject-hooks",
+      "outcome": "pass"
+    },
+    {
+      "id": "derived-authority-tuple-setuptools",
+      "outcome": "pass"
+    },
+    {
+      "id": "authority-derived-synthetic-headers-setuptools",
+      "outcome": "pass"
+    },
+    {
+      "id": "derived-authority-tuple-wheel",
+      "outcome": "pass"
+    },
+    {
+      "id": "authority-derived-synthetic-headers-wheel",
+      "outcome": "pass"
+    },
+    {
+      "id": "metadata-refuses-version",
+      "outcome": "pass"
+    },
+    {
+      "id": "metadata-refuses-project",
+      "outcome": "pass"
+    },
+    {
+      "id": "metadata-refuses-python",
+      "outcome": "pass"
+    },
+    {
+      "id": "metadata-refuses-URL",
+      "outcome": "pass"
+    },
+    {
+      "id": "metadata-refuses-size",
+      "outcome": "pass"
+    },
+    {
+      "id": "metadata-refuses-bool-size",
+      "outcome": "pass"
+    },
+    {
+      "id": "metadata-refuses-hash",
+      "outcome": "pass"
+    },
+    {
+      "id": "metadata-refuses-yanked",
+      "outcome": "pass"
+    },
+    {
+      "id": "metadata-refuses-unknown-yank",
+      "outcome": "pass"
+    },
+    {
+      "id": "metadata-refuses-string-yank",
+      "outcome": "pass"
+    },
+    {
+      "id": "metadata-refuses-duplicate",
+      "outcome": "pass"
+    },
+    {
+      "id": "single-request-receipt-and-body-hash",
+      "outcome": "pass"
+    },
+    {
+      "id": "oversize-header-stable-refusal",
+      "outcome": "pass"
+    },
+    {
+      "id": "encoded-response-stable-refusal",
+      "outcome": "pass"
+    },
+    {
+      "id": "changed-response-URL",
+      "outcome": "pass"
+    },
+    {
+      "id": "archive-missing-length",
+      "outcome": "pass"
+    },
+    {
+      "id": "archive-changed-length",
+      "outcome": "pass"
+    },
+    {
+      "id": "partial-body-count-hash-refusal-ledger",
+      "outcome": "pass"
+    },
+    {
+      "id": "diagnostic-failure-preserves-primary-code",
+      "outcome": "pass"
+    },
+    {
+      "id": "zero-archive-after-semantic-refusal",
+      "outcome": "pass"
+    },
+    {
+      "id": "hash-refusal-does-not-retain-unverified-candidate",
+      "outcome": "pass"
+    },
+    {
+      "id": "late-refusal-removes-all-new-archives",
+      "outcome": "pass"
+    },
+    {
+      "id": "malformed-ZIP-removes-new-archive",
+      "outcome": "pass"
+    },
+    {
+      "id": "special-ZIP-member-removes-new-archive",
+      "outcome": "pass"
+    },
+    {
+      "id": "partial-archive-write-tracked-and-removed",
+      "outcome": "pass"
+    },
+    {
+      "id": "failure-record-collision-preserves-primary-and-zero-archives",
+      "outcome": "pass"
+    },
+    {
+      "id": "unknown-failure-record-collision-preserved-and-zero-archives",
+      "outcome": "pass"
+    },
+    {
+      "id": "v2-retains-semantic-refused-archive-v3-removes-countercontrol",
+      "outcome": "pass"
+    },
+    {
+      "id": "redirect-refusal-ledger-and-zero-archives",
+      "outcome": "pass"
+    },
+    {
+      "id": "v3-fdopen-leaks-archive-and-fd-v4-closes-and-removes",
+      "outcome": "pass"
+    },
+    {
+      "id": "v3-bootstrap-inherits-sentinels-v4-closed-owner-env",
+      "outcome": "pass"
+    },
+    {
+      "id": "exact-reviewed-CA-reused-without-child-changed-bytes-refuse",
+      "outcome": "pass"
+    },
+    {
+      "id": "guarded-owner-has-no-child-launch-surface",
+      "outcome": "pass"
+    },
+    {
+      "id": "owner-refuses-ambient-env-before-pool-or-network",
+      "outcome": "pass"
+    },
+    {
+      "id": "cleanup-identity-collision-preserves-unknown-node-nonpass",
+      "outcome": "pass"
+    },
+    {
+      "id": "cleanup-directory-collision-preserves-unknown-tree-nonpass",
+      "outcome": "pass"
+    },
+    {
+      "id": "uncreated-pool-collision-never-mutates-existing-pool",
+      "outcome": "pass"
+    },
+    {
+      "id": "transport-refusal-zero-archives-missing-Length",
+      "outcome": "pass"
+    },
+    {
+      "id": "transport-refusal-zero-archives-changed-Length",
+      "outcome": "pass"
+    },
+    {
+      "id": "transport-refusal-zero-archives-final-URL",
+      "outcome": "pass"
+    },
+    {
+      "id": "transport-refusal-zero-archives-encoding",
+      "outcome": "pass"
+    },
+    {
+      "id": "transport-refusal-zero-archives-timeout",
+      "outcome": "pass"
+    },
+    {
+      "id": "wrong-size-removes-earlier-new-archive",
+      "outcome": "pass"
+    },
+    {
+      "id": "wrong-hash-removes-earlier-new-archive",
+      "outcome": "pass"
+    },
+    {
+      "id": "changed-active-graph-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "unsafe-ZIP-path-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "parent-output-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "changed-directory-inode-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "exclusive-output-collision-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "failure-record-reserve-survives-pool-bound",
+      "outcome": "pass"
+    },
+    {
+      "id": "empty-extra-directory-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "written-file-mutation-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "complete-synthetic-pool-custody-and-seal",
+      "outcome": "pass"
+    },
+    {
+      "id": "old-admission-cannot-retry",
+      "outcome": "pass"
+    },
+    {
+      "id": "missing-hash-bootstrap-refuses-before-pool",
+      "outcome": "pass"
+    },
+    {
+      "id": "HTTP-scheme-refuses-before-request",
+      "outcome": "pass"
+    },
+    {
+      "id": "foreign-origin-refuses-before-request",
+      "outcome": "pass"
+    },
+    {
+      "id": "URL-userinfo-refuses-before-request",
+      "outcome": "pass"
+    },
+    {
+      "id": "redirect-status-custody-no-second-request",
+      "outcome": "pass"
+    },
+    {
+      "id": "HTTP-error-status-custody",
+      "outcome": "pass"
+    },
+    {
+      "id": "body-shorter-than-header-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-validates-owned-bytes-without-execution",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-changed-source-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-symlink-source-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-shared-inode-source-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "bootstrap-old-admission-refuses-before-source-read",
+      "outcome": "pass"
+    },
+    {
+      "id": "marker-numeric-python-order",
+      "outcome": "pass"
+    },
+    {
+      "id": "marker-old-Python-dependency-excluded",
+      "outcome": "pass"
+    },
+    {
+      "id": "marker-Windows-dependency-excluded",
+      "outcome": "pass"
+    },
+    {
+      "id": "marker-extra-dependency-excluded",
+      "outcome": "pass"
+    },
+    {
+      "id": "marker-code-is-not-executed",
+      "outcome": "pass"
+    },
+    {
+      "id": "patch-sensitive-marker-refuses",
+      "outcome": "pass"
+    },
+    {
+      "id": "unsupported-marker-variable-refuses",
+      "outcome": "pass"
+    }
+  ],
+  "scope": "synthetic source controls, not archive acquisition/SDK/runtime qualification",
+  "simulated_transport_calls": 17,
+  "successor_source_sha256": "234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb"
+}

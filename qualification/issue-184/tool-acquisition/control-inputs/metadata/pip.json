@@ -1,0 +1,32 @@
+{
+  "info": {
+    "name": "pip",
+    "requires_dist": null,
+    "requires_python": ">=3.10",
+    "version": "26.2.2"
+  },
+  "urls": [
+    {
+      "digests": {
+        "blake2b_256": "3f063e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f",
+        "md5": "5cda60fa8d5701634ddf7635fb262b4b",
+        "sha256": "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+      },
+      "filename": "pip-26.2.2-py3-none-any.whl",
+      "size": 1819850,
+      "url": "https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl",
+      "yanked": false
+    },
+    {
+      "digests": {
+        "blake2b_256": "fae80842d757e483e895e670f655084cfe8b8c72580c6769a76b30b2789a0608",
+        "md5": "399f3e6053dd52028d2b60384332cea9",
+        "sha256": "3a8e5c800492787f33a4114ef54444546c340df428974ebba17e0fd47e11af2f"
+      },
+      "filename": "pip-26.2.2.tar.gz",
+      "size": 1863336,
+      "url": "https://files.pythonhosted.org/packages/fa/e8/0842d757e483e895e670f655084cfe8b8c72580c6769a76b30b2789a0608/pip-26.2.2.tar.gz",
+      "yanked": false
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "cases": 16,
+  "downloaded_wheel_imports_or_installs": 0,
+  "failed": 0,
+  "launcher_pending": true,
+  "new_general_decision": null,
+  "passed": 16,
+  "real_network_requests": 0,
+  "results": [
+    {
+      "id": "six-synthetic-header-tuples-semantic-and-ledger-readback",
+      "outcome": "pass"
+    },
+    {
+      "id": "live-owner-cannot-enter-readback",
+      "outcome": "pass"
+    },
+    {
+      "id": "failed-owner-cannot-preserve",
+      "outcome": "pass"
+    },
+    {
+      "id": "bool-exitcode-cannot-masquerade-as-zero",
+      "outcome": "pass"
+    },
+    {
+      "id": "expired-terminal-ceiling-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "owner-pass-marker-not-independent-candidate",
+      "outcome": "pass"
+    },
+    {
+      "id": "candidate-file-count-mismatch-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "candidate-byte-count-mismatch-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "candidate-inventory-hash-mismatch-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "changed-selected-source-bytes-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "changed-trust-file-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "changed-launch-admission-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "changed-wheel-body-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "unknown-extra-output-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "bool-inventory-link-count-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "different-exact-admission-refused",
+      "outcome": "pass"
+    }
+  ],
+  "scope": "synthetic six-tool terminal readback, not actual input acquisition or launcher",
+  "selected_archives_acquired": 0,
+  "source_sha256": "7e75b0929e612ec8605d095956fd446c2ad779a8f8b7e8403563f2764b1e70bf"
+}

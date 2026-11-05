@@ -1,0 +1,176 @@
+{
+  "actual_authority_sha256": null,
+  "actual_selected_archive_pool": null,
+  "all_source_control_processes_expected_absent": true,
+  "all_source_control_processes_verified_absent": true,
+  "combined_archive_cap": 3145728,
+  "connected_retry_admission": null,
+  "cpu_affinity": null,
+  "downloaded_wheel_imports_or_installs": 0,
+  "frozen_predecessor_control_result": {
+    "cases": 53,
+    "passed": 53,
+    "sha256": "30c7d4815ea68410ac839351bab09f10ff9591e9395151d26ce1a917d293b65d"
+  },
+  "frozen_v4_control_result": {
+    "cases": 62,
+    "passed": 62,
+    "sha256": "2c7ee85f4b7b814cab4a9c78c1d150723d86f9cb8b78185644031cd775dc7a73"
+  },
+  "frozen_v5_control_result": {
+    "cases": 66,
+    "passed": 66,
+    "sha256": "3ec6b52657fd172c3db493c8f16df677c473a688f44fcfc5af579b3c9f149394"
+  },
+  "frozen_v6_control_result": {
+    "cases": 73,
+    "passed": 73,
+    "sha256": "f1b504d920d26468dff0f882b6f2e0041529bf3c0f0c4ecb9f88842bd239f4e4"
+  },
+  "frozen_v6_session_result": {
+    "cases": 33,
+    "passed": 33,
+    "sha256": "2ac6e635fa7f8ba76091e85548e98db6d9f4cd1fd0313400702edfdf429c5974"
+  },
+  "guardian_later_findings": {
+    "issues": [
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6660476483",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662253657",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663237183",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663491930",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663692366",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6665713217"
+    ],
+    "narrow_v6_PASS_not_whole_packet": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6664016731",
+    "predecessor_v2_sha256": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70",
+    "predecessor_v3_sha256": "79ddc82b0095872885aceb943cbf9daa1eb3a05048bc08f9ee9cd093511de187",
+    "predecessor_v4_sha256": "d52bb389127cb81b5b0303b3a593ee1af74f8c4835793d67f08d0bf182e2101c",
+    "predecessor_v5_sha256": "4c92d889d89dbef2502ef5e9bc923d00c0314821b42aa77d4c0ee92080aba41e",
+    "predecessor_v6_sha256": "cbb1672855a0dec48c7d952f02be49ab3c0935d9bd7b1cf467638d73fc543e4c",
+    "proposed_successor": "guardian-v7/session; gated pre-allocation guardian setup recovery, exact no-owner pre-adoption removal or live keeper, and protected raw-FD ledger insertion; exact whole-source review pending",
+    "superseded_whole_source_PASS": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662795537"
+  },
+  "host": "lab4, subject to fresh capacity/input/cache/name checks",
+  "inline_launcher_bootstrap_sha256": "0cd9d5309b1dd3314e5a7f288f7462c784e2bcf4cea9618eeff4aa401f516aaf",
+  "interpreter": "/usr/bin/python3.14 CPython3.14.4 root-owned, observed and pinned; host OS/stdlib remain trusted provisioned base",
+  "new_general_decision": null,
+  "new_sdk_wheel": null,
+  "open_files_limits": {
+    "outer_guardian": 128,
+    "owner": 64
+  },
+  "original_connected_classification": "PRODUCT-FAIL, unchanged",
+  "original_data_acquisition": "NONPASSING, exact actual cause unproved, unchanged",
+  "original_failed_pool_all_ten_hashes_reverified": true,
+  "original_frozen_ref": "781c068a0496e8a59fa40bb121eed88bda27cbf1",
+  "original_wheel_sha256": "a6d137f4584f60a1b47400bbe4843aacca62993106208500165e6c04f8b20d29",
+  "owner_has_child_launch_surface": false,
+  "pending_after_review": [
+    "Security whole-source/input disposition",
+    "General exact new data decision and CPU assignment",
+    "filled authority bytes/hash and exact invocation binding",
+    "fresh host/input/root/cache and consumed-decision rechecks",
+    "one admitted invocation and independent terminal actual-pool/role readback"
+  ],
+  "per_archive_cap": 2097152,
+  "pre_adoption_policy": {
+    "guardian_pidfd_failure": "no START, no allocation; close known handles and stop/reap reserved child or retain setup session",
+    "known_empty_tree": "remove exact tracked inodes/directories, acknowledge removal, then reap guardian",
+    "owner_allocated": false,
+    "post_ARM_unknown_owner": "no no-owner drain or completion inference",
+    "unknown_or_unproven_tree": "keep exact guardian handles and partial tree; report nonterminal custody"
+  },
+  "proposed_data_scope": "six exact public tool archives only; no solve/substitute/import/install/Docker/SDK build/runtime",
+  "proposed_entrypoint": "184-acquisition-launcher-bootstrap-proposal.py:run_and_report under exact reviewed inline bytes",
+  "proposed_invocation": null,
+  "real_network_requests": 0,
+  "release_tag_publish_guide_or_adoption": false,
+  "retained_tree_policy": {
+    "explicit_new_General_admission_required": true,
+    "maximum_retention_seconds": 86400,
+    "operation_retention_deadline": null,
+    "outer_owner_custody_required": true,
+    "process_handles_close_only_after_exact_exit_and_full_inventory_readback": true,
+    "retention_owner": "sdk-python",
+    "terminal_cleanup_complete": false
+  },
+  "role_address_space_soft_bytes": {
+    "guardian": 134217728,
+    "outer": 134217728,
+    "owner": 402653184
+  },
+  "runtime_source_inputs": {
+    "bootstrap": "6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed",
+    "ca": "2ef52ad56b4803e264045c915e55c236cbfa045b84b81efefc218a19eb44bd2b",
+    "guardian": "032a2da74a26ea8ed036428d5470420dd49f099b7fe61cfcf4d7ab216d720066",
+    "interpreter": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41",
+    "library": "982cb3768d1d8b00126255ee2785bccf8360c68b197fb3dec95858ab56195f87",
+    "owner": "234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb",
+    "selection": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c",
+    "terminal": "7e75b0929e612ec8605d095956fd446c2ad779a8f8b7e8403563f2764b1e70bf"
+  },
+  "sdk_build_or_install_admission": null,
+  "sdk_source_or_feature_cohort_changed": false,
+  "selected_archive_bytes": 2901292,
+  "selected_archives_acquired": 0,
+  "selected_sdk_source": "14adc40b00b68cc8a3e1ae5647a885a42f273650",
+  "session_sha256": "608c968c38f95774f2cd68aa873b0a978ba48f363aebd86db14cfe61ce541a04",
+  "source_control_result_total": 284,
+  "source_control_results": {
+    "184-acquire-tools-v5-adapter-controls-result.json": {
+      "cases": 16,
+      "passed": 16,
+      "sha256": "fdeaa7cda910e83f057ced455411bbb360e875e8c9163f554d525fab5933c3be"
+    },
+    "184-acquire-tools-v5-controls-result.json": {
+      "cases": 86,
+      "passed": 86,
+      "sha256": "2a84c6612fcd2fd57235f4844face425420dafb3217be7d6e82ef57cc6fab1cd"
+    },
+    "184-acquisition-guardian-v7-controls-result.json": {
+      "cases": 81,
+      "passed": 81,
+      "sha256": "f29e2eda2681715389afd32b4dc0bc3c1f4d48decb352ffcad8195a54db2c228"
+    },
+    "184-acquisition-launcher-bootstrap-controls-result.json": {
+      "cases": 27,
+      "passed": 27,
+      "sha256": "874b1b868975690e56818147c72b1eb7db197c51a961b42da0f1ae00312452b1"
+    },
+    "184-acquisition-session-controls-result.json": {
+      "cases": 58,
+      "passed": 58,
+      "sha256": "95f2abfc9345198e667cfa742fcaadab280e8a1c689a8653abbb10226254d7c3"
+    },
+    "184-acquisition-terminal-controls-result.json": {
+      "cases": 16,
+      "passed": 16,
+      "sha256": "32a30a3767d760befae96f77f906431f234dd2733c28b17c3deadb71921f3be0"
+    }
+  },
+  "startup_environment": {
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "PATH": "/usr/bin:/bin",
+    "TZ": "UTC"
+  },
+  "startup_flags": [
+    "-I",
+    "-S"
+  ],
+  "status": "UNEXECUTED composed source/input packet for independent review; no acquisition admission",
+  "survivor_policy": {
+    "acquisition_work_beyond_bound": false,
+    "custody_keeper_can_outlive_failed_bound": true,
+    "explicit_new_General_admission_required": true,
+    "proposal": "retain-custody-and-escalate",
+    "unknown_handle_or_root_collision": "retain handles/names, no cleanup completion, immediate escalation; operator can stop"
+  },
+  "time_bounds_seconds": {
+    "io_and_active": 270,
+    "operation_total": 300,
+    "setup_counted": true
+  },
+  "tool_selection_sha256": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c",
+  "whole_pool_cap": 4194304
+}

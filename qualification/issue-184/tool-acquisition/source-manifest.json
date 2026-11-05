@@ -1,0 +1,334 @@
+{
+  "actual_authority_sha256": null,
+  "actual_selected_archives": null,
+  "all_source_control_processes_verified_absent": true,
+  "cpu_affinity": null,
+  "downloaded_wheel_imports_or_installs": 0,
+  "files": [
+    {
+      "bytes": 1898,
+      "file": "184-acquire-tools-v5-adapter-controls-result.json",
+      "sha256": "fdeaa7cda910e83f057ced455411bbb360e875e8c9163f554d525fab5933c3be"
+    },
+    {
+      "bytes": 10492,
+      "file": "184-acquire-tools-v5-adapter-controls.py",
+      "sha256": "dfd74c20fa379062efca6110f151e5f52824da291f1591858e560cf7e8d09785"
+    },
+    {
+      "bytes": 2875,
+      "file": "184-acquire-tools-v5-bootstrap.py",
+      "sha256": "6ca5da88054b4c3ea27b2614dfd987f88ecb3db981271a995bb9941d06398fed"
+    },
+    {
+      "bytes": 8301,
+      "file": "184-acquire-tools-v5-controls-result.json",
+      "sha256": "2a84c6612fcd2fd57235f4844face425420dafb3217be7d6e82ef57cc6fab1cd"
+    },
+    {
+      "bytes": 40590,
+      "file": "184-acquire-tools-v5-controls.py",
+      "sha256": "61a08e8538b8b7ec7448c6d30a3c929d99d45771411d296e0b6e5b9224e64c59"
+    },
+    {
+      "bytes": 44676,
+      "file": "184-acquire-tools-v5.py",
+      "sha256": "234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb"
+    },
+    {
+      "bytes": 11769,
+      "file": "184-acquisition-custody-guardian-v2-proposal.py",
+      "sha256": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70"
+    },
+    {
+      "bytes": 19234,
+      "file": "184-acquisition-custody-guardian-v3-proposal.py",
+      "sha256": "79ddc82b0095872885aceb943cbf9daa1eb3a05048bc08f9ee9cd093511de187"
+    },
+    {
+      "bytes": 20980,
+      "file": "184-acquisition-custody-guardian-v4-proposal.py",
+      "sha256": "d52bb389127cb81b5b0303b3a593ee1af74f8c4835793d67f08d0bf182e2101c"
+    },
+    {
+      "bytes": 21371,
+      "file": "184-acquisition-custody-guardian-v5-proposal.py",
+      "sha256": "4c92d889d89dbef2502ef5e9bc923d00c0314821b42aa77d4c0ee92080aba41e"
+    },
+    {
+      "bytes": 22524,
+      "file": "184-acquisition-custody-guardian-v6-proposal.py",
+      "sha256": "cbb1672855a0dec48c7d952f02be49ab3c0935d9bd7b1cf467638d73fc543e4c"
+    },
+    {
+      "bytes": 23306,
+      "file": "184-acquisition-custody-guardian-v7-proposal.py",
+      "sha256": "032a2da74a26ea8ed036428d5470420dd49f099b7fe61cfcf4d7ab216d720066"
+    },
+    {
+      "bytes": 4928,
+      "file": "184-acquisition-guardian-v3-controls-result.json",
+      "sha256": "30c7d4815ea68410ac839351bab09f10ff9591e9395151d26ce1a917d293b65d"
+    },
+    {
+      "bytes": 9789,
+      "file": "184-acquisition-guardian-v3-controls.py",
+      "sha256": "9c8aca4ba5092f1d981556207b4eb435bbeed2bb0a32ba763af4c4cb7a510048"
+    },
+    {
+      "bytes": 5884,
+      "file": "184-acquisition-guardian-v4-controls-result.json",
+      "sha256": "2c7ee85f4b7b814cab4a9c78c1d150723d86f9cb8b78185644031cd775dc7a73"
+    },
+    {
+      "bytes": 14803,
+      "file": "184-acquisition-guardian-v4-controls.py",
+      "sha256": "cc7ed2f6cacb830a5a1bc2f10bfa01aa3eff196a03e776591aacdebd58d72cf0"
+    },
+    {
+      "bytes": 6294,
+      "file": "184-acquisition-guardian-v5-controls-result.json",
+      "sha256": "3ec6b52657fd172c3db493c8f16df677c473a688f44fcfc5af579b3c9f149394"
+    },
+    {
+      "bytes": 18040,
+      "file": "184-acquisition-guardian-v5-controls.py",
+      "sha256": "05fe57d28dbe9b921fa250f7752773d6f9a43cf464f8ec73937ddd4c77ab7ad4"
+    },
+    {
+      "bytes": 6933,
+      "file": "184-acquisition-guardian-v6-controls-result.json",
+      "sha256": "f1b504d920d26468dff0f882b6f2e0041529bf3c0f0c4ecb9f88842bd239f4e4"
+    },
+    {
+      "bytes": 21671,
+      "file": "184-acquisition-guardian-v6-controls.py",
+      "sha256": "6f963d6195d3f7244890f0f391a8f7640f4266c9bad7881cda34614f515dd82d"
+    },
+    {
+      "bytes": 7877,
+      "file": "184-acquisition-guardian-v7-controls-result.json",
+      "sha256": "f29e2eda2681715389afd32b4dc0bc3c1f4d48decb352ffcad8195a54db2c228"
+    },
+    {
+      "bytes": 25028,
+      "file": "184-acquisition-guardian-v7-controls.py",
+      "sha256": "3219a930f460460ea1d7ea09366cf0a9fc623574644c53a2c2252f9929f544ff"
+    },
+    {
+      "bytes": 1010,
+      "file": "184-acquisition-interpreter-authority-proposal.json",
+      "sha256": "cb819468f659c6235176fabcd29894dda552ffb85f0bf54664d83b7dcdd3d2e1"
+    },
+    {
+      "bytes": 2936,
+      "file": "184-acquisition-launcher-bootstrap-controls-result.json",
+      "sha256": "874b1b868975690e56818147c72b1eb7db197c51a961b42da0f1ae00312452b1"
+    },
+    {
+      "bytes": 7807,
+      "file": "184-acquisition-launcher-bootstrap-controls.py",
+      "sha256": "bfe3bfae2442aea2f3f9b8a35bb50015b4168e500bb6c1a5e804c286bd901357"
+    },
+    {
+      "bytes": 7533,
+      "file": "184-acquisition-launcher-bootstrap-proposal.py",
+      "sha256": "0cd9d5309b1dd3314e5a7f288f7462c784e2bcf4cea9618eeff4aa401f516aaf"
+    },
+    {
+      "bytes": 6311,
+      "file": "184-acquisition-session-controls-result.json",
+      "sha256": "95f2abfc9345198e667cfa742fcaadab280e8a1c689a8653abbb10226254d7c3"
+    },
+    {
+      "bytes": 41303,
+      "file": "184-acquisition-session-controls.py",
+      "sha256": "4ff34e4c60859619403a414b5d57fc7bf05411c5720abda4010a7484c263a630"
+    },
+    {
+      "bytes": 52040,
+      "file": "184-acquisition-session-proposal.py",
+      "sha256": "608c968c38f95774f2cd68aa873b0a978ba48f363aebd86db14cfe61ce541a04"
+    },
+    {
+      "bytes": 1826,
+      "file": "184-acquisition-terminal-controls-result.json",
+      "sha256": "32a30a3767d760befae96f77f906431f234dd2733c28b17c3deadb71921f3be0"
+    },
+    {
+      "bytes": 12198,
+      "file": "184-acquisition-terminal-controls.py",
+      "sha256": "bf13c83983567ae04e21fe871625817f85b3bef0b3524b85576296e1267e3dff"
+    },
+    {
+      "bytes": 12215,
+      "file": "184-acquisition-terminal-proposal.py",
+      "sha256": "7e75b0929e612ec8605d095956fd446c2ad779a8f8b7e8403563f2764b1e70bf"
+    },
+    {
+      "bytes": 4550,
+      "file": "184-immutable-build-tool-input-proposal.json",
+      "sha256": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c"
+    },
+    {
+      "bytes": 10676,
+      "file": "README.md",
+      "sha256": "7b2cf2765620a1fee9d246ca9ed727e2586b36257dd492461e18991b209910c3"
+    },
+    {
+      "bytes": 1209,
+      "file": "authority-template.json",
+      "sha256": "22479d136d6f23e3022100d09ff4dda356e54c3b29208f4d815ed5c099efe560"
+    },
+    {
+      "bytes": 1520,
+      "file": "control-inputs/historical-source/manifest.json",
+      "sha256": "c5d33f28439e92554bd603cb9c677c8ebb42e3fb2ce109cebc3d42f6a63a321c"
+    },
+    {
+      "bytes": 17804,
+      "file": "control-inputs/historical-source/original-owner.source",
+      "sha256": "e0b8955c8c26c68333e1439c4eb195ef803d710d68f4a4b297b3dd17fcfd7c54"
+    },
+    {
+      "bytes": 41341,
+      "file": "control-inputs/historical-source/session-v6.source",
+      "sha256": "e721bba90c8cf7fae9eede4b3a2df2b7abb25b59f84b62f8ee5be5b9ee381e89"
+    },
+    {
+      "bytes": 34138,
+      "file": "control-inputs/historical-source/v2-owner.source",
+      "sha256": "16200705aee523e1171ad9c2c1f8522fa089c3479c18d474fdd5ff6ed7b29ff7"
+    },
+    {
+      "bytes": 2769,
+      "file": "control-inputs/historical-source/v3-bootstrap.source",
+      "sha256": "8797366c75b3f55d61c21c19ac3e98ba0bed5b65bbf0a04e4bf3e2b73d326fcc"
+    },
+    {
+      "bytes": 39357,
+      "file": "control-inputs/historical-source/v3-owner.source",
+      "sha256": "0d25554f8f15409141708073060798478185a1d9990ac0383cf1cf5661f05997"
+    },
+    {
+      "bytes": 1482,
+      "file": "control-inputs/metadata/build.json",
+      "sha256": "62e815fa9001a01e6a0457352003698d07256ec1b2fc55d5cb783b3a16f27d26"
+    },
+    {
+      "bytes": 1162,
+      "file": "control-inputs/metadata/packaging.json",
+      "sha256": "e48bbd4c46efbf4eff638602526c3a8f2fbb1e8193d4df86a76f3df0fb258b1b"
+    },
+    {
+      "bytes": 1145,
+      "file": "control-inputs/metadata/pip.json",
+      "sha256": "586b7008e21ba663b15a5af3c531bc3c0dfc25d43e228100cbb70a9524241ff3"
+    },
+    {
+      "bytes": 1195,
+      "file": "control-inputs/metadata/pyproject-hooks.json",
+      "sha256": "77baa40515e7d727d63c7b33d5cce32ad506039aacd255bcb12ab978d69a893b"
+    },
+    {
+      "bytes": 3785,
+      "file": "control-inputs/metadata/setuptools.json",
+      "sha256": "82f7804d38814b9a27a9cb0dbaf3ad70fa57e990cd3dc6486abb654afae40ccb"
+    },
+    {
+      "bytes": 1177,
+      "file": "control-inputs/metadata/wheel.json",
+      "sha256": "cf6a86abed869134225400ca2dc4f5b2974c40cff2bbb768049e26709e4ec647"
+    },
+    {
+      "bytes": 2568,
+      "file": "control-inputs/provenance.json",
+      "sha256": "52296697e2f155f17bfd5f38ef21c9f3fc1a19c25961a1ed00cb667bc5dcead2"
+    },
+    {
+      "bytes": 4550,
+      "file": "control-inputs/selection.json",
+      "sha256": "e9a7d639325b866569cdab83b81a2949437209a6bca91c881c2e365fdc573a1c"
+    },
+    {
+      "bytes": 8293,
+      "file": "review-packet.json",
+      "sha256": "969ef8c6e1191cbf85a6bd58bbaf131e8c418dc491c98c11518dfb02a48394eb"
+    }
+  ],
+  "guardian_later_findings": {
+    "issues": [
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6660476483",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662253657",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663237183",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663491930",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6663692366",
+      "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6665713217"
+    ],
+    "narrow_v6_PASS_not_whole_packet": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6664016731",
+    "predecessor_v2_sha256": "afc5f198de12d4b26520957bc563ff0122f8535838a1cbc64c40272c5f3f7f70",
+    "predecessor_v3_sha256": "79ddc82b0095872885aceb943cbf9daa1eb3a05048bc08f9ee9cd093511de187",
+    "predecessor_v4_sha256": "d52bb389127cb81b5b0303b3a593ee1af74f8c4835793d67f08d0bf182e2101c",
+    "predecessor_v5_sha256": "4c92d889d89dbef2502ef5e9bc923d00c0314821b42aa77d4c0ee92080aba41e",
+    "predecessor_v6_sha256": "cbb1672855a0dec48c7d952f02be49ab3c0935d9bd7b1cf467638d73fc543e4c",
+    "proposed_successor": "guardian-v7/session; gated pre-allocation guardian setup recovery, exact no-owner pre-adoption removal or live keeper, and protected raw-FD ledger insertion; exact whole-source review pending",
+    "superseded_whole_source_PASS": "https://github.com/durable-workflow/sdk-python/issues/184#issuecomment-6662795537"
+  },
+  "manifest_excludes_self": true,
+  "new_general_decision": null,
+  "new_sdk_wheel": null,
+  "original_failed_pool_all_ten_hashes_unchanged": true,
+  "real_network_requests": 0,
+  "remaining_gates": [
+    "Security whole-source/input disposition",
+    "General exact new data decision and CPU assignment",
+    "filled authority bytes/hash and exact invocation binding",
+    "fresh host/input/root/cache and consumed-decision rechecks",
+    "one admitted invocation and independent terminal actual-pool/role readback"
+  ],
+  "retained_tree_policy": {
+    "explicit_new_General_admission_required": true,
+    "maximum_retention_seconds": 86400,
+    "operation_retention_deadline": null,
+    "outer_owner_custody_required": true,
+    "process_handles_close_only_after_exact_exit_and_full_inventory_readback": true,
+    "retention_owner": "sdk-python",
+    "terminal_cleanup_complete": false
+  },
+  "sdk_source_or_feature_cohort_changed": false,
+  "selected_sdk_source": "14adc40b00b68cc8a3e1ae5647a885a42f273650",
+  "source_control_result_total": 284,
+  "source_control_results": {
+    "184-acquire-tools-v5-adapter-controls-result.json": {
+      "cases": 16,
+      "passed": 16,
+      "sha256": "fdeaa7cda910e83f057ced455411bbb360e875e8c9163f554d525fab5933c3be"
+    },
+    "184-acquire-tools-v5-controls-result.json": {
+      "cases": 86,
+      "passed": 86,
+      "sha256": "2a84c6612fcd2fd57235f4844face425420dafb3217be7d6e82ef57cc6fab1cd"
+    },
+    "184-acquisition-guardian-v7-controls-result.json": {
+      "cases": 81,
+      "passed": 81,
+      "sha256": "f29e2eda2681715389afd32b4dc0bc3c1f4d48decb352ffcad8195a54db2c228"
+    },
+    "184-acquisition-launcher-bootstrap-controls-result.json": {
+      "cases": 27,
+      "passed": 27,
+      "sha256": "874b1b868975690e56818147c72b1eb7db197c51a961b42da0f1ae00312452b1"
+    },
+    "184-acquisition-session-controls-result.json": {
+      "cases": 58,
+      "passed": 58,
+      "sha256": "95f2abfc9345198e667cfa742fcaadab280e8a1c689a8653abbb10226254d7c3"
+    },
+    "184-acquisition-terminal-controls-result.json": {
+      "cases": 16,
+      "passed": 16,
+      "sha256": "32a30a3767d760befae96f77f906431f234dd2733c28b17c3deadb71921f3be0"
+    }
+  },
+  "stage": "UNEXECUTED guardian-v7/session successor for composed HOLD6665713217; exact whole-source review pending; no operational admission"
+}

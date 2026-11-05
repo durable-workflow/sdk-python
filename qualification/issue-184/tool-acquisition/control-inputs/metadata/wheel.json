@@ -1,0 +1,34 @@
+{
+  "info": {
+    "name": "wheel",
+    "requires_dist": [
+      "packaging>=24.0"
+    ],
+    "requires_python": ">=3.9",
+    "version": "0.48.0"
+  },
+  "urls": [
+    {
+      "digests": {
+        "blake2b_256": "2e2969cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449",
+        "md5": "75e4bbe15fefadbb91258c5e79b38aa3",
+        "sha256": "3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab"
+      },
+      "filename": "wheel-0.48.0-py3-none-any.whl",
+      "size": 33320,
+      "url": "https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/wheel-0.48.0-py3-none-any.whl",
+      "yanked": false
+    },
+    {
+      "digests": {
+        "blake2b_256": "d02050ed6bdf27dec98b568a8ae25dc599f35baa3d9709f9e83fd1edb56b9a90",
+        "md5": "f668e4885de814378b332eceea04a8a0",
+        "sha256": "94800765601e9171bf5d58d066e640662842bcedcbab982b2c90787a2c987322"
+      },
+      "filename": "wheel-0.48.0.tar.gz",
+      "size": 66471,
+      "url": "https://files.pythonhosted.org/packages/d0/20/50ed6bdf27dec98b568a8ae25dc599f35baa3d9709f9e83fd1edb56b9a90/wheel-0.48.0.tar.gz",
+      "yanked": false
+    }
+  ]
+}

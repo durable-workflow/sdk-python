@@ -1,0 +1,41 @@
+{
+  "info": {
+    "name": "build",
+    "requires_dist": [
+      "packaging>=24.0",
+      "pyproject_hooks",
+      "colorama; os_name == \"nt\"",
+      "importlib-metadata>=4.6; python_full_version < \"3.10.2\"",
+      "tomli>=1.1.0; python_version < \"3.11\"",
+      "keyring; extra == \"keyring\"",
+      "uv>=0.1.18; extra == \"uv\"",
+      "virtualenv>=20.36.1; extra == \"virtualenv\""
+    ],
+    "requires_python": ">=3.10",
+    "version": "1.6.1"
+  },
+  "urls": [
+    {
+      "digests": {
+        "blake2b_256": "ad9b9fb3585dabcd73a1b2a6267f63f62649347c9e6d072c9fde365b105abb2c",
+        "md5": "3e56b7429feb7269a90eb7bee67718d7",
+        "sha256": "ecd351a4be9d35a9eaaba244a7687143c9c7d4aea6ac964e7e7ddab20cbcf4e7"
+      },
+      "filename": "build-1.6.1-py3-none-any.whl",
+      "size": 31179,
+      "url": "https://files.pythonhosted.org/packages/ad/9b/9fb3585dabcd73a1b2a6267f63f62649347c9e6d072c9fde365b105abb2c/build-1.6.1-py3-none-any.whl",
+      "yanked": false
+    },
+    {
+      "digests": {
+        "blake2b_256": "bd674898a44ea4f3f8e213b0954ec0aa0a16971d62a6212d6ea3931e97115b99",
+        "md5": "56f61c2663493ebe4916b8acf40bb039",
+        "sha256": "51cc11666391ab6f092070437ac747002ff46f3e4113a3622177ee6b488bfc53"
+      },
+      "filename": "build-1.6.1.tar.gz",
+      "size": 113427,
+      "url": "https://files.pythonhosted.org/packages/bd/67/4898a44ea4f3f8e213b0954ec0aa0a16971d62a6212d6ea3931e97115b99/build-1.6.1.tar.gz",
+      "yanked": false
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "cases": 16,
+  "downloaded_wheel_imports_or_installs": 0,
+  "failed": 0,
+  "guardian_sha256": "032a2da74a26ea8ed036428d5470420dd49f099b7fe61cfcf4d7ab216d720066",
+  "owner_sha256": "234e099b5208aaafca379d3e5535cf44b3158a327764eec0ef4e12afcfc45ffb",
+  "passed": 16,
+  "real_network_requests": 0,
+  "results": [
+    {
+      "id": "adopt-preallocated-nodes-write-with-same-inodes-seal",
+      "outcome": "pass"
+    },
+    {
+      "id": "network-requires-independent-guardian-before-inputs",
+      "outcome": "pass"
+    },
+    {
+      "id": "missing-readiness-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "wrong-root-path-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "changed-root-inode-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "changed-wheelhouse-inode-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "incomplete-descriptor-set-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "duplicate-descriptors-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "expired-anchor-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "changed-wall-clock-anchor-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "duplicate-adoption-refused",
+      "outcome": "pass"
+    },
+    {
+      "id": "selected-six-filename-closure-before-directory-creation",
+      "outcome": "pass"
+    },
+    {
+      "id": "guarded-fdopen-failure-closes-duplicate-cleans-used-and-unused",
+      "outcome": "pass"
+    },
+    {
+      "id": "late-failure-cleans-earlier-and-unused-preallocations",
+      "outcome": "pass"
+    },
+    {
+      "id": "unknown-replacement-inode-never-written",
+      "outcome": "pass"
+    },
+    {
+      "id": "foreign-fd-never-adopted-or-written",
+      "outcome": "pass"
+    }
+  ],
+  "scope": "synthetic owner adapter, not integrated acquisition or launcher",
+  "terminal_acceptance_and_exact_launcher_pending": true
+}
