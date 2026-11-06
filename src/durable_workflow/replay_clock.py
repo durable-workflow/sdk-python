@@ -209,6 +209,11 @@ class BusinessReplayClock:
         if any(position > index or not self._scalar_row(position, family, resource, identity, allowed)
                for position in indices):
             return False
+        return self._scalar_lifecycle(indices, index, family, opening, payload)
+
+    def _scalar_lifecycle(
+        self, indices: Sequence[int], index: int, family: str, opening: str, payload: Mapping[str, Any],
+    ) -> bool:
         openings = [position for position in indices if _kind(self.events[position]) == opening]
         starts = [position for position in indices if _kind(self.events[position]) == "ActivityStarted"]
         if len(starts) > 1 or (starts and (not openings or starts[0] < openings[0])):
