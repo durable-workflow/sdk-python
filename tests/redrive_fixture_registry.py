@@ -51,6 +51,12 @@ NATIVE_SUCCESSORS: dict[str, int] = {
     "business-clock-native-redrive-entry": 2,
 }
 
+# The complete Core writer retains the same acceptance row as native. Its
+# finite prefix adapter must validate that row before the unchanged Core gate.
+ACCEPTED_CORE_SUCCESSORS: dict[str, int] = {
+    "business-clock-core-redrive-acceptance-timer": 3,
+}
+
 NON_QUALIFYING: dict[str, NonQualifying] = {
     "redrive-start-replayed-clock": NonQualifying(
         sha256="70653171faf5ddba5ed264d0a7ce8bb1af97112dbd6e3bb0e39c6f155fee0fd2",

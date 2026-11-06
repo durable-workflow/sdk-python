@@ -115,7 +115,6 @@ class BusinessReplayClock:
         self._source_run: str | None = None
         self._resume_step: int | None = None
         self._redrive_inserted: datetime | None = None
-        self._native_prefix = False
         starts = [index for index, event in enumerate(events) if _kind(event) == "WorkflowStarted"]
         self.initial: tuple[int | None, datetime | None] = (None, None)
         if len(starts) == 1:
@@ -124,7 +123,6 @@ class BusinessReplayClock:
             if (isinstance(payload, Mapping) and self._start_prefix(index, payload)
                 and self._redrive_start(index, payload, workflow_id, run_id)):
                 self.initial = (index, _time(payload.get("replayed_started_at")))
-                self._native_prefix = index == 1
         self._pending = self.initial
         self._current = self.initial
         for index, event in enumerate(events):
@@ -199,8 +197,6 @@ class BusinessReplayClock:
         self._pending = (index, time)
 
     def _reused_time(self, payload: Mapping[str, Any], family: str, sequence: int) -> datetime | None:
-        if self._native_prefix and family == "timer":
-            return None
         if (self._source_run is None or payload.get("reused_from_run_id") != self._source_run
             or self._resume_step is None or sequence >= self._resume_step):
             return None

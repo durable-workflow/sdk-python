@@ -66,3 +66,14 @@ class NativeRedriveBusinessClockWorkflow:
         before = clock_text(ctx)
         yield ctx.schedule_activity("clock.first", [])
         return {"clock": [before, clock_text(ctx)], "legacy": ctx.now().isoformat(timespec="microseconds")}
+
+
+@workflow.defn(name="tests.replay.business-clock-core-prefix-timer")
+class PrefixedCoreTimerBusinessClockWorkflow:
+    def run(self, ctx: WorkflowContext, name: str, seconds: int):  # type: ignore[no-untyped-def]
+        observations = [clock_text(ctx)]
+        yield ctx.schedule_activity("tests.redrive.first", [name])
+        observations.append(clock_text(ctx))
+        yield ctx.start_timer(seconds)
+        observations.append(clock_text(ctx))
+        return {"clock": observations, "legacy": ctx.now().isoformat(timespec="microseconds")}

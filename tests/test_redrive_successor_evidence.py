@@ -24,8 +24,15 @@ import pytest
 from durable_workflow import workflow
 from durable_workflow.errors import WorkflowCancelled
 from durable_workflow.workflow import CompleteWorkflow, ScheduleActivity, WorkflowContext, query_state, replay
+from tests.core_redrive_fixture import check_prefixed_core_successor
 from tests.native_redrive_fixture import check_native_redrive_successor
-from tests.redrive_fixture_registry import NATIVE_SUCCESSORS, NON_QUALIFYING, SOURCE_RUNS, VALID_SUCCESSORS
+from tests.redrive_fixture_registry import (
+    ACCEPTED_CORE_SUCCESSORS,
+    NATIVE_SUCCESSORS,
+    NON_QUALIFYING,
+    SOURCE_RUNS,
+    VALID_SUCCESSORS,
+)
 from tests.test_replay_clock import REDRIVE_FIXTURES, check_redrive_successor, redrive_fixture, redrive_time
 
 SIDE_EFFECT_CALLS: list[str] = []
@@ -127,7 +134,42 @@ def _verdict(name: str) -> str | None:
 
 def test_every_redrive_fixture_is_registered() -> None:
     selected = {path.stem for path in REDRIVE_FIXTURES.glob("*.json") if _looks_like_redrive(path)}
-    assert selected == set(VALID_SUCCESSORS) | set(NATIVE_SUCCESSORS) | set(NON_QUALIFYING) | SOURCE_RUNS
+    assert selected == (
+        set(VALID_SUCCESSORS) | set(NATIVE_SUCCESSORS) | set(ACCEPTED_CORE_SUCCESSORS)
+        | set(NON_QUALIFYING) | SOURCE_RUNS
+    )
+
+
+@pytest.mark.parametrize("name", sorted(ACCEPTED_CORE_SUCCESSORS))
+def test_complete_core_prefix_is_validated_without_changing_the_retained_successor_checker(name: str) -> None:
+    fixture = redrive_fixture(name)
+    original = deepcopy(fixture)
+    check_prefixed_core_successor(fixture["history"], fixture["workflow"])
+    assert fixture["history"][1]["payload"]["resume_step_sequence"] == ACCEPTED_CORE_SUCCESSORS[name]
+    assert fixture == original
+    assert _verdict(name) is not None
+    with pytest.raises(AssertionError):
+        check_native_redrive_successor(fixture["history"], fixture["workflow"])
+
+
+@pytest.mark.parametrize("mutation", ["prefix", "identity", "order", "duplicate", "timer", "outcome"])
+def test_complete_core_prefix_adapter_preserves_identity_order_and_successor_refusals(mutation: str) -> None:
+    fixture = redrive_fixture("business-clock-core-redrive-acceptance-timer")
+    events = fixture["history"]
+    if mutation == "prefix":
+        events[0]["event_type"] = "WorkflowTaskCompleted"
+    elif mutation == "identity":
+        events[0]["payload"]["workflow_command_id"] = "foreign"
+    elif mutation == "order":
+        events[-1]["sequence"] = 99
+    elif mutation == "duplicate":
+        events.insert(2, deepcopy(events[1]))
+    elif mutation == "timer":
+        events[-1]["payload"]["timer_id"] = "foreign"
+    else:
+        events[0]["payload"]["outcome"] = "started"
+    with pytest.raises(AssertionError):
+        check_prefixed_core_successor(events, fixture["workflow"])
 
 
 @pytest.mark.parametrize("name", sorted(NATIVE_SUCCESSORS))

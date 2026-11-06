@@ -360,7 +360,7 @@ def test_an_unproved_reused_identity_does_not_poison_the_earlier_proved_start() 
     assert result(events, NativeRedriveBusinessClockWorkflow)["clock"] == [first, None]
 
 
-def test_native_acceptance_prefix_does_not_qualify_core_only_reused_timers() -> None:
+def test_complete_core_acceptance_prefix_retains_reused_timer_time() -> None:
     from tests.test_replay_clock import redrive_fixture
 
     fixture = redrive_fixture("redrive-successor-reused-timer")
@@ -372,16 +372,16 @@ def test_native_acceptance_prefix_does_not_qualify_core_only_reused_timers() -> 
     for index, event in enumerate(events, start=1):
         event["sequence"] = index
 
-    class MixedProducer:
+    class CoreTimer:
         def run(self, ctx: WorkflowContext, name: str, seconds: int):  # type: ignore[no-untyped-def]
             yield ctx.schedule_activity("tests.redrive.first", [name])
             yield ctx.start_timer(seconds)
             return clock_text(ctx)
 
     task = fixture["workflow"]
-    outcome = replay(MixedProducer, events, task["input"], workflow_id=task["workflow_id"],
+    outcome = replay(CoreTimer, events, task["input"], workflow_id=task["workflow_id"],
                      run_id=task["run_id"], payload_codec="avro")
     try:
-        assert outcome.commands == [CompleteWorkflow(None)]
+        assert outcome.commands == [CompleteWorkflow("2026-11-03T00:00:06.000000+00:00")]
     finally:
         outcome.close()
