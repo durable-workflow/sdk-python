@@ -11,7 +11,7 @@ import pytest
 from durable_workflow import ReplayClockUnavailable, serializer, workflow
 from durable_workflow.errors import ActivityFailed, NonDeterministicReplayError, QueryFailed
 from durable_workflow.workflow import CompleteWorkflow, WorkflowContext, _prepare_query_state, query_state, replay
-from tests.business_clock_workflows import ScalarBusinessClockWorkflow, clock_text
+from tests.business_clock_workflows import NativeRedriveBusinessClockWorkflow, ScalarBusinessClockWorkflow, clock_text
 
 
 def history() -> list[dict[str, Any]]:
@@ -304,3 +304,84 @@ def test_cyclic_discard_cleanup_restores_parent_time_and_preserves_original_repl
             return clock_text(ctx)
 
     assert result(history()[:3], Parent) == "2026-11-01T00:00:03.123456+00:00"
+
+
+def _native_fixture() -> dict[str, Any]:
+    from tests.native_redrive_fixture import check_native_redrive_successor
+    from tests.test_replay_clock import redrive_fixture
+
+    fixture = redrive_fixture("business-clock-native-redrive-entry")
+    check_native_redrive_successor(fixture["history"], fixture["workflow"])
+    return fixture
+
+
+@pytest.mark.parametrize("public", [False, True])
+def test_native_same_identity_acceptance_prefix_and_both_time_representations_are_supported(public: bool) -> None:
+    fixture = _native_fixture()
+    events = fixture["history"]
+    if public:
+        for event in events:
+            event["timestamp"] = event.pop("recorded_at")
+    assert result(events, NativeRedriveBusinessClockWorkflow) == fixture["expected"]["command_sequence"][0]["result"]
+
+
+@pytest.mark.parametrize("mutation", ["prefix", "instance", "run", "command", "outcome", "extra_prefix",
+                                      "duplicate_start", "order", "self_source", "start_time"])
+def test_native_entry_refuses_unrelated_prefixes_conflicting_identity_and_ambiguous_start(mutation: str) -> None:
+    events = _native_fixture()["history"]
+    if mutation == "prefix":
+        events[0]["event_type"] = "WorkflowTaskCompleted"
+    elif mutation in {"instance", "run", "command"}:
+        key = {"instance": "workflow_instance_id", "run": "workflow_run_id", "command": "workflow_command_id"}[mutation]
+        events[0]["payload"][key] = "foreign"
+    elif mutation == "outcome":
+        events[0]["payload"]["outcome"] = "started"
+    elif mutation == "extra_prefix":
+        events.insert(0, {"event_type": "WorkflowTaskCompleted", "payload": {}})
+    elif mutation == "duplicate_start":
+        events.insert(2, deepcopy(events[1]))
+    elif mutation == "self_source":
+        events[1]["payload"]["continued_from_run_id"] = events[1]["payload"]["workflow_run_id"]
+        events[-1]["payload"]["reused_from_run_id"] = events[1]["payload"]["workflow_run_id"]
+    elif mutation == "start_time":
+        events[1]["timestamp"] = None
+    for index, event in enumerate(events, start=1):
+        event["sequence"] = index
+    if mutation == "order":
+        events[-1]["sequence"] = 9
+    assert result(events, NativeRedriveBusinessClockWorkflow)["clock"] == [None, None]
+
+
+def test_an_unproved_reused_identity_does_not_poison_the_earlier_proved_start() -> None:
+    fixture = _native_fixture()
+    events = fixture["history"]
+    events[-1]["payload"]["activity_execution_id"] = events[-1]["payload"]["reused_activity_execution_id"]
+    first = fixture["expected"]["command_sequence"][0]["result"]["clock"][0]
+    assert result(events, NativeRedriveBusinessClockWorkflow)["clock"] == [first, None]
+
+
+def test_native_acceptance_prefix_does_not_qualify_core_only_reused_timers() -> None:
+    from tests.test_replay_clock import redrive_fixture
+
+    fixture = redrive_fixture("redrive-successor-reused-timer")
+    events = fixture["history"]
+    accepted = _native_fixture()["history"][0]
+    accepted["payload"].update(workflow_type=events[0]["payload"]["workflow_type"],
+                               workflow_class=events[0]["payload"]["workflow_type"])
+    events.insert(0, accepted)
+    for index, event in enumerate(events, start=1):
+        event["sequence"] = index
+
+    class MixedProducer:
+        def run(self, ctx: WorkflowContext, name: str, seconds: int):  # type: ignore[no-untyped-def]
+            yield ctx.schedule_activity("tests.redrive.first", [name])
+            yield ctx.start_timer(seconds)
+            return clock_text(ctx)
+
+    task = fixture["workflow"]
+    outcome = replay(MixedProducer, events, task["input"], workflow_id=task["workflow_id"],
+                     run_id=task["run_id"], payload_codec="avro")
+    try:
+        assert outcome.commands == [CompleteWorkflow(None)]
+    finally:
+        outcome.close()

@@ -87,6 +87,10 @@ def _kind(event: Mapping[str, Any]) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _recorded_value(event: Mapping[str, Any]) -> Any:
+    return event.get("timestamp") if "timestamp" in event else event.get("recorded_at")
+
+
 def _sequence(payload: Mapping[str, Any]) -> int | None:
     value = payload.get("sequence")
     if type(value) is not int or value < 1:
@@ -111,14 +115,16 @@ class BusinessReplayClock:
         self._source_run: str | None = None
         self._resume_step: int | None = None
         self._redrive_inserted: datetime | None = None
+        self._native_prefix = False
         starts = [index for index, event in enumerate(events) if _kind(event) == "WorkflowStarted"]
         self.initial: tuple[int | None, datetime | None] = (None, None)
         if len(starts) == 1:
             index = starts[0]
             payload = events[index].get("payload")
-            if (index == 0 and isinstance(payload, Mapping)
-                and self._redrive_start(payload, workflow_id, run_id)):
+            if (isinstance(payload, Mapping) and self._start_prefix(index, payload)
+                and self._redrive_start(index, payload, workflow_id, run_id)):
                 self.initial = (index, _time(payload.get("replayed_started_at")))
+                self._native_prefix = index == 1
         self._pending = self.initial
         self._current = self.initial
         for index, event in enumerate(events):
@@ -126,13 +132,26 @@ class BusinessReplayClock:
             if isinstance(payload, Mapping) and (sequence := _sequence(payload)) is not None:
                 self._by_sequence.setdefault(sequence, []).append(index)
 
-    def _redrive_start(self, payload: Mapping[str, Any], workflow_id: str, run_id: str) -> bool:
+    def _start_prefix(self, index: int, payload: Mapping[str, Any]) -> bool:
+        if index == 0:
+            return True
+        if index != 1 or _kind(self.events[0]) != "StartAccepted":
+            return False
+        accepted = self.events[0].get("payload")
+        if not isinstance(accepted, Mapping) or accepted.get("outcome") != "redriven":
+            return False
+        return all(_identity(payload.get(key)) and accepted.get(key) == payload[key]
+                   for key in ("workflow_instance_id", "workflow_run_id", "workflow_command_id"))
+
+    def _redrive_start(self, index: int, payload: Mapping[str, Any], workflow_id: str, run_id: str) -> bool:
         if payload.get("recovery_kind") != "redrive":
             # Ordinary entry needs run.started_at, not history insertion time.
             return False
         keys = ("workflow_instance_id", "workflow_run_id", "workflow_command_id", "continued_from_run_id",
                 "workflow_link_id")
         if not all(_identity(payload.get(key)) for key in keys):
+            return False
+        if payload["workflow_run_id"] == payload["continued_from_run_id"]:
             return False
         if ((workflow_id and payload["workflow_instance_id"] != workflow_id)
             or (run_id and payload["workflow_run_id"] != run_id)):
@@ -143,7 +162,7 @@ class BusinessReplayClock:
         if any(type(event.get("sequence")) is not int or event["sequence"] != index + 1
                for index, event in enumerate(self.events)):
             return False
-        inserted = _time(self.events[0].get("recorded_at"))
+        inserted = _time(_recorded_value(self.events[index]))
         original = _time(payload.get("replayed_started_at"))
         if inserted is None or original is None or original > inserted:
             return False
@@ -173,12 +192,17 @@ class BusinessReplayClock:
             return
         event = self.events[index]
         payload = event["payload"]
-        value = event.get("timestamp") if "timestamp" in event else event.get("recorded_at")
+        value = _recorded_value(event)
         if _kind(event) in {"ActivityCompleted", "TimerFired"} and "reused_recorded_at" in payload:
+            if self._native_prefix and family == "timer":
+                return
             if (self._source_run is None or payload.get("reused_from_run_id") != self._source_run
                 or self._resume_step is None or sequence >= self._resume_step):
                 return
-            if family == "activity" and not _identity(payload.get("reused_activity_execution_id")):
+            if family == "activity" and (
+                not _identity(payload.get("reused_activity_execution_id"))
+                or payload.get("reused_activity_execution_id") == payload.get("activity_execution_id")
+            ):
                 return
             value = payload["reused_recorded_at"]
             original = _time(value)

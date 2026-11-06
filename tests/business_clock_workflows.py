@@ -58,3 +58,11 @@ class ScalarBusinessClockWorkflow:
         thread = await asyncio.to_thread(clock_text, self.ctx)
         await asyncio.sleep(0)
         return before, child, thread, clock_text(self.ctx)
+
+
+@workflow.defn(name="tests.replay.business-clock-native-redrive")
+class NativeRedriveBusinessClockWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        before = clock_text(ctx)
+        yield ctx.schedule_activity("clock.first", [])
+        return {"clock": [before, clock_text(ctx)], "legacy": ctx.now().isoformat(timespec="microseconds")}
