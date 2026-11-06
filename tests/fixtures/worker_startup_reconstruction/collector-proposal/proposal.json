@@ -58,7 +58,19 @@
     "defer_connect": true,
     "guard_initialized_before_connect": true,
     "driver_stdout_stderr": "discard; fixed-code framed output only",
-    "tcp_tls": "explicit SSLContext with selected CA, certificate and hostname verification; default preferred mode refused"
+    "tcp_tls": "explicit SSLContext with selected CA, certificate and hostname verification; default preferred mode refused",
+    "observer_authentication_proposal": {
+      "identity": "dedicated SELECT-only fixture observer",
+      "plugin": "caching_sha2_password",
+      "transport": "required verified TLS",
+      "host_identity": "mysql",
+      "port": 3306,
+      "ca_certificate_hostname_and_grants": null,
+      "original_historical_authentication_provenance": false,
+      "ambient_ca_or_credentials": false,
+      "plugin_switch_or_server_key_fetch": false,
+      "account_or_certificate_creation_selected": false
+    }
   },
   "proposed_bounds": {
     "case_seconds": 30,
@@ -73,7 +85,8 @@
     "observer_within_original_runner_cpu": 1,
     "observer_within_original_runner_memory_mib": 512,
     "independent_observer_container": false,
-    "additional_resources_selected": false
+    "additional_resources_selected": false,
+    "receive_budget_domain": "MySQL protocol bytes, including all raw read-ahead; not total TLS ciphertext or OpenSSL allocation"
   },
   "deadlines": {
     "case": "case_started_monotonic + 30",
@@ -121,7 +134,7 @@
   },
   "implementation_steps": [
     "closed SQL-token adapter and raw tuple normalizer with pure byte fixtures",
-    "pinned private-reader receive guard with inert fragmented-packet controls",
+    "bind initial and post-TLS protocol readers before their first read; retain inert read-ahead controls",
     "absolute-budget and framed-output owner integration with inert blocked/trickling child controls",
     "exact-source/input/owner packet and independent cleanup controls before historical execution"
   ],
@@ -145,5 +158,23 @@
     "containers_started": 0,
     "execution_admitted": false,
     "qualification_result": null
+  },
+  "source_input_decision": "https://github.com/durable-workflow/sdk-python/issues/123#issuecomment-6673104109",
+  "protocol_reader_source": {
+    "primitive": "tests/worker_startup_buffered.py",
+    "buffer": "stock io.BufferedReader over a budgeted raw stream",
+    "logical_request_bound_before_buffer_allocation": true,
+    "raw_reservation_before_read": true,
+    "actual_driver_initial_and_post_tls_assignment_binding": null,
+    "tls_handshake_deadline_enforcement": null,
+    "actual_driver_imported": false,
+    "replacement_streams_share_supplied_phase_budget": true,
+    "proposed_assignment_mixin": "ProtocolFileBinding before pinned Connection; initialize budget before deferred constructor",
+    "pinned_fresh_buffer_assignment_lines": [
+      698,
+      953
+    ],
+    "replacement_with_unread_protocol_data": "refuse",
+    "actual_driver_composition_and_lifecycle_qualification": null
   }
 }

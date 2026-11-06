@@ -17,8 +17,8 @@ No #184 executor, acquisition source or blocked review is reused here.
 Use a dedicated observer process, with one connection and no retry, for each
 before/after SQL pair. The proposed driver family is PyMySQL 1.2.3, source commit
 `c990e86083c26493f3285b1e047902994c4b1811`. Its package archive, complete runtime
-import closure, authentication/TLS dependencies and installed input are **not
-selected or acquired**. Public release/source identity is only an input to this
+import closure, actual authentication/TLS inputs and installed input are **not
+bound or acquired**. Public release/source identity is only an input to this
 proposal; it does not establish a supported or qualified historical tuple.
 
 The first pure source slice now lives in `tests/worker_startup_raw.py`.
@@ -37,22 +37,56 @@ failure, and checks the same monotonic deadline before and after each callback.
 Synthetic callbacks exercise these rules without a driver or socket. The
 wrapper cannot interrupt a blocked callback. It is not wired to the pinned
 driver's private method and proves no actual handshake or receive coverage.
-No driver, terminator validation, process owner, framing or cleanup is
-implemented by these slices. The collector vectors below remain unexecuted,
-and all operating inputs remain unselected.
+
+`tests/worker_startup_buffered.py` places the same reservation beneath a stock
+`io.BufferedReader`. Its raw input must be supplied before the first protocol
+read. A logical request is bounded before buffered allocation; every raw
+request, including read-ahead, is reserved before reading. Cached bytes are not
+charged twice, and replacing a stream retains the same phase budget/deadline.
+The inert predecessor control demonstrates that a one-byte logical callback
+can otherwise fetch 8192 uncharged bytes through stock buffering. Successor
+controls cover that reservation, cached reads, shared streams, oversize/expiry
+refusals, short EOF and close without draining. They use fixture raw streams,
+not a socket or the proposed driver.
+
+The proposed `ProtocolFileBinding` mixin intercepts `_rfile` assignment. The
+bound connection source assigns a fresh `sock.makefile("rb")` in `connect`
+(line 698) and a fresh `self._sock.makefile("rb")` after TLS wrapping (line 953).
+Place this mixin before the pinned `Connection` in the future fixture class's
+method resolution order, initialize its budget before the deferred driver
+constructor, and retain the driver's packet parser and `_read_bytes` method.
+The setter immediately detaches that fresh buffer and installs the budgeted raw
+boundary before its first read. It shares the budget across replacements,
+refuses to discard unread prefetched bytes, and closes a rejected newly owned
+stream. `None` assignment closes without a read or a fresh deadline allowance.
+Freshness of the incoming buffer is a requirement of these two exact source
+sites; the helper does not certify an arbitrary buffer supplied after use.
+
+Five additional inert controls exercise those assignment/replacement/close
+boundaries with stock in-memory I/O. No PyMySQL class has been imported or
+composed. Actual class composition and driver lifecycle qualification, TLS
+handshake deadlines, authentication, result terminators, process ownership,
+framing and cleanup remain unqualified. The collector vectors below remain
+unexecuted, and all actual operating inputs remain unbound.
 
 The process receives only the fixture identity and dedicated SELECT-only
 fixture connection parameters through the future owner's private input channel.
 Never obtain production endpoints, ambient credentials, config files, plugin
-credentials or a user's home defaults. Network membership, peer identity,
-authentication, grants and TLS trust must be fixed in the later input packet.
+credentials or a user's home defaults. The [source/input decision](https://github.com/durable-workflow/sdk-python/issues/123#issuecomment-6673104109)
+selects a dedicated SELECT-only fixture identity using `caching_sha2_password`
+over required verified TLS, with peer hostname `mysql` and port 3306. This is
+new reconstruction input, not recovered original authentication provenance.
+Actual network/peer, CA, hostname-valid certificate, grants, backend/platform
+and full installed closure remain unbound. No account/certificate/key creation
+is selected by the source decision.
 No opportunistic RSA package installation, plaintext fallback, server-key fetch,
 reconnect, discovery or endpoint substitution is permitted.
 For the proposed TCP path, supply an explicit SSLContext with the selected CA,
 certificate verification and hostname verification. This pinned driver makes
 explicit SSL configuration required, while its default preferred mode can fall
 back to plaintext. Default TLS options are therefore inadmissible. The exact
-context, peer and authentication closure still require selection and controls.
+context, peer and authentication closure still require concrete binding and
+controls. Ambient CA defaults and authentication plugin switches are refused.
 
 The driver source has consequential defaults:
 
@@ -63,7 +97,7 @@ The driver source has consequential defaults:
   to show autocommit before either SELECT; refuse an inherited false state
   without changing it. No transaction or time-zone change is proposed.
 - Socket read/write timeouts bound socket operations, not the complete pair.
-  Buffered row reading and multipart packets have no proposed receive bound.
+  Stock buffered row reading and multipart packets have no such receive bound.
   `max_allowed_packet` is not a receive-size limit.
 - Default converters produce Python values including datetimes. The proposed
   raw path disables Unicode and type-code decoders, retaining only the driver's
@@ -72,7 +106,8 @@ The driver source has consequential defaults:
 
 These facts are bound to [connection source](https://github.com/PyMySQL/PyMySQL/blob/c990e86083c26493f3285b1e047902994c4b1811/pymysql/connections.py),
 [cursor source](https://github.com/PyMySQL/PyMySQL/blob/c990e86083c26493f3285b1e047902994c4b1811/pymysql/cursors.py)
-and [converter source](https://github.com/PyMySQL/PyMySQL/blob/c990e86083c26493f3285b1e047902994c4b1811/pymysql/converters.py).
+[converter source](https://github.com/PyMySQL/PyMySQL/blob/c990e86083c26493f3285b1e047902994c4b1811/pymysql/converters.py)
+and [authentication source](https://github.com/PyMySQL/PyMySQL/blob/c990e86083c26493f3285b1e047902994c4b1811/pymysql/_auth.py).
 The future adapter is still missing; stock driver use alone satisfies none of
 the complete-read, byte-limit, absolute-deadline or cleanup obligations below.
 
@@ -88,14 +123,20 @@ SQL, quote them locally, log `mogrify`, or allow arbitrary SQL/token replacement
 The driver's parameter API is documented [here](https://pymysql.readthedocs.io/en/latest/modules/cursors.html#pymysql.cursors.Cursor.execute).
 It performs driver escaping, not server-side prepared execution.
 
-The proposed raw reader checks each requested byte count **before** calling the
-pinned driver's `_read_bytes`. It refuses a request above 32 KiB or cumulative
-receive reservation above 64 KiB for the entire connection/pair, including
-handshake, setup, descriptions, rows and terminators. This also bounds multipart
-assembly: header reservations and every component body consume the same budget.
+The proposed reader bounds the driver's logical requests and reserves raw
+protocol reads, including buffered read-ahead, **before** their read/allocation
+boundary. It refuses a request above 32 KiB or cumulative raw reservation above
+64 KiB for the entire connection/pair, including greeting, auth/setup,
+descriptions, rows and terminators. Multipart headers and every component body
+consume the same protocol budget; cached bytes are not counted a second time.
+These are MySQL protocol reservations, not a total TLS ciphertext, certificate
+record or OpenSSL allocation cap. TLS negotiation, buffering and blocked I/O
+still share the original absolute phase/case deadline and resource envelope.
+They receive no separate allowance, and no custom TLS engine is proposed.
 A failed read does not refund that reservation or permit a retry. The adapter
-must be source-reviewed against this exact private method before adoption; it
-has not been implemented or exercised here.
+must bind both initial and post-TLS raw readers against the pinned connection
+source before adoption. The mixin above is proposed source; its actual driver
+composition and lifecycle have not been exercised here.
 Construct with `defer_connect=True`, initialize the deadline/receive guard before
 any handshake, and connect only after fixture identity/input validation. The
 complete process lifetime and its output are also bounded by the owner. Send

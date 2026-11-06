@@ -53,21 +53,42 @@ class ReceiveBudget:
         if sample >= self._deadline_ns:
             self._refuse("TIME_BUDGET_EXPIRED", "truncated" if self.started else "missing")
 
-    def read(self, count: int) -> bytes:
+    def _validate_request(self, count: int) -> None:
         if self.refusal is not None:
             raise ReadRefusal("READ_ALREADY_REFUSED", self.refusal[1])
         if type(count) is not int or count < 0:
             self._refuse("READ_COUNT_INVALID", "invalid")
-        if count > self.REQUEST_LIMIT or self.reserved_bytes + count > self.PHASE_LIMIT:
+        if count > self.REQUEST_LIMIT:
+            self._refuse("RECEIVE_LIMIT_EXCEEDED", "truncated")
+
+    def check_request(self, count: int) -> None:
+        """Bound a logical request without charging already buffered bytes again."""
+        self._validate_request(count)
+        self._check_time()
+
+    def check_deadline(self) -> None:
+        self._validate_request(0)
+        self._check_time()
+
+    def read(self, count: int) -> bytes:
+        return self._read(count, self._read_bytes, exact=True)
+
+    def read_some(self, count: int, read_bytes: Callable[[int], bytes]) -> bytes:
+        """Charge a raw-stream reservation; short returns never refund it."""
+        return self._read(count, read_bytes, exact=False)
+
+    def _read(self, count: int, read_bytes: Callable[[int], bytes], *, exact: bool) -> bytes:
+        self._validate_request(count)
+        if self.reserved_bytes + count > self.PHASE_LIMIT:
             self._refuse("RECEIVE_LIMIT_EXCEEDED", "truncated")
         self._check_time()
         self.reserved_bytes += count
         self.started = True
         try:
-            value = self._read_bytes(count)
+            value = read_bytes(count)
         except Exception:
             self._refuse("RAW_READ_FAILED", "truncated")
         self._check_time()
-        if type(value) is not bytes or len(value) != count:
+        if type(value) is not bytes or len(value) > count or (exact and len(value) != count):
             self._refuse("RAW_READ_INCOMPLETE", "truncated")
         return value

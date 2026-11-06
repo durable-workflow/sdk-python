@@ -1080,11 +1080,18 @@ def _tracked_worktree_files(root: Path) -> dict[str, bytes]:
 
 def _ref_files(root: Path, ref: str) -> dict[str, bytes]:
     paths = _run(["git", "ls-tree", "-r", "--name-only", "-z", ref], root).split("\0")
-    return {
-        path: _run(["git", "show", f"{ref}:{path}"], root).encode()
-        for path in paths
-        if path
-    }
+    files = {}
+    for path in filter(None, paths):
+        # Assets may be binary, and immutable fixtures retain their exact line endings.
+        result = subprocess.run(
+            ["git", "show", "--end-of-options", f"{ref}:{path}"],
+            cwd=root, capture_output=True, check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise CorpusError(f"git show {ref}:{path} failed: {detail}")
+        files[path] = result.stdout
+    return files
 
 
 def _matches(path: str, pattern: str) -> bool:
@@ -1415,7 +1422,11 @@ def validate(
     base_files: dict[str, bytes] = {}
     base_evidence: list[Evidence] = []
     if base_ref and not ZERO_COMMIT.fullmatch(base_ref):
-        _run(["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"], root)
+        base_ref = _run(
+            ["git", "rev-parse", "--verify", "--end-of-options", f"{base_ref}^{{commit}}"], root,
+        ).strip()
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base_ref):
+            raise CorpusError("base ref must resolve to a complete Git commit ID")
         changed, added_paths = _changed_paths(root, base_ref)
         base_files = _ref_files(root, base_ref)
         try:

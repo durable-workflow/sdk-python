@@ -38,6 +38,12 @@
       "blob": "e1afd4f8e5171aa139bc6ec3c41c9a38a7252ba8",
       "bytes": 1492,
       "sha256": "0c3fbc0b53bdaad91e4036c511662d282e7a858192a37e952c0a822a8bf8f7ca"
+    },
+    {
+      "path": "pymysql/_auth.py",
+      "blob": "77123d731334783e31a82ff827d0eb469fbfb8c0",
+      "bytes": 7636,
+      "sha256": "0ac2af5973379f156136aefdac9da0c296e3246860999d3446c46325f337a9dc"
     }
   ],
   "status": "public-source-only-unexecuted-driver-proposal",
@@ -93,5 +99,6 @@
       "bytes": 675,
       "sha256": "025db37ab5311650d694f139941e206c2ae085d9b862426efa409a53ddd2ae13"
     }
-  ]
+  ],
+  "source_input_decision": "https://github.com/durable-workflow/sdk-python/issues/123#issuecomment-6673104109"
 }
