@@ -137,9 +137,10 @@ def test_close_is_idempotent_and_does_not_drain_protocol_data() -> None:
 def test_an_existing_buffered_reader_is_not_admitted_as_a_raw_source() -> None:
     raw = RecordingRaw(b"x")
     buffered = io.BufferedReader(raw)
+    budget = ReceiveBudget(lambda _: b"", 10, clock=lambda: 1)
     try:
         with pytest.raises(TypeError, match="unbuffered raw stream"):
-            ProtocolReader(buffered, ReceiveBudget(lambda _: b"", 10, clock=lambda: 1))
+            ProtocolReader(buffered, budget)
         assert raw.requests == []
     finally:
         buffered.close()

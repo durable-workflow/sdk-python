@@ -1084,7 +1084,8 @@ def _ref_files(root: Path, ref: str) -> dict[str, bytes]:
     for path in filter(None, paths):
         # Assets may be binary, and immutable fixtures retain their exact line endings.
         result = subprocess.run(
-            ["git", "show", f"{ref}:{path}"], cwd=root, capture_output=True, check=False,
+            ["git", "show", "--end-of-options", f"{ref}:{path}"],
+            cwd=root, capture_output=True, check=False,
         )
         if result.returncode != 0:
             detail = result.stderr.decode("utf-8", errors="replace").strip()
