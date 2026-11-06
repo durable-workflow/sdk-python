@@ -2202,7 +2202,9 @@ class WorkflowContext:
         if self._current_time is None and _allow_wall_clock:
             self._current_time = datetime.now(timezone.utc)
         self._replay_clock_error: str | None = None
-        self._business_clock = replay_clock.BusinessReplayClock([], workflow_id, run_id)
+        self._business_clock = replay_clock.BusinessReplayClock(
+            [], workflow_id, run_id, sequence_claim=_workflow_sequence,
+        )
         self._workflow_command_id = workflow_command_id or run_id or workflow_id
         self._cancel_requested = bool(cancel_requested)
         self._cancellation_request_id: str | None = None
@@ -5139,7 +5141,9 @@ def _replay_state(
         _allow_wall_clock=not events,
     )
     ctx._replay_clock_error = replay_clock_error if workflow_start_time is None else None
-    ctx._business_clock = replay_clock.BusinessReplayClock(events, workflow_id or "", run_id)
+    ctx._business_clock = replay_clock.BusinessReplayClock(
+        events, workflow_id or "", run_id, sequence_claim=_workflow_sequence,
+    )
     lifetime = _ReplayLifetime(ctx.logger)
 
     def _set_replaying(replaying: bool) -> None:
