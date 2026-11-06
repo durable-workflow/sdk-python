@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -168,16 +169,22 @@ def test_wrong_documentation_revision_refuses_before_publication_lookup(tmp_path
     assert calls == ""
 
 
-def test_current_workflow_owns_docs_and_the_central_apt_floor() -> None:
+def test_current_workflow_owns_docs_and_published_sdk_checkouts() -> None:
     steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build"]["steps"]
     checkouts = [step for step in steps if step.get("uses", "").startswith("actions/checkout@")]
     assert checkouts[0]["with"]["ref"] == "${{ github.sha }}"
     assert checkouts[1]["with"]["path"] == ".docs-sdk"
     assert all(step["with"]["persist-credentials"] is False for step in checkouts)
-    apt = next(i for i, step in enumerate(steps) if step.get("uses", "").startswith(
-        "durable-workflow/.github/.github/actions/require-fixed-apt@"))
-    chromium = next(i for i, step in enumerate(steps) if step.get("name") == "Install Chromium")
-    assert apt < chromium
+
+
+@pytest.mark.parametrize("workflow", ["docs.yml", "docs-pr.yml"])
+def test_bundled_browser_command_has_no_system_dependency_install_or_fallback(workflow: str) -> None:
+    document = yaml.safe_load(WORKFLOW.with_name(workflow).read_text())
+    steps = next(iter(document["jobs"].values()))["steps"]
+    chromium = next(step for step in steps if step.get("name") == "Install Chromium")
+    assert shlex.split(chromium["run"]) == ["python", "-m", "playwright", "install", "chromium"]
+    assert chromium["env"]["NODE_TLS_REJECT_UNAUTHORIZED"] == "1"
+    assert chromium["env"]["NODE_OPTIONS"] == "--use-openssl-ca"
 
 
 @pytest.mark.parametrize("url", [

@@ -7,10 +7,14 @@ import argparse
 import contextlib
 import functools
 import http.server
+import importlib.metadata
+import json
+import platform
 import threading
 from pathlib import Path
 from typing import Any
 
+import playwright as playwright_package
 from playwright.sync_api import Browser, Page, sync_playwright
 
 FOCUSED = "element => element === document.activeElement"
@@ -276,6 +280,24 @@ def check_api_views(browser: Browser, base_url: str) -> None:
                 page.close()
 
 
+def browser_evidence(browser: Browser) -> dict[str, str]:
+    manifest_path = Path(playwright_package.__file__).parent / "driver" / "package" / "browsers.json"
+    manifest = json.loads(manifest_path.read_text())
+    selected = next(item for item in manifest["browsers"] if item["name"] == "chromium-headless-shell")
+    proof = {
+        "playwright_version": importlib.metadata.version("playwright"),
+        "selection": "Playwright default bundled headless Chromium",
+        "bundled_revision": selected["revision"],
+        "bundled_version": selected["browserVersion"],
+        "launched_version": browser.version,
+        "os": platform.system(),
+        "architecture": platform.machine(),
+    }
+    print(json.dumps(proof, sort_keys=True))
+    assert proof["launched_version"] == proof["bundled_version"], "Launched browser differs from the locked bundle"
+    return proof
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("site", nargs="?", type=Path, default=Path("site"))
@@ -288,8 +310,10 @@ def main() -> int:
     with serve(site) as base_url, sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         try:
+            proof = browser_evidence(browser)
             if args.screenshots:
                 args.screenshots.mkdir(parents=True, exist_ok=True)
+                (args.screenshots / "browser-evidence.json").write_text(json.dumps(proof, indent=2) + "\n")
             check_landing_views(browser, base_url, args.screenshots)
             check_api_views(browser, base_url)
 
