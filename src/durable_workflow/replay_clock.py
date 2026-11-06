@@ -26,6 +26,7 @@ _CHILD_TERMINALS = frozenset({"ChildRunCompleted", "ChildRunFailed", "ChildRunCa
 _CHILD_IDENTITIES = ("child_call_id", "child_workflow_instance_id", "child_workflow_run_id", "child_workflow_type")
 _CHILD_EVENTS = frozenset({"ChildWorkflowScheduled", "ChildRunStarted", *_CHILD_TERMINALS})
 _CHILD_FAMILY = "child workflow"
+_REUSE_FIELDS = ("reused_from_run_id", "reused_recorded_at", "reused_activity_execution_id")
 
 
 def _task() -> object | None:
@@ -123,6 +124,18 @@ def _identity(value: Any) -> TypeGuard[str]:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _declares_redrive(event: Mapping[str, Any]) -> bool:
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping):
+        return False
+    if _kind(event) == "StartAccepted":
+        return payload.get("outcome") == "redriven"
+    return _kind(event) == "WorkflowStarted" and (
+        payload.get("recovery_kind") == "redrive"
+        or "replayed_started_at" in payload or "resume_step_sequence" in payload
+    )
+
+
 class BusinessReplayClock:
     """Index identities once, then read time only at actual scalar consumption."""
 
@@ -133,6 +146,7 @@ class BusinessReplayClock:
         self._source_run: str | None = None
         self._resume_step: int | None = None
         self._redrive_inserted: datetime | None = None
+        self._redrive_declared = any(_declares_redrive(event) for event in events)
         starts = [index for index, event in enumerate(events) if _kind(event) == "WorkflowStarted"]
         self.initial: tuple[int | None, datetime | None] = (None, None)
         if len(starts) == 1:
@@ -218,11 +232,23 @@ class BusinessReplayClock:
             return
         event = self.events[index]
         payload = event["payload"]
-        if _kind(event) in {"ActivityCompleted", "TimerFired"} and "reused_recorded_at" in payload:
-            time = self._reused_time(payload, family, sequence)
-        else:
-            time = _time(_recorded_value(event))
+        time = (_time(_recorded_value(event)) if family == _CHILD_FAMILY
+                else self._scalar_time(event, payload, family, sequence))
         self._pending = (index, time)
+
+    def _scalar_time(
+        self, event: Mapping[str, Any], payload: Mapping[str, Any], family: str, sequence: int,
+    ) -> datetime | None:
+        if self._redrive_declared and self._source_run is None:
+            return None
+        before_resume = self._resume_step is not None and sequence < self._resume_step
+        if _kind(event) in {"ActivityCompleted", "TimerFired"} and (
+            before_resume or any(key in payload for key in _REUSE_FIELDS)
+        ):
+            # The validated resume boundary implies reuse even when both
+            # markers are missing. Insertion time cannot replace its source.
+            return self._reused_time(payload, family, sequence)
+        return _time(_recorded_value(event))
 
     def _child_boundary(self, index: int, sequence: int) -> bool:
         indices = self._by_sequence.get(sequence, [])
