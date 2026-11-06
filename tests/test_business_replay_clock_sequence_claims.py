@@ -95,10 +95,11 @@ def test_nonparseable_digit_counter_preserves_the_original_parser_error() -> Non
         result(events)
 
 
-def test_unclaimed_opening_does_not_poison_an_unrelated_proved_sequence() -> None:
+def test_unclaimed_foreign_opening_does_not_poison_a_proved_sequence() -> None:
     events = history()
     expected = result(events)
     duplicate = deepcopy(events[1])
     duplicate["payload"]["sequence"] = "not-a-counter"
+    duplicate["payload"]["activity_execution_id"] = "unrelated-activity"
     events.insert(1, duplicate)
     assert result(events) == expected
