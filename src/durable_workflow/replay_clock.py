@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, ParamSpec, TypeGuard, TypeVar
 
 from .errors import ReplayClockUnavailable
+from .replay_clock_math import canonical_milliseconds, from_canonical_milliseconds
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -27,6 +28,11 @@ _CHILD_IDENTITIES = ("child_call_id", "child_workflow_instance_id", "child_workf
 _CHILD_EVENTS = frozenset({"ChildWorkflowScheduled", "ChildRunStarted", *_CHILD_TERMINALS})
 _CHILD_FAMILY = "child workflow"
 _REUSE_FIELDS = ("reused_from_run_id", "reused_recorded_at", "reused_activity_execution_id")
+_GROUP_FIELDS = ("parallel_group_id", "parallel_group_kind", "parallel_group_base_sequence",
+                 "parallel_group_size", "parallel_group_index")
+_SELECTION_FIELDS = ("selection_member_key", "selection_member_index", "selection_member_base_sequence",
+                     "selection_member_size", "selection_member_kind")
+_GroupMember = tuple[int | None, int, str, Sequence[Mapping[str, Any]] | None]
 
 
 def _task() -> object | None:
@@ -139,8 +145,75 @@ def _declares_redrive(event: Mapping[str, Any]) -> bool:
     )
 
 
+def _all_group_mode(payload: Mapping[str, Any]) -> bool:
+    return (payload.get("parallel_group_mode") in (None, "all")
+            and all(payload.get(field) is None for field in _SELECTION_FIELDS))
+
+
+def _group_entry_matches(actual: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+    return _all_group_mode(actual) and all(
+        type(actual.get(field)) is type(expected[field]) and actual.get(field) == expected[field]
+        for field in _GROUP_FIELDS
+    )
+
+
+def _group_payload_matches(payload: Mapping[str, Any], expected: Sequence[Mapping[str, Any]]) -> bool:
+    if (not expected or not _all_group_mode(payload)
+        or payload.get("execution_mode") not in (None, "remote") or payload.get("local_activity") is True
+        or payload.get("cancellation_scope_id") not in (None, "root")
+        or payload.get("selection_group") is not None or payload.get("parallel_group") is not None):
+        return False
+    path = payload.get("parallel_group_path")
+    if path in (None, []):
+        return len(expected) == 1 and _group_entry_matches(payload, expected[0])
+    if not isinstance(path, list) or len(path) != len(expected):
+        return False
+    if not all(isinstance(entry, Mapping) and _group_entry_matches(entry, wanted)
+               for entry, wanted in zip(path, expected, strict=True)):
+        return False
+    # Top-level fields are aliases for the innermost path entry. A partial
+    # alias may not contradict the complete path or coerce its counter types.
+    return all(field not in payload or (
+        type(payload[field]) is type(expected[-1][field]) and payload[field] == expected[-1][field]
+    ) for field in _GROUP_FIELDS)
+
+
+def _group_event_time(event: Mapping[str, Any]) -> datetime | None:
+    # Core's Activity-all path uses these model fields, not RedriveReplayClock.
+    value = event.get("recorded_at")
+    time = _time(event.get("created_at") if value is None else value)
+    if "timestamp" in event and _time(event["timestamp"]) != time:
+        return None
+    return time
+
+
+def _activity_group_time(events: Sequence[Mapping[str, Any]], failed_member: int | None) -> datetime | None:
+    candidates: list[tuple[int, datetime, int]] = []
+    for offset, event in enumerate(events):
+        failed = _kind(event) != "ActivityCompleted"
+        if failed != (failed_member is not None):
+            if failed:
+                return None
+            continue  # Successful siblings do not choose the failure clock.
+        time = _group_event_time(event)
+        milliseconds = canonical_milliseconds(time) if time is not None else None
+        if time is None or milliseconds is None:
+            return None
+        candidates.append((milliseconds, time, offset))
+    if not candidates:
+        return None
+    if failed_member is not None:
+        winner = min(candidates, key=lambda candidate: candidate[0])
+        # Preserve the existing SDK exception when the canonical-v1 selector
+        # chooses another member. That open outcome gap has no clock authority.
+        return from_canonical_milliseconds(winner[0]) if winner[2] == failed_member else None
+    # max retains the first descriptor on equal canonical milliseconds. Keep its
+    # full event precision, never the last row or a maximum over all history.
+    return max(candidates, key=lambda candidate: candidate[0])[1]
+
+
 class BusinessReplayClock:
-    """Index identities once, then read time only at actual scalar consumption."""
+    """Index identities once, then read time only at qualified consumption."""
 
     def __init__(
         self, events: Sequence[Mapping[str, Any]], workflow_id: str, run_id: str,
@@ -149,6 +222,7 @@ class BusinessReplayClock:
         self.events = events
         self._by_sequence: dict[int, list[int]] = {}
         self._child_calls: dict[str, list[int]] = {}
+        self._activity_executions: dict[str, list[int]] = {}
         self._source_run: str | None = None
         self._resume_step: int | None = None
         self._redrive_inserted: datetime | None = None
@@ -161,8 +235,8 @@ class BusinessReplayClock:
             if (isinstance(payload, Mapping) and self._start_prefix(index, payload)
                 and self._redrive_start(index, payload, workflow_id, run_id)):
                 self.initial = (index, _time(payload.get("replayed_started_at")))
-        self._pending = self.initial
-        self._current = self.initial
+        self._pending: tuple[int | None, datetime | None] = self.initial
+        self._current: tuple[int | None, datetime | None] = self.initial
         for index, event in enumerate(events):
             self._index_event(index, event, sequence_claim)
 
@@ -179,6 +253,9 @@ class BusinessReplayClock:
         call = payload.get("child_call_id")
         if _kind(event) in _CHILD_EVENTS and _identity(call):
             self._child_calls.setdefault(call, []).append(index)
+        execution = payload.get("activity_execution_id")
+        if _identity(execution):
+            self._activity_executions.setdefault(execution, []).append(index)
 
     def _start_prefix(self, index: int, payload: Mapping[str, Any]) -> bool:
         if index == 0:
@@ -231,6 +308,60 @@ class BusinessReplayClock:
 
     def unavailable(self) -> None:
         self._current = self._pending = (None, None)
+
+    def preserve_boundary(self) -> None:
+        """An empty group consumes no new event and retains the proved prefix."""
+        self._pending = self._current
+
+    def observe_activity_group(
+        self, members: Sequence[_GroupMember], failed_member: int | None, *, reconstruction: bool,
+    ) -> None:
+        self._pending = (None, None)
+        # Core's successful query group-send supplies no new time. Body and
+        # callback reconstruction cannot borrow an executor-only aggregate.
+        if reconstruction or not members or not members[0][3]:
+            return
+        root = members[0][3][0]
+        if (root.get("parallel_group_base_sequence") != members[0][1]
+            or root.get("parallel_group_size") != len(members)):
+            return
+        events: list[Mapping[str, Any]] = []
+        executions: set[str] = set()
+        for offset, member in enumerate(members):
+            path = member[3]
+            expected_root = {**root, "parallel_group_index": offset}
+            if (not path or not _group_entry_matches(path[0], expected_root)
+                or member[1] != members[0][1] + offset):
+                return
+            event = self._activity_group_boundary(member)
+            if event is None:
+                return
+            execution = event["payload"]["activity_execution_id"]
+            if execution in executions:
+                return
+            executions.add(execution)
+            events.append(event)
+        self._pending = (None, _activity_group_time(events, failed_member))
+
+    def _activity_group_boundary(self, member: _GroupMember) -> Mapping[str, Any] | None:
+        index, sequence, activity_type, path = member
+        indices = self._by_sequence.get(sequence, [])
+        if index is None or not path or len(indices) not in (2, 3) or indices[-1] != index:
+            return None
+        kinds = [_kind(self.events[position]) for position in indices]
+        if (kinds[0] != "ActivityScheduled" or kinds[-1] not in _ACTIVITY_TERMINALS
+            or len(kinds) == 3 and kinds[1] != "ActivityStarted"):
+            return None
+        event = self.events[index]
+        execution = event["payload"].get("activity_execution_id")
+        if not _identity(execution) or self._activity_executions.get(execution) != indices:
+            return None
+        for position in indices:
+            body = self.events[position]["payload"]
+            if (_sequence(body) != sequence or body.get("activity_execution_id") != execution
+                or body.get("activity_type") != activity_type or not _group_payload_matches(body, path)):
+                return None
+        return event
 
     def observe(self, index: int | None, family: str, sequence: int) -> None:
         self._pending = (None, None)

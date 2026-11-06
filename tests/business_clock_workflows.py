@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from durable_workflow import workflow
-from durable_workflow.errors import ChildWorkflowFailed, DurableWorkflowError
+from durable_workflow.errors import ActivityFailed, ChildWorkflowFailed, DurableWorkflowError
 from durable_workflow.workflow import WorkflowContext
 
 
@@ -105,3 +105,37 @@ class ChildBusinessClockWorkflow:
     @workflow.query("explode")
     def explode(self) -> None:
         raise ValueError("child-clock-query-error")
+
+
+@workflow.defn(name="tests.replay.business-clock-parallel-activity")
+class ParallelActivityBusinessClockWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        self.ctx = ctx
+        observed = [clock_text(ctx)]
+        legacy = [ctx.now().isoformat(timespec="microseconds")]
+        values = yield [ctx.schedule_activity("group.0", []), ctx.schedule_activity("group.1", [])]
+        observed.append(clock_text(ctx))
+        legacy.append(ctx.now().isoformat(timespec="microseconds"))
+        failure = None
+        try:
+            yield [ctx.schedule_activity("group.0", []), ctx.schedule_activity("group.1", [])]
+        except ActivityFailed as error:
+            failure = {"activity_type": error.activity_type, "message": str(error)}
+        observed.append(clock_text(ctx))
+        legacy.append(ctx.now().isoformat(timespec="microseconds"))
+        return {"values": values, "clock": observed, "legacy": legacy, "failure": failure}
+
+    @workflow.query("clock")
+    def clock(self) -> str | None:
+        return clock_text(self.ctx)
+
+
+@workflow.defn(name="tests.replay.business-clock-parallel-failure-gap")
+class ParallelFailureBusinessClockWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield [ctx.schedule_activity("group.0", []), ctx.schedule_activity("group.1", [])]
+        except ActivityFailed as error:
+            return {"activity_type": error.activity_type, "message": str(error), "clock": clock_text(ctx),
+                    "legacy": ctx.now().isoformat(timespec="microseconds")}
+        raise AssertionError("expected the recorded group failure")
