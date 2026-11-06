@@ -1,0 +1,49 @@
+<header class="md-header dw-header" data-md-component="header">
+  <div class="dw-global-bar md-grid">
+    <a class="dw-brand" href="{{ nav.homepage.url | url }}" aria-label="Durable Workflow Python home">
+      <img class="dw-brand__mark" src="{{ 'assets/logo.svg' | url }}" width="30" height="30" alt="">
+      <span class="dw-brand__name">Durable Workflow</span><span class="dw-brand__slash" aria-hidden="true">/</span><span class="dw-brand__surface">python</span>
+    </a>
+    <nav class="dw-global-nav" aria-label="Global navigation">
+      <a href="https://durable-workflow.com/docs/introduction/">Docs</a>
+      <details class="dw-sdk-switcher" data-sdk-switcher>
+        <summary aria-label="SDK documentation, current SDK Python">SDKs <span aria-hidden="true">⌄</span></summary>
+        <ul>
+          <li><a href="https://python.durable-workflow.com/" aria-current="location">Python <span aria-hidden="true">✓</span></a></li>
+          <li><a href="https://rust.durable-workflow.com/">Rust</a></li>
+          <li><a href="https://php.durable-workflow.com/">PHP</a></li>
+        </ul>
+      </details>
+      <a href="https://cloud.durable-workflow.com/">Cloud</a>
+      <a href="https://cloud.durable-workflow.com/pricing">Pricing</a>
+      <a href="https://status.durable-workflow.com/">Status</a>
+    </nav>
+    <div class="dw-global-actions">
+      <a class="dw-github-link" href="{{ config.repo_url }}">GitHub</a>
+      <a class="dw-button dw-button--primary" href="{{ nav.homepage.url | url }}#first-workflow">Get started</a>
+    </div>
+  </div>
+  <nav class="dw-docs-toolbar md-header__inner md-grid" aria-label="Python documentation controls">
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Open documentation navigation">
+      {% include '.icons/material/menu.svg' %}
+    </label>
+    <a class="dw-docs-toolbar__title" href="{{ 'sdk-reference/' | url }}">Python documentation</a>
+    <span class="dw-channel-label">{{ 'Published ' ~ config.extra.published_sdk_version if config.extra.docs_channel == 'stable' else 'Source preview' }}</span>
+    <div class="dw-docs-toolbar__controls">
+      {% if config.theme.palette and not config.theme.palette is mapping %}
+        {% include 'partials/palette.html' %}
+        {% include 'partials/javascripts/palette.html' %}
+      {% endif %}
+      {% if config.extra.alternate %}{% include 'partials/alternate.html' %}{% endif %}
+      {% if 'material/search' in config.plugins %}
+        {% set search = config.plugins['material/search'] | attr('config') %}
+        {% if search.enabled %}
+          <label class="md-header__button md-icon" for="__search" aria-label="Search documentation">
+            {% include '.icons/material/magnify.svg' %}
+          </label>
+          {% include 'partials/search.html' %}
+        {% endif %}
+      {% endif %}
+    </div>
+  </nav>
+</header>
