@@ -27,6 +27,13 @@ class DurableWorkflowError(Exception):
     """Base class for every exception raised by the SDK."""
 
 
+class ReplayClockUnavailable(DurableWorkflowError):
+    """The current execution has no proved business replay-time boundary."""
+
+    def __init__(self) -> None:
+        super().__init__("business replay time is unavailable at this execution boundary")
+
+
 class FailureReportTooLarge(DurableWorkflowError, ValueError):
     """Required failure identity or semantics cannot fit the reporting budget.
 

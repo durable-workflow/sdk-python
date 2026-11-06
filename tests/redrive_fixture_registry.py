@@ -7,6 +7,10 @@ SHA-256 is pinned, it must keep failing ``check_redrive_successor`` with the
 named error, and its named replacement must pass. The gate in
 ``tests/test_redrive_successor_evidence.py`` requires every fixture that
 looks like a redrive to be registered here.
+
+Native successors have a separate closed activity-only writer profile. Every
+such fixture must pass that profile, while the existing Core checker and all
+of its positive/negative expectations remain unchanged.
 """
 
 from __future__ import annotations
@@ -38,6 +42,19 @@ VALID_SUCCESSORS: dict[str, int] = {
     # Added by #239: redrive-reused-upserts-cancellation-clock with the
     # request's command_type, which Core WorkflowStub::recordCancellationRequest always writes.
     "redrive-successor-reused-upserts-cancellation-clock": 3,
+}
+
+# Native redrive retains a same-identity StartAccepted row and reuses only
+# activities. Its separate closed writer profile must pass; Core's checker
+# remains unchanged and must continue to reject this different shape.
+NATIVE_SUCCESSORS: dict[str, int] = {
+    "business-clock-native-redrive-entry": 2,
+}
+
+# The complete Core writer retains the same acceptance row as native. Its
+# finite prefix adapter must validate that row before the unchanged Core gate.
+ACCEPTED_CORE_SUCCESSORS: dict[str, int] = {
+    "business-clock-core-redrive-acceptance-timer": 3,
 }
 
 NON_QUALIFYING: dict[str, NonQualifying] = {

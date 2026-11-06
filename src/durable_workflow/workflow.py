@@ -35,7 +35,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
 
-from . import serializer
+from . import replay_clock, serializer
 from ._cancellation_scope import CancellationScopeHistory, scope_identity
 from ._cancellation_scope_history import (
     CancellationScopeDeliveryIntent,
@@ -68,6 +68,7 @@ from .errors import (
     NexusOperationFailed,
     NonDeterministicReplayError,
     QueryFailed,
+    ReplayClockUnavailable,
     SagaCompensationFailed,
     TypedValueError,
     WorkflowCancelled,
@@ -2201,6 +2202,7 @@ class WorkflowContext:
         if self._current_time is None and _allow_wall_clock:
             self._current_time = datetime.now(timezone.utc)
         self._replay_clock_error: str | None = None
+        self._business_clock = replay_clock.BusinessReplayClock([], workflow_id, run_id)
         self._workflow_command_id = workflow_command_id or run_id or workflow_id
         self._cancel_requested = bool(cancel_requested)
         self._cancellation_request_id: str | None = None
@@ -2854,6 +2856,20 @@ class WorkflowContext:
             )
         return self._current_time
 
+    def replay_now(self) -> datetime:
+        """Return the proved UTC instant of the supported consumed boundary.
+
+        This additive clock supports scalar persisted activities/timers and an
+        explicit redrive start. Ordinary entry, inline/local/grouped operations
+        and unproved callbacks remain unavailable. Repeated reads are stable;
+        equal/backward recorded times retain their values and precision. Adopt
+        business-time decisions through normal workflow versioning. ``now()``
+        remains the legacy fixed-start accessor, and timestamps are not order IDs.
+        """
+        if self._cancellation_context is not None or self._cancellation_scope_id != "root":
+            raise ReplayClockUnavailable()
+        return replay_clock.read(self)
+
     def random(self) -> random.Random:
         return self._rng
 
@@ -2905,6 +2921,7 @@ class _ReplayLifetime:
         self.generator: Any = None
         self.awaitable: Any = None
 
+    @replay_clock.discarded
     def close(self) -> None:
         self.logger._set_replaying(True)
         awaitable, self.awaitable = self.awaitable, None
@@ -3085,9 +3102,10 @@ class Replayer:
 class _ReplayState:
     outcome: ReplayOutcome
     instance: Any
+    context: WorkflowContext
 
 
-def _consume_replay_result(state: _ReplayState, result: Any) -> Any:
+def _consume_replay_result(state: _ReplayState, result: Any, *, business_clock: bool = False) -> Any:
     """Detach a handler value before discarded replay cleanup can mutate it."""
     if inspect.isawaitable(result):
         if state.outcome._lifetime is not None:
@@ -3095,7 +3113,10 @@ def _consume_replay_result(state: _ReplayState, result: Any) -> Any:
 
         async def consume() -> Any:
             try:
-                return deepcopy(await result)
+                owner = state.context if business_clock else None
+                time = state.context._business_clock.snapshot() if business_clock else None
+                with replay_clock.execution_scope(owner, time):
+                    return deepcopy(await result)
             finally:
                 state.outcome.close()
 
@@ -3506,10 +3527,11 @@ def _prepare_query_state(
 
     def invoke() -> Any:
         try:
-            result = _invoke_workflow_handler(
-                handler, list(args) if args is not None else [], workflow_cls, method_name, allow_async=True,
-            )
-            return _consume_replay_result(state, result)
+            with replay_clock.execution_scope(state.context, state.context._business_clock.snapshot()):
+                result = _invoke_workflow_handler(
+                    handler, list(args) if args is not None else [], workflow_cls, method_name, allow_async=True,
+                )
+                return _consume_replay_result(state, result, business_clock=True)
         except QueryFailed:
             state.outcome.close()
             raise
@@ -3559,6 +3581,7 @@ def query_state(
         raise QueryFailed(str(exc)) from exc
 
 
+@replay_clock.isolated
 def apply_update(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
@@ -3798,6 +3821,7 @@ def _prepare_update_validation(
     return invoke
 
 
+@replay_clock.isolated
 def _invoke_update_validator(
     validator: Callable[..., Any],
     args: list[Any],
@@ -4795,6 +4819,7 @@ def _assert_cancellation_scope_replay_supported(
             )
 
 
+@replay_clock.isolated
 def _replay_state(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
@@ -5114,6 +5139,7 @@ def _replay_state(
         _allow_wall_clock=not events,
     )
     ctx._replay_clock_error = replay_clock_error if workflow_start_time is None else None
+    ctx._business_clock = replay_clock.BusinessReplayClock(events, workflow_id or "", run_id)
     lifetime = _ReplayLifetime(ctx.logger)
 
     def _set_replaying(replaying: bool) -> None:
@@ -5176,7 +5202,7 @@ def _replay_state(
             ],
         )
         outcome._lifetime = lifetime
-        return _ReplayState(outcome=outcome, instance=instance)
+        return _ReplayState(outcome=outcome, instance=instance, context=ctx)
 
     resolved_results: list[Any] = []
     recorded_steps: list[_RecordedStep] = []
@@ -5970,6 +5996,7 @@ def _replay_state(
     update_registry: dict[str, str] = getattr(workflow_cls, "__workflow_updates__", {}) or {}
 
     def _apply_receiver(receiver: _PendingReceiver) -> None:
+        ctx._business_clock.unavailable()
         if receiver.kind == "signal":
             if receiver.name == MESSAGE_STREAM_SIGNAL:
                 ctx._accept_message_stream(receiver.args)
@@ -6160,7 +6187,8 @@ def _replay_state(
     # by a successfully bound body is still an actual workflow failure.
     try:
         _refresh_replay_logging()
-        gen = entry(ctx, *start_input)
+        with replay_clock.execution_scope(ctx, ctx._business_clock.initial[1]):
+            gen = entry(ctx, *start_input)
     except NonDeterministicReplayError:
         raise
     except LocalActivityExecutionAborted:
@@ -6178,6 +6206,9 @@ def _replay_state(
         return _state([CompleteWorkflow(result=gen)])
 
     lifetime.generator = gen
+
+    def _resume_business(function: Callable[[Any], Any], value: Any) -> Any:
+        return ctx._business_clock.resume(ctx, function, value)
 
     _set_replaying(True)
 
@@ -7068,6 +7099,7 @@ def _replay_state(
         return _state(commands + [CompleteWorkflow(result=value)])
 
     def _consume_cancellation(command: Any, boundary: CancellationDelivery) -> _ReplayState | None:
+        ctx._business_clock.unavailable()
         nonlocal cancellation_consumed, authored_sequence, wait_yield_count, advanced_cmd
         if ctx._cancellation_scope_id != "root" or _scope_call_membership(command) != "root":
             raise NonDeterministicReplayError(
@@ -7102,7 +7134,7 @@ def _replay_state(
             authored_sequence += 1
         try:
             _refresh_replay_logging()
-            advanced_cmd = gen.throw(WorkflowCancelled(
+            advanced_cmd = _resume_business(gen.throw, WorkflowCancelled(
                 "workflow cancellation was requested", request_id=boundary.request_id,
                 context=ctx._cancellation_context,
             ))
@@ -7178,6 +7210,7 @@ def _replay_state(
             ctx._observe_cancellation_replay_time(events[index])
 
     def _consume_scope_delivery(command: Any, delivery: ScopeBoundary) -> _ReplayState | None:
+        ctx._business_clock.unavailable()
         nonlocal advanced_cmd, wait_yield_count
         boundary = delivery.boundary
         _assert_cancellation_call_matches(command, boundary)
@@ -7220,7 +7253,7 @@ def _replay_state(
         _apply_due_receivers()
         try:
             _refresh_replay_logging()
-            advanced_cmd = gen.throw(WorkflowCancelled(
+            advanced_cmd = _resume_business(gen.throw, WorkflowCancelled(
                 "scope cancellation was requested", request_id=active_context.request_id, context=active_context,
             ))
             return None
@@ -7256,7 +7289,7 @@ def _replay_state(
             else:
                 try:
                     _refresh_replay_logging()
-                    cmd = gen.send(None) if first else gen.send(next_value)
+                    cmd = _resume_business(gen.send, None if first else next_value)
                 except StopIteration as stop:
                     return _terminal_state(stop.value, include_pending=True)
                 first = False
@@ -7555,7 +7588,9 @@ def _replay_state(
                     if failed is not None or group_typed_failure is not None:
                         try:
                             _refresh_replay_logging()
-                            advanced_cmd = gen.throw(failed if failed is not None else group_typed_failure)
+                            advanced_cmd = _resume_business(
+                                gen.throw, failed if failed is not None else group_typed_failure,
+                            )
                             continue
                         except StopIteration as stop:
                             return _terminal_state(stop.value, include_pending=False)
@@ -7574,7 +7609,7 @@ def _replay_state(
                     ])
                     try:
                         _refresh_replay_logging()
-                        advanced_cmd = gen.throw(
+                        advanced_cmd = _resume_business(gen.throw,
                             DurableOperationCancelled(
                                 cmd.selection_group_id,
                                 cmd.key,
@@ -7613,7 +7648,9 @@ def _replay_state(
                 if failure is not None or handle_typed_failure is not None:
                     try:
                         _refresh_replay_logging()
-                        advanced_cmd = gen.throw(failure if failure is not None else handle_typed_failure)
+                        advanced_cmd = _resume_business(
+                            gen.throw, failure if failure is not None else handle_typed_failure,
+                        )
                         continue
                     except StopIteration as stop:
                         return _terminal_state(stop.value, include_pending=True)
@@ -7678,7 +7715,7 @@ def _replay_state(
                     except NexusOperationFailed as exc:
                         try:
                             _refresh_replay_logging()
-                            advanced_cmd = gen.throw(exc)
+                            advanced_cmd = _resume_business(gen.throw, exc)
                             continue
                         except StopIteration as stop:
                             return _terminal_state(stop.value, include_pending=False)
@@ -7711,7 +7748,7 @@ def _replay_state(
                     except Exception as exc:
                         try:
                             _refresh_replay_logging()
-                            advanced_cmd = gen.throw(exc)
+                            advanced_cmd = _resume_business(gen.throw, exc)
                             continue
                         except StopIteration as stop:
                             return _terminal_state(stop.value, include_pending=True)
@@ -7911,6 +7948,9 @@ def _replay_state(
                 if result_cursor < len(resolved_results):
                     _assert_next_step_matches(cmd)
                     val = resolved_results[result_cursor]
+                    step = recorded_steps[result_cursor]
+                    if isinstance(cmd, ScheduleActivity | StartTimer):
+                        ctx._business_clock.observe(step.history_index, step.shape, step.workflow_sequence)
                     if not isinstance(cmd, RecordLocalActivity) or prepare_local_activities:
                         _advance_cancellation_clock([recorded_steps[result_cursor].history_index])
                     result_cursor += 1
@@ -7922,7 +7962,7 @@ def _replay_state(
                     if isinstance(val, ActivityFailed | ChildWorkflowFailed | TypedValueError):
                         try:
                             _refresh_replay_logging()
-                            advanced_cmd = gen.throw(val)
+                            advanced_cmd = _resume_business(gen.throw, val)
                             continue
                         except StopIteration as stop:
                             return _terminal_state(stop.value, include_pending=False)
@@ -7945,7 +7985,7 @@ def _replay_state(
                     if isinstance(local_result, ActivityFailed):
                         try:
                             _refresh_replay_logging()
-                            advanced_cmd = gen.throw(local_result)
+                            advanced_cmd = _resume_business(gen.throw, local_result)
                             continue
                         except StopIteration as stop:
                             return _terminal_state(stop.value, include_pending=True)
