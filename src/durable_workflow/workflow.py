@@ -2862,9 +2862,12 @@ class WorkflowContext:
         """Return the proved UTC instant of the supported consumed boundary.
 
         This additive clock supports scalar persisted activities, timers and
-        children, plus an explicit redrive start. Ordinary entry, inline/local/grouped operations
-        and unproved callbacks remain unavailable. Repeated reads are stable;
-        equal/backward recorded times retain their values and precision. Adopt
+        children, explicit redrive start, and validated lists of remote
+        activities. Group success retains the selected event's full precision;
+        matching caught failure uses the engine's millisecond reconstruction.
+        Ordinary entry, other groups, inline/local operations, unproved times
+        and group-only query time remain unavailable. Reads are stable,
+        and proved boundaries may move backwards. Adopt
         business-time decisions through normal workflow versioning. ``now()``
         remains the legacy fixed-start accessor, and timestamps are not order IDs.
         """
@@ -7589,6 +7592,20 @@ def _replay_state(
                             vals = [_typed_activity_result(leaf, value) for leaf, value in zip(cmd, vals, strict=True)]
                         except TypedValueError as error:
                             group_typed_failure = error
+                    if not cmd:
+                        ctx._business_clock.preserve_boundary()
+                    elif group_typed_failure is None and all(isinstance(leaf, ScheduleActivity) for leaf in cmd):
+                        selected_failure = next(
+                            (offset for offset, value in enumerate(vals) if failed is not None and value is failed),
+                            None,
+                        )
+                        ctx._business_clock.observe_activity_group(
+                            [(step.history_index, step.workflow_sequence, leaf.activity_type, leaf._parallel_group_path)
+                             for step, leaf in zip(consumed_steps, cmd, strict=True)],
+                            selected_failure, reconstruction=reconstruction_only,
+                        )
+                    else:
+                        ctx._business_clock.unavailable()
                     if failed is not None or group_typed_failure is not None:
                         try:
                             _refresh_replay_logging()
