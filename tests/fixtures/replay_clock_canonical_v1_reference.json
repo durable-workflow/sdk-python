@@ -1,0 +1,255 @@
+{
+  "numeric_contract": "canonical-v1",
+  "authority": "https://github.com/durable-workflow/.github/issues/215#issuecomment-6679568700",
+  "formula": "M = sign(U) * ((abs(U) + 500) div 1000)",
+  "vectors": [
+    {
+      "input": "1969-12-31T23:59:59.000499Z",
+      "utc_microseconds": -999501,
+      "milliseconds": -1000,
+      "reconstructed": "1969-12-31T23:59:59.000000Z"
+    },
+    {
+      "input": "1969-12-31T23:59:59.000500Z",
+      "utc_microseconds": -999500,
+      "milliseconds": -1000,
+      "reconstructed": "1969-12-31T23:59:59.000000Z"
+    },
+    {
+      "input": "1969-12-31T23:59:59.000501Z",
+      "utc_microseconds": -999499,
+      "milliseconds": -999,
+      "reconstructed": "1969-12-31T23:59:59.001000Z"
+    },
+    {
+      "input": "1969-12-31T23:59:59.998500Z",
+      "utc_microseconds": -1500,
+      "milliseconds": -2,
+      "reconstructed": "1969-12-31T23:59:59.998000Z"
+    },
+    {
+      "input": "1969-12-31T23:59:59.999499Z",
+      "utc_microseconds": -501,
+      "milliseconds": -1,
+      "reconstructed": "1969-12-31T23:59:59.999000Z"
+    },
+    {
+      "input": "1969-12-31T23:59:59.999500Z",
+      "utc_microseconds": -500,
+      "milliseconds": -1,
+      "reconstructed": "1969-12-31T23:59:59.999000Z"
+    },
+    {
+      "input": "1969-12-31T23:59:59.999501Z",
+      "utc_microseconds": -499,
+      "milliseconds": 0,
+      "reconstructed": "1970-01-01T00:00:00.000000Z"
+    },
+    {
+      "input": "1969-12-31T23:59:59.999999Z",
+      "utc_microseconds": -1,
+      "milliseconds": 0,
+      "reconstructed": "1970-01-01T00:00:00.000000Z"
+    },
+    {
+      "input": "1970-01-01T00:00:00.000000Z",
+      "utc_microseconds": 0,
+      "milliseconds": 0,
+      "reconstructed": "1970-01-01T00:00:00.000000Z"
+    },
+    {
+      "input": "1970-01-01T00:00:00.000001Z",
+      "utc_microseconds": 1,
+      "milliseconds": 0,
+      "reconstructed": "1970-01-01T00:00:00.000000Z"
+    },
+    {
+      "input": "1970-01-01T00:00:00.000499Z",
+      "utc_microseconds": 499,
+      "milliseconds": 0,
+      "reconstructed": "1970-01-01T00:00:00.000000Z"
+    },
+    {
+      "input": "1970-01-01T00:00:00.000500Z",
+      "utc_microseconds": 500,
+      "milliseconds": 1,
+      "reconstructed": "1970-01-01T00:00:00.001000Z"
+    },
+    {
+      "input": "1970-01-01T00:00:00.000501Z",
+      "utc_microseconds": 501,
+      "milliseconds": 1,
+      "reconstructed": "1970-01-01T00:00:00.001000Z"
+    },
+    {
+      "input": "1970-01-01T00:00:00.123400Z",
+      "utc_microseconds": 123400,
+      "milliseconds": 123,
+      "reconstructed": "1970-01-01T00:00:00.123000Z"
+    },
+    {
+      "input": "1970-01-01T00:00:00.123499Z",
+      "utc_microseconds": 123499,
+      "milliseconds": 123,
+      "reconstructed": "1970-01-01T00:00:00.123000Z"
+    },
+    {
+      "input": "1970-01-01T00:00:00.123500Z",
+      "utc_microseconds": 123500,
+      "milliseconds": 124,
+      "reconstructed": "1970-01-01T00:00:00.124000Z"
+    },
+    {
+      "input": "1970-01-01T00:00:00.999500Z",
+      "utc_microseconds": 999500,
+      "milliseconds": 1000,
+      "reconstructed": "1970-01-01T00:00:01.000000Z"
+    },
+    {
+      "input": "1970-01-01T01:30:00.000500+01:30",
+      "utc_microseconds": 500,
+      "milliseconds": 1,
+      "reconstructed": "1970-01-01T00:00:00.001000Z"
+    },
+    {
+      "input": "1970-01-01T01:29:59.999500+01:30",
+      "utc_microseconds": -500,
+      "milliseconds": -1,
+      "reconstructed": "1969-12-31T23:59:59.999000Z"
+    },
+    {
+      "input": "1969-12-31T22:30:00.000500-01:30",
+      "utc_microseconds": 500,
+      "milliseconds": 1,
+      "reconstructed": "1970-01-01T00:00:00.001000Z"
+    },
+    {
+      "input": "1900-01-01T00:00:00.123500Z",
+      "utc_microseconds": -2208988799876500,
+      "milliseconds": -2208988799877,
+      "reconstructed": "1900-01-01T00:00:00.123000Z"
+    },
+    {
+      "input": "1600-01-01T00:00:00.123500Z",
+      "utc_microseconds": -11676095999876500,
+      "milliseconds": -11676095999877,
+      "reconstructed": "1600-01-01T00:00:00.123000Z"
+    },
+    {
+      "input": "1600-01-01T00:00:00.123501Z",
+      "utc_microseconds": -11676095999876499,
+      "milliseconds": -11676095999876,
+      "reconstructed": "1600-01-01T00:00:00.124000Z"
+    },
+    {
+      "input": "2026-01-01T00:00:00.123499Z",
+      "utc_microseconds": 1767225600123499,
+      "milliseconds": 1767225600123,
+      "reconstructed": "2026-01-01T00:00:00.123000Z"
+    },
+    {
+      "input": "2026-01-01T00:00:00.123500Z",
+      "utc_microseconds": 1767225600123500,
+      "milliseconds": 1767225600124,
+      "reconstructed": "2026-01-01T00:00:00.124000Z"
+    },
+    {
+      "input": "2300-01-01T00:00:00.123499Z",
+      "utc_microseconds": 10413792000123499,
+      "milliseconds": 10413792000123,
+      "reconstructed": "2300-01-01T00:00:00.123000Z"
+    },
+    {
+      "input": "2300-01-01T00:00:00.123500Z",
+      "utc_microseconds": 10413792000123500,
+      "milliseconds": 10413792000124,
+      "reconstructed": "2300-01-01T00:00:00.124000Z"
+    },
+    {
+      "input": "0001-01-01T00:00:00.123500Z",
+      "utc_microseconds": -62135596799876500,
+      "milliseconds": -62135596799877,
+      "reconstructed": "0001-01-01T00:00:00.123000Z"
+    },
+    {
+      "input": "9999-01-01T00:00:00.123500Z",
+      "utc_microseconds": 253370764800123500,
+      "milliseconds": 253370764800124,
+      "reconstructed": "9999-01-01T00:00:00.124000Z"
+    },
+    {
+      "input": "9999-12-31T23:59:59.999499Z",
+      "utc_microseconds": 253402300799999499,
+      "milliseconds": 253402300799999,
+      "reconstructed": "9999-12-31T23:59:59.999000Z"
+    },
+    {
+      "input": "9999-12-31T23:59:59.999500Z",
+      "utc_microseconds": 253402300799999500,
+      "milliseconds": 253402300800000,
+      "reconstructed": null
+    }
+  ],
+  "groups": [
+    {
+      "id": "authored-tie",
+      "times": [
+        "2026-01-01T00:00:00.123400Z",
+        "2026-01-01T00:00:00.123499Z"
+      ],
+      "success_member": 0,
+      "failure_member": 0,
+      "failure_time": "2026-01-01T00:00:00.123000Z"
+    },
+    {
+      "id": "positive-half",
+      "times": [
+        "2026-01-01T00:00:00.123499Z",
+        "2026-01-01T00:00:00.123500Z"
+      ],
+      "success_member": 1,
+      "failure_member": 0,
+      "failure_time": "2026-01-01T00:00:00.123000Z"
+    },
+    {
+      "id": "negative-half",
+      "times": [
+        "1969-12-31T23:59:59.999501Z",
+        "1969-12-31T23:59:59.999500Z"
+      ],
+      "success_member": 0,
+      "failure_member": 1,
+      "failure_time": null
+    },
+    {
+      "id": "large-tie",
+      "times": [
+        "2300-01-01T00:00:00.123400Z",
+        "2300-01-01T00:00:00.123499Z"
+      ],
+      "success_member": 0,
+      "failure_member": 0,
+      "failure_time": "2300-01-01T00:00:00.123000Z"
+    },
+    {
+      "id": "large-half",
+      "times": [
+        "2300-01-01T00:00:00.123499Z",
+        "2300-01-01T00:00:00.123500Z"
+      ],
+      "success_member": 1,
+      "failure_member": 0,
+      "failure_time": "2300-01-01T00:00:00.123000Z"
+    },
+    {
+      "id": "large-pre-epoch",
+      "times": [
+        "1600-01-01T00:00:00.123500Z",
+        "1600-01-01T00:00:00.123501Z"
+      ],
+      "success_member": 1,
+      "failure_member": 0,
+      "failure_time": "1600-01-01T00:00:00.123000Z"
+    }
+  ]
+}

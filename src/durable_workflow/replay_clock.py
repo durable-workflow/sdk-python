@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, ParamSpec, TypeGuard, TypeVar
 
 from .errors import ReplayClockUnavailable
-from .replay_clock_math import carbon_from_milliseconds, carbon_milliseconds
+from .replay_clock_math import canonical_milliseconds, from_canonical_milliseconds
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -194,9 +194,9 @@ def _activity_group_time(events: Sequence[Mapping[str, Any]], failed_member: int
         if failed != (failed_member is not None):
             if failed:
                 return None
-            continue  # Successful siblings do not choose Core's failure.
+            continue  # Successful siblings do not choose the failure clock.
         time = _group_event_time(event)
-        milliseconds = carbon_milliseconds(time) if time is not None else None
+        milliseconds = canonical_milliseconds(time) if time is not None else None
         if time is None or milliseconds is None:
             return None
         candidates.append((milliseconds, time, offset))
@@ -204,10 +204,10 @@ def _activity_group_time(events: Sequence[Mapping[str, Any]], failed_member: int
         return None
     if failed_member is not None:
         winner = min(candidates, key=lambda candidate: candidate[0])
-        # Preserve the existing SDK exception even when Core chooses another
-        # failed member. That open compatibility gap has no clock authority.
-        return carbon_from_milliseconds(winner[0]) if winner[2] == failed_member else None
-    # max retains the first descriptor on an equal millisecond value. Keep its
+        # Preserve the existing SDK exception when the canonical-v1 selector
+        # chooses another member. That open outcome gap has no clock authority.
+        return from_canonical_milliseconds(winner[0]) if winner[2] == failed_member else None
+    # max retains the first descriptor on equal canonical milliseconds. Keep its
     # full event precision, never the last row or a maximum over all history.
     return max(candidates, key=lambda candidate: candidate[0])[1]
 

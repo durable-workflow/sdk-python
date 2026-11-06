@@ -16,17 +16,29 @@ It forms a float microsecond value and calls `round(value / 1000)`.
 PHP tag `php-8.4.27`, `ext/standard/math.c`, Git blob
 `09d98298104333417c233f1f6ba6d78c249b03d7`, SHA-256
 `a6454623cc0f758568724beb47096e8fe6c0d4510c87f1a2243cdcc2b65bd590`,
-confirms the zero-place half-away-from-zero comparison. Reconstruction from an
-integer millisecond uses the represented instant, including negative epochs.
+binds that particular measured numeric profile. PHP's implementation of
+`round()` changed in 8.4; these observations do not establish parity across
+all supported PHP runtimes. The retained JSON and its expected answers stay
+unchanged.
 
-The Python group clock qualifies only the exact float-integer microsecond
-range `abs(epoch_microseconds) <= 2**53` and represented precision up to six
-fractional digits. Other ranges/precision remain unavailable. Success folds
-only validated consumed members in authored descriptor order, retains the
-first member on equal Carbon milliseconds, and returns its full event time.
-Caught failure preserves Python's legacy exception and reconstructs time only
-when that member agrees with Core's earliest-millisecond/member-index choice.
-The conflicting-winner case remains an OPEN versioned compatibility gap.
+The separate `replay_clock_canonical_v1_reference.json` defines the unreleased
+accessor's canonical-v1 contract selected in
+[central #215](https://github.com/durable-workflow/.github/issues/215#issuecomment-6679568700).
+For an authoritative signed integer UTC microsecond value `U`, it uses
+`M = sign(U) * ((abs(U) + 500) div 1000)`, with nonnegative integer division.
+There is no float conversion, runtime rounding or wall-time input. Fixed
+answers cover offsets, positive and negative half boundaries, large dates,
+pre-epoch dates and reconstruction overflow. Scalar event times are not
+quantized. This is a new additive-clock contract, not a claim of universal
+legacy Core `Workflow::now()` parity or published conformance.
+
+Success folds only validated consumed members in authored descriptor order,
+retains the first member on equal canonical milliseconds and returns its full
+event time. Caught failure preserves Python's legacy exception and reconstructs
+the selected canonical millisecond only when that member agrees with the
+canonical earliest-millisecond/member-index choice. An unrepresentable
+reconstruction stays unavailable. The conflicting-winner case remains an OPEN
+versioned compatibility gap; no result or exception is rewritten.
 
 The finite cohort requires a unique schedule, at most one start and one terminal
 per execution, complete matching authored Activity-all paths/counters/types and

@@ -2864,7 +2864,7 @@ class WorkflowContext:
         This additive clock supports scalar persisted activities, timers and
         children, explicit redrive start, and validated lists of remote
         activities. Group success retains the selected event's full precision;
-        matching caught failure uses the engine's millisecond reconstruction.
+        matching caught failure uses canonical-v1 integer milliseconds.
         Ordinary entry, other groups, inline/local operations, unproved times
         and group-only query time remain unavailable. Reads are stable,
         and proved boundaries may move backwards. Adopt

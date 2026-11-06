@@ -12,7 +12,7 @@ import pytest
 
 from durable_workflow import serializer, workflow
 from durable_workflow.errors import ActivityFailed, NonDeterministicReplayError, TypedValueError
-from durable_workflow.replay_clock_math import carbon_from_milliseconds, carbon_milliseconds
+from durable_workflow.replay_clock_math import canonical_milliseconds, from_canonical_milliseconds
 from durable_workflow.workflow import WorkflowContext, query_state, replay
 from tests.business_clock_workflows import clock_text
 from tests.test_business_replay_clock import result
@@ -22,6 +22,7 @@ FIRST = "2026-01-01T00:00:03.123100+00:00"
 TIED = "2026-01-01T00:00:03.123400+00:00"
 REFERENCE = Path(__file__).parent / "fixtures" / "replay_clock_carbon_reference.json"
 VECTORS = json.loads(REFERENCE.read_text())["vectors"]
+CANONICAL = json.loads(REFERENCE.with_name("replay_clock_canonical_v1_reference.json").read_text())
 
 
 def test_retained_carbon_reference_identity_is_exact() -> None:
@@ -36,19 +37,56 @@ def test_retained_carbon_reference_identity_is_exact() -> None:
 
 
 @pytest.mark.parametrize("vector", VECTORS, ids=lambda vector: vector["input"])
-def test_actual_carbon_rounding_and_reconstruction_vectors(vector: dict[str, Any]) -> None:
+def test_canonical_v1_agrees_with_these_specific_retained_php84_observations(vector: dict[str, Any]) -> None:
     time = datetime.fromisoformat(vector["input"].replace("Z", "+00:00"))
-    observed = carbon_milliseconds(time)
+    observed = canonical_milliseconds(time)
     assert observed == vector["milliseconds"]
-    assert carbon_from_milliseconds(vector["milliseconds"]).isoformat(timespec="microseconds").replace(
+    reconstructed = from_canonical_milliseconds(vector["milliseconds"])
+    assert reconstructed is not None
+    assert reconstructed.isoformat(timespec="microseconds").replace(
         "+00:00", "Z",
     ) == vector["reconstructed"]
 
 
 @pytest.mark.parametrize("sign", [-1, 1])
-def test_unproved_float_microsecond_range_stays_unavailable(sign: int) -> None:
+def test_canonical_v1_qualifies_exact_integer_times_beyond_the_prior_float_profile(sign: int) -> None:
     time = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=sign * ((1 << 53) + 1))
-    assert carbon_milliseconds(time) is None
+    assert canonical_milliseconds(time) == sign * 9007199254741
+
+
+@pytest.mark.parametrize("vector", CANONICAL["vectors"], ids=lambda vector: vector["input"])
+def test_canonical_v1_fixed_signed_utc_microsecond_and_reconstruction_vectors(vector: dict[str, Any]) -> None:
+    time = datetime.fromisoformat(vector["input"].replace("Z", "+00:00"))
+    delta = time - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    assert (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds == vector["utc_microseconds"]
+    assert canonical_milliseconds(time) == vector["milliseconds"]
+    reconstructed = from_canonical_milliseconds(vector["milliseconds"])
+    expected = vector["reconstructed"]
+    if expected is None:
+        assert reconstructed is None
+    else:
+        assert reconstructed is not None
+        assert reconstructed == datetime.fromisoformat(expected.replace("Z", "+00:00"))
+
+
+@pytest.mark.parametrize("case", CANONICAL["groups"], ids=lambda case: case["id"])
+def test_canonical_v1_authored_comparison_and_selected_failure_vectors(case: dict[str, Any]) -> None:
+    value = result(history(case["times"], order=(1, 0)), ParallelProbe)
+    expected = datetime.fromisoformat(case["times"][case["success_member"]].replace("Z", "+00:00"))
+    assert value["clock"] == expected.isoformat(timespec="microseconds")
+    failure = result(history(case["times"], failures={0, 1}, order=(1, 0)), ParallelProbe)
+    assert failure["failure"] == ("group.0", "failure-0")
+    time = case["failure_time"]
+    assert failure["clock"] == (datetime.fromisoformat(time.replace("Z", "+00:00")).isoformat(
+        timespec="microseconds",
+    ) if time is not None else None)
+
+
+def test_reconstruction_overflow_refuses_time_without_changing_the_selected_failure() -> None:
+    rows = history(["9999-12-31T23:59:59.999500Z", FIRST], failures={0})
+    value = result(rows, ParallelProbe)
+    assert value["failure"] == ("group.0", "failure-0")
+    assert value["clock"] is None
 
 
 def group_path(base: int, size: int, index: int, *, nested: bool = False) -> list[dict[str, Any]]:
@@ -133,14 +171,14 @@ def test_success_uses_authored_tie_order_and_full_precision_not_arrival_or_histo
     (["1969-12-31T23:59:59.999500Z", "1969-12-31T23:59:59.999501Z"],
      "1969-12-31T23:59:59.999501+00:00"),
 ])
-def test_success_uses_carbon_millisecond_comparison_without_replacing_full_precision(
+def test_success_uses_canonical_millisecond_comparison_without_replacing_full_precision(
     times: list[str], expected: str,
 ) -> None:
     assert result(history(times), ParallelProbe)["clock"] == expected
 
 
 @pytest.mark.parametrize("order", [(0, 1), (1, 0)])
-def test_caught_failure_ignores_successful_sibling_time_and_reconstructs_carbon_milliseconds(
+def test_caught_failure_ignores_successful_sibling_time_and_reconstructs_canonical_milliseconds(
     order: tuple[int, ...],
 ) -> None:
     value = result(history(["1969-12-31T23:59:59.999500Z", "2099-01-01T00:00:00Z"],
@@ -154,7 +192,7 @@ def test_caught_failure_ignores_successful_sibling_time_and_reconstructs_carbon_
     ([TIED, FIRST], "2026-01-01T00:00:03.123000+00:00"),
     ([FIRST, "2026-01-01T00:00:01Z"], None),
 ])
-def test_multiple_failures_preserve_legacy_winner_and_refuse_a_different_core_winner(
+def test_multiple_failures_preserve_legacy_winner_and_refuse_a_different_canonical_winner(
     times: list[str], expected: str | None,
 ) -> None:
     value = result(history(times, failures={0, 1}, order=(1, 0)), ParallelProbe)
@@ -174,7 +212,7 @@ def test_nested_all_activity_paths_follow_authored_order(order: tuple[int, ...])
 
 
 @pytest.mark.parametrize("bad", [None, False, 17, "", "bad", "2026-02-30T00:00:00Z", "2026-01-01T24:00:00Z",
-                                 "2026-01-01T00:00:00.1234567Z", "9999-01-01T00:00:00Z"])
+                                 "2026-01-01T00:00:00.1234567Z"])
 def test_missing_invalid_or_unproved_required_time_does_not_borrow_a_sibling(bad: Any) -> None:
     assert result(history([FIRST, bad]), ParallelProbe)["clock"] is None
 
@@ -319,7 +357,8 @@ def test_pending_and_unmarked_legacy_groups_do_not_receive_a_proved_clock() -> N
     rows.pop()
     pending = replay(ParallelProbe, rows, [], payload_codec="avro")
     try:
-        assert pending.commands and all(getattr(command, "activity_type", None) for command in pending.commands)
+        assert pending.commands
+        assert all(getattr(command, "activity_type", None) for command in pending.commands)
     finally:
         pending.close()
     rows = history()
