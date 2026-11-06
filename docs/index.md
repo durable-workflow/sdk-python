@@ -11,7 +11,7 @@ hide:
 
 <div class="dw-hero__copy" markdown="1">
 
-<p class="dw-eyebrow">First-party Python SDK · 2.0 stable</p>
+<p class="dw-eyebrow">Python SDK · 2.14.1 published</p>
 
 # Durable workflows in Python.
 
@@ -33,9 +33,13 @@ namespace.
 
 ## Install
 
+<div id="install-package-code" markdown="1">
+
 ```bash
 pip install durable-workflow
 ```
+
+</div>
 
 Use a virtual environment and lock the resolved package version with the rest
 of your application dependencies.
@@ -53,39 +57,12 @@ of your application dependencies.
 A client asks the runtime to do durable work. A worker receives tasks and
 dispatches them to your workflow and activity code.
 
-<div class="dw-role-grid" role="list">
-  <a class="dw-role-card" data-sdk-role="client" href="reference/client/" role="listitem"><span class="dw-role-card__step">01</span><strong>Client</strong><span>Starts and controls workflow runs from your app.</span><span class="dw-role-card__link">Client API →</span></a>
-  <a class="dw-role-card" data-sdk-role="worker" href="reference/worker/" role="listitem"><span class="dw-role-card__step">02</span><strong>Worker</strong><span>Polls a task queue and dispatches registered handlers.</span><span class="dw-role-card__link">Worker API →</span></a>
-  <a class="dw-role-card" data-sdk-role="workflow" href="reference/workflow/" role="listitem"><span class="dw-role-card__step">03</span><strong>Workflow</strong><span>Describes replay-safe orchestration and durable decisions.</span><span class="dw-role-card__link">Workflow API →</span></a>
-  <a class="dw-role-card" data-sdk-role="activity" href="reference/activity/" role="listitem"><span class="dw-role-card__step">04</span><strong>Activity</strong><span>Performs side effects such as API calls and database work.</span><span class="dw-role-card__link">Activity API →</span></a>
-</div>
-
-</section>
-
-<section class="dw-section dw-runtime" id="runtime-choices" aria-labelledby="choose-who-runs-the-runtime" markdown="1">
-
-## Choose who runs the runtime
-
-The workflow types, activity types, and task queue stay the same. Only the
-endpoint, credentials, and operating boundary change.
-
-<div class="dw-runtime-grid">
-  <article class="dw-runtime-card dw-runtime-card--primary" data-runtime="self-hosted" data-access="no-account-required">
-    <span class="dw-tag">Available without an account</span>
-    <h3>Self-hosted Server</h3>
-    <p>Run the published Server image locally, then execute the complete Python journey below.</p>
-    <a class="dw-button dw-button--primary" data-docs-destination="self-hosted-quickstart" href="#first-workflow">Start locally <span aria-hidden="true">→</span></a>
-  </article>
-  <article class="dw-runtime-card dw-runtime-card--secondary dw-cloud-promotion" data-runtime="cloud" data-access="limited" data-promotion-source="sdk-python-reference">
-    <span class="dw-cloud-promotion__eyebrow dw-tag">Managed runtime · limited access</span>
-    <h3>Durable Workflow Cloud</h3>
-    <p>Connect the same program to a provisioned namespace with separate client and worker credentials.</p>
-    <p class="dw-runtime-card__actions">
-      <a class="dw-button dw-button--secondary" data-docs-destination="cloud-quickstart" href="#managed-cloud">Connect a namespace</a>
-      <a class="dw-cloud-promotion__action" data-docs-destination="cloud-access" data-promotion-action="early-access" href="https://cloud.durable-workflow.com/early-access#source=sdk-python-reference">Request early access →</a>
-    </p>
-  </article>
-</div>
+<ul class="dw-role-grid" aria-label="SDK concepts">
+  <li><a class="dw-role-card" data-sdk-role="client" href="reference/client/" ><span class="dw-role-card__step">01</span><strong>Client</strong><span>Starts and controls workflow runs from your app.</span><span class="dw-role-card__link">Client API →</span></a></li>
+  <li><a class="dw-role-card" data-sdk-role="worker" href="reference/worker/" ><span class="dw-role-card__step">02</span><strong>Worker</strong><span>Polls a task queue and dispatches registered handlers.</span><span class="dw-role-card__link">Worker API →</span></a></li>
+  <li><a class="dw-role-card" data-sdk-role="workflow" href="reference/workflow/" ><span class="dw-role-card__step">03</span><strong>Workflow</strong><span>Describes replay-safe orchestration and durable decisions.</span><span class="dw-role-card__link">Workflow API →</span></a></li>
+  <li><a class="dw-role-card" data-sdk-role="activity" href="reference/activity/" ><span class="dw-role-card__step">04</span><strong>Activity</strong><span>Performs side effects such as API calls and database work.</span><span class="dw-role-card__link">Activity API →</span></a></li>
+</ul>
 
 </section>
 
@@ -96,15 +73,21 @@ endpoint, credentials, and operating boundary change.
 This source-free path runs one Python file containing an activity, workflow,
 worker, and client against the stable Server channel.
 
-### 1. Start Server
+### 1. Start Server { #start-server }
 
 Docker keeps this first run local. Select the stable 2.x Server channel:
+
+<div id="server-image-code" markdown="1">
 
 ```bash
 export DW_SERVER_IMAGE='durableworkflow/server:2'
 ```
 
+</div>
+
 Then bootstrap and start that qualified image:
+
+<div id="start-server-code" markdown="1">
 
 ```bash
 export DURABLE_WORKFLOW_RUNTIME_URL='http://127.0.0.1:8080'
@@ -122,12 +105,27 @@ docker run -d --name durable-workflow-python-server -p 8080:8080 \
 until curl -sf http://127.0.0.1:8080/api/ready >/dev/null; do sleep 1; done
 ```
 
-### 2. Save `greeter.py`
+</div>
+
+<div class="dw-quickstart-grid" markdown="1">
+<div class="dw-quickstart-copy" markdown="1">
+
+<p class="dw-eyebrow">Step 2 of 3</p>
+
+### Save `greeter.py` { #save-greeter }
 
 The named constants make the authoring contract visible: the decorator and
 start call share a workflow type, the workflow and decorator share an activity
 type, and the client and worker share one task queue. Values cross those
 boundaries with the supported Avro authoring codec.
+
+First [start Server](#start-server), then save this complete program and
+[run it in step 3](#run-greeter). Copy preserves the whole file and its indentation.
+
+</div>
+<div class="dw-quickstart-code" markdown="1">
+
+<div id="greeter-program-code" markdown="1">
 
 ```python
 import asyncio
@@ -181,22 +179,63 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-### 3. Run it
+</div>
+
+</div>
+</div>
+
+
+### 3. Run it { #run-greeter }
+
+<div id="run-program-code" markdown="1">
 
 ```bash
 python greeter.py
 ```
+
+</div>
 
 <div class="dw-checkpoint" data-worker-ready-output="registered" markdown="1">
 
 The SDK reports registration before it handles the workflow, followed by the
 completed result:
 
+<div id="workflow-output-code" markdown="1">
+
 ```text
 worker py-worker-… registered on python-workers
 Hello, world!
 ```
 
+</div>
+
+</div>
+
+</section>
+
+<section class="dw-section dw-runtime" id="runtime-choices" aria-labelledby="choose-who-runs-the-runtime" markdown="1">
+
+## Choose who runs the runtime
+
+The workflow types, activity types, and task queue stay the same. Only the
+endpoint, credentials, and operating boundary change.
+
+<div class="dw-runtime-grid">
+  <article class="dw-runtime-card dw-runtime-card--primary" data-runtime="self-hosted" data-access="no-account-required">
+    <span class="dw-tag">Available without an account</span>
+    <h3>Self-hosted Server</h3>
+    <p>Run the published Server image locally, then execute the complete Python journey below.</p>
+    <a class="dw-text-link" data-docs-destination="self-hosted-quickstart" href="#first-workflow">Start locally <span aria-hidden="true">→</span></a>
+  </article>
+  <article class="dw-runtime-card dw-runtime-card--secondary dw-cloud-promotion" data-runtime="cloud" data-access="limited" data-promotion-source="sdk-python-reference">
+    <span class="dw-cloud-promotion__eyebrow dw-tag">Managed runtime · limited access</span>
+    <h3>Durable Workflow Cloud</h3>
+    <p>Connect the same program to a provisioned namespace with separate client and worker credentials.</p>
+    <p class="dw-runtime-card__actions">
+      <a class="dw-text-link" data-docs-destination="cloud-quickstart" href="#managed-cloud">Connect a namespace</a>
+      <a class="dw-cloud-promotion__action" data-docs-destination="cloud-access" data-promotion-action="early-access" href="https://cloud.durable-workflow.com/early-access#source=sdk-python-reference">Request early access →</a>
+    </p>
+  </article>
 </div>
 
 </section>
@@ -221,6 +260,8 @@ Replace the placeholders with values returned for your namespace, then run the
 same `greeter.py`. Keep client and worker tokens in their respective processes
 when you split the example for production.
 
+<div id="managed-runtime-code" markdown="1">
+
 ```bash
 export DURABLE_WORKFLOW_RUNTIME_URL='<provisioned-runtime-url>'
 export DURABLE_WORKFLOW_RUNTIME_NAMESPACE='<provisioned-runtime-namespace>'
@@ -229,6 +270,8 @@ export DURABLE_WORKFLOW_WORKER_TOKEN='<runtime-worker-token>'
 unset DURABLE_WORKFLOW_TOKEN
 python greeter.py
 ```
+
+</div>
 
 <p class="dw-inline-actions"><a class="dw-button dw-button--secondary" data-docs-destination="cloud-guide" href="https://durable-workflow.com/docs/2.0/polyglot/cloud-control-plane/">Cloud runtime guide</a><a class="dw-text-link" data-docs-destination="python-playground" href="https://github.com/durable-workflow/sample-app#symmetric-sdk-playground">Run the Python playground →</a></p>
 

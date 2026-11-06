@@ -9,6 +9,8 @@ on:
       - 'overrides/**'
       - 'mkdocs.yml'
       - 'pyproject.toml'
+      - 'requirements-docs.txt'
+      - 'scripts/prepare_portal.py'
       - 'scripts/check-docs-analytics.py'
       - 'scripts/check-docs-layout.py'
       - 'scripts/docstring_cross_references.py'
@@ -29,6 +31,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.12"
@@ -36,18 +40,28 @@ jobs:
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
           clients: pip,python
-      - name: Install package and documentation dependencies
-        run: pip install -e '.[docs]'
+      - name: Install pinned documentation dependencies
+        run: |
+          pip install --require-hashes --only-binary=:all: -r requirements-docs.txt
       - name: Install Chromium
         env:
           NODE_OPTIONS: --use-openssl-ca
           NODE_EXTRA_CA_CERTS: ''
           NODE_USE_SYSTEM_CA: '0'
           NODE_TLS_REJECT_UNAUTHORIZED: '1'
-        run: python -m playwright install --with-deps chromium
+        run: python -m playwright install chromium
       - name: Build and check the portal
         run: |
-          mkdocs build --strict
+          python scripts/prepare_portal.py
+          mkdocs build --strict --config-file .docs-build.yml
           python scripts/docstring_cross_references.py --site site
           python scripts/check-docs-analytics.py site
-          python scripts/check-docs-layout.py site
+          python scripts/check-docs-layout.py site --screenshots docs-review
+          cp .docs-provenance.json docs-review/deployment-audit.json
+          cp .docs-api-inventory.json docs-review/api-source-inventory.json
+      - name: Retain rendered review screenshots
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: python-portal-review-${{ github.sha }}
+          path: docs-review
+          retention-days: 7
