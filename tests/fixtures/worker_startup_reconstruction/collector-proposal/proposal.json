@@ -168,6 +168,13 @@
     "actual_driver_initial_and_post_tls_assignment_binding": null,
     "tls_handshake_deadline_enforcement": null,
     "actual_driver_imported": false,
-    "replacement_streams_share_supplied_phase_budget": true
+    "replacement_streams_share_supplied_phase_budget": true,
+    "proposed_assignment_mixin": "ProtocolFileBinding before pinned Connection; initialize budget before deferred constructor",
+    "pinned_fresh_buffer_assignment_lines": [
+      698,
+      953
+    ],
+    "replacement_with_unread_protocol_data": "refuse",
+    "actual_driver_composition_and_lifecycle_qualification": null
   }
 }

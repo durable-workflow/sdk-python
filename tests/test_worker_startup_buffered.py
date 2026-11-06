@@ -4,7 +4,7 @@ import io
 
 import pytest
 
-from tests.worker_startup_buffered import ProtocolReader
+from tests.worker_startup_buffered import ProtocolFileBinding, ProtocolReader
 from tests.worker_startup_read_budget import ReadRefusal, ReceiveBudget
 
 
@@ -143,3 +143,92 @@ def test_an_existing_buffered_reader_is_not_admitted_as_a_raw_source() -> None:
         assert raw.requests == []
     finally:
         buffered.close()
+
+
+def test_assignment_binding_detaches_the_fresh_buffer_before_its_first_read() -> None:
+    raw = RecordingRaw(b"x" * 8192)
+    original_buffer = io.BufferedReader(raw)
+    budget = ReceiveBudget(lambda _: b"", 10, clock=lambda: 1)
+    binding = ProtocolFileBinding(budget)
+    try:
+        binding._rfile = original_buffer
+        assert raw.requests == []
+        assert binding._rfile is not None
+        assert binding._rfile.read(1) == b"x"
+        assert raw.requests == [8192]
+        assert budget.reserved_bytes == 8192
+        assert binding._rfile.unread_bytes == 8191
+        with pytest.raises(ValueError):
+            original_buffer.read(1)
+    finally:
+        binding._rfile = None
+
+
+def test_fresh_replacement_cannot_reset_the_phase_budget() -> None:
+    budget = ReceiveBudget(lambda _: b"", 10, clock=lambda: 1)
+    binding = ProtocolFileBinding(budget)
+    first = RecordingRaw(b"a" * 32768)
+    second = RecordingRaw(b"b" * 32768)
+    extra = RecordingRaw(b"c" * 8192)
+    try:
+        binding._rfile = io.BufferedReader(first)
+        assert binding._rfile is not None
+        assert binding._rfile.read(32768) == b"a" * 32768
+        binding._rfile = io.BufferedReader(second)
+        assert first.closed
+        assert binding._rfile is not None
+        assert binding._rfile.read(32768) == b"b" * 32768
+        binding._rfile = io.BufferedReader(extra)
+        assert second.closed
+        assert binding._rfile is not None
+        with pytest.raises(ReadRefusal, match="RECEIVE_LIMIT_EXCEEDED"):
+            binding._rfile.read(1)
+        assert budget.reserved_bytes == 65536
+        assert extra.requests == []
+    finally:
+        binding._rfile = None
+
+
+def test_replacement_cannot_discard_prefetched_protocol_data() -> None:
+    budget = ReceiveBudget(lambda _: b"", 10, clock=lambda: 1)
+    binding = ProtocolFileBinding(budget)
+    first = RecordingRaw(b"a" * 8192)
+    extra = RecordingRaw(b"b" * 8192)
+    try:
+        binding._rfile = io.BufferedReader(first)
+        reader = binding._rfile
+        assert reader is not None
+        assert reader.read(1) == b"a"
+        with pytest.raises(ReadRefusal, match="STREAM_REPLACEMENT_UNREAD"):
+            binding._rfile = io.BufferedReader(extra)
+        assert binding._rfile is reader
+        assert extra.closed
+        assert extra.requests == []
+        assert budget.reserved_bytes == 8192
+        with pytest.raises(ReadRefusal, match="READ_ALREADY_REFUSED"):
+            reader.read(1)
+    finally:
+        binding._rfile = None
+    assert first.closed
+
+
+def test_expired_assignment_closes_its_new_stream_without_reading() -> None:
+    raw = RecordingRaw(b"unused")
+    binding = ProtocolFileBinding(ReceiveBudget(lambda _: b"", 10, clock=lambda: 10))
+    with pytest.raises(ReadRefusal, match="TIME_BUDGET_EXPIRED"):
+        binding._rfile = io.BufferedReader(raw)
+    assert raw.closed
+    assert raw.requests == []
+    assert binding._rfile is None
+
+
+def test_none_assignment_closes_without_a_drain_or_remaining_read_budget() -> None:
+    now = [1]
+    raw = RecordingRaw(b"unused")
+    binding = ProtocolFileBinding(ReceiveBudget(lambda _: b"", 10, clock=lambda: now[0]))
+    binding._rfile = io.BufferedReader(raw)
+    now[0] = 10
+    binding._rfile = None
+    binding._rfile = None
+    assert raw.close_count == 1
+    assert raw.requests == []

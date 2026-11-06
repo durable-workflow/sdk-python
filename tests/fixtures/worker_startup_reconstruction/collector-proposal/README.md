@@ -49,12 +49,24 @@ controls cover that reservation, cached reads, shared streams, oversize/expiry
 refusals, short EOF and close without draining. They use fixture raw streams,
 not a socket or the proposed driver.
 
-The actual driver binding is still absent. The pinned connection source creates
-its initial buffered reader and recreates it after TLS wrapping. Both sites
-must install the budgeted raw boundary before any read; this primitive refuses
-an already buffered input and does not establish either lifecycle hook. TLS
+The proposed `ProtocolFileBinding` mixin intercepts `_rfile` assignment. The
+bound connection source assigns a fresh `sock.makefile("rb")` in `connect`
+(line 698) and a fresh `self._sock.makefile("rb")` after TLS wrapping (line 953).
+Place this mixin before the pinned `Connection` in the future fixture class's
+method resolution order, initialize its budget before the deferred driver
+constructor, and retain the driver's packet parser and `_read_bytes` method.
+The setter immediately detaches that fresh buffer and installs the budgeted raw
+boundary before its first read. It shares the budget across replacements,
+refuses to discard unread prefetched bytes, and closes a rejected newly owned
+stream. `None` assignment closes without a read or a fresh deadline allowance.
+Freshness of the incoming buffer is a requirement of these two exact source
+sites; the helper does not certify an arbitrary buffer supplied after use.
+
+Five additional inert controls exercise those assignment/replacement/close
+boundaries with stock in-memory I/O. No PyMySQL class has been imported or
+composed. Actual class composition and driver lifecycle qualification, TLS
 handshake deadlines, authentication, result terminators, process ownership,
-framing and cleanup remain unimplemented. The collector vectors below remain
+framing and cleanup remain unqualified. The collector vectors below remain
 unexecuted, and all actual operating inputs remain unbound.
 
 The process receives only the fixture identity and dedicated SELECT-only
@@ -123,8 +135,8 @@ still share the original absolute phase/case deadline and resource envelope.
 They receive no separate allowance, and no custom TLS engine is proposed.
 A failed read does not refund that reservation or permit a retry. The adapter
 must bind both initial and post-TLS raw readers against the pinned connection
-source before adoption. That lifecycle binding has not been implemented or
-exercised here.
+source before adoption. The mixin above is proposed source; its actual driver
+composition and lifecycle have not been exercised here.
 Construct with `defer_connect=True`, initialize the deadline/receive guard before
 any handshake, and connect only after fixture identity/input validation. The
 complete process lifetime and its output are also bounded by the owner. Send
