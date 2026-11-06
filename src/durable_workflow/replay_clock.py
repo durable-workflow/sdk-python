@@ -192,23 +192,27 @@ class BusinessReplayClock:
             return
         event = self.events[index]
         payload = event["payload"]
-        value = _recorded_value(event)
         if _kind(event) in {"ActivityCompleted", "TimerFired"} and "reused_recorded_at" in payload:
-            if self._native_prefix and family == "timer":
-                return
-            if (self._source_run is None or payload.get("reused_from_run_id") != self._source_run
-                or self._resume_step is None or sequence >= self._resume_step):
-                return
-            if family == "activity" and (
-                not _identity(payload.get("reused_activity_execution_id"))
-                or payload.get("reused_activity_execution_id") == payload.get("activity_execution_id")
-            ):
-                return
-            value = payload["reused_recorded_at"]
-            original = _time(value)
-            if original is None or self._redrive_inserted is None or original > self._redrive_inserted:
-                return
-        self._pending = (index, _time(value))
+            time = self._reused_time(payload, family, sequence)
+        else:
+            time = _time(_recorded_value(event))
+        self._pending = (index, time)
+
+    def _reused_time(self, payload: Mapping[str, Any], family: str, sequence: int) -> datetime | None:
+        if self._native_prefix and family == "timer":
+            return None
+        if (self._source_run is None or payload.get("reused_from_run_id") != self._source_run
+            or self._resume_step is None or sequence >= self._resume_step):
+            return None
+        if family == "activity" and (
+            not _identity(payload.get("reused_activity_execution_id"))
+            or payload.get("reused_activity_execution_id") == payload.get("activity_execution_id")
+        ):
+            return None
+        original = _time(payload.get("reused_recorded_at"))
+        if original is None or self._redrive_inserted is None or original > self._redrive_inserted:
+            return None
+        return original
 
     def _scalar_boundary(self, index: int, family: str, sequence: int) -> bool:
         event = self.events[index]
