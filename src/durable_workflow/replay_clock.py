@@ -40,18 +40,16 @@ class _Frame:
 
 
 _ACTIVE: ContextVar[_Frame | None] = ContextVar("business_replay_clock", default=None)
+_DISCARD = threading.local()
 
 
 @contextlib.contextmanager
 def execution_scope(owner: object | None, time: datetime | None) -> Iterator[None]:
-    previous = _ACTIVE.get()
-    _ACTIVE.set(_Frame(owner, time, threading.get_ident(), _task()))
+    token = _ACTIVE.set(_Frame(owner, time, threading.get_ident(), _task()))
     try:
         yield
     finally:
-        # Restore the value without deleting an absent binding during nested
-        # generator finalization. Cleanup must preserve the original exception.
-        _ACTIVE.set(previous)
+        _ACTIVE.reset(token)
 
 
 def isolated(function: Callable[_P, _T]) -> Callable[_P, _T]:
@@ -63,9 +61,24 @@ def isolated(function: Callable[_P, _T]) -> Callable[_P, _T]:
     return invoke
 
 
+def discarded(function: Callable[_P, _T]) -> Callable[_P, _T]:
+    """Synchronous disposal cannot borrow an active business clock."""
+    @functools.wraps(function)
+    def invoke(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        # Finalizers can interrupt a ContextVar update. Do not write another
+        # ContextVar here or move generator cleanup away from its own tokens.
+        previous = getattr(_DISCARD, "active", False)
+        _DISCARD.active = True
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _DISCARD.active = previous
+    return invoke
+
+
 def read(owner: object) -> datetime:
     frame = _ACTIVE.get()
-    if (frame is None or frame.owner is not owner or frame.time is None
+    if (getattr(_DISCARD, "active", False) or frame is None or frame.owner is not owner or frame.time is None
         or frame.thread != threading.get_ident() or frame.task is not _task()):
         raise ReplayClockUnavailable()
     return frame.time

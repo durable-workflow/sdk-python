@@ -2921,7 +2921,7 @@ class _ReplayLifetime:
         self.generator: Any = None
         self.awaitable: Any = None
 
-    @replay_clock.isolated
+    @replay_clock.discarded
     def close(self) -> None:
         self.logger._set_replaying(True)
         awaitable, self.awaitable = self.awaitable, None

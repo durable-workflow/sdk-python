@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+from contextvars import ContextVar
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any
@@ -10,7 +11,14 @@ import pytest
 
 from durable_workflow import ReplayClockUnavailable, serializer, workflow
 from durable_workflow.errors import ActivityFailed, NonDeterministicReplayError, QueryFailed
-from durable_workflow.workflow import CompleteWorkflow, WorkflowContext, _prepare_query_state, query_state, replay
+from durable_workflow.workflow import (
+    _ACTIVE_WORKFLOW_REPLAY,
+    CompleteWorkflow,
+    WorkflowContext,
+    _prepare_query_state,
+    query_state,
+    replay,
+)
 from tests.business_clock_workflows import NativeRedriveBusinessClockWorkflow, ScalarBusinessClockWorkflow, clock_text
 
 
@@ -121,6 +129,7 @@ def test_existing_command_mismatch_remains_the_original_replay_error() -> None:
     events[2]["payload"]["activity_type"] = "changed"
     with pytest.raises(NonDeterministicReplayError):
         result(events)
+    assert _ACTIVE_WORKFLOW_REPLAY.get() is None
 
 
 def test_accessor_is_unavailable_outside_execution_even_with_an_explicit_legacy_clock() -> None:
@@ -288,6 +297,7 @@ def test_cyclic_discard_cleanup_restores_parent_time_and_preserves_original_repl
         def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
             yield ctx.schedule_activity("clock.first", [])
             before = ctx.replay_now()
+            assert _ACTIVE_WORKFLOW_REPLAY.get() is ctx
             for _ in range(32):
                 outcome = replay(Discard, [], [], payload_codec="avro")
                 cycle: list[Any] = [outcome]
@@ -296,14 +306,62 @@ def test_cyclic_discard_cleanup_restores_parent_time_and_preserves_original_repl
             gc.collect()
             assert cleanup == [None] * 32
             assert ctx.replay_now() == before
+            assert _ACTIVE_WORKFLOW_REPLAY.get() is ctx
             mismatch = history()
             mismatch[2]["payload"]["activity_type"] = "changed"
             with pytest.raises(NonDeterministicReplayError):
                 replay(ScalarBusinessClockWorkflow, mismatch, [], payload_codec="avro")
             assert ctx.replay_now() == before
+            assert _ACTIVE_WORKFLOW_REPLAY.get() is ctx
             return clock_text(ctx)
 
     assert result(history()[:3], Parent) == "2026-11-01T00:00:03.123456+00:00"
+    assert _ACTIVE_WORKFLOW_REPLAY.get() is None
+
+
+@pytest.mark.parametrize("collected", [False, True], ids=["explicit-close", "cyclic-finalizer"])
+def test_discard_keeps_generator_context_tokens_and_cannot_borrow_parent_time(collected: bool) -> None:
+    ambient: ContextVar[str] = ContextVar("clock_cleanup_ambient", default="outside")
+    observations: list[Any] = []
+    parent: list[WorkflowContext] = []
+
+    class Discard:
+        def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+            token = ambient.set("suspended")
+            try:
+                yield ctx.schedule_activity("discard", [])
+            finally:
+                observations.append((ambient.get(), clock_text(ctx), clock_text(parent[0])))
+                ambient.reset(token)
+                observations.append(ambient.get())
+
+    class Parent:
+        def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+            yield ctx.schedule_activity("clock.first", [])
+            parent.append(ctx)
+            before = ctx.replay_now()
+            token = ambient.set("parent")
+            try:
+                outcome = replay(Discard, [], [], payload_codec="avro")
+                assert ambient.get() == "suspended"
+                if collected:
+                    cycle: list[Any] = [outcome]
+                    cycle.append(cycle)
+                    del outcome, cycle
+                    gc.collect()
+                else:
+                    outcome.close()
+                assert observations == [("suspended", None, None), "parent"]
+                assert ambient.get() == "parent"
+                assert ctx.replay_now() == before
+                assert _ACTIVE_WORKFLOW_REPLAY.get() is ctx
+            finally:
+                ambient.reset(token)
+            return clock_text(ctx)
+
+    assert result(history()[:3], Parent) == "2026-11-01T00:00:03.123456+00:00"
+    assert ambient.get() == "outside"
+    assert _ACTIVE_WORKFLOW_REPLAY.get() is None
 
 
 def _native_fixture() -> dict[str, Any]:
