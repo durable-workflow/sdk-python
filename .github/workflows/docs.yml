@@ -152,7 +152,7 @@ jobs:
           PUBLISHED_WHEEL_URL: ${{ steps.release-channel.outputs.wheel_url }}
           PUBLISHED_WHEEL_SHA256: ${{ steps.release-channel.outputs.wheel_sha256 }}
         run: |
-          pip install --only-binary=:all: -r requirements-docs.txt
+          pip install --require-hashes --only-binary=:all: -r requirements-docs.txt
           if [ -n "$STABLE_TAG" ]; then
             python - <<'PY'
           import os

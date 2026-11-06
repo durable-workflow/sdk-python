@@ -42,7 +42,7 @@ jobs:
           clients: pip,python
       - name: Install pinned documentation dependencies
         run: |
-          pip install --only-binary=:all: -r requirements-docs.txt
+          pip install --require-hashes --only-binary=:all: -r requirements-docs.txt
       - name: Install Chromium
         env:
           NODE_OPTIONS: --use-openssl-ca

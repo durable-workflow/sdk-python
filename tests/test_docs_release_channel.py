@@ -185,6 +185,8 @@ def test_bundled_browser_command_has_no_system_dependency_install_or_fallback(wo
     assert shlex.split(chromium["run"]) == ["python", "-m", "playwright", "install", "chromium"]
     assert chromium["env"]["NODE_TLS_REJECT_UNAUTHORIZED"] == "1"
     assert chromium["env"]["NODE_OPTIONS"] == "--use-openssl-ca"
+    install = next(step["run"] for step in steps if "-r requirements-docs.txt" in step.get("run", ""))
+    assert "--require-hashes" in shlex.split(install.splitlines()[0])
 
 
 @pytest.mark.parametrize("url", [

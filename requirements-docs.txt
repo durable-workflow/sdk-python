@@ -1,43 +1,85 @@
-# Resolved documentation and SDK runtime dependencies for the Python 3.12 portal builder.
-anyio==4.16.0
-babel==2.18.0
-backrefs==8.2
-certifi==2026.10.23
-charset-normalizer==3.5.2
-click==8.5.0
-colorama==0.4.6
-fastavro==1.13.1
-ghp-import==2.1.0
-greenlet==3.5.6
-griffelib==2.4.1
-h11==0.16.0
-httpcore==1.0.9
-httpx==0.28.1
-idna==3.20
-Jinja2==3.1.6
-Markdown==3.11.3
-MarkupSafe==3.0.4
-mergedeep==1.3.4
-mkdocs==1.6.1
-mkdocs-autorefs==1.4.5
-mkdocs-get-deps==0.2.2
-mkdocs-material==9.8.0
-mkdocs-material-extensions==1.3.1
-mkdocstrings==1.0.8
-mkdocstrings-python==2.0.10
-packaging==26.3
-paginate==0.5.7
-pathspec==1.1.1
-platformdirs==4.14.5
-playwright==1.64.1
-pyee==14.0.0
-Pygments==2.21.0
-pymdown-extensions==12.3
-python-dateutil==4.0.0
-PyYAML==6.0.3
-pyyaml_env_tag==1.1
-requests==2.34.2
-typing_extensions==4.16.0
-tzdata==2026.6
-urllib3==2.8.0
-watchdog==7.1.0
+# Resolved wheel artifacts for the Linux amd64 / Python 3.12 portal builder.
+# anyio-4.16.0-py3-none-any.whl
+anyio==4.16.0 --hash=sha256:c66ae634e0b8228396b801741beb3294326d4b6102f7bba4041c0dfb58c29026
+# babel-2.18.0-py3-none-any.whl
+babel==2.18.0 --hash=sha256:e2b422b277c2b9a9630c1d7903c2a00d0830c409c59ac8cae9081c92f1aeba35
+# backrefs-8.2-py312-none-any.whl
+backrefs==8.2 --hash=sha256:e64a50f31e8eee2837009ca7744999ba59125acfd50996ba2349d8f18061e608
+# certifi-2026.10.23-py3-none-any.whl
+certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1
+# charset_normalizer-3.5.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+charset-normalizer==3.5.2 --hash=sha256:3d31298449090ab8d47b7b1b2a555ff73cac7ed438a08b7ac160980c7ebed649
+# click-8.5.0-py3-none-any.whl
+click==8.5.0 --hash=sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360
+# colorama-0.4.6-py2.py3-none-any.whl
+colorama==0.4.6 --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
+# fastavro-1.13.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+fastavro==1.13.1 --hash=sha256:2f56a127d71e45083306d2650efff827cad0f4b0744dd42cb69c631d77943b1d
+# ghp_import-2.1.0-py3-none-any.whl
+ghp-import==2.1.0 --hash=sha256:8337dd7b50877f163d4c0289bc1f1c7f127550241988d568c1db512c4324a619
+# greenlet-3.5.6-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
+greenlet==3.5.6 --hash=sha256:975736b002ed080d124cf81a79cb7e05cb26d6b3f5c7a7b651c0fcce70353aa1
+# griffelib-2.4.1-py3-none-any.whl
+griffelib==2.4.1 --hash=sha256:76bc562f936ad1ce198d2cf6d0731bd5c92a7d934b69ef828ef22ee0ffdb62ce
+# h11-0.16.0-py3-none-any.whl
+h11==0.16.0 --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
+# httpcore-1.0.9-py3-none-any.whl
+httpcore==1.0.9 --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55
+# httpx-0.28.1-py3-none-any.whl
+httpx==0.28.1 --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
+# idna-3.20-py3-none-any.whl
+idna==3.20 --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c
+# jinja2-3.1.6-py3-none-any.whl
+Jinja2==3.1.6 --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
+# markdown-3.11.3-py3-none-any.whl
+Markdown==3.11.3 --hash=sha256:e1a31a112232504d753e5c01bb8c2de90d3f0ba986b063e10770cf7695b09e73
+# markupsafe-3.0.4-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+MarkupSafe==3.0.4 --hash=sha256:8e124f974786f831d6043728e38296969d3579db8896fe004682f5758e613581
+# mergedeep-1.3.4-py3-none-any.whl
+mergedeep==1.3.4 --hash=sha256:70775750742b25c0d8f36c55aed03d24c3384d17c951b3175d898bd778ef0307
+# mkdocs-1.6.1-py3-none-any.whl
+mkdocs==1.6.1 --hash=sha256:db91759624d1647f3f34aa0c3f327dd2601beae39a366d6e064c03468d35c20e
+# mkdocs_autorefs-1.4.5-py3-none-any.whl
+mkdocs-autorefs==1.4.5 --hash=sha256:68ee484e0800f3ba50cda1bc4a94293adbdfcc010243c322b3f5d66e15d06770
+# mkdocs_get_deps-0.2.2-py3-none-any.whl
+mkdocs-get-deps==0.2.2 --hash=sha256:e7878cbeac04860b8b5e0ca31d3abad3df9411a75a32cde82f8e44b6c16ff650
+# mkdocs_material-9.8.0-py3-none-any.whl
+mkdocs-material==9.8.0 --hash=sha256:19304a7263c5700428227122b3b2699aa73f432c9de8816876adaec7d7293ce3
+# mkdocs_material_extensions-1.3.1-py3-none-any.whl
+mkdocs-material-extensions==1.3.1 --hash=sha256:adff8b62700b25cb77b53358dad940f3ef973dd6db797907c49e3c2ef3ab4e31
+# mkdocstrings-1.0.8-py3-none-any.whl
+mkdocstrings==1.0.8 --hash=sha256:4b03ed2b863009f1153f0d04aacb22a85b92afc28a0636d85717c92eecca638c
+# mkdocstrings_python-2.0.10-py3-none-any.whl
+mkdocstrings-python==2.0.10 --hash=sha256:4a3aaeebb25ba5ae57a8f9e75432fe4571984889602f2b2f7d672faa760e9062
+# packaging-26.3-py3-none-any.whl
+packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+# paginate-0.5.7-py2.py3-none-any.whl
+paginate==0.5.7 --hash=sha256:b885e2af73abcf01d9559fd5216b57ef722f8c42affbb63942377668e35c7591
+# pathspec-1.1.1-py3-none-any.whl
+pathspec==1.1.1 --hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189
+# platformdirs-4.14.5-py3-none-any.whl
+platformdirs==4.14.5 --hash=sha256:8e778c6fa421516f4d3369449f8df3b0e1b72c0e0005fe88e3ec772d0a14e750
+# playwright-1.64.1-py3-none-manylinux1_x86_64.whl
+playwright==1.64.1 --hash=sha256:577b8d88778c245cfbd145ae17cf53044f084b1b46c55c69081d4069d56057e2
+# pyee-14.0.0-py3-none-any.whl
+pyee==14.0.0 --hash=sha256:3ac2d3229a9677f7de2c33d7f52fe25b638a46b19c413fea2edc8c6d0a644e4d
+# pygments-2.21.0-py3-none-any.whl
+Pygments==2.21.0 --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
+# pymdown_extensions-12.3-py3-none-any.whl
+pymdown-extensions==12.3 --hash=sha256:345493a8e3497e24382902903a1c43a28e34a52f2b7571a1c9641429b820ca74
+# python_dateutil-4.0.0-py3-none-any.whl
+python-dateutil==4.0.0 --hash=sha256:a5e246f79eb80475e691bf93862cead98decd8a498cf53ba0516fcdc0f50dc1c
+# pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+PyYAML==6.0.3 --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc
+# pyyaml_env_tag-1.1-py3-none-any.whl
+pyyaml_env_tag==1.1 --hash=sha256:17109e1a528561e32f026364712fee1264bc2ea6715120891174ed1b980d2e04
+# requests-2.34.2-py3-none-any.whl
+requests==2.34.2 --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0
+# typing_extensions-4.16.0-py3-none-any.whl
+typing_extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+# tzdata-2026.6-py2.py3-none-any.whl
+tzdata==2026.6 --hash=sha256:0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec
+# urllib3-2.8.0-py3-none-any.whl
+urllib3==2.8.0 --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3
+# watchdog-7.1.0-py3-none-manylinux_2_17_x86_64.whl
+watchdog==7.1.0 --hash=sha256:ad6d0b473cb8cde0721692b22b30fcbea8b52102430528874b3593549888bd81
