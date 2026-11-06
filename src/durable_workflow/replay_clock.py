@@ -22,6 +22,9 @@ _TIMESTAMP = re.compile(
     r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])",
 )
 _ACTIVITY_TERMINALS = frozenset({"ActivityCompleted", "ActivityFailed", "ActivityTimedOut", "ActivityCancelled"})
+_CHILD_TERMINALS = frozenset({"ChildRunCompleted", "ChildRunFailed", "ChildRunCancelled", "ChildRunTerminated"})
+_CHILD_IDENTITIES = ("child_call_id", "child_workflow_instance_id", "child_workflow_run_id", "child_workflow_type")
+_CHILD_EVENTS = frozenset({"ChildWorkflowScheduled", "ChildRunStarted", *_CHILD_TERMINALS})
 
 
 def _task() -> object | None:
@@ -125,6 +128,7 @@ class BusinessReplayClock:
     def __init__(self, events: Sequence[Mapping[str, Any]], workflow_id: str, run_id: str) -> None:
         self.events = events
         self._by_sequence: dict[int, list[int]] = {}
+        self._child_calls: dict[str, list[int]] = {}
         self._source_run: str | None = None
         self._resume_step: int | None = None
         self._redrive_inserted: datetime | None = None
@@ -139,9 +143,17 @@ class BusinessReplayClock:
         self._pending = self.initial
         self._current = self.initial
         for index, event in enumerate(events):
-            payload = event.get("payload")
-            if isinstance(payload, Mapping) and (sequence := _sequence(payload)) is not None:
-                self._by_sequence.setdefault(sequence, []).append(index)
+            self._index_event(index, event)
+
+    def _index_event(self, index: int, event: Mapping[str, Any]) -> None:
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            return
+        if (sequence := _sequence(payload)) is not None:
+            self._by_sequence.setdefault(sequence, []).append(index)
+        call = payload.get("child_call_id")
+        if _kind(event) in _CHILD_EVENTS and _identity(call):
+            self._child_calls.setdefault(call, []).append(index)
 
     def _start_prefix(self, index: int, payload: Mapping[str, Any]) -> bool:
         if index == 0:
@@ -197,9 +209,11 @@ class BusinessReplayClock:
 
     def observe(self, index: int | None, family: str, sequence: int) -> None:
         self._pending = (None, None)
-        if index is None or not 0 <= index < len(self.events) or family not in {"activity", "timer"}:
+        if index is None or not 0 <= index < len(self.events) or family not in {"activity", "timer", "child workflow"}:
             return
-        if not self._scalar_boundary(index, family, sequence):
+        boundary = (self._child_boundary(index, sequence) if family == "child workflow"
+                    else self._scalar_boundary(index, family, sequence))
+        if not boundary:
             return
         event = self.events[index]
         payload = event["payload"]
@@ -208,6 +222,31 @@ class BusinessReplayClock:
         else:
             time = _time(_recorded_value(event))
         self._pending = (index, time)
+
+    def _child_boundary(self, index: int, sequence: int) -> bool:
+        indices = self._by_sequence.get(sequence, [])
+        if len(indices) not in (2, 3) or indices[-1] != index:
+            return False
+        kinds = [_kind(self.events[position]) for position in indices]
+        if kinds[0] != "ChildWorkflowScheduled" or kinds[-1] not in _CHILD_TERMINALS:
+            return False
+        if len(kinds) == 3 and kinds[1] != "ChildRunStarted":
+            return False
+        payload = self.events[index].get("payload")
+        if not isinstance(payload, Mapping) or _sequence(payload) != sequence:
+            return False
+        if not all(_identity(payload.get(key)) for key in _CHILD_IDENTITIES):
+            return False
+        if self._child_calls.get(payload["child_call_id"]) != indices:
+            return False
+        return all(self._child_row(position, payload) for position in indices)
+
+    def _child_row(self, index: int, terminal: Mapping[str, Any]) -> bool:
+        payload = self.events[index].get("payload")
+        return (self._scalar_row(index, "child workflow", "child_call_id", terminal["child_call_id"], _CHILD_EVENTS)
+                and isinstance(payload, Mapping)
+                and payload.get("workflow_type", terminal["child_workflow_type"]) == terminal["child_workflow_type"]
+                and all(payload.get(key) == terminal[key] for key in _CHILD_IDENTITIES))
 
     def _reused_time(self, payload: Mapping[str, Any], family: str, sequence: int) -> datetime | None:
         if (self._source_run is None or payload.get("reused_from_run_id") != self._source_run
@@ -260,7 +299,9 @@ class BusinessReplayClock:
             return False
         return not openings or openings[0] < index
 
-    def _scalar_row(self, index: int, family: str, resource: str, identity: str, allowed: set[str]) -> bool:
+    def _scalar_row(
+        self, index: int, family: str, resource: str, identity: str, allowed: set[str] | frozenset[str],
+    ) -> bool:
         row = self.events[index]
         body = row.get("payload")
         if not isinstance(body, Mapping) or _kind(row) not in allowed or body.get(resource) != identity:

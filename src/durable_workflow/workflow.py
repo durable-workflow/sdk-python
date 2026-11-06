@@ -2859,8 +2859,8 @@ class WorkflowContext:
     def replay_now(self) -> datetime:
         """Return the proved UTC instant of the supported consumed boundary.
 
-        This additive clock supports scalar persisted activities/timers and an
-        explicit redrive start. Ordinary entry, inline/local/grouped operations
+        This additive clock supports scalar persisted activities, timers and
+        children, plus an explicit redrive start. Ordinary entry, inline/local/grouped operations
         and unproved callbacks remain unavailable. Repeated reads are stable;
         equal/backward recorded times retain their values and precision. Adopt
         business-time decisions through normal workflow versioning. ``now()``
@@ -7949,7 +7949,7 @@ def _replay_state(
                     _assert_next_step_matches(cmd)
                     val = resolved_results[result_cursor]
                     step = recorded_steps[result_cursor]
-                    if isinstance(cmd, ScheduleActivity | StartTimer):
+                    if isinstance(cmd, ScheduleActivity | StartTimer | StartChildWorkflow):
                         ctx._business_clock.observe(step.history_index, step.shape, step.workflow_sequence)
                     if not isinstance(cmd, RecordLocalActivity) or prepare_local_activities:
                         _advance_cancellation_clock([recorded_steps[result_cursor].history_index])

@@ -26,6 +26,7 @@ from durable_workflow.workflow import (
     query_state,
 )
 from tests.business_clock_workflows import (
+    ChildBusinessClockWorkflow,
     NativeRedriveBusinessClockWorkflow,
     PrefixedCoreTimerBusinessClockWorkflow,
     ScalarBusinessClockWorkflow,
@@ -376,6 +377,7 @@ class BlankFailureWorkflow:
 
 
 WORKFLOWS = [
+    ChildBusinessClockWorkflow,
     NativeRedriveBusinessClockWorkflow,
     PrefixedCoreTimerBusinessClockWorkflow,
     ScalarBusinessClockWorkflow,
