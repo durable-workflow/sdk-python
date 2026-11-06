@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from durable_workflow import workflow
-from durable_workflow.errors import DurableWorkflowError
+from durable_workflow.errors import ChildWorkflowFailed, DurableWorkflowError
 from durable_workflow.workflow import WorkflowContext
 
 
@@ -77,3 +77,31 @@ class PrefixedCoreTimerBusinessClockWorkflow:
         yield ctx.start_timer(seconds)
         observations.append(clock_text(ctx))
         return {"clock": observations, "legacy": ctx.now().isoformat(timespec="microseconds")}
+
+
+@workflow.defn(name="tests.replay.business-clock-child")
+class ChildBusinessClockWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        self.ctx = ctx
+        observations = [clock_text(ctx)]
+        legacy = [ctx.now().isoformat(timespec="microseconds")]
+        value = yield ctx.start_child_workflow("clock.child", [])
+        observations.append(clock_text(ctx))
+        repeated = clock_text(ctx) == observations[-1]
+        legacy.append(ctx.now().isoformat(timespec="microseconds"))
+        failure = None
+        try:
+            yield ctx.start_child_workflow("clock.child", [])
+        except ChildWorkflowFailed as error:
+            failure = {"kind": error.failure_kind, "run": error.child_workflow_run_id, "message": str(error)}
+        observations.append(clock_text(ctx))
+        legacy.append(ctx.now().isoformat(timespec="microseconds"))
+        return {"clock": observations, "legacy": legacy, "repeated": repeated, "result": value, "failure": failure}
+
+    @workflow.query("clock")
+    def clock(self) -> str | None:
+        return clock_text(self.ctx)
+
+    @workflow.query("explode")
+    def explode(self) -> None:
+        raise ValueError("child-clock-query-error")
