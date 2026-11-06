@@ -1,0 +1,230 @@
+"""Business replay time from supported consumed boundaries, without wall time."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import functools
+import re
+import threading
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, ParamSpec, TypeVar
+
+from .errors import ReplayClockUnavailable
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+_TIMESTAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+    r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])",
+)
+_ACTIVITY_TERMINALS = frozenset({"ActivityCompleted", "ActivityFailed", "ActivityTimedOut", "ActivityCancelled"})
+
+
+def _task() -> object | None:
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
+
+@dataclass(frozen=True)
+class _Frame:
+    owner: object | None
+    time: datetime | None
+    thread: int
+    task: object | None
+
+
+_ACTIVE: ContextVar[_Frame | None] = ContextVar("business_replay_clock", default=None)
+
+
+@contextlib.contextmanager
+def execution_scope(owner: object | None, time: datetime | None) -> Iterator[None]:
+    token = _ACTIVE.set(_Frame(owner, time, threading.get_ident(), _task()))
+    try:
+        yield
+    finally:
+        _ACTIVE.reset(token)
+
+
+def isolated(function: Callable[_P, _T]) -> Callable[_P, _T]:
+    """Nested reconstruction and its unqualified callbacks cannot borrow time."""
+    @functools.wraps(function)
+    def invoke(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        with execution_scope(None, None):
+            return function(*args, **kwargs)
+    return invoke
+
+
+def read(owner: object) -> datetime:
+    frame = _ACTIVE.get()
+    if (frame is None or frame.owner is not owner or frame.time is None
+        or frame.thread != threading.get_ident() or frame.task is not _task()):
+        raise ReplayClockUnavailable()
+    return frame.time
+
+
+def _time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or _TIMESTAMP.fullmatch(value) is None:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _kind(event: Mapping[str, Any]) -> str | None:
+    value = event.get("event_type") or event.get("type")
+    if "event_type" in event and "type" in event and event["event_type"] != event["type"]:
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _sequence(payload: Mapping[str, Any]) -> int | None:
+    value = payload.get("sequence")
+    if type(value) is not int or value < 1:
+        return None
+    if "workflow_sequence" in payload:
+        alias = payload["workflow_sequence"]
+        if type(alias) is not int or alias != value:
+            return None
+    return value
+
+
+def _identity(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+class BusinessReplayClock:
+    """Index identities once, then read time only at actual scalar consumption."""
+
+    def __init__(self, events: Sequence[Mapping[str, Any]], workflow_id: str, run_id: str) -> None:
+        self.events = events
+        self._by_sequence: dict[int, list[int]] = {}
+        self._source_run: str | None = None
+        self._resume_step: int | None = None
+        self._redrive_inserted: datetime | None = None
+        starts = [index for index, event in enumerate(events) if _kind(event) == "WorkflowStarted"]
+        self.initial: tuple[int | None, datetime | None] = (None, None)
+        if len(starts) == 1:
+            index = starts[0]
+            payload = events[index].get("payload")
+            if (index == 0 and isinstance(payload, Mapping)
+                and self._redrive_start(payload, workflow_id, run_id)):
+                self.initial = (index, _time(payload.get("replayed_started_at")))
+        self._pending = self.initial
+        self._current = self.initial
+        for index, event in enumerate(events):
+            payload = event.get("payload")
+            if isinstance(payload, Mapping) and (sequence := _sequence(payload)) is not None:
+                self._by_sequence.setdefault(sequence, []).append(index)
+
+    def _redrive_start(self, payload: Mapping[str, Any], workflow_id: str, run_id: str) -> bool:
+        if payload.get("recovery_kind") != "redrive":
+            # Ordinary entry needs run.started_at, not history insertion time.
+            return False
+        keys = ("workflow_instance_id", "workflow_run_id", "workflow_command_id", "continued_from_run_id",
+                "workflow_link_id")
+        if not all(_identity(payload.get(key)) for key in keys):
+            return False
+        if ((workflow_id and payload["workflow_instance_id"] != workflow_id)
+            or (run_id and payload["workflow_run_id"] != run_id)):
+            return False
+        resume_step = payload.get("resume_step_sequence")
+        if type(resume_step) is not int or resume_step < 1 or _time(payload.get("replayed_started_at")) is None:
+            return False
+        if any(type(event.get("sequence")) is not int or event["sequence"] != index + 1
+               for index, event in enumerate(self.events)):
+            return False
+        inserted = _time(self.events[0].get("recorded_at"))
+        original = _time(payload.get("replayed_started_at"))
+        if inserted is None or original is None or original > inserted:
+            return False
+        self._source_run = payload["continued_from_run_id"]
+        self._resume_step = resume_step
+        self._redrive_inserted = inserted
+        return True
+
+    def resume(self, owner: object, function: Callable[..., _T], *args: Any) -> _T:
+        self._current, self._pending = self._pending, (None, None)
+        with execution_scope(owner, self._current[1]):
+            return function(*args)
+
+    def snapshot(self) -> datetime | None:
+        # Only this final inspected prefix is proved for a query callback.
+        index, time = self._current
+        return time if index is not None and index == len(self.events) - 1 else None
+
+    def unavailable(self) -> None:
+        self._current = self._pending = (None, None)
+
+    def observe(self, index: int | None, family: str, sequence: int) -> None:
+        self._pending = (None, None)
+        if index is None or not 0 <= index < len(self.events) or family not in {"activity", "timer"}:
+            return
+        if not self._scalar_boundary(index, family, sequence):
+            return
+        event = self.events[index]
+        payload = event["payload"]
+        value = event.get("timestamp") if "timestamp" in event else event.get("recorded_at")
+        if _kind(event) in {"ActivityCompleted", "TimerFired"} and "reused_recorded_at" in payload:
+            if (self._source_run is None or payload.get("reused_from_run_id") != self._source_run
+                or self._resume_step is None or sequence >= self._resume_step):
+                return
+            if family == "activity" and not _identity(payload.get("reused_activity_execution_id")):
+                return
+            value = payload["reused_recorded_at"]
+            original = _time(value)
+            if original is None or self._redrive_inserted is None or original > self._redrive_inserted:
+                return
+        self._pending = (index, _time(value))
+
+    def _scalar_boundary(self, index: int, family: str, sequence: int) -> bool:
+        event = self.events[index]
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping) or _sequence(payload) != sequence:
+            return False
+        kinds = _ACTIVITY_TERMINALS if family == "activity" else frozenset({"TimerFired"})
+        if _kind(event) not in kinds:
+            return False
+        indices = self._by_sequence.get(sequence, [])
+        matching = [position for position in indices if _kind(self.events[position]) in kinds]
+        if matching != [index]:
+            return False
+        resource = "activity_execution_id" if family == "activity" else "timer_id"
+        identity = payload.get(resource)
+        if not _identity(identity):
+            return False
+        opening = "ActivityScheduled" if family == "activity" else "TimerScheduled"
+        allowed = {opening, *kinds}
+        if family == "activity":
+            allowed.add("ActivityStarted")
+        previous = -1
+        for position in indices:
+            row = self.events[position]
+            body = row.get("payload")
+            if (not isinstance(body, Mapping) or _kind(row) not in allowed
+                or position > index or position <= previous or body.get(resource) != identity
+                or body.get("execution_mode") not in (None, "remote") or body.get("local_activity") is True
+                or body.get("parallel_group") is not None or body.get("parallel_group_path") not in (None, [])
+                or body.get("selection_group") is not None
+                or body.get("cancellation_scope_id") not in (None, "root")):
+                return False
+            if family == "timer" and (
+                body.get("timer_kind") not in (None, "sleep", "durable_timer")
+                or "condition_wait_id" in body or "signal_wait_id" in body
+            ):
+                return False
+            previous = position
+        openings = [position for position in indices if _kind(self.events[position]) == opening]
+        starts = [position for position in indices if _kind(self.events[position]) == "ActivityStarted"]
+        if len(starts) > 1 or (starts and (not openings or starts[0] < openings[0])):
+            return False
+        reused = "reused_recorded_at" in payload and self._source_run is not None
+        if len(openings) != 1 and not (family == "activity" and reused and indices == [index]):
+            return False
+        return not openings or openings[0] < index

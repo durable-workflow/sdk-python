@@ -25,6 +25,7 @@ from durable_workflow.workflow import (
     commands_to_server_commands,
     query_state,
 )
+from tests.business_clock_workflows import ScalarBusinessClockWorkflow
 from tests.condition_fingerprint_workflows import FingerprintApproval, FingerprintGenexpr, FingerprintTerminalDuplicate
 from tests.deregistration_recovery import RecoveredWorkflow as FencedRecoveryWorkflow
 from tests.test_condition_occurrence_id import OccurrenceApproval, SelectionOccurrences
@@ -371,6 +372,7 @@ class BlankFailureWorkflow:
 
 
 WORKFLOWS = [
+    ScalarBusinessClockWorkflow,
     PendingFinally,
     BlankFailureWorkflow,
     IdentityAcrossReplay,
