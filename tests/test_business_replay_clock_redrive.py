@@ -94,6 +94,17 @@ def test_missing_start_retains_the_original_legacy_clock_error() -> None:
         result(document)
 
 
+@pytest.mark.parametrize("prefixed", [False, True])
+@pytest.mark.parametrize("alias", ["WorkflowTaskCompleted", "StartAccepted"])
+def test_conflicting_start_kind_alias_cannot_hide_an_unbound_redrive_header(prefixed: bool, alias: str) -> None:
+    document = fixture(prefixed)
+    started = next(event for event in document["history"] if event["event_type"] == "WorkflowStarted")
+    started["type"] = alias
+    for key in REUSE_FIELDS:
+        document["history"][-1]["payload"].pop(key)
+    assert result(document) == {"clock": [None] * 3, "legacy": "2026-11-03T00:00:00.000000+00:00"}
+
+
 def test_pre_resume_activity_with_a_schedule_cannot_use_insertion_time_when_reuse_fields_are_missing() -> None:
     document = fixture(False)
     terminal = document["history"][1]

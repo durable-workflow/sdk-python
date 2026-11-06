@@ -128,9 +128,12 @@ def _declares_redrive(event: Mapping[str, Any]) -> bool:
     payload = event.get("payload")
     if not isinstance(payload, Mapping):
         return False
-    if _kind(event) == "StartAccepted":
-        return payload.get("outcome") == "redriven"
-    return _kind(event) == "WorkflowStarted" and (
+    # A conflicting kind alias invalidates authority; it must not erase a
+    # recognizable redrive envelope and turn it into ordinary history.
+    aliases = (event.get("event_type"), event.get("type"))
+    if "StartAccepted" in aliases and payload.get("outcome") == "redriven":
+        return True
+    return "WorkflowStarted" in aliases and (
         payload.get("recovery_kind") == "redrive"
         or "replayed_started_at" in payload or "resume_step_sequence" in payload
     )
