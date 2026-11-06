@@ -1422,7 +1422,11 @@ def validate(
     base_files: dict[str, bytes] = {}
     base_evidence: list[Evidence] = []
     if base_ref and not ZERO_COMMIT.fullmatch(base_ref):
-        _run(["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"], root)
+        base_ref = _run(
+            ["git", "rev-parse", "--verify", "--end-of-options", f"{base_ref}^{{commit}}"], root,
+        ).strip()
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base_ref):
+            raise CorpusError("base ref must resolve to a complete Git commit ID")
         changed, added_paths = _changed_paths(root, base_ref)
         base_files = _ref_files(root, base_ref)
         try:

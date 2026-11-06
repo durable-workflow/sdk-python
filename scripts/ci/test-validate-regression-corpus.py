@@ -816,6 +816,13 @@ raise SystemExit(0 if "return str(value)" in source else 1)
         self.assertFalse(result["counts"]["codec"]["related_change"])
         self.assertEqual(VALIDATOR._ref_files(self.root, "HEAD")[relative], data)
 
+    def test_symbolic_base_ref_is_bound_to_its_complete_commit_identity(self) -> None:
+        expected = VALIDATOR._run(["git", "rev-parse", "HEAD"], self.root).strip()
+
+        result = self._validate()
+
+        self.assertEqual(result["base_ref"], expected)
+
     def _add_avro_golden_to_base(
         self,
         malformed_wire: str | None = None,
