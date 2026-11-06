@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any
@@ -189,8 +190,9 @@ def test_nested_reconstruction_and_callback_error_cannot_borrow_time_and_restore
                         ctx.replay_now()
                     raise RuntimeError("query failed")
 
+            nested_history = history()[:1]
             with pytest.raises(QueryFailed, match="query failed"):
-                query_state(Inner, history()[:1], [], "fail", payload_codec="avro")
+                query_state(Inner, nested_history, [], "fail", payload_codec="avro")
             assert ctx.replay_now() == before
             return clock_text(ctx)
 
@@ -270,3 +272,35 @@ def test_a_retained_context_is_unavailable_after_success_and_discard_cleanup() -
     assert result(history()[:3], Retain) == "2026-11-01T00:00:03.123456+00:00"
     with pytest.raises(ReplayClockUnavailable):
         retained[0].replay_now()
+
+
+def test_cyclic_discard_cleanup_restores_parent_time_and_preserves_original_replay_errors() -> None:
+    cleanup: list[str | None] = []
+
+    class Discard:
+        def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+            try:
+                yield ctx.schedule_activity("discard", [])
+            finally:
+                cleanup.append(clock_text(ctx))
+
+    class Parent:
+        def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+            yield ctx.schedule_activity("clock.first", [])
+            before = ctx.replay_now()
+            for _ in range(32):
+                outcome = replay(Discard, [], [], payload_codec="avro")
+                cycle: list[Any] = [outcome]
+                cycle.append(cycle)
+            del outcome, cycle
+            gc.collect()
+            assert cleanup == [None] * 32
+            assert ctx.replay_now() == before
+            mismatch = history()
+            mismatch[2]["payload"]["activity_type"] = "changed"
+            with pytest.raises(NonDeterministicReplayError):
+                replay(ScalarBusinessClockWorkflow, mismatch, [], payload_codec="avro")
+            assert ctx.replay_now() == before
+            return clock_text(ctx)
+
+    assert result(history()[:3], Parent) == "2026-11-01T00:00:03.123456+00:00"

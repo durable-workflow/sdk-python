@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeGuard, TypeVar
 
 from .errors import ReplayClockUnavailable
 
@@ -44,11 +44,14 @@ _ACTIVE: ContextVar[_Frame | None] = ContextVar("business_replay_clock", default
 
 @contextlib.contextmanager
 def execution_scope(owner: object | None, time: datetime | None) -> Iterator[None]:
-    token = _ACTIVE.set(_Frame(owner, time, threading.get_ident(), _task()))
+    previous = _ACTIVE.get()
+    _ACTIVE.set(_Frame(owner, time, threading.get_ident(), _task()))
     try:
         yield
     finally:
-        _ACTIVE.reset(token)
+        # Restore the value without deleting an absent binding during nested
+        # generator finalization. Cleanup must preserve the original exception.
+        _ACTIVE.set(previous)
 
 
 def isolated(function: Callable[_P, _T]) -> Callable[_P, _T]:
@@ -95,7 +98,7 @@ def _sequence(payload: Mapping[str, Any]) -> int | None:
     return value
 
 
-def _identity(value: Any) -> bool:
+def _identity(value: Any) -> TypeGuard[str]:
     return isinstance(value, str) and bool(value.strip())
 
 
@@ -203,23 +206,9 @@ class BusinessReplayClock:
         allowed = {opening, *kinds}
         if family == "activity":
             allowed.add("ActivityStarted")
-        previous = -1
-        for position in indices:
-            row = self.events[position]
-            body = row.get("payload")
-            if (not isinstance(body, Mapping) or _kind(row) not in allowed
-                or position > index or position <= previous or body.get(resource) != identity
-                or body.get("execution_mode") not in (None, "remote") or body.get("local_activity") is True
-                or body.get("parallel_group") is not None or body.get("parallel_group_path") not in (None, [])
-                or body.get("selection_group") is not None
-                or body.get("cancellation_scope_id") not in (None, "root")):
-                return False
-            if family == "timer" and (
-                body.get("timer_kind") not in (None, "sleep", "durable_timer")
-                or "condition_wait_id" in body or "signal_wait_id" in body
-            ):
-                return False
-            previous = position
+        if any(position > index or not self._scalar_row(position, family, resource, identity, allowed)
+               for position in indices):
+            return False
         openings = [position for position in indices if _kind(self.events[position]) == opening]
         starts = [position for position in indices if _kind(self.events[position]) == "ActivityStarted"]
         if len(starts) > 1 or (starts and (not openings or starts[0] < openings[0])):
@@ -228,3 +217,18 @@ class BusinessReplayClock:
         if len(openings) != 1 and not (family == "activity" and reused and indices == [index]):
             return False
         return not openings or openings[0] < index
+
+    def _scalar_row(self, index: int, family: str, resource: str, identity: str, allowed: set[str]) -> bool:
+        row = self.events[index]
+        body = row.get("payload")
+        if not isinstance(body, Mapping) or _kind(row) not in allowed or body.get(resource) != identity:
+            return False
+        if (body.get("execution_mode") not in (None, "remote") or body.get("local_activity") is True
+            or body.get("parallel_group") is not None or body.get("parallel_group_path") not in (None, [])
+            or body.get("selection_group") is not None
+            or body.get("cancellation_scope_id") not in (None, "root")):
+            return False
+        return family != "timer" or (
+            body.get("timer_kind") in (None, "sleep", "durable_timer")
+            and "condition_wait_id" not in body and "signal_wait_id" not in body
+        )
