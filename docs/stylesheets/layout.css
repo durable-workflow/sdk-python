@@ -1154,7 +1154,7 @@ body:has(.dw-landing) .md-content__inner {
   padding: 0;
   list-style: none;
 }
-.md-typeset .dw-role-grid > li {
+.md-typeset ul.dw-role-grid > li {
   display: flex;
   min-width: 0;
   margin: 0;
