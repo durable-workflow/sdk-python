@@ -782,6 +782,40 @@ raise SystemExit(0 if "return str(value)" in source else 1)
             codec_runner_path=self.codec_runner,
         )
 
+    def test_binary_base_asset_does_not_prevent_corpus_validation(self) -> None:
+        asset = self.root / "assets/font.woff2"
+        asset.parent.mkdir()
+        data = b"wOF2\x00\xbc\xff\x80\r\n"
+        asset.write_bytes(data)
+        self._git("add", "assets/font.woff2")
+        self._git(
+            "-c", "user.name=Regression Corpus Test",
+            "-c", "user.email=regression-corpus@example.invalid",
+            "commit", "--quiet", "--message=binary-baseline",
+        )
+
+        result = self._validate()
+
+        self.assertFalse(result["counts"]["codec"]["related_change"])
+        self.assertEqual(VALIDATOR._ref_files(self.root, "HEAD")["assets/font.woff2"], data)
+
+    def test_unchanged_crlf_fixture_keeps_exact_base_bytes(self) -> None:
+        relative = "tests/fixtures/codec_regressions/base.json"
+        fixture = self.root / relative
+        data = fixture.read_bytes().replace(b"\n", b"\r\n")
+        fixture.write_bytes(data)
+        self._git("-c", "core.autocrlf=false", "add", relative)
+        self._git(
+            "-c", "user.name=Regression Corpus Test",
+            "-c", "user.email=regression-corpus@example.invalid",
+            "commit", "--quiet", "--message=crlf-baseline",
+        )
+
+        result = self._validate()
+
+        self.assertFalse(result["counts"]["codec"]["related_change"])
+        self.assertEqual(VALIDATOR._ref_files(self.root, "HEAD")[relative], data)
+
     def _add_avro_golden_to_base(
         self,
         malformed_wire: str | None = None,

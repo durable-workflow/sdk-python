@@ -1080,11 +1080,17 @@ def _tracked_worktree_files(root: Path) -> dict[str, bytes]:
 
 def _ref_files(root: Path, ref: str) -> dict[str, bytes]:
     paths = _run(["git", "ls-tree", "-r", "--name-only", "-z", ref], root).split("\0")
-    return {
-        path: _run(["git", "show", f"{ref}:{path}"], root).encode()
-        for path in paths
-        if path
-    }
+    files = {}
+    for path in filter(None, paths):
+        # Assets may be binary, and immutable fixtures retain their exact line endings.
+        result = subprocess.run(
+            ["git", "show", f"{ref}:{path}"], cwd=root, capture_output=True, check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise CorpusError(f"git show {ref}:{path} failed: {detail}")
+        files[path] = result.stdout
+    return files
 
 
 def _matches(path: str, pattern: str) -> bool:
