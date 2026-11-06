@@ -142,7 +142,10 @@ def _declares_redrive(event: Mapping[str, Any]) -> bool:
 class BusinessReplayClock:
     """Index identities once, then read time only at actual scalar consumption."""
 
-    def __init__(self, events: Sequence[Mapping[str, Any]], workflow_id: str, run_id: str) -> None:
+    def __init__(
+        self, events: Sequence[Mapping[str, Any]], workflow_id: str, run_id: str,
+        *, sequence_claim: Callable[[Mapping[str, Any]], int | None],
+    ) -> None:
         self.events = events
         self._by_sequence: dict[int, list[int]] = {}
         self._child_calls: dict[str, list[int]] = {}
@@ -161,13 +164,17 @@ class BusinessReplayClock:
         self._pending = self.initial
         self._current = self.initial
         for index, event in enumerate(events):
-            self._index_event(index, event)
+            self._index_event(index, event, sequence_claim)
 
-    def _index_event(self, index: int, event: Mapping[str, Any]) -> None:
+    def _index_event(
+        self, index: int, event: Mapping[str, Any], sequence_claim: Callable[[Mapping[str, Any]], int | None],
+    ) -> None:
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
             return
-        if (sequence := _sequence(payload)) is not None:
+        # Visibility follows the resolver's actual claims, including legacy
+        # counters. Authority still requires strict integers on every row.
+        if (sequence := sequence_claim(payload)) is not None:
             self._by_sequence.setdefault(sequence, []).append(index)
         call = payload.get("child_call_id")
         if _kind(event) in _CHILD_EVENTS and _identity(call):
@@ -228,6 +235,9 @@ class BusinessReplayClock:
     def observe(self, index: int | None, family: str, sequence: int) -> None:
         self._pending = (None, None)
         if index is None or not 0 <= index < len(self.events) or family not in {"activity", "timer", _CHILD_FAMILY}:
+            return
+        if any(_sequence(self.events[position]["payload"]) != sequence
+               for position in self._by_sequence.get(sequence, [])):
             return
         boundary = (self._child_boundary(index, sequence) if family == _CHILD_FAMILY
                     else self._scalar_boundary(index, family, sequence))
