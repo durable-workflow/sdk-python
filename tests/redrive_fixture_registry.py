@@ -58,6 +58,17 @@ ACCEPTED_CORE_SUCCESSORS: dict[str, int] = {
 }
 
 NON_QUALIFYING: dict[str, NonQualifying] = {
+    "business-clock-redrive-timer-missing-reuse": NonQualifying(
+        sha256="641be3fcc1a639335c4f2b2c9158ee5972946140b8f1244caec9a3e50c65c7ba",
+        error="resume_step_sequence must follow the last reused step",
+        replacement="redrive-successor-reused-timer",
+        release="unreleased (#215 business replay clock)",
+        reason=(
+            "The timer precedes the declared resume step but lacks both reuse fields. Its legacy value still "
+            "replays, while replay_now must remain unavailable instead of borrowing successor insertion time. "
+            "This is malformed-input refusal evidence, not a history the Core writer can produce."
+        ),
+    ),
     "redrive-start-replayed-clock": NonQualifying(
         sha256="70653171faf5ddba5ed264d0a7ce8bb1af97112dbd6e3bb0e39c6f155fee0fd2",
         error="history order",
