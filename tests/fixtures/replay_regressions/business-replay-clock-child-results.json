@@ -55,8 +55,7 @@
           "codec": "avro",
           "blob": "wwHioz3/VYAiNwoQcmVjb3JkZWQ="
         },
-        "closed_at": "2098-01-01T00:00:00Z",
-        "reused_recorded_at": "2099-01-01T00:00:00Z"
+        "closed_at": "2026-11-01T00:00:01+00:00"
       },
       "sequence": 4
     },
@@ -94,8 +93,7 @@
         "child_workflow_run_id": "run-2",
         "child_workflow_type": "clock.child",
         "message": "recorded child failure",
-        "closed_at": "2098-01-01T00:00:00Z",
-        "reused_recorded_at": "2099-01-01T00:00:00Z"
+        "closed_at": "2026-11-01T00:00:01+00:00"
       },
       "sequence": 7
     },

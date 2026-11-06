@@ -25,6 +25,7 @@ _ACTIVITY_TERMINALS = frozenset({"ActivityCompleted", "ActivityFailed", "Activit
 _CHILD_TERMINALS = frozenset({"ChildRunCompleted", "ChildRunFailed", "ChildRunCancelled", "ChildRunTerminated"})
 _CHILD_IDENTITIES = ("child_call_id", "child_workflow_instance_id", "child_workflow_run_id", "child_workflow_type")
 _CHILD_EVENTS = frozenset({"ChildWorkflowScheduled", "ChildRunStarted", *_CHILD_TERMINALS})
+_CHILD_FAMILY = "child workflow"
 
 
 def _task() -> object | None:
@@ -209,9 +210,9 @@ class BusinessReplayClock:
 
     def observe(self, index: int | None, family: str, sequence: int) -> None:
         self._pending = (None, None)
-        if index is None or not 0 <= index < len(self.events) or family not in {"activity", "timer", "child workflow"}:
+        if index is None or not 0 <= index < len(self.events) or family not in {"activity", "timer", _CHILD_FAMILY}:
             return
-        boundary = (self._child_boundary(index, sequence) if family == "child workflow"
+        boundary = (self._child_boundary(index, sequence) if family == _CHILD_FAMILY
                     else self._scalar_boundary(index, family, sequence))
         if not boundary:
             return
@@ -243,7 +244,7 @@ class BusinessReplayClock:
 
     def _child_row(self, index: int, terminal: Mapping[str, Any]) -> bool:
         payload = self.events[index].get("payload")
-        return (self._scalar_row(index, "child workflow", "child_call_id", terminal["child_call_id"], _CHILD_EVENTS)
+        return (self._scalar_row(index, _CHILD_FAMILY, "child_call_id", terminal["child_call_id"], _CHILD_EVENTS)
                 and isinstance(payload, Mapping)
                 and payload.get("workflow_type", terminal["child_workflow_type"]) == terminal["child_workflow_type"]
                 and all(payload.get(key) == terminal[key] for key in _CHILD_IDENTITIES))

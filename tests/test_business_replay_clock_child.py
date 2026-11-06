@@ -200,8 +200,9 @@ def test_query_prefix_nested_replay_error_and_scope_exit_preserve_parent_time() 
             before = ctx.replay_now()
             assert execute(history())["clock"] == [None, COMPLETED, FAILED]
             assert ctx.replay_now() == before
+            query_events = history()
             with pytest.raises(QueryFailed, match="child-clock-query-error"):
-                query_state(ChildBusinessClockWorkflow, history(), [], "explode", payload_codec="avro")
+                query_state(ChildBusinessClockWorkflow, query_events, [], "explode", payload_codec="avro")
             assert ctx.replay_now() == before
             return clock_text(ctx)
 
