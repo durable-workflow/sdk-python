@@ -9,7 +9,9 @@ from durable_workflow import worker as worker_module
 from durable_workflow.workflow import RecordLocalActivity
 
 
-async def _run_failing_local_activity(monkeypatch: pytest.MonkeyPatch, policy: dict[str, object]) -> tuple[list[float], list[dict[str, object]]]:
+async def _run_failing_local_activity(
+    monkeypatch: pytest.MonkeyPatch, policy: dict[str, object],
+) -> tuple[list[float], list[dict[str, object]]]:
     slept: list[float] = []
 
     async def record_sleep(seconds: float) -> None:

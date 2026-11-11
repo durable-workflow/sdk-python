@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "python-local-activity-backoff-repeats-final-entry",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "sdk.local-activity-backoff",
+    "input": [{"retry_policy": {"max_attempts": 5, "backoff_seconds": [1, 2]}}]
+  },
+  "command_sequence": [
+    {
+      "type": "local_activity_backoff",
+      "slept_seconds": [1, 2, 2, 2],
+      "attempt_backoff_seconds": [1, 2, 2, 2, null]
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "local_activity_backoff",
+        "slept_seconds": [1, 2, 2, 2],
+        "attempt_backoff_seconds": [1, 2, 2, 2, null]
+      }
+    ]
+  }
+}
