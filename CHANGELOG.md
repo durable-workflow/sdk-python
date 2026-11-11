@@ -6,19 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Worker batch encoding converts dataclass and Enum workflow results, update results and continue-as-new arguments to neutral Avro values, matching individual command encoding. Typed results previously failed during real Worker submission. (#184)
-
-### Added
-
-- Unreleased typed run-activity visibility through `Client.get_run_activities` and `WorkflowHandle.get_activities`, with activity/attempt metadata, exact run/namespace binding, explicit unavailable fields and preserved diagnostic authority. Standalone activity listing is unchanged. Shared delivery remains tracked in durable-workflow/.github#235.
-
-- Unreleased `ActivityInfo.activity_execution_id` exposes the received logical activity identity without task/attempt/session fallbacks. Prepared local callbacks receive their validated admission ID; inline local callbacks and older claims without an ID expose `None`. These IDs are public idempotency metadata, not live-claim or external-effect authority, and replace no credentials, heartbeat/current-attempt checks, per-effect suffixes or outcome reconciliation. Shared identity acceptance remains tracked in durable-workflow/.github#211.
-
-- Lazy `Client.iter_workflows`, `Client.iter_history` and `WorkflowHandle.iter_history` follow opaque page tokens while retaining only the current page and bounded cursor bookkeeping. They preserve run/filter/namespace identity, follow empty continued pages, stop on early close, and surface HTTP, cancellation and invalid/cyclic cursor errors. Existing one-page methods keep their contracts. (durable-workflow/.github#247)
-
-## [2.15.0] - 2026-11-04
+## [2.15.0] - 2026-11-11
 
 ### Added
 
@@ -28,9 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Opt-in typed workflow values (#184). `@workflow.defn(..., typed=True)` decodes the arguments of `run` (after `ctx`) and of every signal, query, update and update-validator handler to their annotations. `ctx.start_child_workflow(..., result_type=T)` decodes a child's result, and `WorkflowHandle.result(result_type=T)` / `Client.get_result(..., result_type=T)` decode a workflow's result on the client. Dataclass and `Enum` values in client workflow, signal, update, query and schedule arguments, child and continue-as-new arguments, and workflow and update results are sent as their neutral values. A typed `TypedValueError` names the path but never the value. Untyped workflows receive plain values as before, so in-flight histories replay unchanged.
 
+- Typed run-activity visibility through `Client.get_run_activities` and `WorkflowHandle.get_activities`, with activity/attempt metadata, exact run/namespace binding, explicit unavailable fields and preserved diagnostic authority. Standalone activity listing is unchanged. Shared delivery remains tracked in durable-workflow/.github#235.
+
+- `ActivityInfo.activity_execution_id` exposes the received logical activity identity without task/attempt/session fallbacks. Prepared local callbacks receive their validated admission ID; inline local callbacks and older claims without an ID expose `None`. These IDs are public idempotency metadata, not live-claim or external-effect authority, and replace no credentials, heartbeat/current-attempt checks, per-effect suffixes or outcome reconciliation. Shared identity acceptance remains tracked in durable-workflow/.github#211.
+
+- Lazy `Client.iter_workflows`, `Client.iter_history` and `WorkflowHandle.iter_history` follow opaque page tokens while retaining only the current page and bounded cursor bookkeeping. They preserve run/filter/namespace identity, follow empty continued pages, stop on early close, and surface HTTP, cancellation and invalid/cyclic cursor errors. Existing one-page methods keep their contracts. (durable-workflow/.github#247)
+
 ### Fixed
 
 - Replay consumes an already-open duplicate of a condition wait when the older physical wait is satisfied with a true predicate. A wait opened after that satisfaction remains a separate authored call with its own timeout. (#256)
+
+- Worker batch encoding converts dataclass and Enum workflow results, update results and continue-as-new arguments to neutral Avro values, matching individual command encoding. Typed results previously failed during real Worker submission. (#184)
 
 ## [2.14.1] - 2026-11-04
 
