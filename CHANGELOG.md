@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.15.1] - 2026-11-11
+
 ### Fixed
 
 - Local activities no longer retry with zero delay once their backoff list runs out. Each later retry repeats the final backoff entry, as Server-scheduled activities do (durable-workflow/.github#219).
