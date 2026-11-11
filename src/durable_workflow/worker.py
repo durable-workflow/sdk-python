@@ -2565,7 +2565,10 @@ class Worker:
                     or exception_type in non_retryable_types
                 )
                 retry = not non_retryable and attempt_number < max_attempts
-                backoff_seconds = backoff[attempt_number - 1] if retry and len(backoff) >= attempt_number else 0
+                # Once the list runs out, keep the final entry, as Server-scheduled
+                # activities do (.github#219). The list already carries the
+                # policy's maximum-interval cap.
+                backoff_seconds = backoff[min(attempt_number, len(backoff)) - 1] if retry and backoff else 0
                 if (
                     retry and command.schedule_to_close_timeout is not None
                     and time.monotonic() - started_at + backoff_seconds >= command.schedule_to_close_timeout

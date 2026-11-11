@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from durable_workflow import Replayer, Worker, serializer, workflow
+from durable_workflow import Replayer, Worker, activity, serializer, workflow
 from durable_workflow.client import PROTOCOL_VERSION, Client, WorkflowExecution, WorkflowStreamAppendItem
 from durable_workflow.errors import (
     DurableWorkflowError,
@@ -502,6 +502,47 @@ def _assert_matches(expected: Any, actual: Any, context: str) -> None:
     assert actual == expected, f"{context} expected {expected!r}, observed {actual!r}"
 
 
+
+def _execute_local_activity_backoff(inputs: Any) -> dict[str, Any]:
+    """Run the real local-activity executor with an always-failing callback and
+    report the delays it waited between attempts (.github#219)."""
+    from durable_workflow import worker as worker_module
+    from durable_workflow.workflow import RecordLocalActivity
+
+    assert isinstance(inputs, list) and len(inputs) == 1 and isinstance(inputs[0], dict)
+    policy = inputs[0]["retry_policy"]
+
+    @activity.defn(name="tests.replay.local-always-fails")
+    async def always_fails() -> None:
+        raise RuntimeError("still failing")
+
+    async def run() -> dict[str, Any]:
+        slept: list[float] = []
+        original_sleep = worker_module.asyncio.sleep
+
+        async def record_sleep(seconds: float) -> None:
+            slept.append(seconds)
+
+        worker_module.asyncio.sleep = record_sleep  # type: ignore[assignment]
+        try:
+            async with Client("http://regression-corpus", worker_token="worker") as client:
+                worker = Worker(client, task_queue="queue", activities=[always_fails])
+                worker._renew_local_workflow_lease = AsyncMock()  # type: ignore[method-assign]
+                command = RecordLocalActivity("tests.replay.local-always-fails", [], retry_policy=policy)
+                await worker._execute_local_activity(
+                    {"task_id": "task", "workflow_task_attempt": 1}, command, payload_codec="avro",
+                )
+        finally:
+            worker_module.asyncio.sleep = original_sleep  # type: ignore[assignment]
+        assert command.outcome is not None
+        return {
+            "type": "local_activity_backoff",
+            "slept_seconds": slept,
+            "attempt_backoff_seconds": [attempt.get("backoff_seconds") for attempt in command.outcome["attempts"]],
+        }
+
+    return asyncio.run(run())
+
 def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     assert fixture.get("fixture_schema") == FIXTURE_SCHEMA
     assert "python" in fixture.get("bindings", [])
@@ -512,6 +553,11 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     assert isinstance(workflow_type, str) and workflow_type
     if workflow_type == "sdk.observed-worker-replay":
         return _execute_observed_worker_replay(fixture)
+    if workflow_type == "sdk.local-activity-backoff":
+        commands = [_execute_local_activity_backoff(workflow.get("input"))]
+        _assert_matches(fixture["command_sequence"], commands, f"{fixture['id']}.command_sequence")
+        _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
+        return commands
     if workflow_type in {
         "sdk.query-task-dispatch", "sdk.generator-query-task-dispatch", "sdk.generator-side-effect-query-task-dispatch",
     }:
@@ -735,7 +781,7 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
     assert isinstance(expected, dict) and expected
     if workflow.get("type") in {
         "sdk.replay-conformance-report", "sdk.query-task-dispatch", "sdk.generator-query-task-dispatch",
-        "sdk.generator-side-effect-query-task-dispatch", "sdk.observed-worker-replay",
+        "sdk.generator-side-effect-query-task-dispatch", "sdk.observed-worker-replay", "sdk.local-activity-backoff",
     }:
         _execute_fixture(fixture)
         return
