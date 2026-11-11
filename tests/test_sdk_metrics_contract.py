@@ -228,6 +228,24 @@ async def test_dispatch_records_server_ready_age_before_execution(
     assert assert_contract(Recorder(recorder.calls[1:]), duration=19.0) == {"worker_task"}
 
 
+async def test_run_until_activity_records_server_ready_age(monkeypatch: pytest.MonkeyPatch) -> None:
+    # run_until() runs activities through _run_until_activity_task, not
+    # _dispatch_activity_task; both must record schedule-to-start (#188).
+    recorder = Recorder()
+    client = Client("https://runtime.example", metrics=recorder)
+    client._cluster_info = {"worker_protocol": {"server_capabilities": {"claimed_task_ready_age": True}}}
+    worker = Worker(client, task_queue="orders")
+
+    async def execute(_: object) -> object:
+        return "completed"
+
+    monkeypatch.setattr(worker, "_run_activity_task", execute)
+    await worker._run_until_activity_task({"ready_age_ms": 1250})
+    assert recorder.calls[0] == (
+        "record", SCHEDULE_TO_START, 1.25, {"task_kind": "activity", "task_queue": "orders"},
+    )
+
+
 @pytest.mark.parametrize("kind", ["workflow", "activity"])
 @pytest.mark.parametrize("value", [None, True, False, -1, 9007199254740992, 1.0, float("nan"),
                                   float("inf"), "private-value", {"private-key": "private-value"}, []])

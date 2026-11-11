@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `Worker.run_until()` now records the schedule-to-start histogram for activity tasks, as `run()` already did (#188).
+
 ## [2.15.1] - 2026-11-11
 
 ### Fixed

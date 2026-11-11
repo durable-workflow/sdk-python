@@ -4743,6 +4743,9 @@ class Worker:
         return True
 
     async def _run_until_activity_task(self, task: dict[str, Any]) -> None:
+        # run_until() dispatches activities here instead of through
+        # _dispatch_activity_task, so record the Server-computed age too (#188).
+        self._record_task_schedule_to_start("activity", task)
         task_start = time.perf_counter()
         outcome = "error"
         self._activity_inflight += 1
