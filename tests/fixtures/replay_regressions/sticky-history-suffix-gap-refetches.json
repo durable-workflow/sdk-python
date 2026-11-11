@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "python-sticky-history-suffix-gap-refetches",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "sdk.sticky-suffix",
+    "input": [
+      {"cached_through": 4, "after": 4, "last": 6, "suffix": [5, 6]},
+      {"cached_through": 4, "after": 4, "last": 7, "suffix": [6, 7]}
+    ]
+  },
+  "command_sequence": [
+    {
+      "type": "sticky_suffix_history",
+      "history_sequences": [1, 2, 3, 4, 5, 6],
+      "authoritative_fetch_tokens": [],
+      "hit": 1,
+      "forced_cold_replay": 0
+    },
+    {
+      "type": "sticky_suffix_history",
+      "history_sequences": [1, 2, 3, 4, 5, 6, 7],
+      "authoritative_fetch_tokens": ["MA=="],
+      "hit": 0,
+      "forced_cold_replay": 1
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "sticky_suffix_history",
+        "history_sequences": [1, 2, 3, 4, 5, 6],
+        "authoritative_fetch_tokens": [],
+        "hit": 1,
+        "forced_cold_replay": 0
+      },
+      {
+        "type": "sticky_suffix_history",
+        "history_sequences": [1, 2, 3, 4, 5, 6, 7],
+        "authoritative_fetch_tokens": ["MA=="],
+        "hit": 0,
+        "forced_cold_replay": 1
+      }
+    ]
+  }
+}

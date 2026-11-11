@@ -543,6 +543,46 @@ def _execute_local_activity_backoff(inputs: Any) -> dict[str, Any]:
 
     return asyncio.run(run())
 
+def _execute_sticky_suffix(inputs: Any) -> list[dict[str, Any]]:
+    """Feed sticky_history_suffix v1 answers (server#1017) to the real worker over a warm
+    cache and report what it replays and which authoritative pages it fetched."""
+    assert isinstance(inputs, list) and inputs and all(isinstance(item, dict) for item in inputs)
+
+    def events(sequences: list[int]) -> list[dict[str, Any]]:
+        return [{"id": f"event-{sequence}", "sequence": sequence,
+                 "event_type": "WorkflowStarted" if sequence == 1 else "SideEffectRecorded",
+                 "payload": {"value": {"number": sequence}}} for sequence in sequences]
+
+    async def run(scenario: dict[str, Any]) -> dict[str, Any]:
+        last = scenario["last"]
+        client = AsyncMock(spec=Client)
+        client.workflow_task_history.return_value = {
+            "history_events": events(list(range(1, last + 1))), "next_history_page_token": None,
+        }
+        worker = Worker(client, task_queue="queue", worker_id="holder", build_id="build", sticky_cache_capacity=1)
+        worker._sticky_history_suffix_supported = True
+        assert worker._sticky_cache.remember(
+            ("workflow", "run", "build"), events(list(range(1, scenario["cached_through"] + 1))),
+        )
+        history = await worker._load_workflow_claim_history({
+            "task_id": "task", "workflow_id": "workflow", "run_id": "run", "workflow_task_attempt": 1,
+            "sticky_replay_mode": "sticky_hit_expected", "history_events": events(scenario["suffix"]),
+            "history_after_sequence": scenario["after"], "history_last_sequence": last,
+            "next_history_page_token": None,
+        })
+        metrics = worker.sticky_cache_metrics()
+        return {
+            "type": "sticky_suffix_history",
+            "history_sequences": [event["sequence"] for event in history],
+            "authoritative_fetch_tokens": [
+                call.kwargs["next_history_page_token"] for call in client.workflow_task_history.await_args_list
+            ],
+            "hit": metrics["hit"],
+            "forced_cold_replay": metrics["forced_cold_replay"],
+        }
+
+    return [asyncio.run(run(scenario)) for scenario in inputs]
+
 def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     assert fixture.get("fixture_schema") == FIXTURE_SCHEMA
     assert "python" in fixture.get("bindings", [])
@@ -553,6 +593,11 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     assert isinstance(workflow_type, str) and workflow_type
     if workflow_type == "sdk.observed-worker-replay":
         return _execute_observed_worker_replay(fixture)
+    if workflow_type == "sdk.sticky-suffix":
+        commands = _execute_sticky_suffix(workflow.get("input"))
+        _assert_matches(fixture["command_sequence"], commands, f"{fixture['id']}.command_sequence")
+        _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
+        return commands
     if workflow_type == "sdk.local-activity-backoff":
         commands = [_execute_local_activity_backoff(workflow.get("input"))]
         _assert_matches(fixture["command_sequence"], commands, f"{fixture['id']}.command_sequence")
@@ -782,6 +827,7 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
     if workflow.get("type") in {
         "sdk.replay-conformance-report", "sdk.query-task-dispatch", "sdk.generator-query-task-dispatch",
         "sdk.generator-side-effect-query-task-dispatch", "sdk.observed-worker-replay", "sdk.local-activity-backoff",
+        "sdk.sticky-suffix",
     }:
         _execute_fixture(fixture)
         return
