@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -1251,6 +1252,47 @@ class TestStickyWorkerRegistration:
         assert registration["capability_manifest"]["sticky_execution"] == {
             "supported": True, "minimum_protocol_version": "1.18", "implementation": "bounded_durable_history_cache",
         }
+        await worker.stop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("server_entry", "expected"), [
+        ({"supported": True, "version": 1}, True),
+        ({"supported": True, "version": 2}, False),
+        ({"supported": False, "version": 1}, False),
+        (None, False),
+    ])
+    async def test_enabled_worker_advertises_history_suffix_and_reads_server_support(
+        self, mock_client: AsyncMock, server_entry: dict[str, Any] | None, expected: bool,
+    ) -> None:
+        info = compatible_cluster_info()
+        capabilities = info["worker_protocol"]["server_capabilities"]  # type: ignore[index]
+        capabilities["sticky_execution"] = {"supported": True}
+        if server_entry is not None:
+            capabilities["sticky_history_suffix"] = server_entry
+        mock_client.get_cluster_info.return_value = info
+        worker = Worker(mock_client, task_queue="q", sticky_cache_capacity=2)
+        await worker._register()
+        registration = mock_client.register_worker.await_args.kwargs
+        assert registration["capabilities"].count("sticky_history_suffix") == 1
+        assert registration["capability_manifest"]["sticky_history_suffix"] == {
+            "supported": True, "minimum_protocol_version": "1.18", "version": 1,
+        }
+        assert worker._sticky_history_suffix_supported is expected
+        await worker.stop()
+
+    @pytest.mark.asyncio
+    async def test_disabled_cache_does_not_advertise_history_suffix(self, mock_client: AsyncMock) -> None:
+        info = compatible_cluster_info()
+        info["worker_protocol"]["server_capabilities"]["sticky_history_suffix"] = {  # type: ignore[index]
+            "supported": True, "version": 1,
+        }
+        mock_client.get_cluster_info.return_value = info
+        worker = Worker(mock_client, task_queue="q")
+        await worker._register()
+        registration = mock_client.register_worker.await_args.kwargs
+        assert "sticky_history_suffix" not in registration["capabilities"]
+        assert "sticky_history_suffix" not in registration["capability_manifest"]
+        assert worker._sticky_history_suffix_supported is False
         await worker.stop()
 
     @pytest.mark.asyncio

@@ -430,6 +430,18 @@ def _signal_arguments_envelope_from_export(
     return envelope
 
 
+def _suffix_continues(events: list[dict[str, Any]], after: int, last: Any) -> bool:
+    """Whether ``events`` run gap-free from ``after + 1`` and end at ``last``."""
+    if type(last) is not int or last < after:
+        return False
+    if any(not isinstance(event, dict) for event in events):
+        return False
+    sequences = [event.get("sequence") for event in events]
+    if any(type(sequence) is not int for sequence in sequences):
+        return False
+    return sequences == list(range(after + 1, last + 1))
+
+
 def _history_events_from_query_export(history: Any, history_export: Any) -> Any:
     if isinstance(history, list) and history:
         return history
@@ -1215,6 +1227,7 @@ class Worker:
         self._poller_tasks: set[asyncio.Task[Any]] = set()
         self._registered = False
         self._deregistration_fenced = False
+        self._sticky_history_suffix_supported = False
         self._registration_token: str | None = None
         self._registration_worker_id: str | None = None
         self._registration_namespace: object = None
@@ -1383,6 +1396,14 @@ class Worker:
             not isinstance(sticky_support, Mapping) or sticky_support.get("supported") is not True
         ):
             raise RuntimeError("sticky execution requires Server's advertised sticky_execution support")
+        # Server #1017: a sticky worker may take only the history after its cached sequence.
+        suffix_support = (
+            server_capabilities.get("sticky_history_suffix") if isinstance(server_capabilities, Mapping) else None
+        )
+        self._sticky_history_suffix_supported = (
+            self._sticky_cache.enabled and isinstance(suffix_support, Mapping)
+            and suffix_support.get("supported") is True and suffix_support.get("version") == 1
+        )
         self._cooperative_cancellation_supported = (
             "cooperative_cancellation" in self.capabilities
             and isinstance(protocol, Mapping)
@@ -1485,7 +1506,9 @@ class Worker:
             capabilities.append("prepared_local_activity_cancellation_policies")
         if PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST["worker_sessions"]["supported"]:
             capabilities.append("worker_sessions")
-        affinity_manifest = {name: dict(entry) for name, entry in PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST.items()}
+        affinity_manifest: dict[str, dict[str, Any]] = {
+            name: dict(entry) for name, entry in PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST.items()
+        }
         if self._sticky_cache.enabled:
             if "sticky_execution" not in capabilities:
                 capabilities.append("sticky_execution")
@@ -1493,6 +1516,11 @@ class Worker:
                 "supported": True,
                 "minimum_protocol_version": "1.18",
                 "implementation": "bounded_durable_history_cache",
+            }
+            if "sticky_history_suffix" not in capabilities:
+                capabilities.append("sticky_history_suffix")
+            affinity_manifest["sticky_history_suffix"] = {
+                "supported": True, "minimum_protocol_version": "1.18", "version": 1,
             }
 
         ack = await self.client.register_worker(
@@ -1683,6 +1711,9 @@ class Worker:
     ) -> list[dict[str, Any]]:
         if first_page_token is not None:
             return await self._fetch_workflow_claim_history_pages(task, [], first_page_token)
+        after = task.get("history_after_sequence")
+        if type(after) is int and after > 0:
+            return await self._load_suffix_history(task, after)
         inline = list(task.get("history_events", []))
         key = self._sticky_cache_key(task)
         mode = task.get("sticky_replay_mode")
@@ -1735,6 +1766,41 @@ class Worker:
             return history
         return await self._fetch_workflow_claim_history_pages(task, inline, task.get("next_history_page_token"))
 
+    async def _load_suffix_history(self, task: dict[str, Any], after: int) -> list[dict[str, Any]]:
+        """Replay a sticky_history_suffix v1 answer (server#1017) or refetch full history.
+
+        A suffix is used only on a sticky hit whose cached history ends at exactly
+        ``after`` and whose events run gap-free from ``after + 1`` to
+        ``history_last_sequence``. It is never treated as a complete history.
+        """
+        key = self._sticky_cache_key(task)
+        suffix = list(task.get("history_events", []))
+        token = task.get("next_history_page_token")
+        if token is not None:
+            suffix = await self._fetch_workflow_claim_history_pages(task, suffix, token)
+        last = task.get("history_last_sequence")
+        cached = (
+            self._sticky_cache.lookup(key)
+            if key is not None and self._sticky_history_suffix_supported
+            and task.get("sticky_replay_mode") == "sticky_hit_expected" else None
+        )
+        if cached is not None:
+            prefix = cached[0]
+            if prefix and prefix[-1].get("sequence") == after and _suffix_continues(suffix, after, last):
+                history = prefix + suffix
+                if complete_history(history):
+                    task["_sticky_resume_token"] = None
+                    task["_sticky_resume_offset"] = 0
+                    self._sticky_cache.record_replay(hit=True)
+                    return history
+        if key is not None:
+            self._sticky_cache.discard(key)
+            self._sticky_cache.record_replay(hit=False, forced=True)
+        history = await self._fetch_workflow_claim_history_pages(task, [], "MA==")
+        if not complete_history(history):
+            raise LocalActivityExecutionAborted("cold replay lacks a complete canonical history prefix")
+        return history
+
     async def _fetch_workflow_claim_history_pages(
         self, task: dict[str, Any], history: list[dict[str, Any]], token: Any,
     ) -> list[dict[str, Any]]:
@@ -1782,12 +1848,16 @@ class Worker:
             resume_offset=task.get("_sticky_resume_offset", 0),
         ):
             return None
-        return {
+        claim: dict[str, Any] = {
             "worker_id": self.worker_id, "workflow_id": key[0], "run_id": key[1], "build_id": key[2],
             "ttl_seconds": self._sticky_cache.ttl_seconds,
             "metrics": {name: self._sticky_cache.metrics()[name]
                         for name in ("hit", "miss", "eviction", "forced_cold_replay")},
         }
+        if self._sticky_history_suffix_supported:
+            # sticky_history_suffix v1: the Server sends the next suffix after exactly this sequence.
+            claim["history_last_sequence"] = history[-1]["sequence"]
+        return claim
 
     def sticky_cache_metrics(self) -> dict[str, int]:
         """Return replay counters, retained entries and encoded history bytes."""
