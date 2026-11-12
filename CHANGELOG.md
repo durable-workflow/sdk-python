@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.16.0] - 2026-11-12
+
 ### Added
 
 - Workers with a sticky cache (`sticky_cache_capacity > 0`) advertise `sticky_history_suffix` (#300, server#1017). On Server 3.5.0 or later, a sticky hit receives only the history after the sequence the worker cached, instead of the full history on every workflow task. A suffix is used only when it continues the cached history exactly; otherwise the worker drops the entry and refetches full history.
