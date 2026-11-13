@@ -232,3 +232,11 @@ removed after exact-ID container/volume cleanup. Record each state/scenario and
 any NONPASS separately. Independent review, exact-head checks and actual
 installed evidence are required before qualification; another SDK's result does
 not qualify this adapter or complete shared216.
+
+Every SQLite snapshot targets the retained real database file descriptor through
+`file:/proc/self/fd/<fd>?mode=ro`. A directory descriptor followed by a mutable
+basename does not protect against swap/open/restore races. Read-only snapshot
+connections include active WAL frames; immutable mode is unsuitable for a live
+database. The positive control keeps a second writer connection open, proves a
+committed row remains WAL-only, and requires the snapshot to include that row.
+Stopped helper copies have their separate checkpoint/source-descriptor contract.

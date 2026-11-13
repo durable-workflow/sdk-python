@@ -112,7 +112,6 @@ def run_bound(args, inputs, controls, workspace):
         catalog.executescript(inputs["step_sql"].data.decode())
         added_schema = [row for row in legacy.snapshot(catalog)["schema"] if row[2] != "dw_server_schema"]
     database = workspace.directory("database")
-    copied = Path(workspace.proc(database, "upgraded.sqlite"))
     config = workspace.directory("docker-config")
     workspace.write("config.json", '{"auths":{}}\n', parent=config)
     environment = {"PATH": os.defpath, "TMPDIR": workspace.proc(workspace.root)}
@@ -138,12 +137,7 @@ def run_bound(args, inputs, controls, workspace):
         )
 
     def snapshot():
-        workspace.check()
-        with closing(sqlite3.connect(copied.as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
-            connection.execute("BEGIN")
-            result = legacy.snapshot(connection)
-        workspace.check()
-        return result
+        return workspace.read_database(held_database, legacy.snapshot)
 
     image = "ghcr.io/durable-workflow/server@" + controls.EXPECTED_SERVER["index"]
     python_image = "docker.io/library/python@" + controls.PYTHON_INDEX
@@ -210,8 +204,7 @@ def run_bound(args, inputs, controls, workspace):
         for value in inputs.values():
             value.recheck()
         held_database = workspace.write("upgraded.sqlite", inputs["baseline"].data, parent=database, immutable=False)
-        with closing(sqlite3.connect(copied)) as connection:
-            native_marker(connection, 12)
+        workspace.read_database(held_database, lambda connection: native_marker(connection, 12))
         baseline = snapshot()
         began = time.time()
         upgrade_id = create(
@@ -232,8 +225,7 @@ def run_bound(args, inputs, controls, workspace):
         finished = time.time()
         report["upgrade"] = upgrade
         report["cleanup_by_id"]["upgrade"] = controls.cleanup_owned(cleanup_call, upgrade_id, nonce)
-        with closing(sqlite3.connect(copied)) as connection:
-            native_marker(connection, 13)
+        workspace.read_database(held_database, lambda connection: native_marker(connection, 13))
         validate_upgrade(baseline, snapshot(), added_schema, began, finished)
         report["upgrade_row_preservation"] = True
         report["journal_sha384"] = JOURNAL_SHA384

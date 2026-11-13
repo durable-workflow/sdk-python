@@ -198,12 +198,7 @@ def run_bound(args, inputs, controls, workspace):
         report["cleanup_by_id"][role] = controls.cleanup_owned(cleanup_call, identity, nonce)
 
     def snapshot(path):
-        workspace.check()
-        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
-            connection.execute("BEGIN")
-            result = legacy.snapshot(connection)
-        workspace.check()
-        return result
+        return workspace.read_database(held_databases[path.name], legacy.snapshot)
 
     def consume(phase, upstream, seed=None):
         for value in inputs.values():
@@ -262,17 +257,20 @@ def run_bound(args, inputs, controls, workspace):
         seed = consume("prepare", upstream)["seed"]
         stop("source")
         source, copied = database / "source.sqlite", database / "copied.sqlite"
+        stopped_source = snapshot(source)
         if args.scenario == "modern-raw":
             # No transform is appropriate for this ambiguity cell. SQLite backup
             # still creates a separately owned complete copy of the stopped DB.
             held_databases["copied.sqlite"] = workspace.write("copied.sqlite", b"", parent=database_fd, immutable=False)
             workspace.check()
             with (
-                closing(sqlite3.connect(source.as_uri() + "?mode=ro&immutable=1", uri=True)) as original,
-                closing(sqlite3.connect(copied)) as destination,
+                closing(sqlite3.connect(workspace.database_uri(held_databases["source.sqlite"]), uri=True)) as original,
+                closing(
+                    sqlite3.connect(workspace.database_uri(held_databases["copied.sqlite"], "rw"), uri=True)
+                ) as destination,
             ):
                 original.backup(destination)
-            if snapshot(source) != snapshot(copied):
+            if snapshot(source) != stopped_source or snapshot(copied) != stopped_source:
                 raise ValueError("unmodified modern copy differs")
             report["transform"] = {"transformed": 0, "manifest_sha256": MANIFEST_SHA256}
         else:

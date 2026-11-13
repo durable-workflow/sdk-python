@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sqlite3
 import stat
+from contextlib import closing
 from pathlib import Path
 
 NATIVE_PREFLIGHT = """set -eu
@@ -105,6 +107,24 @@ class Workspace:
             file_key,
             *arguments,
         ]
+
+    def database_uri(self, database, mode="ro"):
+        self.check()
+        if self.files.get((database["parent"], database["name"])) is not database:
+            raise ValueError("snapshot database is not a held workspace file")
+        if mode not in {"ro", "rw"}:
+            raise ValueError("unsupported held database mode")
+        return "file:/proc/self/fd/" + str(database["fd"]) + "?mode=" + mode
+
+    def read_database(self, database, reader):
+        # Target the retained real file, not a mutable basename under a held
+        # directory. mode=ro includes active WAL; immutable=1 would omit it.
+        uri = self.database_uri(database)
+        with closing(sqlite3.connect(uri, uri=True, timeout=2)) as connection:
+            connection.execute("BEGIN")
+            result = reader(connection)
+        self.check()
+        return result
 
     def check_file(self, item):
         current = os.stat(item["name"], dir_fd=item["parent"], follow_symlinks=False)
