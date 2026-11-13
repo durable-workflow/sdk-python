@@ -607,6 +607,12 @@ after that discovery succeeds. `Client.query_workflow()` checks the same
 manifest before sending a query and raises `RuntimeCapabilityUnsupported` or
 `RuntimeDiscoveryUnavailable` with remediation when the route cannot be used.
 
+`Client.query_workflow()` and `WorkflowHandle.query()` return the Server's
+receipt. The decoded handler value is in `receipt["result"]`, including a
+successful `None` result. See the [query result example](reference/client.md#read-a-query-result).
+The synchronous client returns the same receipt shape. Query failures raise
+`QueryFailed`.
+
 Python workers advertise declared update validators and evaluate them on a
 dedicated synchronous validation task before the Server records an accepted
 update. Validation replays the authoritative workflow state without committing

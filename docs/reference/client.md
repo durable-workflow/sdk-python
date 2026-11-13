@@ -1,5 +1,21 @@
 # Client
 
+## Read a query result
+
+`Client.query_workflow()` returns the Server's receipt. Read its `result`
+member for the decoded value returned by the query handler:
+
+```python
+receipt = await client.query_workflow("approval-1", "status")
+status = receipt["result"]
+print(status["approved"])
+```
+
+The receipt also identifies the workflow, run and query. A successful handler
+may return `None`; that value appears in `receipt["result"]`. Query failures
+raise `QueryFailed`. `WorkflowHandle.query()` and the synchronous client
+return the same receipt shape.
+
 ## Read an update outcome
 
 `Client.update_workflow()` returns a Server receipt. Its default wait stage is
