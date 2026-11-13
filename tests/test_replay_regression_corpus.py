@@ -65,6 +65,7 @@ from tests.test_replay_clock import (
     RedriveVisibilityCleanupWorkflow,
     RedriveVisibilityWorkflow,
 )
+from tests.test_run_closed_settlement_replay import AllFailureClosedWorkflow, SelectionLoserAtCloseWorkflow
 from tests.test_typed_values import TypedActivityResultsWorkflow
 from tests.test_typed_workflow_values import TypedOnboarding, TypedTerminalResult
 from tests.test_update_signal_condition_replay import (
@@ -431,6 +432,8 @@ WORKFLOWS = [
     SelectionAwaitMarkerWorkflow,
     SelectionCancellationQueryWorkflow,
     SelectionMissingNestedOpeningWorkflow,
+    SelectionLoserAtCloseWorkflow,
+    AllFailureClosedWorkflow,
     UpdateSignalConditionTimerWorkflow,
     WorkflowStreamAuthorWorkflow,
     WorkflowMemoAuthorWorkflow,

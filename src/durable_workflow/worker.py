@@ -165,6 +165,19 @@ _WORKFLOW_WORK_TASK_KINDS = ("workflow", "update_validation")
 _MULTIPLEXED_WORKFLOW_POLL_ENDPOINT = "/worker/workflow-tasks/poll"
 
 _TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
+
+# The typed refusal for late activity work on a run whose own code closed it
+# (server#1193, workflow#1117). The run settled the activity at close, or left
+# it running under the abandon policy, and nothing is ever appended after the
+# terminal event, so the refusal is final: never retried or reported again.
+_RUN_CLOSED_REFUSAL = "run_closed"
+
+
+def _run_closed_refusal(error: BaseException) -> bool:
+    """Whether a claim or outcome request was refused because its run closed."""
+    if isinstance(error, ActivityLeaseAuthorityLost):
+        return error.reason == _RUN_CLOSED_REFUSAL
+    return isinstance(error, ServerError) and error.reason() == _RUN_CLOSED_REFUSAL
 _QUERY_TASK_FINAL_REJECTION_REASONS = {
     "lease_expired",
     "query_task_not_found",
@@ -3380,6 +3393,11 @@ class Worker:
                 **self._external_storage_completion_kwargs(),
             )
         except Exception as e:
+            if _run_closed_refusal(e):
+                # Final: an activity the run left running under the abandon
+                # policy ends with this outcome, any other was settled at close.
+                log.info("activity task %s outcome not recorded: its workflow run closed", task_id)
+                return "completed"
             log.warning("failed to complete activity task %s: %s", task_id, e)
             return "complete_error"
         return "completed"
@@ -3435,6 +3453,9 @@ class Worker:
                 task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id, **failure,
             )
         except Exception as error:
+            if _run_closed_refusal(error):
+                log.info("%s for activity task %s not recorded: its workflow run closed", context, task_id)
+                return
             log.warning("failed to report %s: %s", context, error)
 
     async def _invoke_remote_activity(self, task: dict[str, Any], activity_type: str,
@@ -4045,6 +4066,14 @@ class Worker:
                 if self._stop.is_set():
                     self._status.request_abandoned("activity_poll")
                     return
+                if _run_closed_refusal(e):
+                    # The claim's run closed before it started: the Server
+                    # settled that task, so this answered poll is no failure.
+                    log.info("activity claim refused because its workflow run closed: %s", e)
+                    failures.reset()
+                    self._status.request_succeeded("activity_poll")
+                    self._record_poll_metrics("activity", "empty", time.perf_counter() - poll_start)
+                    continue
                 delay = _poll_capacity_delay(e, "activity_task", self.task_queue)
                 self._record_poll_status("activity_poll", e, answered=delay is not None)
                 if _is_storage_admission_error(e):
