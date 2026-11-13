@@ -116,7 +116,7 @@ async def prepare(client, value):
     finally:
         await worker.stop()
         await task
-    handle = await client.start_workflow(WORKFLOW_TYPE, args=[0], workflow_id=queue, task_queue=queue)
+    handle = await client.start_workflow(workflow_type=WORKFLOW_TYPE, input=[0], workflow_id=queue, task_queue=queue)
     seed = {"workflow_id": handle.workflow_id, "run_id": handle.run_id, "commands": {}, "selections": []}
     caller = "CaseSensitive" if value["scenario"] == "case-only" else "token-key"
     for kind in ("signal", "update"):
