@@ -145,5 +145,7 @@ def test_the_github_release_follows_verification_and_runs_no_third_party_code() 
 
 def test_the_build_job_holds_no_publication_credential() -> None:
     build = jobs()["build"]
-    assert "permissions" not in build
+    assert build["permissions"] == {"contents": "read", "actions": "read"}
+    assert "id-token" not in build["permissions"]
+    assert all(value == "read" for value in build["permissions"].values())
     assert not any(action.startswith(PYPI_PUBLISH_ACTION) for action in uses(build))
