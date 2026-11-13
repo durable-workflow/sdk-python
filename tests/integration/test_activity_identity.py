@@ -79,6 +79,10 @@ async def test_retry_preserves_received_execution_id_and_changes_attempt_id(
     assert isinstance(first["execution_id"], str)
     assert first["execution_id"].strip()
     assert first["execution_id"] == second["execution_id"]
+    for value in observed:
+        for name in ("task_id", "attempt_id"):
+            assert isinstance(value[name], str)
+            assert value[name].strip()
     assert first["attempt_id"] != second["attempt_id"]
     assert first["task_id"] != second["task_id"]
     assert {value["workflow_id"] for value in observed} == {handle.workflow_id}
