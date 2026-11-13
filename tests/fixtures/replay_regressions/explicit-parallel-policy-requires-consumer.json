@@ -1,0 +1,108 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "explicit-parallel-policy-requires-consumer",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.parallel-failure-policy",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-01-01T00:00:00Z",
+      "payload": {},
+      "sequence": 1
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-01-01T00:00:00Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "execution-0",
+        "activity_type": "slow-first",
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_policy": "propagate"
+          }
+        ],
+        "parallel_group_policy": "propagate"
+      },
+      "sequence": 2
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-01-01T00:00:00Z",
+      "payload": {
+        "sequence": 2,
+        "activity_execution_id": "execution-1",
+        "activity_type": "fast-second",
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_policy": "propagate"
+          }
+        ],
+        "parallel_group_policy": "propagate"
+      },
+      "sequence": 3
+    },
+    {
+      "event_type": "ActivityFailed",
+      "recorded_at": "2026-01-01T00:00:01Z",
+      "payload": {
+        "sequence": 2,
+        "activity_execution_id": "execution-1",
+        "activity_type": "fast-second",
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_policy": "propagate"
+          }
+        ],
+        "message": "higher position failed first",
+        "parallel_group_policy": "propagate"
+      },
+      "sequence": 4
+    }
+  ],
+  "expected": {
+    "command_sequence": []
+  },
+  "expected_replay_error": {
+    "type": "LocalActivityExecutionAborted",
+    "message_contains": "parallel_group_policy_not_supported"
+  }
+}

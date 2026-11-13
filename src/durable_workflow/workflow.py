@@ -4026,6 +4026,72 @@ def _parallel_group_entry(payload: Mapping[str, Any]) -> tuple[str, str, int, in
     return group_id, kind, base_sequence, size, index
 
 
+def _read_parallel_group_policies(
+    events: list[dict[str, Any]], supported: tuple[str, ...],
+) -> dict[tuple[str, str, int, int], str | None]:
+    """Validate recorded policy before application code can observe the history.
+
+    This draft consumer has no worker negotiation or advertisement. The private
+    replay option enables source tests only until producer admission is qualified.
+    """
+    if any(policy != "propagate" for policy in supported):
+        raise ValueError("parallel_group_policy consumer is not implemented")
+    policies: dict[tuple[str, str, int, int], str | None] = {}
+    for event in events:
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        path = payload.get("parallel_group_path")
+        frames = path if isinstance(path, list) and path else [payload]
+        has_explicit = "parallel_group_policy" in payload or any(
+            isinstance(frame, Mapping) and "parallel_group_policy" in frame for frame in frames
+        )
+        if has_explicit and path is not None and not isinstance(path, list):
+            raise ValueError("parallel_group_policy requires a canonical group path")
+        if isinstance(path, list) and path and isinstance(path[-1], Mapping) and (
+            ("parallel_group_policy" in payload) != ("parallel_group_policy" in path[-1])
+            or payload.get("parallel_group_policy") != path[-1].get("parallel_group_policy")
+        ):
+            raise ValueError("parallel_group_policy disagrees with its canonical path")
+        if isinstance(path, list) and path and any(
+            isinstance(frame, Mapping) and "parallel_group_policy" in frame for frame in path
+        ) and (not isinstance(path[-1], Mapping)
+               or _parallel_group_entry(payload) != _parallel_group_entry(path[-1])):
+            raise ValueError("parallel_group_policy requires matching flattened group identity")
+        ordinary_policies: list[str | None] = []
+        for frame in frames:
+            if not isinstance(frame, Mapping):
+                if has_explicit:
+                    raise ValueError("parallel_group_policy requires canonical group metadata")
+                continue
+            present = "parallel_group_policy" in frame
+            policy = frame.get("parallel_group_policy")
+            if present and (not isinstance(policy, str) or policy not in {"propagate", "cancel_remaining", "settle"}):
+                raise ValueError("parallel_group_policy is unknown or malformed")
+            if frame.get("parallel_group_mode") == "select":
+                if present:
+                    raise ValueError("parallel_group_policy does not apply to select frames")
+                continue
+            entry = _parallel_group_entry(frame)
+            if entry is None:
+                if has_explicit:
+                    raise ValueError("parallel_group_policy requires canonical group metadata")
+                continue
+            key = entry[:4]
+            recorded = cast(str | None, policy) if present else None
+            ordinary_policies.append(recorded)
+            if key in policies and policies[key] != recorded:
+                raise ValueError("parallel_group_policy is inconsistent across members or history")
+            policies[key] = recorded
+        if has_explicit and None in ordinary_policies:
+            raise LocalActivityExecutionAborted("parallel_group_policy mixed nested composition is not supported")
+    if any(policy is not None and policy not in supported for policy in policies.values()):
+        raise LocalActivityExecutionAborted(
+            "parallel_group_policy_not_supported: explicit history requires a qualified policy consumer",
+        )
+    return policies
+
+
 def _selection_group_metadata(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """Return the outer durable-selection metadata entry, if present."""
     raw_path = payload.get("parallel_group_path")
@@ -4864,6 +4930,7 @@ def _replay_state(
     reconstruction_only: bool = False,
     allow_cancellation_scope_authoring: bool = False,
     allow_cancellation_scope_delivery: bool = False,
+    parallel_group_policies: tuple[str, ...] = (),
 ) -> _ReplayState:
     _validate_workflow_entrypoint(workflow_cls)
     _workflow_handler_registries(workflow_cls)
@@ -4887,6 +4954,7 @@ def _replay_state(
     # an all() group and never supplies replay time: the workflow had closed
     # past it. Every history reader below sees the activity as still open.
     events = [event for event in history_events if not _settled_at_close(event)]
+    recorded_group_policies = _read_parallel_group_policies(events, parallel_group_policies)
     # A malformed delivery span refuses replay before any history parser can
     # read it more permissively.
     _assert_delivery_spans(events)
@@ -5312,7 +5380,11 @@ def _replay_state(
             _append_selection_step(shape, event, fallback_sequence=workflow_sequence)
             return
         resolved_results.append(value)
-        resolved_parallel_members.append(_parallel_group_member(payload))
+        resolved_parallel_members.append(
+            None if any(frame.get("parallel_group_policy") is not None
+                        for frame in (payload.get("parallel_group_path") or []) if isinstance(frame, Mapping))
+            or payload.get("parallel_group_policy") is not None else _parallel_group_member(payload)
+        )
         recorded_steps.append(step)
 
     def _recorded_step(
@@ -5456,7 +5528,8 @@ def _replay_state(
             candidates.extend(recorded_wait_steps[wait_yield_count:])
         if pending_step_cursor < len(recorded_pending_steps):
             candidates.extend(recorded_pending_steps[pending_step_cursor:])
-        return sorted(candidates, key=lambda step: step.workflow_sequence)
+        return sorted((step for step in candidates if step.workflow_sequence not in consumed_policy_sequences),
+                      key=lambda step: step.workflow_sequence)
 
     def _next_unconsumed_recorded_step() -> _RecordedStep | None:
         candidates = _unconsumed_recorded_steps()
@@ -6179,6 +6252,7 @@ def _replay_state(
         )
 
     result_cursor = 0
+    consumed_policy_sequences: set[int] = set()
     pending_step_cursor = 0
     wait_yield_count = 0
     has_terminal_history = any(_history_event_type(event) in {
@@ -6381,13 +6455,25 @@ def _replay_state(
             "condition": "parallel-conditions",
             "mixed": "parallel-calls",
         }[kind]
-        return {
+        entry: dict[str, Any] = {
             "parallel_group_id": f"{prefix}:{base_sequence}:{size}",
             "parallel_group_kind": kind,
             "parallel_group_base_sequence": base_sequence,
             "parallel_group_size": size,
             "parallel_group_index": index,
         }
+        key = (entry["parallel_group_id"], kind, base_sequence, size)
+        if key in recorded_group_policies:
+            policy = recorded_group_policies[key]
+        elif any(base_sequence <= step.workflow_sequence < base_sequence + size
+                 for step in recorded_steps + recorded_wait_steps + recorded_pending_steps):
+            # Histories predating group metadata also keep their recorded semantics.
+            policy = None
+        else:
+            policy = "propagate" if "propagate" in parallel_group_policies else None
+        if policy is not None:
+            entry["parallel_group_policy"] = policy
+        return entry
 
     def _annotate_parallel_commands(
         commands: list[Any],
@@ -6407,7 +6493,7 @@ def _replay_state(
             recorded_sequences = [
                 step.workflow_sequence for step in recorded_steps + recorded_wait_steps + recorded_pending_steps
             ]
-            base_sequence = max(recorded_sequences, default=0) + len(pending) + 1
+            base_sequence = max([*recorded_sequences, *consumed_policy_sequences], default=0) + len(pending) + 1
 
         def _build(group: list[Any], group_base: int) -> tuple[list[Any], list[Any]]:
             size = len(_parallel_leaves(group, nested=group is not commands))
@@ -7288,6 +7374,43 @@ def _replay_state(
         except StopIteration as stop:
             return _terminal_state(stop.value, include_pending=True)
 
+    def _consume_propagating_group(
+        commands: list[Any],
+    ) -> tuple[list[Any], list[_RecordedStep], ActivityFailed | ChildWorkflowFailed | None] | None:
+        base = commands[0]._parallel_group_path[0]["parallel_group_base_sequence"]
+        slots = [index for index in range(result_cursor, len(recorded_steps))
+                 if base <= recorded_steps[index].workflow_sequence < base + len(commands)]
+        if len({recorded_steps[index].workflow_sequence for index in slots}) != len(slots):
+            raise ValueError("parallel_group_policy history has duplicate member outcomes")
+        for index in slots:
+            _assert_step_matches(commands[recorded_steps[index].workflow_sequence - base], recorded_steps[index])
+        failures = [index for index in slots
+                    if isinstance(resolved_results[index], ActivityFailed | ChildWorkflowFailed)]
+        selected = min(failures, key=lambda index: cast(int, recorded_steps[index].history_index)) if failures else None
+        if selected is None and len(slots) != len(commands):
+            return None
+        ordered = sorted(slots, key=lambda index: recorded_steps[index].workflow_sequence)
+        values = [resolved_results[index] for index in ordered]
+        steps = [recorded_steps[index] for index in ordered]
+        failure = cast(ActivityFailed | ChildWorkflowFailed | None,
+                       resolved_results[selected] if selected is not None else None)
+        boundary = (recorded_steps[selected].history_index if selected is not None
+                    else max(cast(int, step.history_index) for step in steps))
+        while pending_receivers and pending_receivers[0].history_index < cast(int, boundary):
+            if pending_receivers[0].condition_wait_id is not None:
+                break
+            _apply_receiver(pending_receivers.pop(0))
+        # A late loser can settle on either side of successor work. Remove its
+        # outcome by durable sequence so it never occupies the successor cursor.
+        # Keep receiver positions relative to the remaining ordinary outcomes.
+        for receiver in pending_receivers:
+            receiver.result_index -= sum(index < receiver.result_index for index in slots)
+        for index in sorted(slots, reverse=True):
+            del resolved_results[index]
+            del recorded_steps[index]
+        consumed_policy_sequences.update(range(base, base + len(commands)))
+        return values, steps, failure
+
     def _advance_selection_clock(base: int, size: int, failure: BaseException | None) -> None:
         indexes = [
             selection_resolution_indexes[sequence] for sequence in range(base, base + size)
@@ -7576,6 +7699,57 @@ def _replay_state(
                 prepared_group = prepare_local_activities and _contains_local_activity(cmd)
                 cmd, result_shape = _annotate_parallel_commands(cmd, current_call_sequence if prepared_group else None)
                 needed = len(cmd)
+                if cmd and cmd[0]._parallel_group_path[0].get("parallel_group_policy") == "propagate":
+                    if prepared_group or any(isinstance(leaf, RecordLocalActivity) for leaf in cmd):
+                        raise LocalActivityExecutionAborted("parallel_group_policy requires qualified local admission")
+                    consumed = _consume_propagating_group(cmd)
+                    if consumed is None:
+                        _set_replaying(False)
+                        for offset, leaf in enumerate(cmd):
+                            _assert_pending_step_matches(leaf, offset)
+                        return _state([*pending, *cmd])
+                    vals, consumed_steps, failed = consumed
+                    if failed is not None:
+                        failed_step = next(step for step, value in zip(consumed_steps, vals, strict=True)
+                                           if value is failed)
+                        _advance_cancellation_clock([failed_step.history_index])
+                        leaf = cmd[failed_step.workflow_sequence - cmd[0]._parallel_group_path[0][
+                            "parallel_group_base_sequence"]]
+                        if isinstance(leaf, ScheduleActivity):
+                            ctx._business_clock.observe_propagated_activity_failure(
+                                (failed_step.history_index, failed_step.workflow_sequence,
+                                 leaf.activity_type, leaf._parallel_group_path), reconstruction=reconstruction_only,
+                            )
+                        else:
+                            ctx._business_clock.unavailable()
+                        try:
+                            _refresh_replay_logging()
+                            advanced_cmd = _resume_business(gen.throw, failed)
+                            continue
+                        except StopIteration as stop:
+                            return _terminal_state(stop.value, include_pending=False)
+                    _advance_cancellation_clock(step.history_index for step in consumed_steps)
+                    try:
+                        typed_values = [_typed_activity_result(leaf, value)
+                                        for leaf, value in zip(cmd, vals, strict=True)]
+                    except TypedValueError as error:
+                        ctx._business_clock.unavailable()
+                        try:
+                            _refresh_replay_logging()
+                            advanced_cmd = _resume_business(gen.throw, error)
+                            continue
+                        except StopIteration as stop:
+                            return _terminal_state(stop.value, include_pending=False)
+                    if all(isinstance(leaf, ScheduleActivity) for leaf in cmd):
+                        ctx._business_clock.observe_activity_group(
+                            [(step.history_index, step.workflow_sequence, leaf.activity_type, leaf._parallel_group_path)
+                             for step, leaf in zip(consumed_steps, cmd, strict=True)],
+                            None, reconstruction=reconstruction_only,
+                        )
+                    else:
+                        ctx._business_clock.unavailable()
+                    next_value = _parallel_result_shape(result_shape, typed_values)
+                    continue
                 if prepared_group:
                     group = _prepared_group(cmd)
                     if group is not None:

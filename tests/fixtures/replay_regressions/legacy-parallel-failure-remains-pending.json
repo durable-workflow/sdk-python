@@ -9,17 +9,14 @@
   "workflow": {
     "type": "tests.replay.parallel-failure-policy",
     "input": [],
-    "payload_codec": "avro",
-    "query": {
-      "name": "caught",
-      "arguments": []
-    }
+    "payload_codec": "avro"
   },
   "history": [
     {
       "event_type": "WorkflowStarted",
       "recorded_at": "2026-01-01T00:00:00Z",
-      "payload": {}
+      "payload": {},
+      "sequence": 1
     },
     {
       "event_type": "ActivityScheduled",
@@ -42,7 +39,8 @@
             "parallel_group_index": 0
           }
         ]
-      }
+      },
+      "sequence": 2
     },
     {
       "event_type": "ActivityScheduled",
@@ -65,7 +63,8 @@
             "parallel_group_index": 1
           }
         ]
-      }
+      },
+      "sequence": 3
     },
     {
       "event_type": "ActivityFailed",
@@ -89,11 +88,14 @@
           }
         ],
         "message": "higher position failed first"
-      }
+      },
+      "sequence": 4
     }
   ],
   "expected": {
-    "command_sequence": [],
-    "query_result": null
+    "command_sequence": [
+      {"type": "schedule_activity", "activity_type": "slow-first"},
+      {"type": "schedule_activity", "activity_type": "fast-second"}
+    ]
   }
 }
