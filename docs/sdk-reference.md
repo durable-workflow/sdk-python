@@ -268,7 +268,7 @@ receipt = yield ctx.start_child_workflow(
 )
 ```
 
-## Activity execution identity (unreleased)
+## Activity execution identity
 
 Inside an activity, `activity.context().info.activity_execution_id` exposes the
 logical execution ID received from Server. `workflow_id` and `run_id` identify
@@ -310,9 +310,8 @@ validated admission receipt's execution ID. Inline local activities have no
 admitted execution ID and expose `None`, while retaining their parent workflow
 and run IDs. Server-free mocks do not create Server activity identity.
 
-This source addition is unreleased and is outside the current typed-value
-release candidate. Published-package retry identity and execution-guarantees
-guide acceptance remain tracked in
+This accessor is available in Python SDK 2.15.0 and later. Published-Server retry
+identity and execution-guarantees guide acceptance remain tracked in
 [the shared identity issue](https://github.com/durable-workflow/.github/issues/211).
 
 ## Local activities
@@ -380,6 +379,13 @@ may run again on a replacement worker. Make side effects idempotent and keep
 local attempts short; use `ctx.schedule_activity(...)` for separately queued
 work. Local activities are yielded one at a time; they are not members of a
 parallel workflow group.
+
+For local activities, `max_attempts` counts all attempts, including the first.
+When a nonempty `backoff_seconds` list runs out, later retries repeat its final
+entry. For example, five attempts with `[1, 2]` wait `1, 2, 2, 2` seconds before
+attempts two through five. An empty list adds no retry wait. A committed local
+result replays its recorded attempts without rerunning the handler, including
+older records made with a zero-delay tail.
 
 ## Worker sessions
 
