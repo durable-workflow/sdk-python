@@ -654,6 +654,17 @@ returned as `None`. A failed update raises `UpdateFailed`, a rejected one
 unless you pass `wait_for="completed"`. The read follows the update across
 continue-as-new: the receipt's `run_id` names the run that owns it now.
 
+Both methods refuse an empty, `.` or `..` workflow or update id, an unknown
+`wait_for` and a non-positive `wait_timeout_seconds` with `ValueError` before
+sending anything. They accept an answer only when it names the requested
+`update_id`, carries a string `update_status` and, if it echoes a
+`workflow_id`, names the requested workflow. `update_outcome()` returns a value
+only from a completed receipt. Any other answer raises `UnrecognizedUpdateOutcome`
+(with `workflow_id`, `update_id` and `body`) instead of a value. When you pass
+`wait_timeout_seconds`, the HTTP timeout for that read becomes the wait plus 30
+seconds if that is longer than the client's `timeout`, so the client does not
+cut off a long Server-side wait.
+
 Both need a Server that advertises `capabilities.update_outcome_reads: true`
 in `GET /api/cluster/info` (native Server 3.6.0 and later). On an older Server
 they raise `RuntimeCapabilityUnsupported` after discovery, without reading or

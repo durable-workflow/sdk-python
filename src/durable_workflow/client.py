@@ -74,6 +74,7 @@ from .errors import (
     RuntimeDiscoveryUnavailable,
     ServerError,
     SignalFailed,
+    UnrecognizedUpdateOutcome,
     UpdateFailed,
     UpdateRejected,
     UpdateStillPending,
@@ -126,6 +127,9 @@ _QUERY_TASKS_DISCOVERY_PATH = "worker_protocol.server_capabilities.query_tasks"
 _COOPERATIVE_CANCELLATION_DISCOVERY_PATH = "worker_protocol.server_capabilities.cooperative_cancellation"
 _UPDATE_OUTCOME_READS_DISCOVERY_PATH = "capabilities.update_outcome_reads"
 _UPDATE_OUTCOME_WAIT_STAGES = ("accepted", "completed")
+# Client-side headroom beyond a requested completion wait, so the HTTP timeout
+# never cuts off a Server that is still legitimately waiting.
+_UPDATE_OUTCOME_WAIT_HEADROOM_SECONDS = 30.0
 _UPDATE_WAIT_STAGES_DISCOVERY_PATH = (
     "control_plane.request_contract.operations.update.fields.wait_for.canonical_values"
 )
@@ -317,9 +321,7 @@ def _update_outcome_value(
     A pending receipt raises :class:`UpdateStillPending`, never ``None``.
     """
     status = receipt.get("update_status")
-    if isinstance(receipt.get("result_envelope"), dict) or (
-        status == "completed" and receipt.get("wait_timed_out") is not True
-    ):
+    if isinstance(receipt.get("result_envelope"), dict) or status == "completed":
         value = receipt.get("result")
         return value if result_type is None else decode_payload_value(value, result_type, "update result")
     if status == "failed":
@@ -331,6 +333,15 @@ def _update_outcome_value(
         )
     if status == "rejected":
         raise UpdateRejected("update rejected", body=receipt)
+
+    if status != "accepted":
+        raise UnrecognizedUpdateOutcome(
+            f"update {update_id} on workflow {workflow_id} answered with update_status {status!r}, "
+            "which is not completed, accepted, failed or rejected; no result was returned",
+            workflow_id=workflow_id,
+            update_id=update_id,
+            body=receipt,
+        )
 
     def text(name: str) -> str | None:
         value = receipt.get(name)
@@ -5157,7 +5168,16 @@ class Client:
         :class:`~durable_workflow.errors.UpdateFailed`, a rejected one
         :class:`~durable_workflow.errors.UpdateRejected`, and an id with no
         retained update (including one pruned with its run)
-        :class:`~durable_workflow.errors.UpdateNotFound`.
+        :class:`~durable_workflow.errors.UpdateNotFound`. A value is returned
+        only from a completed receipt for the requested update; an answer that
+        names another update or workflow, or has any other status, raises
+        :class:`~durable_workflow.errors.UnrecognizedUpdateOutcome`.
+
+        An empty, ``.`` or ``..`` workflow or update id, an unknown
+        ``wait_for`` or a non-positive ``wait_timeout_seconds`` raises
+        :class:`ValueError` before any request. With ``wait_timeout_seconds``
+        the HTTP timeout becomes that wait plus 30 seconds when that exceeds
+        the client's ``timeout``, so a long wait is not cut off.
 
         The read follows the update across continue-as-new; the receipt's
         ``run_id`` names the run that owns it now. It needs a Server that
@@ -5190,8 +5210,9 @@ class Client:
         whether a completion wait ran out) and ``"completed"`` once it has a
         ``result``, which may be ``None``.
 
-        Failed, rejected and unknown updates raise as in
-        :meth:`update_outcome`. Without the Server's
+        Failed, rejected and unknown updates, invalid ids and receipts that do
+        not match the request raise as in :meth:`update_outcome`, and long
+        waits extend the HTTP timeout the same way. Without the Server's
         ``capabilities.update_outcome_reads`` this raises
         :class:`~durable_workflow.errors.RuntimeCapabilityUnsupported`;
         resubmitting the update is never a substitute for reading it.
@@ -5210,8 +5231,18 @@ class Client:
     ) -> dict[str, Any]:
         if wait_for not in _UPDATE_OUTCOME_WAIT_STAGES:
             raise ValueError(f"{operation} wait_for must be 'accepted' or 'completed', not {wait_for!r}")
-        if not isinstance(update_id, str) or not update_id.strip():
-            raise ValueError(f"{operation} needs the update id")
+        # "." and ".." would resolve onto another route (".." reaches the workflow itself).
+        for name, value in (("workflow id", workflow_id), ("update id", update_id)):
+            if not isinstance(value, str) or not value.strip() or value in (".", ".."):
+                raise ValueError(f"{operation} needs a non-empty {name} other than '.' or '..', not {value!r}")
+        if wait_timeout_seconds is not None and (
+            isinstance(wait_timeout_seconds, bool)
+            or not isinstance(wait_timeout_seconds, int)
+            or wait_timeout_seconds < 1
+        ):
+            raise ValueError(
+                f"{operation} wait_timeout_seconds must be a positive integer, not {wait_timeout_seconds!r}"
+            )
         await self._require_update_outcome_reads(operation)
         path = f"/workflows/{quote(workflow_id, safe='')}/updates/{quote(update_id, safe='')}"
         query: dict[str, Any] = {}
@@ -5221,15 +5252,29 @@ class Client:
             query["wait_timeout_seconds"] = wait_timeout_seconds
         if query:
             path += "?" + urlencode(query)
+        timeout = None
+        if wait_timeout_seconds is not None:
+            timeout = max(self.timeout, wait_timeout_seconds + _UPDATE_OUTCOME_WAIT_HEADROOM_SECONDS)
         data = await self._request(
-            "GET", path, context=workflow_id, raise_for_status=_raise_for_update_outcome_read,
+            "GET", path, context=workflow_id, timeout=timeout, raise_for_status=_raise_for_update_outcome_read,
         )
+        problem = None
         if not isinstance(data, dict):
-            raise ServerError(
-                200,
-                {"reason": "invalid_update_receipt", "message": f"expected JSON object, got {type(data).__name__}"},
+            problem = f"is not a JSON object but {type(data).__name__}"
+        elif data.get("update_id") != update_id:
+            problem = f"names update {data.get('update_id')!r}"
+        elif not isinstance(data.get("update_status"), str):
+            problem = "carries no string update_status"
+        elif data.get("workflow_id") is not None and data.get("workflow_id") != workflow_id:
+            problem = f"names workflow {data.get('workflow_id')!r}"
+        if problem is not None:
+            raise UnrecognizedUpdateOutcome(
+                f"{operation} asked for update {update_id} on workflow {workflow_id}, but the answer {problem}",
+                workflow_id=workflow_id,
+                update_id=update_id,
+                body=data,
             )
-        return data
+        return cast(dict[str, Any], data)
 
     async def get_result(
         self,

@@ -19,6 +19,7 @@ from durable_workflow.client import Client, WorkflowHandle
 from durable_workflow.errors import (
     RuntimeCapabilityUnsupported,
     TypedValueError,
+    UnrecognizedUpdateOutcome,
     UpdateFailed,
     UpdateNotFound,
     UpdateRejected,
@@ -271,14 +272,102 @@ async def test_an_unknown_wait_stage_is_refused_before_any_request(connect: Any,
     assert server.requests == []
 
 
-@pytest.mark.parametrize("update_id", ["", "   "])
-async def test_an_empty_update_id_is_refused_before_any_request(connect: Any, update_id: str) -> None:
+@pytest.mark.parametrize("bad_id", ["", "   ", ".", ".."])
+@pytest.mark.parametrize("method", ["update_outcome", "update_outcome_receipt"])
+async def test_empty_and_dot_ids_are_refused_before_any_request(connect: Any, bad_id: str, method: str) -> None:
+    # ".." would otherwise resolve onto /workflows/{id} and read the describe body.
     server = Server()
     client = await connect(server)
 
     with pytest.raises(ValueError, match="update id"):
-        await client.update_outcome("order 1", update_id)
+        await getattr(client, method)("order 1", bad_id)
+    with pytest.raises(ValueError, match="workflow id"):
+        await getattr(client, method)(bad_id, "upd-1")
     assert server.requests == []
+
+
+@pytest.mark.parametrize("wait_timeout_seconds", [0, -5, True, 1.5])
+async def test_an_invalid_wait_timeout_is_refused_before_any_request(connect: Any, wait_timeout_seconds: Any) -> None:
+    server = Server()
+    client = await connect(server)
+
+    with pytest.raises(ValueError, match="wait_timeout_seconds"):
+        await client.update_outcome("order 1", "upd-1", wait_timeout_seconds=wait_timeout_seconds)
+    assert server.requests == []
+
+
+DESCRIBE_BODY = {"workflow_id": "order 1", "run_id": "run-9", "status": "running", "workflow_type": "orders"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(DESCRIBE_BODY, id="describe-like"),
+        pytest.param(_receipt(update_id="upd-other", result_envelope=_envelope("x")), id="other-update"),
+        pytest.param(_receipt(workflow_id="order 2", result_envelope=_envelope("x")), id="other-workflow"),
+        pytest.param({**_receipt(result_envelope=_envelope("x")), "update_status": None}, id="no-status"),
+        pytest.param(["not", "a", "receipt"], id="not-an-object"),
+    ],
+)
+@pytest.mark.parametrize("method", ["update_outcome", "update_outcome_receipt"])
+async def test_a_receipt_that_does_not_match_the_request_is_refused(connect: Any, body: Any, method: str) -> None:
+    server = Server((200, CLUSTER), (200, body))
+    client = await connect(server)
+
+    with pytest.raises(UnrecognizedUpdateOutcome) as excinfo:
+        await getattr(client, method)("order 1", "upd-1")
+
+    assert (excinfo.value.workflow_id, excinfo.value.update_id) == ("order 1", "upd-1")
+    received = excinfo.value.body
+    if isinstance(body, dict):
+        # The client decodes result_envelope into result before checking the receipt.
+        assert isinstance(received, dict)
+        received = {key: value for key, value in received.items() if key != "result"}
+        body = {key: value for key, value in body.items() if key != "result"}
+    assert received == body
+
+
+async def test_a_receipt_without_a_workflow_echo_is_accepted(connect: Any) -> None:
+    body = _receipt(result_envelope=_envelope(3))
+    del body["workflow_id"]
+    server = Server((200, CLUSTER), (200, body))
+    client = await connect(server)
+
+    assert await client.update_outcome("order 1", "upd-1") == 3
+
+
+@pytest.mark.parametrize("status", ["applied", "unknown", ""])
+async def test_a_non_completed_success_receipt_never_returns_a_value(connect: Any, status: str) -> None:
+    server = Server((200, CLUSTER), (200, _receipt(update_status=status, result="looks like a result")))
+    client = await connect(server)
+
+    with pytest.raises(UnrecognizedUpdateOutcome) as excinfo:
+        await client.update_outcome("order 1", "upd-1")
+
+    assert repr(status) in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "wait_timeout_seconds,client_timeout,expected",
+    [
+        (None, 60.0, 60.0),
+        (5, 60.0, 60.0),
+        (30, 60.0, 60.0),
+        (60, 60.0, 90.0),
+        (120, 60.0, 150.0),
+        (10, 5.0, 40.0),
+    ],
+)
+async def test_long_waits_extend_the_http_timeout_and_short_ones_keep_it(
+    connect: Any, wait_timeout_seconds: int | None, client_timeout: float, expected: float,
+) -> None:
+    server = Server((200, CLUSTER), (200, _receipt(result_envelope=_envelope(1))))
+    client = await connect(server)
+    client.timeout = client_timeout
+
+    await client.update_outcome("order 1", "upd-1", wait_timeout_seconds=wait_timeout_seconds)
+
+    assert server.reads[0].extensions["timeout"]["read"] == expected
 
 
 async def test_reads_use_a_bounded_metrics_route(connect: Any) -> None:

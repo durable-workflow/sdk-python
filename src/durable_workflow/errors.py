@@ -685,6 +685,24 @@ class UpdateStillPending(DurableWorkflowError):
         self.body = body
 
 
+class UnrecognizedUpdateOutcome(DurableWorkflowError):
+    """An update outcome read answered with a receipt the SDK cannot trust.
+
+    Raised by :meth:`~durable_workflow.Client.update_outcome` and
+    :meth:`~durable_workflow.Client.update_outcome_receipt` when a successful
+    answer does not name the requested update, carries no string
+    ``update_status``, echoes another workflow, or (for ``update_outcome``)
+    is neither completed, pending, failed nor rejected. No value is returned
+    from such an answer. :attr:`body` preserves it for diagnosis.
+    """
+
+    def __init__(self, message: str, *, workflow_id: str, update_id: str, body: object | None = None) -> None:
+        super().__init__(message)
+        self.workflow_id = workflow_id
+        self.update_id = update_id
+        self.body = body
+
+
 class UpdateRejected(DurableWorkflowError):
     """A workflow update was rejected by the workflow's validator."""
 
