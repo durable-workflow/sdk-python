@@ -78,8 +78,9 @@ def draft_replay(history: list[dict], definition: type = ParallelFailurePolicyWo
 
 @pytest.mark.parametrize("policy", ["propagate", "cancel_remaining", "settle"])
 def test_public_replay_does_not_silently_interpret_an_unsupported_recorded_policy(policy: str) -> None:
+    history = explicit_history(policy)
     with pytest.raises(LocalActivityExecutionAborted, match="parallel_group_policy_not_supported"):
-        replay(ParallelFailurePolicyWorkflow, explicit_history(policy), [])
+        replay(ParallelFailurePolicyWorkflow, history, [])
 
 
 def test_explicit_propagate_raises_while_the_other_member_is_open() -> None:
@@ -247,8 +248,9 @@ def test_invalid_policy_is_refused_before_constructing_application_state() -> No
         def __init__(self) -> None:
             type(self).calls += 1
             super().__init__()
+    history = explicit_history("unknown")
     with pytest.raises(ValueError, match="parallel_group_policy"):
-        draft_replay(explicit_history("unknown"), NoApplication)
+        draft_replay(history, NoApplication)
     assert NoApplication.calls == 0
 
 

@@ -4026,6 +4026,78 @@ def _parallel_group_entry(payload: Mapping[str, Any]) -> tuple[str, str, int, in
     return group_id, kind, base_sequence, size, index
 
 
+def _parallel_policy_frames(payload: Mapping[str, Any]) -> tuple[list[Any], bool]:
+    path = payload.get("parallel_group_path")
+    frames = path if isinstance(path, list) and path else [payload]
+    has_explicit = "parallel_group_policy" in payload or any(
+        isinstance(frame, Mapping) and "parallel_group_policy" in frame for frame in frames
+    )
+    if has_explicit and path is not None and not isinstance(path, list):
+        raise ValueError("parallel_group_policy requires a canonical group path")
+    if isinstance(path, list) and path:
+        _assert_parallel_policy_alias(payload, path[-1], has_explicit)
+    return frames, has_explicit
+
+
+def _assert_parallel_policy_alias(payload: Mapping[str, Any], inner: Any, has_explicit: bool) -> None:
+    if not isinstance(inner, Mapping):
+        if has_explicit:
+            raise ValueError("parallel_group_policy requires matching flattened group identity")
+        return
+    if (("parallel_group_policy" in payload) != ("parallel_group_policy" in inner)
+        or payload.get("parallel_group_policy") != inner.get("parallel_group_policy")):
+        raise ValueError("parallel_group_policy disagrees with its canonical path")
+    if has_explicit and _parallel_group_entry(payload) != _parallel_group_entry(inner):
+        raise ValueError("parallel_group_policy requires matching flattened group identity")
+
+
+def _parallel_policy_value(frame: Mapping[str, Any]) -> str | None:
+    if "parallel_group_policy" not in frame:
+        return None
+    policy = frame["parallel_group_policy"]
+    if not isinstance(policy, str) or policy not in {"propagate", "cancel_remaining", "settle"}:
+        raise ValueError("parallel_group_policy is unknown or malformed")
+    if frame.get("parallel_group_mode") == "select":
+        raise ValueError("parallel_group_policy does not apply to select frames")
+    return policy
+
+
+def _parallel_policy_entry(
+    frame: Any, *, strict: bool,
+) -> tuple[tuple[str, str, int, int], str | None] | None:
+    if not isinstance(frame, Mapping):
+        if strict:
+            raise ValueError("parallel_group_policy requires canonical group metadata")
+        return None
+    policy = _parallel_policy_value(frame)
+    if frame.get("parallel_group_mode") == "select":
+        return None
+    entry = _parallel_group_entry(frame)
+    if entry is None:
+        if strict:
+            raise ValueError("parallel_group_policy requires canonical group metadata")
+        return None
+    return entry[:4], policy
+
+
+def _merge_parallel_group_policies(
+    payload: Mapping[str, Any], policies: dict[tuple[str, str, int, int], str | None],
+) -> None:
+    frames, has_explicit = _parallel_policy_frames(payload)
+    ordinary_policies: list[str | None] = []
+    for frame in frames:
+        parsed = _parallel_policy_entry(frame, strict=has_explicit)
+        if parsed is None:
+            continue
+        key, recorded = parsed
+        ordinary_policies.append(recorded)
+        if key in policies and policies[key] != recorded:
+            raise ValueError("parallel_group_policy is inconsistent across members or history")
+        policies[key] = recorded
+    if has_explicit and None in ordinary_policies:
+        raise LocalActivityExecutionAborted("parallel_group_policy mixed nested composition is not supported")
+
+
 def _read_parallel_group_policies(
     events: list[dict[str, Any]], supported: tuple[str, ...],
 ) -> dict[tuple[str, str, int, int], str | None]:
@@ -4041,50 +4113,7 @@ def _read_parallel_group_policies(
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
             continue
-        path = payload.get("parallel_group_path")
-        frames = path if isinstance(path, list) and path else [payload]
-        has_explicit = "parallel_group_policy" in payload or any(
-            isinstance(frame, Mapping) and "parallel_group_policy" in frame for frame in frames
-        )
-        if has_explicit and path is not None and not isinstance(path, list):
-            raise ValueError("parallel_group_policy requires a canonical group path")
-        if isinstance(path, list) and path and isinstance(path[-1], Mapping) and (
-            ("parallel_group_policy" in payload) != ("parallel_group_policy" in path[-1])
-            or payload.get("parallel_group_policy") != path[-1].get("parallel_group_policy")
-        ):
-            raise ValueError("parallel_group_policy disagrees with its canonical path")
-        if isinstance(path, list) and path and any(
-            isinstance(frame, Mapping) and "parallel_group_policy" in frame for frame in path
-        ) and (not isinstance(path[-1], Mapping)
-               or _parallel_group_entry(payload) != _parallel_group_entry(path[-1])):
-            raise ValueError("parallel_group_policy requires matching flattened group identity")
-        ordinary_policies: list[str | None] = []
-        for frame in frames:
-            if not isinstance(frame, Mapping):
-                if has_explicit:
-                    raise ValueError("parallel_group_policy requires canonical group metadata")
-                continue
-            present = "parallel_group_policy" in frame
-            policy = frame.get("parallel_group_policy")
-            if present and (not isinstance(policy, str) or policy not in {"propagate", "cancel_remaining", "settle"}):
-                raise ValueError("parallel_group_policy is unknown or malformed")
-            if frame.get("parallel_group_mode") == "select":
-                if present:
-                    raise ValueError("parallel_group_policy does not apply to select frames")
-                continue
-            entry = _parallel_group_entry(frame)
-            if entry is None:
-                if has_explicit:
-                    raise ValueError("parallel_group_policy requires canonical group metadata")
-                continue
-            key = entry[:4]
-            recorded = cast(str | None, policy) if present else None
-            ordinary_policies.append(recorded)
-            if key in policies and policies[key] != recorded:
-                raise ValueError("parallel_group_policy is inconsistent across members or history")
-            policies[key] = recorded
-        if has_explicit and None in ordinary_policies:
-            raise LocalActivityExecutionAborted("parallel_group_policy mixed nested composition is not supported")
+        _merge_parallel_group_policies(payload, policies)
     if any(policy is not None and policy not in supported for policy in policies.values()):
         raise LocalActivityExecutionAborted(
             "parallel_group_policy_not_supported: explicit history requires a qualified policy consumer",
