@@ -636,6 +636,73 @@ class UpdateFailed(InvalidArgument):
         return value if isinstance(value, str) and value.strip() else None
 
 
+class UpdateNotFound(UpdateFailed):
+    """No retained update has this id for this workflow (HTTP 404 ``update_not_found``).
+
+    Raised by :meth:`~durable_workflow.Client.update_outcome` and
+    :meth:`~durable_workflow.Client.update_outcome_receipt`. This includes an
+    update pruned with its run, so it does not prove the update was never
+    admitted. It subclasses :class:`UpdateFailed`, so callers that treat every
+    unreadable outcome alike can catch that.
+    """
+
+
+class UpdateStillPending(DurableWorkflowError):
+    """An accepted update that has not completed, so it has no result yet.
+
+    Raised by :meth:`~durable_workflow.Client.update_outcome` when the Server
+    answers with an accepted, still-open update: either a plain read, or a
+    completion wait that ran out (:attr:`wait_timed_out`). This is never a
+    ``None`` result. Call ``update_outcome()`` again with :attr:`update_id` to
+    keep waiting; reading never admits another update.
+    """
+
+    def __init__(
+        self,
+        *,
+        workflow_id: str,
+        update_id: str,
+        run_id: str | None = None,
+        update_name: str | None = None,
+        request_id: str | None = None,
+        update_status: str | None = None,
+        wait_timed_out: bool = False,
+        body: dict[str, Any] | None = None,
+    ) -> None:
+        label = f"{update_name} ({update_id})" if update_name else update_id
+        super().__init__(
+            f"Update {label} on workflow {workflow_id} is still {update_status or 'pending'}; it has no "
+            f"result yet. Call update_outcome() again with update id {update_id!r} to keep waiting. "
+            "Reading never admits another update."
+        )
+        self.workflow_id = workflow_id
+        self.update_id = update_id
+        self.run_id = run_id
+        self.update_name = update_name
+        self.request_id = request_id
+        self.update_status = update_status
+        self.wait_timed_out = wait_timed_out
+        self.body = body
+
+
+class UnrecognizedUpdateOutcome(DurableWorkflowError):
+    """An update outcome read answered with a receipt the SDK cannot trust.
+
+    Raised by :meth:`~durable_workflow.Client.update_outcome` and
+    :meth:`~durable_workflow.Client.update_outcome_receipt` when a successful
+    answer does not name the requested update, carries no string
+    ``update_status``, echoes another workflow, or (for ``update_outcome``)
+    is neither completed, pending, failed nor rejected. No value is returned
+    from such an answer. :attr:`body` preserves it for diagnosis.
+    """
+
+    def __init__(self, message: str, *, workflow_id: str, update_id: str, body: object | None = None) -> None:
+        super().__init__(message)
+        self.workflow_id = workflow_id
+        self.update_id = update_id
+        self.body = body
+
+
 class UpdateRejected(DurableWorkflowError):
     """A workflow update was rejected by the workflow's validator."""
 
@@ -1087,6 +1154,35 @@ def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
         raise InvalidArgument(message, errors)
 
     raise ServerError(status, body)
+
+
+def _raise_for_update_outcome_read(status: int, body: object, *, context: str = "") -> None:
+    """Map a refused update outcome read (Server #1131) to the update's typed failure.
+
+    ``404 update_not_found`` raises :class:`UpdateNotFound`, and a rejected
+    update, which answers with its original rejection status, raises
+    :class:`UpdateRejected` as submitting it did. Everything else, including
+    ``422`` failed updates, takes the usual mapping.
+    """
+    if status >= 400 and isinstance(body, dict):
+        reason = body.get("reason")
+        message = body.get("message")
+        if status == 404 and reason == "update_not_found":
+            raise UpdateNotFound(
+                message if isinstance(message, str) and message else "update not found",
+                status=status,
+                body=body,
+            )
+        if body.get("update_status") == "rejected":
+            if not isinstance(message, str) or not message:
+                message = f"update rejected: {reason}" if isinstance(reason, str) and reason else "update rejected"
+            errors = body.get("validation_errors")
+            raise UpdateRejected(
+                message,
+                validation_errors=errors if isinstance(errors, dict) and errors else None,
+                body=body,
+            )
+    _raise_for_status(status, body, context=context)
 
 
 def _control_plane_operation(body: object) -> str | None:

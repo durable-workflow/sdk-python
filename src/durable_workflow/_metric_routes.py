@@ -31,6 +31,7 @@ _ROUTES = (
     *(f"/workflows/{{workflow_id}}/{action}"
       for action in ("archive", "cancel", "repair", "terminate", "request-cancellation", "runs")),
     *(f"/workflows/{{workflow_id}}/{action}/{{name}}" for action in ("signal", "query", "update")),
+    "/workflows/{workflow_id}/updates/{update_id}",
     "/workflows/{workflow_id}/message-streams/{name}/messages",
     "/workflows/{workflow_id}/runs/{run_id}",
     *(f"/workflows/{{workflow_id}}/runs/{{run_id}}/{action}"
