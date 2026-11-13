@@ -171,6 +171,39 @@ class SyncWorkflowHandle:
             )
         )
 
+    def update_outcome(
+        self,
+        update_id: str,
+        *,
+        wait_for: str = "completed",
+        wait_timeout_seconds: int | None = None,
+        result_type: Any = None,
+    ) -> Any:
+        return self._runner.run(
+            self._handle.update_outcome(
+                update_id,
+                wait_for=wait_for,
+                wait_timeout_seconds=wait_timeout_seconds,
+                result_type=result_type,
+            )
+        )
+
+    def update_outcome_receipt(
+        self,
+        update_id: str,
+        *,
+        wait_for: str = "accepted",
+        wait_timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = self._runner.run(
+            self._handle.update_outcome_receipt(
+                update_id,
+                wait_for=wait_for,
+                wait_timeout_seconds=wait_timeout_seconds,
+            )
+        )
+        return result
+
 
 class SyncScheduleHandle:
     """Blocking wrapper around an async schedule handle."""
@@ -591,6 +624,43 @@ class Client:
                 request_id=request_id,
             )
         )
+
+    def update_outcome(
+        self,
+        workflow_id: str,
+        update_id: str,
+        *,
+        wait_for: str = "completed",
+        wait_timeout_seconds: int | None = None,
+        result_type: Any = None,
+    ) -> Any:
+        return self._runner.run(
+            self._async.update_outcome(
+                workflow_id,
+                update_id,
+                wait_for=wait_for,
+                wait_timeout_seconds=wait_timeout_seconds,
+                result_type=result_type,
+            )
+        )
+
+    def update_outcome_receipt(
+        self,
+        workflow_id: str,
+        update_id: str,
+        *,
+        wait_for: str = "accepted",
+        wait_timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = self._runner.run(
+            self._async.update_outcome_receipt(
+                workflow_id,
+                update_id,
+                wait_for=wait_for,
+                wait_timeout_seconds=wait_timeout_seconds,
+            )
+        )
+        return result
 
     def get_result(
         self,

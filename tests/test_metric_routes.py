@@ -14,6 +14,7 @@ from durable_workflow.retry_policy import TransportRetryPolicy
 ROUTES = [
     ("/workflows/wf-{id}/signal/signal-{id}", "/workflows/{workflow_id}/signal/{name}"),
     ("/workflows/wf-{id}/runs/run-{id}/history/export", "/workflows/{workflow_id}/runs/{run_id}/history/export"),
+    ("/workflows/wf-{id}/updates/update-{id}", "/workflows/{workflow_id}/updates/{update_id}"),
     ("/worker/workflow-tasks/task-{id}/complete", "/worker/workflow-tasks/{task_id}/complete"),
     ("/worker/activity-tasks/task-{id}/heartbeat", "/worker/activity-tasks/{task_id}/heartbeat"),
     ("/worker/query-tasks/task-{id}/status", "/worker/query-tasks/{task_id}/status"),

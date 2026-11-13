@@ -618,6 +618,48 @@ workers, and unsupported capability paths raise `UpdateValidationFailed` with
 the Server's typed reason and retryability. `wait_for="completed"` additionally
 waits for the accepted update handler to reach its terminal outcome.
 
+`Client.update_workflow()` (and `WorkflowHandle.update()`) returns the Server
+receipt, not the decoded handler result. When `wait_for` is omitted the Server
+answers at `accepted`. Read the receipt's `update_status`: `"completed"` carries
+the decoded value in `result`, which may be `None`; `"accepted"` means the
+update is still pending and has no result yet, even though `result` is `None`.
+`wait_timed_out` is `True` when a `wait_for="completed"` wait ran out first.
+
+To read the outcome later, keep the receipt's `update_id` and call
+`Client.update_outcome()` (or `WorkflowHandle.update_outcome()`). It reads the
+update by id and never submits it again, so it cannot admit a second update:
+
+```python
+from durable_workflow import UpdateNotFound, UpdateStillPending
+
+receipt = await client.update_workflow("order-1", "rename", args=["new name"])
+update_id = receipt["update_id"]
+
+try:
+    result = await client.update_outcome("order-1", update_id, wait_timeout_seconds=30)
+except UpdateStillPending as pending:
+    ...  # still running: call update_outcome() again with pending.update_id
+except UpdateNotFound:
+    ...  # no retained update has this id, for example after pruning
+```
+
+`update_outcome()` waits for the outcome by default and returns the decoded
+result, including `None` (`result_type=` decodes it to an annotation). A
+pending update raises `UpdateStillPending` with `workflow_id`, `run_id`,
+`update_name`, `update_id`, `request_id` and `update_status`; it is never
+returned as `None`. A failed update raises `UpdateFailed`, a rejected one
+`UpdateRejected`, and an unknown or pruned id `UpdateNotFound` (a subclass of
+`UpdateFailed`; it does not prove the update was never admitted).
+`update_outcome_receipt()` returns the raw receipt instead and answers at once
+unless you pass `wait_for="completed"`. The read follows the update across
+continue-as-new: the receipt's `run_id` names the run that owns it now.
+
+Both need a Server that advertises `capabilities.update_outcome_reads: true`
+in `GET /api/cluster/info` (native Server 3.6.0 and later). On an older Server
+they raise `RuntimeCapabilityUnsupported` after discovery, without reading or
+resubmitting the update. The synchronous `durable_workflow.sync.Client` and
+its workflow handles offer the same methods.
+
 Malformed signal and query payloads are reported as typed client errors with
 the server's documented reason and status preserved:
 

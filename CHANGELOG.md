@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Client.update_outcome()` and `Client.update_outcome_receipt()` read an accepted update's outcome later by its update id with `GET /api/workflows/{workflow_id}/updates/{update_id}`, and never submit the update again (durable-workflow/.github#212, server#1131). `update_outcome()` waits for the outcome by default and returns the decoded result, including `None`, with optional `result_type` decoding. A still-pending update raises the new `UpdateStillPending`, which carries `workflow_id`, `run_id`, `update_name`, `update_id`, `request_id` and `update_status` and tells the caller to read again by update id; it is never returned as `None`. A failed update raises `UpdateFailed`, a rejected one `UpdateRejected`, and an unknown or pruned id the new `UpdateNotFound` (a subclass of `UpdateFailed`). `update_outcome_receipt()` returns the raw receipt and answers at once by default. Both need a Server that advertises `capabilities.update_outcome_reads` (native 3.6.0 and later); on an older Server they raise `RuntimeCapabilityUnsupported` after discovery, without reading or resubmitting anything. `WorkflowHandle` and the synchronous client and handle have the same methods.
+
+### Changed
+
+- The `Client.update_workflow()` and `WorkflowHandle.update()` docstrings now say what they always did: they return the Server receipt, not the decoded result, and the Server answers at `wait_for="accepted"` when it is omitted. A receipt with `update_status: "accepted"` is a pending update even though its `result` is `None`.
+
 ## [2.16.0] - 2026-11-12
 
 ### Added

@@ -75,11 +75,14 @@ from .errors import (
     ServerError,
     SignalFailed,
     UpdateFailed,
+    UpdateRejected,
+    UpdateStillPending,
     WorkflowCancelled,
     WorkflowFailed,
     WorkflowTerminated,
     WorkflowTimedOut,
     _raise_for_status,
+    _raise_for_update_outcome_read,
 )
 from .external_storage import (
     RUNTIME_EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
@@ -121,6 +124,8 @@ CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA = "durable-workflow.v2.control-plane-reque
 CONTROL_PLANE_REQUEST_CONTRACT_VERSION = 1
 _QUERY_TASKS_DISCOVERY_PATH = "worker_protocol.server_capabilities.query_tasks"
 _COOPERATIVE_CANCELLATION_DISCOVERY_PATH = "worker_protocol.server_capabilities.cooperative_cancellation"
+_UPDATE_OUTCOME_READS_DISCOVERY_PATH = "capabilities.update_outcome_reads"
+_UPDATE_OUTCOME_WAIT_STAGES = ("accepted", "completed")
 _UPDATE_WAIT_STAGES_DISCOVERY_PATH = (
     "control_plane.request_contract.operations.update.fields.wait_for.canonical_values"
 )
@@ -302,6 +307,45 @@ def _command_request_failure(exc: Exception, *, command: str, request_id: str) -
         )
     _attach_request_id(exc, request_id)
     return exc
+
+
+def _update_outcome_value(
+    receipt: dict[str, Any], *, workflow_id: str, update_id: str, result_type: Any = None,
+) -> Any:
+    """Return a completed update's decoded result, or raise for any other receipt.
+
+    A pending receipt raises :class:`UpdateStillPending`, never ``None``.
+    """
+    status = receipt.get("update_status")
+    if isinstance(receipt.get("result_envelope"), dict) or (
+        status == "completed" and receipt.get("wait_timed_out") is not True
+    ):
+        value = receipt.get("result")
+        return value if result_type is None else decode_payload_value(value, result_type, "update result")
+    if status == "failed":
+        message = receipt.get("failure_message")
+        raise UpdateFailed(
+            message if isinstance(message, str) and message else "workflow update failed",
+            status=200,
+            body=receipt,
+        )
+    if status == "rejected":
+        raise UpdateRejected("update rejected", body=receipt)
+
+    def text(name: str) -> str | None:
+        value = receipt.get(name)
+        return value if isinstance(value, str) and value else None
+
+    raise UpdateStillPending(
+        workflow_id=text("workflow_id") or workflow_id,
+        update_id=text("update_id") or update_id,
+        run_id=text("run_id"),
+        update_name=text("update_name"),
+        request_id=text("request_id"),
+        update_status=text("update_status"),
+        wait_timed_out=receipt.get("wait_timed_out") is True,
+        body=receipt,
+    )
 
 
 def _resolve_namespace_name(
@@ -1633,7 +1677,7 @@ class WorkflowHandle:
         wait_timeout_seconds: int | None = None,
         request_id: str | None = None,
     ) -> Any:
-        """Send a synchronous update to this workflow and wait for the result. See :meth:`Client.update_workflow`."""
+        """Send an update to this workflow and return the Server's receipt. See :meth:`Client.update_workflow`."""
         return await self._client.update_workflow(
             self.workflow_id,
             update_name,
@@ -1641,6 +1685,38 @@ class WorkflowHandle:
             wait_for=wait_for,
             wait_timeout_seconds=wait_timeout_seconds,
             request_id=request_id,
+        )
+
+    async def update_outcome(
+        self,
+        update_id: str,
+        *,
+        wait_for: str = "completed",
+        wait_timeout_seconds: int | None = None,
+        result_type: Any = None,
+    ) -> Any:
+        """Read an accepted update's outcome later by update id. See :meth:`Client.update_outcome`."""
+        return await self._client.update_outcome(
+            self.workflow_id,
+            update_id,
+            wait_for=wait_for,
+            wait_timeout_seconds=wait_timeout_seconds,
+            result_type=result_type,
+        )
+
+    async def update_outcome_receipt(
+        self,
+        update_id: str,
+        *,
+        wait_for: str = "accepted",
+        wait_timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Read an accepted update's receipt by update id. See :meth:`Client.update_outcome_receipt`."""
+        return await self._client.update_outcome_receipt(
+            self.workflow_id,
+            update_id,
+            wait_for=wait_for,
+            wait_timeout_seconds=wait_timeout_seconds,
         )
 
 
@@ -2068,6 +2144,7 @@ class Client:
         timeout: float | None = None,
         context: str = "",
         retry: bool = True,
+        raise_for_status: Callable[..., None] = _raise_for_status,
     ) -> Any:
         if worker and discovery:
             raise ValueError("a request cannot be both worker-plane and cluster discovery")
@@ -2167,7 +2244,7 @@ class Client:
                     body = exc.response.json()
                 except ValueError:
                     body = exc.response.text
-                _raise_for_status(exc.response.status_code, body, context=context)
+                raise_for_status(exc.response.status_code, body, context=context)
                 raise  # unreachable, but keeps type checker happy
 
             status_code = str(resp.status_code)
@@ -3096,6 +3173,27 @@ class Client:
                     "stage or upgrade Server."
                 ),
                 supported_values=supported_stages,
+            )
+
+    async def _require_update_outcome_reads(self, operation: str) -> None:
+        info = await self._runtime_discovery(
+            operation=operation,
+            required_path=_UPDATE_OUTCOME_READS_DISCOVERY_PATH,
+        )
+        capabilities = info.get("capabilities")
+        supported = capabilities.get("update_outcome_reads") if isinstance(capabilities, dict) else None
+        if supported is not True:
+            raise RuntimeCapabilityUnsupported(
+                operation,
+                _UPDATE_OUTCOME_READS_DISCOVERY_PATH,
+                (
+                    f"{operation} is unsupported by this runtime because GET /api/cluster/info "
+                    f"does not advertise {_UPDATE_OUTCOME_READS_DISCOVERY_PATH}=true (native "
+                    "Server 3.6.0 or later), so an update outcome cannot be read by id. The SDK "
+                    "never resubmits an update in place of reading it. Upgrade Server, or retry "
+                    "update_workflow() with the update's original request_id, which returns the "
+                    "retained receipt instead of admitting another update."
+                ),
             )
 
     def get_workflow_handle(
@@ -4964,17 +5062,27 @@ class Client:
         wait_timeout_seconds: int | None = None,
         request_id: str | None = None,
     ) -> Any:
-        """Send a synchronous update to a running workflow and wait for the result.
+        """Send an update to a running workflow and return the Server's receipt.
 
         Updates are request/response calls to a named handler on the workflow;
         the handler may mutate durable workflow state and return a value.
-        ``wait_for`` selects how long the server waits before returning —
-        typically ``completed`` to block until the handler finishes, or
-        ``accepted`` to return once the request is durably accepted and routed.
+        ``wait_for`` selects how long the server waits before answering:
+        ``"accepted"`` (the default when omitted) answers once the update is
+        durably accepted and routed, and ``"completed"`` waits up to
+        ``wait_timeout_seconds`` for the handler's outcome.
         When the workflow contract declares a validator, a capable Server does
         not return that accepted state until synchronous validation succeeds.
         Validator rejection and validation-routing failures remain typed and
         do not silently fall back to post-accept handler failure.
+
+        The return value is the receipt ``dict``, not the decoded handler
+        result. Its ``update_status`` says where the update is: ``"completed"``
+        carries the decoded value in ``result`` (which may be ``None``) and the
+        encoded ``result_envelope``; ``"accepted"`` means the update is still
+        pending and has no result yet, even though ``result`` is ``None``, and
+        ``wait_timed_out`` is ``True`` when a completion wait ran out. Keep the
+        receipt's ``update_id`` to read the outcome later with
+        :meth:`update_outcome`, which never admits another update.
 
         ``request_id`` is the caller command key (1-255 opaque, case-sensitive
         bytes) that makes a retry of this update safe. When omitted the client
@@ -5023,6 +5131,104 @@ class Client:
             raise failure from exc
         if isinstance(data, dict):
             data.setdefault("request_id", key)
+        return data
+
+    async def update_outcome(
+        self,
+        workflow_id: str,
+        update_id: str,
+        *,
+        wait_for: str = "completed",
+        wait_timeout_seconds: int | None = None,
+        result_type: Any = None,
+    ) -> Any:
+        """Read an accepted update's outcome later by its update id, without submitting it again.
+
+        By default this waits for the outcome (``wait_for="completed"``) up to
+        ``wait_timeout_seconds``, or the Server's update wait default. It
+        returns the decoded result of a completed update, including ``None``.
+        ``result_type`` opts in to decoding the result to that annotation, as
+        :meth:`get_result` does.
+
+        A still-pending update raises
+        :class:`~durable_workflow.errors.UpdateStillPending` and is never
+        returned as ``None``; call this again with the same ``update_id`` to
+        keep waiting. A failed update raises
+        :class:`~durable_workflow.errors.UpdateFailed`, a rejected one
+        :class:`~durable_workflow.errors.UpdateRejected`, and an id with no
+        retained update (including one pruned with its run)
+        :class:`~durable_workflow.errors.UpdateNotFound`.
+
+        The read follows the update across continue-as-new; the receipt's
+        ``run_id`` names the run that owns it now. It needs a Server that
+        advertises ``capabilities.update_outcome_reads`` (native 3.6.0 and
+        later) and otherwise raises
+        :class:`~durable_workflow.errors.RuntimeCapabilityUnsupported` without
+        reading or resubmitting anything.
+        """
+        if result_type is not None:
+            validate_annotation(result_type, "result_type")
+        receipt = await self._read_update_outcome(
+            "Client.update_outcome", workflow_id, update_id, wait_for, wait_timeout_seconds,
+        )
+        return _update_outcome_value(receipt, workflow_id=workflow_id, update_id=update_id, result_type=result_type)
+
+    async def update_outcome_receipt(
+        self,
+        workflow_id: str,
+        update_id: str,
+        *,
+        wait_for: str = "accepted",
+        wait_timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Read an accepted update's Server receipt by its update id. It writes nothing.
+
+        By default this answers at once (``wait_for="accepted"``); pass
+        ``wait_for="completed"`` to wait for the outcome. The receipt is the
+        same one :meth:`update_workflow` returns: ``update_status`` is
+        ``"accepted"`` while the update is pending (``wait_timed_out`` says
+        whether a completion wait ran out) and ``"completed"`` once it has a
+        ``result``, which may be ``None``.
+
+        Failed, rejected and unknown updates raise as in
+        :meth:`update_outcome`. Without the Server's
+        ``capabilities.update_outcome_reads`` this raises
+        :class:`~durable_workflow.errors.RuntimeCapabilityUnsupported`;
+        resubmitting the update is never a substitute for reading it.
+        """
+        return await self._read_update_outcome(
+            "Client.update_outcome_receipt", workflow_id, update_id, wait_for, wait_timeout_seconds,
+        )
+
+    async def _read_update_outcome(
+        self,
+        operation: str,
+        workflow_id: str,
+        update_id: str,
+        wait_for: str,
+        wait_timeout_seconds: int | None,
+    ) -> dict[str, Any]:
+        if wait_for not in _UPDATE_OUTCOME_WAIT_STAGES:
+            raise ValueError(f"{operation} wait_for must be 'accepted' or 'completed', not {wait_for!r}")
+        if not isinstance(update_id, str) or not update_id.strip():
+            raise ValueError(f"{operation} needs the update id")
+        await self._require_update_outcome_reads(operation)
+        path = f"/workflows/{quote(workflow_id, safe='')}/updates/{quote(update_id, safe='')}"
+        query: dict[str, Any] = {}
+        if wait_for == "completed":
+            query["wait_for"] = wait_for
+        if wait_timeout_seconds is not None:
+            query["wait_timeout_seconds"] = wait_timeout_seconds
+        if query:
+            path += "?" + urlencode(query)
+        data = await self._request(
+            "GET", path, context=workflow_id, raise_for_status=_raise_for_update_outcome_read,
+        )
+        if not isinstance(data, dict):
+            raise ServerError(
+                200,
+                {"reason": "invalid_update_receipt", "message": f"expected JSON object, got {type(data).__name__}"},
+            )
         return data
 
     async def get_result(
