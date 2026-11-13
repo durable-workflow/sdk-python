@@ -23,6 +23,15 @@ from types import ModuleType, SimpleNamespace
 RESULT_PREFIX = "SDK_PYTHON_CONSUMER_RESULT="
 ROLES = {"adapter", "bootstrap", "proxy", "wheel", "requirements"}
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
+IMAGE_INTERPRETER = Path("/usr/local/bin/python3.12")
+
+
+def approved_environment_link(relative, target):
+    return (
+        (relative == "lib64" and target == "lib")
+        or (relative in {"bin/python", "bin/python3"} and target == "python3.12")
+        or (relative == "bin/python3.12" and target == str(IMAGE_INTERPRETER))
+    )
 
 
 def decode_inputs(bundle):
@@ -57,9 +66,10 @@ def inventory(root):
         if stat.S_ISDIR(info.st_mode):
             continue
         if path.is_symlink():
-            if relative != "lib64" or os.readlink(path) != "lib":
+            target = os.readlink(path)
+            if not approved_environment_link(relative, target):
                 raise ValueError("unexpected installed-environment link")
-            entries.append([relative, "symlink", "lib"])
+            entries.append([relative, "symlink", target])
             continue
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
             raise ValueError("unexpected installed-environment file")
@@ -76,16 +86,31 @@ def prepare(bundle, sources):
         raise ValueError("caller may not supply a prepared interpreter")
     root = Path(tempfile.mkdtemp(prefix="sdk-python-installed-"))
     environment = root / "venv"
-    venv.EnvBuilder(with_pip=True, symlinks=False).create(environment)
+    # Scratch remains noexec. These fresh internal links may target only the
+    # immutable interpreter in the fixed image, never a host/caller program.
+    venv.EnvBuilder(with_pip=True, symlinks=True).create(environment)
     lock = root / "requirements.txt"
     lock.write_bytes(sources["requirements"])
     lock.chmod(0o400)
     python = environment / "bin/python"
     executable = python.lstat()
-    if not stat.S_ISREG(executable.st_mode) or executable.st_nlink != 1 or executable.st_uid != os.getuid():
+    if (
+        not stat.S_ISLNK(executable.st_mode)
+        or executable.st_nlink != 1
+        or executable.st_uid != os.getuid()
+        or python.resolve() != IMAGE_INTERPRETER
+    ):
         raise ValueError("fresh interpreter identity differs")
+    image_binary = IMAGE_INTERPRETER.lstat()
+    if (
+        not stat.S_ISREG(image_binary.st_mode)
+        or image_binary.st_uid != 0
+        or image_binary.st_nlink != 1
+        or image_binary.st_mode & 0o022
+    ):
+        raise ValueError("immutable image interpreter shape differs")
     binary_sha256 = hashlib.sha256(python.read_bytes()).hexdigest()
-    if binary_sha256 != hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest():
+    if binary_sha256 != hashlib.sha256(IMAGE_INTERPRETER.read_bytes()).hexdigest():
         raise ValueError("virtualenv interpreter differs from fixed image interpreter")
     clean_environment = {"PATH": os.defpath, "TMPDIR": str(root), "PIP_CONFIG_FILE": "/dev/null"}
     subprocess.run(
@@ -121,7 +146,7 @@ def prepare(bundle, sources):
         "inventory": before,
     }
     # Both the child program and its inputs come from the same captured bytes.
-    # The interpreter is created here from the immutable image, never supplied
+    # The interpreter links here to the immutable image, never supplied
     # by a host pathname. Its complete environment is checked around the call.
     result = subprocess.run(
         [str(python), "-I", "-B", "-c", sources["bootstrap"].decode(), "--prepared"],

@@ -150,6 +150,21 @@ def test_inventory_catches_installed_dependency_or_interpreter_mutation(tmp_path
     assert bootstrap.inventory(tmp_path) != before
 
 
+@pytest.mark.parametrize(
+    "relative,target",
+    [
+        ("bin/python", "python3.12"),
+        ("bin/python3", "python3.12"),
+        ("bin/python3.12", "/usr/local/bin/python3.12"),
+        ("lib64", "lib"),
+    ],
+)
+def test_fresh_venv_links_are_closed_to_the_immutable_image(relative, target):
+    assert bootstrap.approved_environment_link(relative, target)
+    assert not bootstrap.approved_environment_link(relative, "/host/arbitrary-program")
+    assert not bootstrap.approved_environment_link("lib/python3.12/site-packages/replaced", target)
+
+
 def test_requirement_lock_covers_only_exact_wheel_hashes():
     lines = (ROOT / "consumer-requirements.txt").read_text().splitlines()
     assert len(lines) == 9
