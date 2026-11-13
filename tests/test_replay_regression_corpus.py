@@ -47,6 +47,7 @@ from tests.test_golden_history_replay import (
     GoldenTimeoutWaitWorkflow,
     GoldenVersionMarkerWorkflow,
 )
+from tests.test_parallel_group_policy import ParallelFailurePolicyWorkflow
 from tests.test_patch_history import (
     MixedPatchHelpersWorkflow,
     PatchCancellationWorkflow,
@@ -470,6 +471,7 @@ WORKFLOWS = [
 WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__)): workflow for workflow in WORKFLOWS}
 WORKFLOW_TYPES["tests.replay.condition-identity"] = ConditionIdentityWorkflow
 WORKFLOW_TYPES["tests.replay.entry-arguments-required"] = RequiredEntryArgumentWorkflow
+WORKFLOW_TYPES["tests.replay.parallel-failure-policy"] = ParallelFailurePolicyWorkflow
 
 
 def _fixture_paths() -> list[Path]:
