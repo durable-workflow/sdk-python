@@ -124,7 +124,7 @@ def git_bytes(root, commit, relative):
     )
 
 
-def captured_inputs(args, stack):
+def captured_inputs(args, stack, *, source_files=None, data_files=None):
     if re.fullmatch(r"[0-9a-f]{40}", args.runner_commit) is None:
         raise ValueError("runner commit must be one exact full Git SHA")
     root = Path(__file__).absolute().parents[3]
@@ -139,27 +139,33 @@ def captured_inputs(args, stack):
     # Load the immutable Git object, never a second lookup of a mutable file.
     exec(compile(guard_bytes, "reviewed-input-guards.py", "exec"), guards.__dict__)
     inputs = {}
-    for role, filename in {
+    sources = {
         "controller": "run_response_loss.py",
         "guard": "input_guards.py",
         "adapter": "response_loss.py",
         "bootstrap": "consumer_bootstrap.py",
         "requirements": "consumer-requirements.txt",
-    }.items():
+    }
+    if source_files:
+        sources.update(source_files)
+    for role, filename in sources.items():
         expected = hashlib.sha256(git_bytes(root, head, prefix + filename)).hexdigest()
         inputs[role] = stack.enter_context(
             guards.CapturedInput(root / prefix / filename, role, maximum=256 * 1024, expected=expected)
         )
-    inputs["proxy"] = stack.enter_context(
-        guards.CapturedInput(args.proxy, "proxy", maximum=64 * 1024, expected=PROXY_SHA256)
+    data = (
+        data_files
+        if data_files is not None
+        else {"proxy": (args.proxy, 64 * 1024, PROXY_SHA256), "wheel": (args.wheel, 4 * 1024 * 1024, WHEEL_SHA256)}
     )
-    inputs["wheel"] = stack.enter_context(
-        guards.CapturedInput(args.wheel, "wheel", maximum=4 * 1024 * 1024, expected=WHEEL_SHA256)
-    )
+    for role, (path, maximum, expected) in data.items():
+        inputs[role] = stack.enter_context(guards.CapturedInput(path, role, maximum=maximum, expected=expected))
     return inputs
 
 
-def consumer_result(stdout, inputs):
+def consumer_result(stdout, inputs, *, scenario="response_loss"):
+    if scenario not in {"response_loss", "physical_readback"}:
+        raise ValueError("unknown installed consumer scenario")
     lines = [line[len(RESULT_PREFIX) :] for line in stdout.splitlines() if line.startswith(RESULT_PREFIX)]
     if len(lines) != 1:
         raise ValueError("consumer did not emit exactly one bound result")
@@ -167,14 +173,59 @@ def consumer_result(stdout, inputs):
     if (
         result.get("complete") is not True
         or result.get("adapter_sha256") != inputs["adapter"].sha256
-        or result.get("proxy_sha256") != PROXY_SHA256
         or result.get("sdk", {}).get("wheel_sha256") != WHEEL_SHA256
         or result.get("sdk", {}).get("python") != PYTHON_VERSION
         or result.get("toolchain", {}).get("post_inventory_equal") is not True
         or result["toolchain"].get("requirements_sha256") != inputs["requirements"].sha256
     ):
         raise ValueError("consumer result does not bind the captured inputs/toolchain")
+    if scenario == "response_loss" and result.get("proxy_sha256") != PROXY_SHA256:
+        raise ValueError("consumer proxy identity differs")
+    if scenario == "physical_readback" and result.get("seed_sha256") != inputs["seed"].sha256:
+        raise ValueError("consumer seed identity differs")
     return result
+
+
+def create_consumer(call, name, nonce, inputs):
+    return created_id(
+        call(
+            "create",
+            "--init",
+            "--read-only",
+            "--name",
+            name,
+            "--label",
+            OWNER_LABEL + "=sdk-python",
+            "--label",
+            RUN_LABEL + "=" + nonce,
+            "--network",
+            "host",
+            "--cpus",
+            "1",
+            "--memory",
+            "1g",
+            "--pids-limit",
+            "256",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            "--tmpfs",
+            "/tmp:mode=1777,size=256m",
+            "--tmpfs",
+            f"/opt/sdk-python:mode=0700,uid={os.getuid()},gid={os.getgid()},size=256m,exec",
+            "-i",
+            "--entrypoint",
+            "/usr/local/bin/python3.12",
+            "docker.io/library/python@" + PYTHON_INDEX,
+            "-I",
+            "-B",
+            "-c",
+            inputs["bootstrap"].data.decode(),
+        ).stdout
+    )
 
 
 def run_bound(args, inputs):
@@ -284,45 +335,7 @@ def run_bound(args, inputs):
         # Host networking is needed only for the fixture's numeric loopback.
         # It has no host mounts or inherited host environment. Only the synthetic
         # runtime token is delivered through the captured stdin bundle.
-        consumer_id = created_id(
-            call(
-                "create",
-                "--init",
-                "--read-only",
-                "--name",
-                names[1],
-                "--label",
-                OWNER_LABEL + "=sdk-python",
-                "--label",
-                RUN_LABEL + "=" + nonce,
-                "--network",
-                "host",
-                "--cpus",
-                "1",
-                "--memory",
-                "1g",
-                "--pids-limit",
-                "256",
-                "--cap-drop",
-                "ALL",
-                "--security-opt",
-                "no-new-privileges",
-                "--user",
-                f"{os.getuid()}:{os.getgid()}",
-                "--tmpfs",
-                "/tmp:mode=1777,size=256m",
-                "--tmpfs",
-                f"/opt/sdk-python:mode=0700,uid={os.getuid()},gid={os.getgid()},size=256m,exec",
-                "-i",
-                "--entrypoint",
-                "/usr/local/bin/python3.12",
-                python_image,
-                "-I",
-                "-B",
-                "-c",
-                inputs["bootstrap"].data.decode(),
-            ).stdout
-        )
+        consumer_id = create_consumer(call, names[1], nonce, inputs)
         if consumer_id == runtime_id:
             raise ValueError("Docker create reused an existing container ID")
         report["owned_containers"]["consumer"] = {"id": consumer_id, "requested_name": names[1]}

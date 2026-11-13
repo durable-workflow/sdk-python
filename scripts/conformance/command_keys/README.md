@@ -84,65 +84,50 @@ This adapter alone does not complete shared216.
 
 ## Physical upgrade consumer
 
-`physical_readback.py` consumes the producer-owned JSON receipt contract from
-[Server1210](https://github.com/durable-workflow/server/pull/1210). Source/execution
-reuse is held until that PR's final source review and checks qualify. This is
-separate from the accepted synthetic-copy helper and its older manifest hash.
+The producer-owned [frozen handoff](https://github.com/durable-workflow/server/pull/1210#issuecomment-6860138558)
+is accepted at contract source `a09f156399416216d2f097c257a2164f83c7eda7`.
+The actual original seed execution remains `09a4ccda3da11853606af031a8970bbde4b2d6ec`,
+driver SHA-256 `01c0fa1251ac3c809723e58d71817881fe2c5c9498579bc4c2e6097324a3618b`.
+These are different authorities and must remain distinct in every receipt.
 
-The consumer invokes the registry-only Python Client against an already upgraded
-disposable runtime. The producer receipt must include all original signal/update
-open/completed/continued cases, complete captured histories and original update
-identities. The manifest includes the historical unkeyed-signal clarification.
-It refuses a changed receipt hash, incomplete seed, missing identities or package
-overlay before issuing a command.
-
-An outer runner must bind the producer source, stopped backup and receipt hashes,
-upgrade a private copy with the qualified image, preserve the original, disable
-unrelated maintenance writes and compare complete logical snapshots around this
-consumer. It owns the image/source check, exact runtime/database/credential
-cleanup and the final qualification receipt. Never run against the retained
-original database or reuse a production runtime credential.
-
-`run_physical_readback.py` supplies that outer integration for the frozen producer
-handoff. It binds the exact stopped-backup/JSON/helper hashes, copies into a new
-private directory, checks native schema markers, runs the qualified image's
-`schema-upgrade`, and verifies the empty intent table. It then brackets this
-consumer with complete typed logical snapshots from the accepted helper.
-The upgrade itself preserves every original business row and schema object.
-Its only metadata exceptions are the native marker and a single SQLx journal
-row, validated field by field against tagged description/checksum/version,
-success, zero execution time and the actual timestamp window. The added empty
-table/catalog comes from the hash-bound tagged SQL step in an isolated SQLite
-catalog. No business row or migration-journal field is exempted from comparison.
-The request window ends before shutdown; later repair work cannot be relabeled
-as part of that zero-write window. The retained original backup is hash-checked
-again after cleanup. Two sequential containers have the same 1 CPU/1 GiB/256-PID
-limits, read-only roots and bounded tmpfs paths; no compile or historical reseed
-occurs. Original seed/upgrade authority remains Server-owned.
-
-Once the producer's final source gate permits execution reuse, invoke the outer
-controller with `--python`, `--wheel`, `--baseline`, `--seed`, `--snapshot-helper`,
-the tagged `--step-sql`,
-and a new private `--output` directory. The original file inputs come from the
-producer handoff and accepted common snapshot helper, not an invented fixture.
-This draft has no installed physical result yet.
+`run_physical_readback.py` consumes that stopped backup/JSON plus the accepted
+common snapshot helper and hash-bound tagged SQL step. It captures every input
+with the same Git/owner/no-follow/held-identity boundary as the response-loss
+runner. Only a new private copy is upgraded. Start/inspect/wait/log/remove/absence
+checks use captured full creation IDs and ownership labels. Upgrade and runtime
+are sequential; the runtime and registry consumer are the only concurrent pair.
+The fixed image/bootstrap/hash-locked registry environment is shared with the
+reviewed response-loss runner. No host interpreter or executable input pathname
+is accepted.
 
 ```sh
-/path/to/registry-venv/bin/python -I \
-  scripts/conformance/command_keys/physical_readback.py \
-  --upstream http://127.0.0.1:12345 --server-version 3.9.2 \
-  --credential-file /path/to/private/fixture.env \
-  --seed /path/to/producer-receipt.json --seed-sha256 FULL_PRODUCER_RECEIPT_SHA256 \
+python3 -I scripts/conformance/command_keys/run_physical_readback.py \
+  --runner-commit FULL_REVIEWED_RUNNER_COMMIT \
   --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
-  --output /path/to/private/new-consumer-receipt.json
+  --baseline /path/to/producer/stopped-backup.sqlite \
+  --seed /path/to/producer/seed-receipts.json \
+  --snapshot-helper /path/to/accepted/sqlite_legacy.py \
+  --step-sql /path/to/tagged/0013_command_intents.sql \
+  --output /path/to/private-disk-scratch/new-physical-run
 ```
 
-For each original keyed update it issues four concurrent retries with changed
-input, requires original command/run/update/acceptance identities and explicit
-`intent_verified: false`, checks a changed-name conflict, then uses GET-only
-outcome reads to distinguish pending from completed-null. Python's update helper
-uses its unscoped route; this does not claim a new explicit-run update API.
+The controller binds the frozen backup/packet/helper/step hashes. It checks the
+native marker transition and validates every business row/schema object, allowing
+only the exact new empty intent catalog and source-defined marker/journal changes.
+Every SQLx journal field is checked: version, description, tagged cumulative SQL
+checksum, success, zero execution time and the actual upgrade timestamp window.
+The installed Client's readbacks are bracketed by complete typed logical snapshots.
+That interval ends before shutdown; subsequent repair work is not relabeled as
+part of the zero-write claim. Original inputs are rechecked and preserved.
+
+For each original keyed update in open/completed/continued state, four concurrent
+changed-input retries must return the original command/run/update/acceptance
+identities with explicit `intent_verified: false`. Changed names must conflict;
+GET-only outcome reads distinguish pending from completed-null. The Python update
+helper uses its unscoped public route, so no new explicit-run update API is claimed.
 Historical NULL-key signals receive no fabricated retry key. Their compatibility
-control reads the original history, including completed/continued boundaries.
-Neither this consumer's completion flag nor a producer-only upgrade receipt alone
-qualifies the installed SDK physical cell without the outer snapshot/cleanup proof.
+control preserves their original history and business identities only.
+
+A producer upgrade receipt alone does not qualify this SDK. The exact consumer
+source, installed proof, complete snapshots, immutable input/toolchain rechecks,
+all three captured-ID cleanup records and independent review remain required.

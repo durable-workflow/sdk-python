@@ -19,6 +19,14 @@ CONTROLLER_SPEC = importlib.util.spec_from_file_location(
 assert CONTROLLER_SPEC is not None and CONTROLLER_SPEC.loader is not None
 controller = importlib.util.module_from_spec(CONTROLLER_SPEC)
 CONTROLLER_SPEC.loader.exec_module(controller)
+GUARD_SPEC = importlib.util.spec_from_file_location("physical_input_guards", PATH.with_name("input_guards.py"))
+assert GUARD_SPEC is not None and GUARD_SPEC.loader is not None
+guards = importlib.util.module_from_spec(GUARD_SPEC)
+GUARD_SPEC.loader.exec_module(guards)
+BOOTSTRAP_SPEC = importlib.util.spec_from_file_location("physical_bootstrap", PATH.with_name("consumer_bootstrap.py"))
+assert BOOTSTRAP_SPEC is not None and BOOTSTRAP_SPEC.loader is not None
+bootstrap = importlib.util.module_from_spec(BOOTSTRAP_SPEC)
+BOOTSTRAP_SPEC.loader.exec_module(bootstrap)
 
 
 def seed():
@@ -97,14 +105,30 @@ def test_input_hash_and_regular_file_refusal(tmp_path):
     path = tmp_path / "synthetic"
     path.write_bytes(b"original")
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    controller.verify_file(path, digest)
+    with guards.CapturedInput(path, "baseline", maximum=100, expected=digest) as captured:
+        assert captured.data == b"original"
     path.write_bytes(b"changed")
-    with pytest.raises(ValueError, match="identity differs"):
-        controller.verify_file(path, digest)
+    with pytest.raises(ValueError, match="input refused"):
+        guards.CapturedInput(path, "baseline", maximum=100, expected=digest)
     link = tmp_path / "linked"
     link.symlink_to(path)
-    with pytest.raises(ValueError, match="identity differs"):
-        controller.verify_file(link, hashlib.sha256(path.read_bytes()).hexdigest())
+    with pytest.raises(ValueError, match="input refused"):
+        guards.CapturedInput(link, "baseline", maximum=100, expected=hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+def test_physical_bundle_closes_seed_and_verifier_roles():
+    import base64
+
+    sources = {
+        role: {"base64": base64.b64encode(b"original").decode(), "sha256": hashlib.sha256(b"original").hexdigest()}
+        for role in bootstrap.PHYSICAL_ROLES
+    }
+    assert bootstrap.decode_inputs({"scenario": "physical_readback", "sources": sources})["seed"] == b"original"
+    sources["proxy"] = sources["seed"]
+    with pytest.raises(ValueError, match="roles differ"):
+        bootstrap.decode_inputs({"scenario": "physical_readback", "sources": sources})
+    with pytest.raises(ValueError, match="roles differ"):
+        bootstrap.decode_inputs({"scenario": "unknown", "sources": sources})
 
 
 def test_schema_authority_uses_native_marker_not_sqlite_user_version():
@@ -181,5 +205,5 @@ def test_unapproved_helper_bytes_cannot_execute(tmp_path):
     marker = tmp_path / "executed"
     script.write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n")
     with pytest.raises(ValueError, match="source identity differs"):
-        controller.load(script, "unapproved_fixture", "0" * 64)
+        controller.load_bytes(script.read_bytes(), "unapproved_fixture", "0" * 64)
     assert not marker.exists()

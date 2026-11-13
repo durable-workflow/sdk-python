@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
+import re
 import secrets
-import shutil
 import sqlite3
-import stat
 import subprocess
 import time
 import urllib.request
-from contextlib import closing
+from contextlib import ExitStack, closing
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,24 +33,14 @@ JOURNAL_DESCRIPTION = (
 )
 
 
-def load(path, name, expected=None):
-    data = path.read_bytes()
-    digest = hashlib.sha256(data).hexdigest()
-    if expected is not None and digest != expected:
+def load_bytes(data, name, expected, *, filename=None):
+    if hashlib.sha256(data).hexdigest() != expected:
         raise ValueError("required executable source identity differs")
     module = ModuleType(name)
-    module.__file__ = str(path)
-    # Execute precisely the bytes that were hashed, rather than reopening the
-    # external helper through an import loader after its identity check.
-    exec(compile(data, str(path), "exec"), module.__dict__)
-    module.source_sha256 = digest
+    module.__file__ = filename or "captured-" + name + ".py"
+    exec(compile(data, module.__file__, "exec"), module.__dict__)
+    module.source_sha256 = expected
     return module
-
-
-def verify_file(path, expected):
-    info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
-        raise ValueError("required producer/helper input identity differs")
 
 
 def native_marker(connection, expected):
@@ -102,20 +92,25 @@ def validate_upgrade(before, after, added_schema, began, finished):
         raise ValueError("upgrade changed business rows or unexpected metadata")
 
 
-def run(args):
-    if not __debug__:
-        raise ValueError("acceptance assertions require Python without optimization")
-    # No Docker action or backup copy precedes all input identity checks.
-    verify_file(args.baseline, BASELINE_SHA256)
-    verify_file(args.seed, SEED_SHA256)
-    verify_file(args.snapshot_helper, HELPER_SHA256)
-    verify_file(args.step_sql, STEP_SHA256)
-    legacy = load(args.snapshot_helper, "accepted_sqlite_snapshot", HELPER_SHA256)
+def controls_from_git(args):
+    if re.fullmatch(r"[0-9a-f]{40}", args.runner_commit) is None:
+        raise ValueError("require one exact runner commit")
+    root = Path(__file__).absolute().parents[3]
+    relative = "scripts/conformance/command_keys/run_response_loss.py"
+    data = subprocess.check_output(
+        ["git", "-C", str(root), "show", args.runner_commit + ":" + relative], env={"PATH": os.defpath}, timeout=10
+    )
+    return load_bytes(
+        data, "reviewed_runtime_controls", hashlib.sha256(data).hexdigest(), filename=str(root / relative)
+    )
+
+
+def run_bound(args, inputs, controls):
+    legacy = load_bytes(inputs["snapshot_helper"].data, "accepted_snapshot", HELPER_SHA256)
     with closing(sqlite3.connect(":memory:")) as catalog:
         catalog.execute("CREATE TABLE dw_server_schema(engine TEXT, version INTEGER)")
-        catalog.executescript(args.step_sql.read_text())
+        catalog.executescript(inputs["step_sql"].data.decode())
         added_schema = [row for row in legacy.snapshot(catalog)["schema"] if row[2] != "dw_server_schema"]
-    controls = load(Path(__file__).with_name("run_response_loss.py"), "native_runtime_identity")
     root = args.output.absolute()
     root.mkdir(mode=0o700, parents=False, exist_ok=False)
     database = root / "database"
@@ -124,7 +119,7 @@ def run(args):
     config = root / "docker-config"
     config.mkdir(mode=0o700)
     (config / "config.json").write_text('{"auths":{}}\n')
-    environment = {"PATH": os.defpath, "TMPDIR": str(root), "PYTHONUNBUFFERED": "1"}
+    environment = {"PATH": os.defpath, "TMPDIR": str(root)}
     docker = ["docker", "--config", str(config)]
 
     def call(*arguments, check=True, timeout=45):
@@ -138,30 +133,31 @@ def run(args):
             return legacy.snapshot(connection)
 
     image = "ghcr.io/durable-workflow/server@" + controls.EXPECTED_SERVER["index"]
+    python_image = "docker.io/library/python@" + controls.PYTHON_INDEX
     observed = controls.image_identity(json.loads(call("image", "inspect", image).stdout))
-    suffix = uuid4().hex[:12]
-    names = ["sdk-python-216-physical-upgrade-" + suffix, "sdk-python-216-physical-runtime-" + suffix]
+    interpreter = controls.interpreter_identity(json.loads(call("image", "inspect", python_image).stdout))
+    nonce = uuid4().hex
+    token = secrets.token_hex(24)
     credential = root / "fixture.env"
     descriptor = os.open(credential, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(descriptor, "w") as stream:
         stream.write(
-            "DW_AUTH_TOKEN="
-            + secrets.token_hex(24)
-            + "\nDW_RUNTIME_CREDENTIALS_ENABLED=false\nDW_RUST_MAINTENANCE_LOOP=0"
-            + "\nDB_CONNECTION=sqlite\nDB_DATABASE=/cohort/upgraded.sqlite\n"
+            "DW_AUTH_TOKEN=" + token + "\nDW_RUNTIME_CREDENTIALS_ENABLED=false\n"
+            "DW_RUST_MAINTENANCE_LOOP=0\nDB_CONNECTION=sqlite\nDB_DATABASE=/cohort/upgraded.sqlite\n"
         )
-    consumer = Path(__file__).with_name("physical_readback.py")
     report = {
         "started_at": datetime.now(timezone.utc).isoformat(),
-        "baseline_sha256": BASELINE_SHA256,
-        "seed_sha256": SEED_SHA256,
-        "snapshot_helper_sha256": HELPER_SHA256,
-        "runtime_verifier_sha256": controls.source_sha256,
-        "tagged_step_sha256": STEP_SHA256,
+        "runner_commit": args.runner_commit,
+        "accepted_contract_source": "a09f156399416216d2f097c257a2164f83c7eda7",
+        "actual_seed_source": "09a4ccda3da11853606af031a8970bbde4b2d6ec",
+        "actual_seed_driver_sha256": "01c0fa1251ac3c809723e58d71817881fe2c5c9498579bc4c2e6097324a3618b",
         "expected_server": controls.EXPECTED_SERVER,
         "observed_image": observed,
-        "controller_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        "consumer_sha256": hashlib.sha256(consumer.read_bytes()).hexdigest(),
+        "interpreter_image": interpreter,
+        "ownership_nonce": nonce,
+        "owned_containers": {},
+        "inputs": {role: {"sha256": value.sha256, "bytes": len(value.data)} for role, value in inputs.items()},
+        "cleanup_by_id": {},
         "complete": False,
     }
     common = [
@@ -173,6 +169,10 @@ def run(args):
         "1g",
         "--pids-limit",
         "256",
+        "--label",
+        controls.OWNER_LABEL + "=sdk-python",
+        "--label",
+        controls.RUN_LABEL + "=" + nonce,
         "--tmpfs",
         "/tmp:mode=1777,size=128m",
         "--tmpfs",
@@ -184,130 +184,182 @@ def run(args):
         "--env-file",
         str(credential),
     ]
-    clean = []
+
+    def create(role, *arguments):
+        name = "sdk-python-216-physical-" + role + "-" + nonce[:12]
+        identity = controls.created_id(call("create", "--name", name, *common, *arguments).stdout)
+        if identity in [entry["id"] for entry in report["owned_containers"].values()]:
+            raise ValueError("duplicate creation ID")
+        report["owned_containers"][role] = {"id": identity, "requested_name": name}
+        if controls.inspect_owned(call, identity, nonce) is None:
+            raise ValueError("created object vanished")
+        return identity
+
     try:
-        shutil.copyfile(args.baseline, copied)
-        copied.chmod(0o600)
-        verify_file(copied, BASELINE_SHA256)
+        for value in inputs.values():
+            value.recheck()
+        descriptor = os.open(copied, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(inputs["baseline"].data)
         with closing(sqlite3.connect(copied)) as connection:
             native_marker(connection, 12)
-        baseline_snapshot = snapshot()
-        upgrade_began = time.time()
-        call("create", "--name", names[0], "--network", "none", *common, image, "schema-upgrade")
-        call("start", names[0])
-        assert call("wait", names[0]).stdout.strip() == "0"
-        upgrade = json.loads(call("logs", names[0]).stdout)
-        assert upgrade == {"backend": "sqlite", "from_schema_version": 12, "schema_version": 13, "status": "upgraded"}
+        baseline = snapshot()
+        began = time.time()
+        upgrade_id = create("upgrade", "--network", "none", image, "schema-upgrade")
+        call("start", upgrade_id)
+        if call("wait", upgrade_id).stdout.strip() != "0":
+            raise RuntimeError("schema upgrade failed")
+        upgrade = json.loads(call("logs", upgrade_id).stdout)
+        if upgrade != {"backend": "sqlite", "from_schema_version": 12, "schema_version": 13, "status": "upgraded"}:
+            raise ValueError("unexpected upgrade result")
+        finished = time.time()
         report["upgrade"] = upgrade
-        upgrade_finished = time.time()
-        upgrade_state = json.loads(call("inspect", names[0]).stdout)[0]
-        assert upgrade_state["State"]["OOMKilled"] is False
-        call("rm", "-v", names[0])
+        report["cleanup_by_id"]["upgrade"] = controls.cleanup_owned(call, upgrade_id, nonce)
         with closing(sqlite3.connect(copied)) as connection:
             native_marker(connection, 13)
-            assert connection.execute("SELECT count(*) FROM dw_command_intents").fetchone()[0] == 0
-        upgraded_snapshot = snapshot()
-        validate_upgrade(baseline_snapshot, upgraded_snapshot, added_schema, upgrade_began, upgrade_finished)
+        validate_upgrade(baseline, snapshot(), added_schema, began, finished)
         report["upgrade_row_preservation"] = True
         report["journal_sha384"] = JOURNAL_SHA384
-        call("create", "--name", names[1], "-p", "127.0.0.1::8080", *common, image)
-        call("start", names[1])
-        address = call("port", names[1], "8080/tcp").stdout.strip()
+        runtime_id = create("runtime", "-p", "127.0.0.1::8080", image)
+        call("start", runtime_id)
+        address = call("port", runtime_id, "8080/tcp").stdout.strip()
         host, port = address.split(":")
-        assert host == "127.0.0.1" and port.isdigit() and 1 <= int(port) <= 65535
+        if host != "127.0.0.1" or not port.isdigit() or not 1 <= int(port) <= 65535:
+            raise ValueError("runtime did not bind numeric loopback")
         upstream = "http://" + address
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             try:
-                with urllib.request.urlopen(upstream + "/api/health", timeout=2) as response:
+                with opener.open(upstream + "/api/health", timeout=2) as response:
                     if response.status == 200:
                         break
             except OSError:
                 time.sleep(0.2)
         else:
-            raise TimeoutError("upgraded synthetic runtime readiness")
+            raise TimeoutError("upgraded runtime readiness")
+        bundle = {
+            "scenario": "physical_readback",
+            "sources": {
+                role: {"sha256": value.sha256, "base64": base64.b64encode(value.data).decode()}
+                for role, value in inputs.items()
+                if role in {"adapter", "bootstrap", "requirements", "verifier", "seed", "wheel"}
+            },
+            "upstream": upstream,
+            "token": token,
+            "server_version": controls.EXPECTED_SERVER["version"],
+        }
+        for value in inputs.values():
+            value.recheck()
+        consumer_id = controls.create_consumer(call, "sdk-python-216-physical-consumer-" + nonce[:12], nonce, inputs)
+        if consumer_id in [entry["id"] for entry in report["owned_containers"].values()]:
+            raise ValueError("duplicate consumer ID")
+        report["owned_containers"]["consumer"] = {"id": consumer_id}
+        if controls.inspect_owned(call, consumer_id, nonce) is None:
+            raise ValueError("consumer vanished")
         before = snapshot()
-        with (root / "consumer.log").open("x") as log:
-            result = subprocess.run(
-                [
-                    str(args.python.absolute()),
-                    "-I",
-                    str(consumer),
-                    "--upstream",
-                    upstream,
-                    "--server-version",
-                    controls.EXPECTED_SERVER["version"],
-                    "--credential-file",
-                    str(credential),
-                    "--seed",
-                    str(args.seed.absolute()),
-                    "--seed-sha256",
-                    SEED_SHA256,
-                    "--wheel",
-                    str(args.wheel.absolute()),
-                    "--output",
-                    str(root / "consumer.json"),
-                ],
-                cwd=root,
-                env=environment,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                timeout=120,
-            )
+        result = subprocess.run(
+            docker + ["start", "-a", "-i", consumer_id],
+            input=json.dumps(bundle),
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
         after = snapshot()
-        report["consumer_exit_code"] = result.returncode
+        (root / "consumer.log").write_text(result.stdout + result.stderr)
         report["request_window_before_sha256"] = legacy.fingerprint(before)
         report["request_window_after_sha256"] = legacy.fingerprint(after)
-        assert before == after, "consumer request window changed complete logical rows/schema"
-        assert result.returncode == 0, "installed physical consumer failed"
-        proof = json.loads((root / "consumer.json").read_text())
-        assert proof["complete"] and proof["consumer_sha256"] == report["consumer_sha256"]
+        if before != after:
+            raise ValueError("consumer window changed complete logical rows/schema")
+        state = controls.inspect_owned(call, consumer_id, nonce)
+        if state is None or state["State"]["Running"]:
+            raise ValueError("consumer final state unverified")
+        report["consumer_exit_code"] = state["State"]["ExitCode"]
+        if result.returncode != 0 or report["consumer_exit_code"] != 0:
+            raise RuntimeError("installed consumer failed")
+        for value in inputs.values():
+            value.recheck()
+        report["input_identities_rechecked"] = True
+        if controls.interpreter_identity(json.loads(call("image", "inspect", python_image).stdout)) != interpreter:
+            raise ValueError("interpreter image changed")
+        report["interpreter_identity_rechecked"] = True
+        proof = controls.consumer_result(result.stdout, inputs, scenario="physical_readback")
+        (root / "consumer.json").write_text(json.dumps(proof, indent=2) + "\n")
         report["consumer_complete"] = True
     except Exception as error:
         report["failure_type"] = type(error).__name__
         raise
     finally:
-        for name in names:
-            inspection = call("inspect", name, check=False)
-            volumes = []
-            if inspection.returncode == 0:
-                state = json.loads(inspection.stdout)[0]
-                volumes = [mount["Name"] for mount in state["Mounts"] if mount["Type"] == "volume"]
-                report.setdefault("oom_by_container", {})[name] = state["State"]["OOMKilled"]
-                call("rm", "-f", "-v", name)
-            absent = controls.missing_object(call("inspect", name, check=False), name)
-            volumes_absent = all(
-                controls.missing_object(call("volume", "inspect", volume, check=False), volume, volume=True)
-                for volume in volumes
-            )
-            clean.append(absent and volumes_absent)
+        for role, owned in report["owned_containers"].items():
+            if role in report["cleanup_by_id"]:
+                continue
+            try:
+                report["cleanup_by_id"][role] = controls.cleanup_owned(call, owned["id"], nonce)
+            except Exception as error:
+                report["cleanup_by_id"][role] = {"id": owned["id"], "failure_type": type(error).__name__}
         credential.unlink(missing_ok=True)
-        if all(clean):
+        clean = all(value.get("absent") and value.get("volumes_absent") for value in report["cleanup_by_id"].values())
+        if clean:
             for path in database.iterdir():
                 path.unlink()
             database.rmdir()
-        verify_file(args.baseline, BASELINE_SHA256)
+        try:
+            for value in inputs.values():
+                value.recheck()
+            report["original_inputs_unchanged"] = True
+        except Exception as error:
+            report["post_input_failure_type"] = type(error).__name__
         report["cleanup"] = {
-            "containers_and_volumes_absent": all(clean),
+            "containers_and_volumes_absent": clean,
             "private_database_removed": not database.exists(),
             "credential_removed": not credential.exists(),
-            "original_backup_unchanged": True,
         }
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
         report["complete"] = (
-            all(clean)
+            len(report["cleanup_by_id"]) == 3
+            and clean
             and report.get("consumer_complete") is True
-            and not any(report.get("oom_by_container", {}).values())
+            and all(value.get("oom_killed") is False for value in report["cleanup_by_id"].values())
             and "failure_type" not in report
+            and "post_input_failure_type" not in report
         )
         (root / "run.json").write_text(json.dumps(report, indent=2) + "\n")
-        if not all(clean):
-            raise RuntimeError("owned physical runtime cleanup incomplete")
+        if not clean:
+            raise RuntimeError("owned physical cleanup incomplete")
+        if not report["complete"] and "failure_type" not in report:
+            raise RuntimeError("physical evidence incomplete")
+
+
+def run(args):
+    if not __debug__:
+        raise ValueError("acceptance requires assertions enabled")
+    controls = controls_from_git(args)
+    with ExitStack() as stack:
+        inputs = controls.captured_inputs(
+            args,
+            stack,
+            source_files={
+                "controller": "run_physical_readback.py",
+                "support": "run_response_loss.py",
+                "adapter": "physical_readback.py",
+                "verifier": "response_loss.py",
+            },
+            data_files={
+                "wheel": (args.wheel, 4 * 1024 * 1024, controls.WHEEL_SHA256),
+                "baseline": (args.baseline, 64 * 1024 * 1024, BASELINE_SHA256),
+                "seed": (args.seed, 256 * 1024, SEED_SHA256),
+                "snapshot_helper": (args.snapshot_helper, 128 * 1024, HELPER_SHA256),
+                "step_sql": (args.step_sql, 16 * 1024, STEP_SHA256),
+            },
+        )
+        run_bound(args, inputs, controls)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("python", "wheel", "baseline", "seed", "snapshot-helper", "step-sql", "output"):
+    parser.add_argument("--runner-commit", required=True)
+    for name in ("wheel", "baseline", "seed", "snapshot-helper", "step-sql", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     return parser.parse_args()
 

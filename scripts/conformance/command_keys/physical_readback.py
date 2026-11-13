@@ -6,14 +6,11 @@ zero-write snapshots and cleanup. This consumer neither seeds nor upgrades data.
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import hashlib
-import importlib.util
 import json
 import stat
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from durable_workflow import Client
@@ -22,16 +19,6 @@ from durable_workflow.errors import UpdateFailed
 # Physical seed authority includes the producer's unkeyed-signal clarification.
 # It is distinct from the older manifest bound to the synthetic-copy helper.
 MANIFEST_SHA256 = "ceb4695643e48c7bfe3f81eea380c6ab9aa0b973da830cb552d070344047319f"
-
-
-def bound_source():
-    path = Path(__file__).with_name("response_loss.py")
-    spec = importlib.util.spec_from_file_location("installed_keys_provenance", path)
-    if spec is None or spec.loader is None:
-        raise ValueError("installed package verifier is unavailable")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module, hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def seed_cases(document):
@@ -66,7 +53,7 @@ def legacy_receipt(original, received):
             raise ValueError("legacy readback changed original " + field)
 
 
-async def run(args):
+async def main(args):
     if not __debug__:
         raise ValueError("acceptance assertions require Python without optimization")
     if args.output.exists():
@@ -79,12 +66,11 @@ async def run(args):
         or args.upstream != f"http://127.0.0.1:{upstream.port}"
     ):
         raise ValueError("synthetic runtime must be canonical numeric loopback")
-    raw_seed = args.seed.read_bytes()
+    raw_seed = args.seed_data
     if hashlib.sha256(raw_seed).hexdigest() != args.seed_sha256:
         raise ValueError("producer seed receipt hash mismatch")
     cases = seed_cases(json.loads(raw_seed))
-    verifier, verifier_hash = bound_source()
-    package = verifier.installed_identity(args.wheel)
+    package = args.package_identity
     mode = args.credential_file.lstat().st_mode
     if not stat.S_ISREG(mode) or mode & 0o077:
         raise ValueError("fixture credential file must be owner-only")
@@ -93,8 +79,8 @@ async def run(args):
         "started_at": datetime.now(timezone.utc).isoformat(),
         "sdk": package,
         "seed_sha256": args.seed_sha256,
-        "verifier_sha256": verifier_hash,
-        "consumer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "verifier_sha256": args.verifier_sha256,
+        "adapter_sha256": args.adapter_sha256,
         "scope": "installed SDK physical-upgrade readbacks only",
         "cells": [],
         "complete": False,
@@ -168,19 +154,8 @@ async def run(args):
         raise
     finally:
         args.output.write_text(json.dumps(report, indent=2) + "\n")
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--upstream", required=True)
-    parser.add_argument("--server-version", required=True)
-    parser.add_argument("--credential-file", type=Path, required=True)
-    parser.add_argument("--seed", type=Path, required=True)
-    parser.add_argument("--seed-sha256", required=True)
-    parser.add_argument("--wheel", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    return parser.parse_args()
+    return report
 
 
 if __name__ == "__main__":
-    asyncio.run(run(parse_args()))
+    raise SystemExit("Use the captured-input run_physical_readback.py controller")
