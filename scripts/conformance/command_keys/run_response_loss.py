@@ -41,6 +41,12 @@ def image_identity(document):
     }
 
 
+def missing_object(result, name, *, volume=False):
+    """Distinguish Docker's actual missing-object reply from daemon/tool errors."""
+    expected = f"Error response from daemon: get {name}: no such volume" if volume else f"error: no such object: {name}"
+    return result.returncode == 1 and result.stderr.strip() == expected
+
+
 def run(args):
     root = args.output.resolve()
     root.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -73,6 +79,7 @@ def run(args):
         "observed_image": observed,
         "controller_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "adapter_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "owned_container": name,
         "complete": False,
     }
     volumes = []
@@ -84,6 +91,12 @@ def run(args):
             "--rm",
             "--init",
             "--read-only",
+            "--tmpfs",
+            "/tmp:mode=1777,size=128m",
+            "--tmpfs",
+            "/app/storage:uid=1000,gid=1000,mode=0700,size=64m",
+            "--tmpfs",
+            "/app/database:uid=1000,gid=1000,mode=0700,size=64m",
             "--name",
             name,
             "--cpus",
@@ -96,11 +109,14 @@ def run(args):
             "127.0.0.1::8080",
             "--env-file",
             str(credential),
+            "-e",
+            "DB_DATABASE=/app/database/response-loss.sqlite",
             image,
         )
         created = True
         inspection = json.loads(call("inspect", name).stdout)[0]
         volumes = [mount["Name"] for mount in inspection["Mounts"] if mount["Type"] == "volume"]
+        report["owned_volumes"] = volumes
         port = call("port", name, "8080/tcp").stdout.strip().removeprefix("127.0.0.1:")
         if not port.isascii() or not port.isdigit() or not 1 <= int(port) <= 65535:
             raise ValueError("runtime did not bind an explicit loopback port")
@@ -160,11 +176,11 @@ def run(args):
             report["runtime_disappeared_before_cleanup"] = True
         credential.unlink(missing_ok=True)
         checked = call("inspect", name, check=False)
-        absent = checked.returncode == 1 and f"No such object: {name}" in checked.stderr
+        absent = missing_object(checked, name)
         remaining = []
         for volume in volumes:
             checked = call("volume", "inspect", volume, check=False)
-            if not (checked.returncode == 1 and f"no such volume: {volume}" in checked.stderr):
+            if not missing_object(checked, volume, volume=True):
                 remaining.append(volume)
         report["cleanup"] = {
             "container_absent": absent,

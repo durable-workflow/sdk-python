@@ -41,6 +41,8 @@ python3 -I scripts/conformance/command_keys/run_response_loss.py \
 The output parent must exist. The new private output directory must not exist.
 One runtime is capped at 1 CPU, 1 GiB and 256 PIDs, with a read-only root,
 `--init` and one ephemeral loopback port. The consumer is sequential and bounded
+to ten minutes. Bounded tmpfs mounts supply writable SQLite, storage and temporary
+paths inside the container's memory ceiling. The consumer is sequential and bounded
 to ten minutes. A private empty Docker config and minimal subprocess environment
 exclude host credentials. The controller owns exact-name runtime/anonymous-volume
 cleanup and removes its generated credential even after consumer failure.

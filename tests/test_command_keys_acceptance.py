@@ -15,6 +15,12 @@ SPEC = importlib.util.spec_from_file_location("command_keys_acceptance", SOURCE)
 assert SPEC is not None and SPEC.loader is not None
 adapter = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(adapter)
+CONTROLLER_SPEC = importlib.util.spec_from_file_location(
+    "command_keys_controller", SOURCE.with_name("run_response_loss.py")
+)
+assert CONTROLLER_SPEC is not None and CONTROLLER_SPEC.loader is not None
+controller = importlib.util.module_from_spec(CONTROLLER_SPEC)
+CONTROLLER_SPEC.loader.exec_module(controller)
 
 
 def record(**changes):
@@ -111,3 +117,43 @@ def test_installed_file_substitution_and_source_overlay_refuse(tmp_path, monkeyp
     monkeypatch.setattr(durable_workflow, "__file__", str(tmp_path / "overlay/__init__.py"))
     with pytest.raises(ValueError, match="outside"):
         adapter.installed_identity(wheel)
+
+
+@pytest.mark.parametrize(
+    "volume,message",
+    [
+        (False, "error: no such object: synthetic-owned"),
+        (True, "Error response from daemon: get synthetic-owned: no such volume"),
+    ],
+)
+def test_cleanup_recognizes_only_missing_owned_objects(volume, message):
+    result = SimpleNamespace(returncode=1, stderr=message + "\n")
+    assert controller.missing_object(result, "synthetic-owned", volume=volume)
+    assert not controller.missing_object(result, "someone-elses-object", volume=volume)
+    result.stderr = "Cannot connect to the Docker daemon"
+    assert not controller.missing_object(result, "synthetic-owned", volume=volume)
+    result.stderr = message
+    result.returncode = 0
+    assert not controller.missing_object(result, "synthetic-owned", volume=volume)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("Architecture", "arm64"),
+        ("Os", "windows"),
+        ("RepoDigests", []),
+        ("Config", {"Labels": {"org.opencontainers.image.revision": "unqualified-source"}}),
+    ],
+)
+def test_unqualified_local_image_refuses(field, value):
+    image = {
+        "Architecture": "amd64",
+        "Os": "linux",
+        "Id": "synthetic-config-id",
+        "RepoDigests": ["ghcr.io/durable-workflow/server@" + controller.EXPECTED_SERVER["index"]],
+        "Config": {"Labels": {"org.opencontainers.image.revision": controller.EXPECTED_SERVER["source"]}},
+    }
+    assert controller.image_identity([image])["revision"] == controller.EXPECTED_SERVER["source"]
+    with pytest.raises(ValueError, match="differs"):
+        controller.image_identity([{**image, field: value}])
