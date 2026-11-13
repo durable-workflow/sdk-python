@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Existing immutable SDK release tag; empty permits a build-only run'
+        description: 'Existing immutable tag for publication; build-only runs use the selected source commit'
         required: false
         type: string
         default: ''
@@ -41,6 +41,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     outputs:
       artifact-digest: ${{ steps.privileged-handoff.outputs.artifact-digest }}
       artifact-id: ${{ steps.privileged-handoff.outputs.artifact-id }}
@@ -54,8 +57,8 @@ jobs:
         with:
           fetch-depth: 0
           ref: >-
-            ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
-            && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+            ${{ github.event_name == 'workflow_dispatch' && inputs.publish && inputs.release_tag != ''
+            && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
 
       - name: Resolve exact release identity
         id: release_source
@@ -95,17 +98,44 @@ jobs:
               fi
             fi
           else
+            test "$head_commit" = "$GITHUB_SHA"
             REQUESTED_TAG="$package_version"
           fi
           {
             printf 'tag=%s\n' "$REQUESTED_TAG"
             printf 'commit=%s\n' "$head_commit"
             printf 'base_commit=%s\n' "$base_commit"
+            printf 'publish=%s\n' "$PUBLISH_REQUESTED"
           } >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.12"
+
+      - name: Resolve the reviewed build-only artifact
+        if: steps.release_source.outputs.publish == 'true'
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.release_source.outputs.tag }}
+        run: python .github/scripts/promote_release.py resolve --version "$RELEASE_VERSION"
+
+      - name: Download the exact reviewed distributions
+        if: steps.release_source.outputs.publish == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          artifact-ids: ${{ steps.candidate.outputs.artifact-id }}
+          run-id: ${{ steps.candidate.outputs.run-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          path: .release-candidate
+          archive: false
+
+      - name: Verify reviewed bytes before extracting distributions
+        if: steps.release_source.outputs.publish == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.release_source.outputs.tag }}
+        run: python .github/scripts/promote_release.py extract --version "$RELEASE_VERSION"
 
       - name: Bootstrap patched pip trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
@@ -117,6 +147,7 @@ jobs:
           pip install --only-binary :all: build==1.6.1 twine==7.0.0
 
       - name: Build package
+        if: steps.release_source.outputs.publish != 'true'
         run: python -m build
 
       - name: Compare built release metadata with the exact source commit
