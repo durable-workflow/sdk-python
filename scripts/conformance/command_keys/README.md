@@ -81,3 +81,69 @@ The accepted common stopped-copy helper is owned by
 [SDK Rust260](https://github.com/durable-workflow/sdk-rust/pull/260); Server1210
 owns the real historical seed. Namespace/run fences remain independently scoped.
 This adapter alone does not complete shared216.
+
+## Physical upgrade consumer
+
+The producer-owned [frozen handoff](https://github.com/durable-workflow/server/pull/1210#issuecomment-6860138558)
+is accepted at contract source `a09f156399416216d2f097c257a2164f83c7eda7`.
+The actual original seed execution remains `09a4ccda3da11853606af031a8970bbde4b2d6ec`,
+driver SHA-256 `01c0fa1251ac3c809723e58d71817881fe2c5c9498579bc4c2e6097324a3618b`.
+These are different authorities and must remain distinct in every receipt.
+
+`run_physical_readback.py` consumes that stopped backup/JSON plus the accepted
+common snapshot helper and hash-bound tagged SQL step. It captures every input
+with the same Git/owner/no-follow/held-identity boundary as the response-loss
+runner. Only a new private copy is upgraded. Start/inspect/wait/log/remove/absence
+checks use captured full creation IDs and ownership labels. Upgrade and runtime
+are sequential; the runtime and registry consumer are the only concurrent pair.
+The fixed image/bootstrap/hash-locked registry environment is shared with the
+reviewed response-loss runner. No host interpreter or executable input pathname
+is accepted.
+
+```sh
+python3 -I scripts/conformance/command_keys/run_physical_readback.py \
+  --runner-commit FULL_REVIEWED_RUNNER_COMMIT \
+  --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
+  --baseline /path/to/producer/stopped-backup.sqlite \
+  --seed /path/to/producer/seed-receipts.json \
+  --snapshot-helper /path/to/accepted/sqlite_legacy.py \
+  --step-sql /path/to/tagged/0013_command_intents.sql \
+  --output /path/to/private-disk-scratch/new-physical-run
+```
+
+The controller binds the frozen backup/packet/helper/step hashes. It checks the
+native marker transition and validates every business row/schema object, allowing
+only the exact new empty intent catalog and source-defined marker/journal changes.
+Every SQLx journal field is checked: version, description, tagged cumulative SQL
+checksum, success, zero execution time and the actual upgrade timestamp window.
+The installed Client's readbacks are bracketed by complete typed logical snapshots.
+That interval ends before shutdown; subsequent repair work is not relabeled as
+part of the zero-write claim. Original inputs are rechecked and preserved.
+
+For each original keyed update in open/completed/continued state, four concurrent
+changed-input retries must return the original command/run/update/acceptance
+identities with explicit `intent_verified: false`. Changed names must conflict;
+GET-only outcome reads distinguish pending from completed-null. The Python update
+helper uses its unscoped public route, so no new explicit-run update API is claimed.
+Historical NULL-key signals receive no fabricated retry key. Their compatibility
+control preserves their original history and business identities only.
+
+A producer upgrade receipt alone does not qualify this SDK. The exact consumer
+source, installed proof, complete snapshots, immutable input/toolchain rechecks,
+all three captured-ID cleanup records and independent review remain required.
+
+The host workspace also retains no-follow descriptors for every ancestor,
+private directory and created file. Config/credential bytes are immutable;
+the copied SQLite file may change contents but must keep its owned single-link
+inode. Docker configuration and credential reads use held
+`/proc/<controller-pid>/fd` paths. The canonical database bind has a preflight
+inside the immutable published image: it verifies the mounted directory/file
+device, inode, owner, mode and single-link identities before executing the
+native entrypoint. Host snapshots and lifecycle calls check workspace
+identities before and after use. Cleanup uses an explicit empty kernel FD
+configuration directory, so workspace substitution cannot block known-ID cleanup. Evidence is created exclusively relative to the
+held directory, with the creation descriptor retained through verification.
+A substituted parent, copied database, configuration, credential or report refuses
+qualification. Known-container cleanup stays bound to captured IDs and preserves
+replacement paths. Workspace substitution controls must pass before installed
+response-loss or physical results qualify.

@@ -22,6 +22,7 @@ from types import ModuleType, SimpleNamespace
 
 RESULT_PREFIX = "SDK_PYTHON_CONSUMER_RESULT="
 ROLES = {"adapter", "bootstrap", "proxy", "wheel", "requirements"}
+PHYSICAL_ROLES = {"adapter", "bootstrap", "verifier", "seed", "wheel", "requirements"}
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 IMAGE_INTERPRETER = Path("/usr/local/bin/python3.12")
 
@@ -35,7 +36,9 @@ def approved_environment_link(relative, target):
 
 
 def decode_inputs(bundle):
-    if set(bundle["sources"]) != ROLES:
+    scenario = bundle.get("scenario", "response_loss")
+    roles = ROLES if scenario == "response_loss" else PHYSICAL_ROLES if scenario == "physical_readback" else None
+    if roles is None or set(bundle["sources"]) != roles:
         raise ValueError("captured source roles differ")
     result = {}
     for role, entry in bundle["sources"].items():
@@ -185,14 +188,23 @@ def main():
     descriptor = os.open(credential, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as stream:
         stream.write("DW_AUTH_TOKEN=" + bundle["token"] + "\n")
-    adapter = execute_source(sources["adapter"], "installed_command_keys")
+    scenario = bundle.get("scenario", "response_loss")
+    verifier = execute_source(sources.get("verifier", sources["adapter"]), "installed_package_verifier")
+    package = verifier.installed_identity(sources["wheel"])
+    adapter = (
+        verifier if scenario == "response_loss" else execute_source(sources["adapter"], "installed_physical_readback")
+    )
     try:
         result = asyncio.run(
             adapter.main(
                 SimpleNamespace(
                     upstream=bundle["upstream"],
                     credential_file=credential,
-                    proxy_data=sources["proxy"],
+                    proxy_data=sources.get("proxy"),
+                    seed_data=sources.get("seed"),
+                    seed_sha256=bundle["sources"].get("seed", {}).get("sha256"),
+                    package_identity=package,
+                    verifier_sha256=bundle["sources"].get("verifier", bundle["sources"]["adapter"])["sha256"],
                     wheel_data=sources["wheel"],
                     adapter_sha256=bundle["sources"]["adapter"]["sha256"],
                     server_version=bundle["server_version"],
