@@ -131,3 +131,15 @@ control preserves their original history and business identities only.
 A producer upgrade receipt alone does not qualify this SDK. The exact consumer
 source, installed proof, complete snapshots, immutable input/toolchain rechecks,
 all three captured-ID cleanup records and independent review remain required.
+
+The host workspace also retains no-follow descriptors for every ancestor,
+private directory and created file. Config/credential bytes are immutable;
+the copied SQLite file may change contents but must keep its owned single-link
+inode. Docker configuration, credential reads and database binds use held
+`/proc/<controller-pid>/fd` paths. Snapshots and lifecycle calls check workspace
+identities before and after use. Evidence is created exclusively relative to the
+held directory, with the creation descriptor retained through verification.
+A substituted parent, copied database, configuration, credential or report refuses
+qualification. Known-container cleanup stays bound to captured IDs and preserves
+replacement paths. Workspace substitution controls must pass before installed
+response-loss or physical results qualify.

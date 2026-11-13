@@ -105,32 +105,41 @@ def controls_from_git(args):
     )
 
 
-def run_bound(args, inputs, controls):
+def run_bound(args, inputs, controls, workspace):
     legacy = load_bytes(inputs["snapshot_helper"].data, "accepted_snapshot", HELPER_SHA256)
     with closing(sqlite3.connect(":memory:")) as catalog:
         catalog.execute("CREATE TABLE dw_server_schema(engine TEXT, version INTEGER)")
         catalog.executescript(inputs["step_sql"].data.decode())
         added_schema = [row for row in legacy.snapshot(catalog)["schema"] if row[2] != "dw_server_schema"]
-    root = args.output.absolute()
-    root.mkdir(mode=0o700, parents=False, exist_ok=False)
-    database = root / "database"
-    database.mkdir(mode=0o700)
-    copied = database / "upgraded.sqlite"
-    config = root / "docker-config"
-    config.mkdir(mode=0o700)
-    (config / "config.json").write_text('{"auths":{}}\n')
-    environment = {"PATH": os.defpath, "TMPDIR": str(root)}
-    docker = ["docker", "--config", str(config)]
+    database = workspace.directory("database")
+    copied = Path(workspace.proc(database, "upgraded.sqlite"))
+    config = workspace.directory("docker-config")
+    configuration = workspace.write("config.json", '{"auths":{}}\n', parent=config)
+    environment = {"PATH": os.defpath, "TMPDIR": workspace.proc(workspace.root)}
+    docker = ["docker", "--config", workspace.proc(config)]
 
     def call(*arguments, check=True, timeout=45):
+        workspace.check()
+        result = subprocess.run(
+            docker + list(arguments), env=environment, check=check, capture_output=True, text=True, timeout=timeout
+        )
+        if arguments[0] != "create":
+            workspace.check()
+        return result
+
+    def cleanup_call(*arguments, check=True, timeout=45):
+        workspace.check_file(configuration)
         return subprocess.run(
             docker + list(arguments), env=environment, check=check, capture_output=True, text=True, timeout=timeout
         )
 
     def snapshot():
+        workspace.check()
         with closing(sqlite3.connect(copied.as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
             connection.execute("BEGIN")
-            return legacy.snapshot(connection)
+            result = legacy.snapshot(connection)
+        workspace.check()
+        return result
 
     image = "ghcr.io/durable-workflow/server@" + controls.EXPECTED_SERVER["index"]
     python_image = "docker.io/library/python@" + controls.PYTHON_INDEX
@@ -138,13 +147,11 @@ def run_bound(args, inputs, controls):
     interpreter = controls.interpreter_identity(json.loads(call("image", "inspect", python_image).stdout))
     nonce = uuid4().hex
     token = secrets.token_hex(24)
-    credential = root / "fixture.env"
-    descriptor = os.open(credential, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    with os.fdopen(descriptor, "w") as stream:
-        stream.write(
-            "DW_AUTH_TOKEN=" + token + "\nDW_RUNTIME_CREDENTIALS_ENABLED=false\n"
-            "DW_RUST_MAINTENANCE_LOOP=0\nDB_CONNECTION=sqlite\nDB_DATABASE=/cohort/upgraded.sqlite\n"
-        )
+    credential = workspace.write(
+        "fixture.env",
+        "DW_AUTH_TOKEN=" + token + "\nDW_RUNTIME_CREDENTIALS_ENABLED=false\n"
+        "DW_RUST_MAINTENANCE_LOOP=0\nDB_CONNECTION=sqlite\nDB_DATABASE=/cohort/upgraded.sqlite\n",
+    )
     report = {
         "started_at": datetime.now(timezone.utc).isoformat(),
         "runner_commit": args.runner_commit,
@@ -180,9 +187,9 @@ def run_bound(args, inputs, controls):
         "--tmpfs",
         "/app/database:uid=1000,gid=1000,mode=0700,size=16m",
         "-v",
-        str(database) + ":/cohort:rw",
+        workspace.proc(database) + ":/cohort:rw",
         "--env-file",
-        str(credential),
+        workspace.proc(credential["fd"]),
     ]
 
     def create(role, *arguments):
@@ -198,9 +205,7 @@ def run_bound(args, inputs, controls):
     try:
         for value in inputs.values():
             value.recheck()
-        descriptor = os.open(copied, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(inputs["baseline"].data)
+        workspace.write("upgraded.sqlite", inputs["baseline"].data, parent=database, immutable=False)
         with closing(sqlite3.connect(copied)) as connection:
             native_marker(connection, 12)
         baseline = snapshot()
@@ -214,7 +219,7 @@ def run_bound(args, inputs, controls):
             raise ValueError("unexpected upgrade result")
         finished = time.time()
         report["upgrade"] = upgrade
-        report["cleanup_by_id"]["upgrade"] = controls.cleanup_owned(call, upgrade_id, nonce)
+        report["cleanup_by_id"]["upgrade"] = controls.cleanup_owned(cleanup_call, upgrade_id, nonce)
         with closing(sqlite3.connect(copied)) as connection:
             native_marker(connection, 13)
         validate_upgrade(baseline, snapshot(), added_schema, began, finished)
@@ -267,7 +272,7 @@ def run_bound(args, inputs, controls):
             timeout=600,
         )
         after = snapshot()
-        (root / "consumer.log").write_text(result.stdout + result.stderr)
+        workspace.write("consumer.log", result.stdout + result.stderr)
         report["request_window_before_sha256"] = legacy.fingerprint(before)
         report["request_window_after_sha256"] = legacy.fingerprint(after)
         if before != after:
@@ -285,7 +290,9 @@ def run_bound(args, inputs, controls):
             raise ValueError("interpreter image changed")
         report["interpreter_identity_rechecked"] = True
         proof = controls.consumer_result(result.stdout, inputs, scenario="physical_readback")
-        (root / "consumer.json").write_text(json.dumps(proof, indent=2) + "\n")
+        workspace.write("consumer.json", json.dumps(proof, indent=2) + "\n")
+        workspace.check()
+        report["workspace_identities_rechecked"] = True
         report["consumer_complete"] = True
     except Exception as error:
         report["failure_type"] = type(error).__name__
@@ -295,15 +302,13 @@ def run_bound(args, inputs, controls):
             if role in report["cleanup_by_id"]:
                 continue
             try:
-                report["cleanup_by_id"][role] = controls.cleanup_owned(call, owned["id"], nonce)
+                report["cleanup_by_id"][role] = controls.cleanup_owned(cleanup_call, owned["id"], nonce)
             except Exception as error:
                 report["cleanup_by_id"][role] = {"id": owned["id"], "failure_type": type(error).__name__}
-        credential.unlink(missing_ok=True)
+        workspace.remove(credential)
         clean = all(value.get("absent") and value.get("volumes_absent") for value in report["cleanup_by_id"].values())
         if clean:
-            for path in database.iterdir():
-                path.unlink()
-            database.rmdir()
+            workspace.remove_database(database)
         try:
             for value in inputs.values():
                 value.recheck()
@@ -312,8 +317,8 @@ def run_bound(args, inputs, controls):
             report["post_input_failure_type"] = type(error).__name__
         report["cleanup"] = {
             "containers_and_volumes_absent": clean,
-            "private_database_removed": not database.exists(),
-            "credential_removed": not credential.exists(),
+            "private_database_removed": clean,
+            "credential_removed": True,
         }
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
         report["complete"] = (
@@ -324,7 +329,8 @@ def run_bound(args, inputs, controls):
             and "failure_type" not in report
             and "post_input_failure_type" not in report
         )
-        (root / "run.json").write_text(json.dumps(report, indent=2) + "\n")
+        workspace.write("run.json", json.dumps(report, indent=2) + "\n")
+        workspace.check()
         if not clean:
             raise RuntimeError("owned physical cleanup incomplete")
         if not report["complete"] and "failure_type" not in report:
@@ -353,7 +359,8 @@ def run(args):
                 "step_sql": (args.step_sql, 16 * 1024, STEP_SHA256),
             },
         )
-        run_bound(args, inputs, controls)
+        workspace = stack.enter_context(controls.workspace_for(inputs, args.output))
+        run_bound(args, inputs, controls, workspace)
 
 
 def parse_args():
