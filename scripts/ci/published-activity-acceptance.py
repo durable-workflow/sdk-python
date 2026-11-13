@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlunsplit
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,9 +23,7 @@ def call(*arguments, check=True, **kwargs):
     return subprocess.run(arguments, check=check, capture_output=True, text=True, timeout=180, **kwargs)
 
 
-def main():
-    OUTPUT.mkdir()
-    selected = json.loads((ROOT / "tests/fixtures/published-activity-acceptance.json").read_text())
+def install_reviewed_sdk(selected):
     approval = json.loads((ROOT / ".github/release-candidates" / (selected["sdk_version"] + ".json")).read_text())
     wheel_name = next(name for name in approval["files"] if name.endswith(".whl"))
     call(
@@ -54,6 +53,10 @@ def main():
     if importlib.metadata.version("durable-workflow") != selected["sdk_version"]:
         raise ValueError("installed SDK version differs")
     (OUTPUT / "installed-packages.txt").write_text(call(sys.executable, "-m", "pip", "freeze").stdout)
+    return approval, wheel_name
+
+
+def verify_published_image(selected):
     image = selected["server_image"]
     call("docker", "pull", "--platform", "linux/amd64", image)
     index = json.loads(call("docker", "buildx", "imagetools", "inspect", "--raw", image).stdout)
@@ -71,6 +74,59 @@ def main():
         or image not in observed_image["RepoDigests"]
     ):
         raise ValueError("runtime image differs from the qualified tuple")
+    return observed_image
+
+
+def runtime_url(identity):
+    port = call("docker", "port", identity, "8080/tcp").stdout.strip()
+    if re.fullmatch(r"127\.0\.0\.1:\d{1,5}", port, flags=re.ASCII) is None:
+        raise ValueError("published runtime did not bind numeric loopback")
+    if not 1 <= int(port.rsplit(":", 1)[1]) <= 65535:
+        raise ValueError("published runtime port is outside its range")
+    url = urlunsplit(("http", port, "", "", ""))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    deadline = time.monotonic() + 45
+    while time.monotonic() < deadline:
+        try:
+            with opener.open(url + "/api/health", timeout=2) as response:
+                if response.status == 200:
+                    break
+        except OSError:
+            time.sleep(0.2)
+    else:
+        raise TimeoutError("published runtime readiness")
+    return url
+
+
+def remove_owned_runtime(identity, nonce, report):
+    record = json.loads(call("docker", "inspect", identity).stdout)[0]
+    labels = record["Config"]["Labels"]
+    if (
+        record["Id"] != identity
+        or labels.get("dev.durable-workflow.fixture-owner") != "sdk-python"
+        or labels.get("dev.durable-workflow.fixture-run") != nonce
+    ):
+        raise ValueError("container cleanup ownership differs")
+    report["oom_killed"] = record["State"]["OOMKilled"]
+    logs = call("docker", "logs", identity, check=False)
+    (OUTPUT / "server.log").write_text(logs.stdout + logs.stderr)
+    volumes = [mount["Name"] for mount in record["Mounts"] if mount["Type"] == "volume"]
+    call("docker", "rm", "-f", "-v", identity)
+    absent = call("docker", "ps", "-aq", "--no-trunc", "--filter", "id=" + identity).stdout.strip() == ""
+    report["container_absent"] = absent
+    report["volumes_absent"] = all(
+        call("docker", "volume", "ls", "-q", "--filter", "name=^" + volume + "$").stdout.strip() == ""
+        for volume in volumes
+    )
+    report["complete"] = report["complete"] and absent and report["volumes_absent"] and not report["oom_killed"]
+
+
+def main():
+    OUTPUT.mkdir()
+    selected = json.loads((ROOT / "tests/fixtures/published-activity-acceptance.json").read_text())
+    approval, wheel_name = install_reviewed_sdk(selected)
+    image = selected["server_image"]
+    observed_image = verify_published_image(selected)
     nonce = uuid4().hex
     identity = None
     report = {
@@ -119,21 +175,7 @@ def main():
             raise ValueError("Docker did not return one full container ID")
         report["container_id"] = identity
         call("docker", "start", identity)
-        port = call("docker", "port", identity, "8080/tcp").stdout.strip()
-        if re.fullmatch(r"127\.0\.0\.1:[0-9]{1,5}", port) is None:
-            raise ValueError("published runtime did not bind numeric loopback")
-        url = "http://" + port
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        deadline = time.monotonic() + 45
-        while time.monotonic() < deadline:
-            try:
-                with opener.open(url + "/api/health", timeout=2) as response:
-                    if response.status == 200:
-                        break
-            except OSError:
-                time.sleep(0.2)
-        else:
-            raise TimeoutError("published runtime readiness")
+        url = runtime_url(identity)
         environment = {
             **os.environ,
             "DURABLE_WORKFLOW_SERVER_URL": url,
@@ -162,26 +204,7 @@ def main():
         report["complete"] = True
     finally:
         if identity and re.fullmatch(r"[0-9a-f]{64}", identity):
-            record = json.loads(call("docker", "inspect", identity).stdout)[0]
-            labels = record["Config"]["Labels"]
-            if (
-                record["Id"] != identity
-                or labels.get("dev.durable-workflow.fixture-owner") != "sdk-python"
-                or labels.get("dev.durable-workflow.fixture-run") != nonce
-            ):
-                raise ValueError("container cleanup ownership differs")
-            report["oom_killed"] = record["State"]["OOMKilled"]
-            logs = call("docker", "logs", identity, check=False)
-            (OUTPUT / "server.log").write_text(logs.stdout + logs.stderr)
-            volumes = [mount["Name"] for mount in record["Mounts"] if mount["Type"] == "volume"]
-            call("docker", "rm", "-f", "-v", identity)
-            absent = call("docker", "ps", "-aq", "--no-trunc", "--filter", "id=" + identity).stdout.strip() == ""
-            report["container_absent"] = absent
-            report["volumes_absent"] = all(
-                call("docker", "volume", "ls", "-q", "--filter", "name=^" + volume + "$").stdout.strip() == ""
-                for volume in volumes
-            )
-            report["complete"] = report["complete"] and absent and report["volumes_absent"] and not report["oom_killed"]
+            remove_owned_runtime(identity, nonce, report)
         (OUTPUT / "result.json").write_text(json.dumps(report, indent=2) + "\n")
     if not report["complete"]:
         raise RuntimeError("published activity result or cleanup is incomplete")

@@ -76,7 +76,8 @@ async def test_retry_preserves_received_execution_id_and_changes_attempt_id(
     assert len(observed) == 2
     first, second = observed
     assert [first["attempt_number"], second["attempt_number"]] == [1, 2]
-    assert isinstance(first["execution_id"], str) and first["execution_id"].strip()
+    assert isinstance(first["execution_id"], str)
+    assert first["execution_id"].strip()
     assert first["execution_id"] == second["execution_id"]
     assert first["attempt_id"] != second["attempt_id"]
     assert first["task_id"] != second["task_id"]
