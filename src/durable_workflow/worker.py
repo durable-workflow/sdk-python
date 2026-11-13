@@ -166,6 +166,36 @@ _WORKFLOW_WORK_TASK_KINDS = ("workflow", "update_validation")
 _MULTIPLEXED_WORKFLOW_POLL_ENDPOINT = "/worker/workflow-tasks/poll"
 
 _TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
+
+# The typed refusal for late activity work on a run whose own code closed it
+# (server#1193, workflow#1117). The run settled the activity at close, or left
+# it running under the abandon policy, and nothing is ever appended after the
+# terminal event, so the refusal is final: never retried or reported again.
+_RUN_CLOSED_REFUSAL = "run_closed"
+
+
+def _run_closed_refusal(error: BaseException) -> bool:
+    """Whether a claim or outcome request was refused because its run closed."""
+    if isinstance(error, ActivityLeaseAuthorityLost):
+        return error.reason == _RUN_CLOSED_REFUSAL
+    return isinstance(error, ServerError) and error.reason() == _RUN_CLOSED_REFUSAL
+
+
+def _run_closed_completion_kept(error: BaseException) -> bool | None:
+    """Classify a completion refused with ``run_closed``, as the PHP worker does.
+
+    ``True``: an abandon-policy activity its run left running at close, whose
+    own outcome closed it (``activity_status`` completed or failed); nothing
+    is recorded on the closed run. ``False``: the close cancelled the activity
+    and its outcome was dropped. ``None``: not a ``run_closed`` refusal with
+    ``recorded: false``.
+    """
+    if not isinstance(error, ServerError) or error.status != 409 or error.reason() != _RUN_CLOSED_REFUSAL:
+        return None
+    body = error.body
+    if not isinstance(body, dict) or body.get("recorded") is not False:
+        return None
+    return body.get("activity_status") in ("completed", "failed")
 _QUERY_TASK_FINAL_REJECTION_REASONS = {
     "lease_expired",
     "query_task_not_found",
@@ -3450,6 +3480,23 @@ class Worker:
                 **self._external_storage_completion_kwargs(),
             )
         except Exception as e:
+            kept = _run_closed_completion_kept(e)
+            if kept is True:
+                # The run left this activity running under the abandon policy:
+                # its outcome closed it, and nothing is appended to the run.
+                log.info(
+                    "activity task %s completed; its workflow run closed, so the outcome is not recorded on the run",
+                    task_id,
+                )
+                return "completed"
+            if kept is False:
+                # The run's close cancelled this activity: the outcome is
+                # dropped, and the refusal is final, never retried.
+                log.warning(
+                    "activity task %s outcome not recorded: its workflow run closed and cancelled the activity",
+                    task_id,
+                )
+                return "claim_aborted"
             log.warning("failed to complete activity task %s: %s", task_id, e)
             return "complete_error"
         return "completed"
@@ -3505,6 +3552,9 @@ class Worker:
                 task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id, **failure,
             )
         except Exception as error:
+            if _run_closed_refusal(error):
+                log.info("%s for activity task %s not recorded: its workflow run closed", context, task_id)
+                return
             log.warning("failed to report %s: %s", context, error)
 
     async def _invoke_remote_activity(self, task: dict[str, Any], activity_type: str,
@@ -4115,6 +4165,14 @@ class Worker:
                 if self._stop.is_set():
                     self._status.request_abandoned("activity_poll")
                     return
+                if _run_closed_refusal(e):
+                    # The claim's run closed before it started: the Server
+                    # settled that task, so this answered poll is no failure.
+                    log.info("activity claim refused because its workflow run closed: %s", e)
+                    failures.reset()
+                    self._status.request_succeeded("activity_poll")
+                    self._record_poll_metrics("activity", "empty", time.perf_counter() - poll_start)
+                    continue
                 delay = _poll_capacity_delay(e, "activity_task", self.task_queue)
                 self._record_poll_status("activity_poll", e, answered=delay is not None)
                 if _is_storage_admission_error(e):
