@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -116,3 +117,28 @@ def test_later_activity_completion_returns_the_original_timer_clock() -> None:
     assert produced[0].result == {
         "greeting": "Hello, Taylor!", "timer_clock": ORIGINAL_CLOCK, "resumed": "resumed",
     }
+
+
+def test_fractional_source_timer_clock_requires_the_exact_reuse_timestamp() -> None:
+    source_recorded_at = "2026-11-03T00:00:06.654321+00:00"
+    source_time = datetime.fromisoformat(source_recorded_at)
+    floored_recorded_at = source_time.replace(microsecond=0).isoformat()
+    observed = []
+    for reused_time in (floored_recorded_at, source_recorded_at):
+        document = successor()
+        fired = document["history"][-1]
+        fired["payload"]["fired_at"] = source_recorded_at
+        fired["payload"]["reused_recorded_at"] = reused_time
+        unchanged = deepcopy(document)
+        produced = commands(document)
+        assert len(produced) == 1
+        assert isinstance(produced[0], ScheduleActivity)
+        assert produced[0].activity_type == "tests.redrive.second"
+        observed.append(produced[0].arguments[1])
+        assert document == unchanged
+    # This is an offline producer-shaped prefix comparison. The reader follows
+    # the authoritative reuse timestamp and cannot repair a producer's lost
+    # fraction from the different fired_at field or successor insertion time.
+    assert observed[0] == ORIGINAL_CLOCK
+    assert observed[0] != source_time.isoformat(timespec="microseconds")
+    assert observed[1] == source_time.isoformat(timespec="microseconds")
