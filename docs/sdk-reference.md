@@ -982,6 +982,30 @@ quiet_client = Client(
 )
 ```
 
+## Workflow-task completion size
+
+Each command's arguments must fit the server payload limit (2 MiB by
+default). Server 3.6.0 and later also bound the whole workflow-task
+completion, all of the commands one task produces, at 16 payload limits
+(32 MiB by default). A larger completion is refused with HTTP 413
+`payload_too_large` and `limit_kind: workflow_task_completion_bytes`.
+
+The SDK raises `WorkflowTaskCompletionTooLarge` for that response. It is a
+`ServerError` with `limit` (the Server's aggregate limit in bytes) and `size`
+(the encoded request body the SDK sent). Replaying the task would produce the
+same commands, so the worker never resends the refused completion and does not
+report a workflow-task failure. It completes the same task once with a
+non-retryable `fail_workflow` command whose message starts with
+`Structural limit exceeded: workflow_task_completion_bytes:`, which the Server
+records with the `structural_limit` failure category. If that small completion
+also fails, the usual completion-error handling applies to it. Other 413
+responses keep the previous handling.
+
+To stay under the aggregate, schedule a large fan-out in bounded batches
+across workflow tasks, move groups of work into child workflows, or
+continue-as-new. Enable external payload storage so large arguments travel as
+references.
+
 ## Avro payload type boundaries
 
 The default Avro codec uses the fixed recursive

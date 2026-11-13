@@ -91,6 +91,7 @@ from .errors import (
     UpdateRejected,
     UpdateValidationFailed,
     WorkflowEntryArgumentsMismatchError,
+    WorkflowTaskCompletionTooLarge,
 )
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver, store_external_payload
 from .interceptors import (
@@ -377,6 +378,10 @@ def _is_final_query_task_rejection(error: BaseException) -> bool:
 
 
 def _should_fail_workflow_task_after_completion_error(error: BaseException) -> bool:
+    # The run already failed with a structural-limit failure. A workflow-task
+    # failure would retry the same oversized completion or block replay.
+    if isinstance(error, WorkflowTaskCompletionTooLarge):
+        return False
     if isinstance(error, ExternalPayloadError):
         return False
     if isinstance(error, InvalidArgument):
@@ -2865,7 +2870,7 @@ class Worker:
                 )
             except Exception as e:
                 log.warning("failed to complete workflow update task %s: %s", task_id, e)
-                if _is_storage_admission_error(e):
+                if _is_storage_admission_error(e) or isinstance(e, WorkflowTaskCompletionTooLarge):
                     return None
                 if _should_fail_workflow_task_after_completion_error(e):
                     await self._report_workflow_task_after_completion_error(task_id, attempt, e)
@@ -3038,7 +3043,7 @@ class Worker:
             )
         except Exception as e:
             log.warning("failed to complete workflow task %s: %s", task_id, e)
-            if _is_storage_admission_error(e):
+            if _is_storage_admission_error(e) or isinstance(e, WorkflowTaskCompletionTooLarge):
                 return None
             if _should_fail_workflow_task_after_completion_error(e):
                 await self._report_workflow_task_after_completion_error(task_id, attempt, e)
@@ -3046,6 +3051,69 @@ class Worker:
         return commands
 
     async def _complete_workflow_task_with_retry(
+        self,
+        *,
+        task_id: str,
+        attempt: int,
+        commands: list[dict[str, Any]],
+        message_stream_cursors: list[dict[str, Any]] | None = None,
+        message_stream_waits: list[dict[str, Any]] | None = None,
+        sticky_cache: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            await self._send_workflow_task_completion(
+                task_id=task_id,
+                attempt=attempt,
+                commands=commands,
+                message_stream_cursors=message_stream_cursors,
+                message_stream_waits=message_stream_waits,
+                sticky_cache=sticky_cache,
+            )
+        except WorkflowTaskCompletionTooLarge as error:
+            await self._fail_run_for_oversized_completion(task_id, attempt, error)
+            raise
+
+    async def _fail_run_for_oversized_completion(
+        self,
+        task_id: str,
+        attempt: int,
+        error: WorkflowTaskCompletionTooLarge,
+    ) -> None:
+        """Fail the run once with a structural-limit failure (.github#228).
+
+        The refused completion is never resent: a replay produces the same
+        commands. The same leased task completes with one small
+        ``fail_workflow`` command instead, which the Server records with the
+        ``structural_limit`` failure category. If that completion also fails,
+        its error replaces this one so the existing completion-error handling
+        applies to it.
+        """
+        message = error.structural_limit_message()
+        log.error(
+            "workflow task %s completion refused by the server: %s (limit_kind=%s, size=%s bytes, "
+            "limit=%s bytes); failing the run instead of resending it",
+            task_id,
+            message,
+            error.limit_kind,
+            error.size,
+            error.limit,
+        )
+        command = FailWorkflow(
+            message,
+            exception_type=type(error).__name__,
+            non_retryable=True,
+        ).to_server_command(self.task_queue)
+        try:
+            await self._send_workflow_task_completion(task_id=task_id, attempt=attempt, commands=[command])
+        except Exception as fail_error:
+            log.warning(
+                "failed to record the structural-limit failure for workflow task %s: %s",
+                task_id,
+                fail_error,
+            )
+            raise fail_error from error
+
+    async def _send_workflow_task_completion(
         self,
         *,
         task_id: str,

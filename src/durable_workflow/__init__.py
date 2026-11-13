@@ -113,6 +113,7 @@ from .errors import (
     WorkflowFailed,
     WorkflowNotFound,
     WorkflowPayloadDecodeError,
+    WorkflowTaskCompletionTooLarge,
     WorkflowTerminated,
     WorkflowTimedOut,
 )
@@ -418,6 +419,7 @@ __all__ = [
     "WorkflowCancelled",
     "WorkflowFailed",
     "WorkflowNotFound",
+    "WorkflowTaskCompletionTooLarge",
     "WorkflowTerminated",
     "WorkflowTimedOut",
     "EXTERNAL_TASK_INPUT_CONTRACT_SCHEMA",

@@ -1790,6 +1790,14 @@ class ScheduleHandle:
         )
 
 
+def _request_body_bytes(request: httpx.Request) -> int | None:
+    """The encoded body length of a sent request, when it was buffered."""
+    try:
+        return len(request.content)
+    except httpx.RequestNotRead:
+        return None
+
+
 class Client:
     """Async HTTP client for Durable Workflow control-plane and worker APIs.
 
@@ -2167,7 +2175,12 @@ class Client:
                     body = exc.response.json()
                 except ValueError:
                     body = exc.response.text
-                _raise_for_status(exc.response.status_code, body, context=context)
+                # The typed completion-size refusal carries the limit; the
+                # size is the encoded request body this client sent.
+                _raise_for_status(
+                    exc.response.status_code, body, context=context,
+                    request_bytes=_request_body_bytes(exc.request),
+                )
                 raise  # unreachable, but keeps type checker happy
 
             status_code = str(resp.status_code)
