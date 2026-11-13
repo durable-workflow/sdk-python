@@ -3955,6 +3955,23 @@ def _history_event_type(event: Mapping[str, Any]) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+# ``cancellation_reason`` of an ActivityCancelled that the run's own close
+# recorded (Workflow 2.28.0, workflow#1117 and server#1193). Completing,
+# failing or continuing as new cancels each activity the workflow never
+# awaited, such as a select() loser, in the closing transaction just before the
+# terminal event. The workflow had already moved past those operations, so the
+# cancellation is never an outcome replay can observe: the activity stays open.
+RUN_CLOSED_CANCELLATION_REASON = "run_closed"
+
+
+def _settled_at_close(event: Any) -> bool:
+    """Whether this is an activity cancellation recorded by its run's close."""
+    if not isinstance(event, Mapping) or _history_event_type(event) != "ActivityCancelled":
+        return False
+    payload = event.get("payload")
+    return isinstance(payload, Mapping) and payload.get("cancellation_reason") == RUN_CLOSED_CANCELLATION_REASON
+
+
 def _workflow_sequence(payload: Mapping[str, Any]) -> int | None:
     value = payload.get("sequence") or payload.get("workflow_sequence")
     if isinstance(value, int):
@@ -4865,7 +4882,10 @@ def _replay_state(
                 exception_type=type(exception).__name__,
             ) from exception
 
-    events = list(history_events)
+    # A run-close cancellation never resolves a select() member, never fails
+    # an all() group and never supplies replay time: the workflow had closed
+    # past it. Every history reader below sees the activity as still open.
+    events = [event for event in history_events if not _settled_at_close(event)]
     # A malformed delivery span refuses replay before any history parser can
     # read it more permissively.
     _assert_delivery_spans(events)
