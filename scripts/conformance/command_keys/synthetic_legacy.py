@@ -105,18 +105,25 @@ async def command(client, kind, seed, key, value=999, *, name=None, run_id=None)
 
 async def prepare(client, value):
     queue = "synthetic-legacy-" + uuid4().hex
-    worker = Worker(client, task_queue=queue, workflows=[LegacyCommands])
+    worker = Worker(client, task_queue=queue, workflows=[LegacyCommands], poll_timeout=0.2)
     task = asyncio.create_task(worker.run())
     try:
-        # Register the actual published Worker, then stop before open admissions.
-        # stop() waits for registration and leaves no poller behind.
-        await asyncio.sleep(0.1)
-        await worker.stop()
-        await task
+        handle = await client.start_workflow(
+            workflow_type=WORKFLOW_TYPE, input=[0], workflow_id=queue, task_queue=queue
+        )
+        # The producer admits updates only after the first real workflow task
+        # binds its contract. Stop before command admission so open updates stay pending.
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            events = [event async for event in client.iter_history(queue, handle.run_id)]
+            if any(event["event_type"] == "ConditionWaitOpened" for event in events):
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise TimeoutError("first workflow task did not bind the run contract")
     finally:
         await worker.stop()
         await task
-    handle = await client.start_workflow(workflow_type=WORKFLOW_TYPE, input=[0], workflow_id=queue, task_queue=queue)
     seed = {"workflow_id": handle.workflow_id, "run_id": handle.run_id, "commands": {}, "selections": []}
     caller = "CaseSensitive" if value["scenario"] == "case-only" else "token-key"
     for kind in ("signal", "update"):
@@ -133,7 +140,7 @@ async def prepare(client, value):
         if value["scenario"] != "modern-raw":
             seed["selections"].append(selection(kind, seed["workflow_id"], chosen, chosen_key, legacy_key))
     if value["state"] != "open":
-        worker = Worker(client, task_queue=queue, workflows=[LegacyCommands])
+        worker = Worker(client, task_queue=queue, workflows=[LegacyCommands], poll_timeout=0.2)
         task = asyncio.create_task(worker.run())
         try:
             update = seed["commands"]["update"]["original"]
