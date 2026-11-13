@@ -105,3 +105,47 @@ class TestPublicBoundaryScanner:
         assert result.returncode == 1, (result.stdout, result.stderr)
         assert "forbidden commit metadata" in result.stderr
         assert sha[:12] in result.stderr
+
+    @pytest.mark.parametrize(
+        "path",
+        [".claude/settings.local.json", "component/.claude/settings.local.json"],
+    )
+    def test_tracked_claude_local_settings_are_refused(self, scratch_repo: Path, path: str) -> None:
+        # durable-workflow/.github#355: refuse the path, never print the content.
+        target = scratch_repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("canary-value-must-not-be-printed\n", encoding="utf-8")
+        _git(scratch_repo, "add", "-f", path)
+        _git(scratch_repo, "commit", "-q", "-m", "Track local settings")
+        _commit(scratch_repo, "hello.txt", "unrelated\n")
+
+        result = _run_scanner(scratch_repo, "-1 HEAD")
+
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert path in result.stdout
+        assert "refused: tracked .claude/settings.local.json" in result.stderr
+        assert "canary-value-must-not-be-printed" not in result.stdout + result.stderr
+
+    def test_claude_local_settings_near_names_pass(self, scratch_repo: Path) -> None:
+        for path in (
+            ".claude/settings.json",
+            ".claude/settings.local.json.example",
+            "component/settings.local.json",
+        ):
+            target = scratch_repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("{}\n", encoding="utf-8")
+            _git(scratch_repo, "add", path)
+        _git(scratch_repo, "commit", "-q", "-m", "Add near names")
+
+        result = _run_scanner(scratch_repo, "-1 HEAD")
+
+        assert result.returncode == 0, (result.stdout, result.stderr)
+
+    def test_claude_local_settings_are_ignored(self, scratch_repo: Path) -> None:
+        shutil.copy2(REPO_ROOT / ".gitignore", scratch_repo / ".gitignore")
+        for path in (".claude/settings.local.json", "component/.claude/settings.local.json"):
+            target = scratch_repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("{}\n", encoding="utf-8")
+            _git(scratch_repo, "check-ignore", "-q", path)
