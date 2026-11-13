@@ -319,7 +319,7 @@ class CooperativeTimeoutCleanupCauseWorkflow:
         except WorkflowCancelled as exc:
             context = exc.context
             assert isinstance(context, CancellationContext)
-            return [type(exc).__name__, context.cause, context.timeout_kind, exc.request_id]
+            return [type(exc).__name__, context.cause, exc.request_id]
         return "not cancelled"
 
 

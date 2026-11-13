@@ -45,12 +45,12 @@ work deadline through the same cooperative delivery. The context then has
 the type, to tell the two apart. The run still ends timed out.
 
 `cause` is `None` (absent) or `"cancellation"` for an ordinary request; any
-other value is refused. `cleanup_deadline_at` is the hard cleanup deadline.
-`timeout_kind` (`"execution"` or `"run"`) and `work_deadline_at` are set when
-the request carries them, and are refused without the timeout cause. A child
-cancelled under a timeout request receives an ordinary cancellation: the cause
-is not inherited. `to_dict()` writes `cause` back exactly as received and
-leaves ordinary contexts unchanged.
+other value is refused. `cleanup_deadline_at` is the cleanup deadline. The
+context carries no other timeout fields: the timeout kind and work deadline are
+recorded on `WorkflowTimeoutCleanupStarted`. `cause` is never inherited: a child
+cancelled under a timeout request, scoped or not, receives an ordinary
+cancellation. `to_dict()` writes `cause` back exactly as received, including an
+explicit `"cancellation"`, and leaves ordinary contexts unchanged.
 
 A child preserves the root request time and budget even when its local request
 arrives later. Canonical request history supplies the context on cold replay,

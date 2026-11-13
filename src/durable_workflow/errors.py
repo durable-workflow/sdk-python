@@ -983,9 +983,7 @@ class WorkflowTimeoutCleanupRequested(WorkflowCancelled):
     is not an :class:`asyncio.CancelledError`. ``context.cause`` is
     ``"timeout"``; test ``cause`` rather than the type when telling the two
     apart, since ``cause`` is the cross-SDK discriminator. ``context.cleanup_deadline_at``
-    is the hard cleanup deadline, and ``context.timeout_kind`` and
-    ``context.work_deadline_at`` are set when the request carries them.
-    Experimental.
+    is the cleanup deadline. Experimental.
     """
 
     def __init__(

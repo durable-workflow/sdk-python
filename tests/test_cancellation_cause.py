@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -39,8 +38,8 @@ def snapshot() -> dict[str, Any]:
     }
 
 
-def timeout_snapshot(**fields: Any) -> dict[str, Any]:
-    return {**snapshot(), "cause": "timeout", **fields}
+def timeout_snapshot() -> dict[str, Any]:
+    return {**snapshot(), "cause": "timeout"}
 
 
 def test_an_ordinary_context_is_unchanged_and_stays_a_cancellation() -> None:
@@ -74,7 +73,6 @@ def test_a_timeout_cause_round_trips_and_delivers_the_timeout_subtype() -> None:
 
     assert context.cause == "timeout"
     assert context.is_timeout
-    assert context.timeout_kind is None and context.work_deadline_at is None
     assert context.to_dict() == timeout_snapshot()
     assert list(context.to_dict()).index("cause") == list(context.to_dict()).index("lineage") + 1
     exception = _cancellation_requested("cancelled", request_id="req-1", context=context)
@@ -82,17 +80,6 @@ def test_a_timeout_cause_round_trips_and_delivers_the_timeout_subtype() -> None:
     assert isinstance(exception, WorkflowCancelled)
     assert exception.context is context
     assert exception.request_id == "req-1"
-
-
-def test_timeout_fields_round_trip() -> None:
-    value = timeout_snapshot(timeout_kind="execution", work_deadline_at="2026-11-13T00:01:00.000000Z")
-    context = CancellationContext.from_dict(value)
-
-    assert context.timeout_kind == "execution"
-    assert context.work_deadline_at == datetime(2026, 11, 13, 0, 1, tzinfo=timezone.utc)
-    assert context.cleanup_deadline_at == datetime(2026, 11, 13, 0, 1, 10, tzinfo=timezone.utc)
-    assert context.to_dict() == value
-    assert CancellationContext.from_dict(context.to_dict()) == context
 
 
 def test_the_timeout_subtype_is_base_exception_rooted_and_not_task_cancellation() -> None:
@@ -125,42 +112,58 @@ def test_an_unknown_cause_is_refused(cause: Any) -> None:
         CancellationContext.from_dict({**snapshot(), "cause": cause})
 
 
-@pytest.mark.parametrize("cause", [None, "cancellation"])
-@pytest.mark.parametrize("field,value", [
-    ("timeout_kind", "execution"), ("work_deadline_at", "2026-11-13T00:01:00.000000Z"),
-])
-def test_timeout_fields_require_the_timeout_cause(cause: str | None, field: str, value: str) -> None:
-    ordinary = snapshot() if cause is None else {**snapshot(), "cause": cause}
-    with pytest.raises(ValueError, match="timeout fields require the timeout cause"):
-        CancellationContext.from_dict({**ordinary, field: value})
+def test_the_contract_carries_no_timeout_fields_in_the_context() -> None:
+    # The timeout kind and work deadline are recorded on WorkflowTimeoutCleanupStarted,
+    # not in the context. Like any other unknown key they are not read or written back.
+    context = CancellationContext.from_dict({
+        **timeout_snapshot(), "timeout_kind": "execution", "work_deadline_at": "2026-11-13T00:01:00.000000Z",
+    })
+
+    assert context.is_timeout
+    assert context.to_dict() == timeout_snapshot()
+    assert not hasattr(context, "timeout_kind") and not hasattr(context, "work_deadline_at")
 
 
-@pytest.mark.parametrize("field,value,message", [
-    ("timeout_kind", "workflow", "timeout_kind must be execution or run"),
-    ("timeout_kind", 1, "timeout_kind must be execution or run"),
-    ("work_deadline_at", "2026-11-13 00:01:00", "ISO date, time and timezone"),
-    ("work_deadline_at", 1, "ISO date, time and timezone"),
-    ("work_deadline_at", "2026-11-13T00:01:10.000000Z", "work deadline must precede its cleanup deadline"),
-    ("work_deadline_at", "2026-11-13T00:02:00.000000Z", "work deadline must precede its cleanup deadline"),
-])
-def test_invalid_timeout_fields_are_refused(field: str, value: Any, message: str) -> None:
-    with pytest.raises(ValueError, match=message):
-        CancellationContext.from_dict(timeout_snapshot(**{field: value}))
-
-
-def test_a_scoped_root_keeps_the_run_request_cause() -> None:
+def scope_origin() -> dict[str, Any]:
     # Core's ScopedCancellationContext::fromRunContext keeps the run context's keys.
-    scoped = ScopedCancellationContext.from_dict({
+    return {
         "schema": "durable-workflow.scoped-cancellation-context/v1",
         "root_context": timeout_snapshot(),
         "lineage": [{
             "request_id": "req-1", "workflow_instance_id": "instance-1", "workflow_run_id": "run-1",
             "scope_id": "root", "cleanup_deadline_at": "2026-11-13T00:01:10.000000Z",
         }],
-    })
+    }
+
+
+def test_a_scoped_root_keeps_the_run_request_cause() -> None:
+    scoped = ScopedCancellationContext.from_dict(scope_origin())
 
     assert scoped.root_context.is_timeout
     assert scoped.to_dict()["root_context"] == timeout_snapshot()
+
+
+def test_a_scoped_descendant_of_a_timeout_is_cancelled_not_timed_out() -> None:
+    # Built the way Core's fromScopeContext builds it (workflow#1129 at 14a4b944):
+    # the root's cause is stripped, while scope_origin keeps the original root.
+    child = {key: value for key, value in timeout_snapshot().items() if key != "cause"}
+    child.update({
+        "schema": "durable-workflow.cancellation-context/v2",
+        "request_id": "req-child", "parent_request_id": "req-1",
+        "lineage": [*child["lineage"], {
+            "request_id": "req-child", "workflow_instance_id": "child-instance", "workflow_run_id": "child-run",
+        }],
+        "scope_origin": scope_origin(),
+        "scope_authority_deadline_at": "2026-11-13T00:01:10.000000Z",
+    })
+    context = CancellationContext.from_dict(child)
+
+    assert not context.is_timeout
+    assert context.scope_origin is not None and context.scope_origin.root_context.is_timeout
+    assert "cause" not in context.to_dict()
+    assert context.to_dict() == child
+    assert not CancellationContext.from_dict(context.to_dict()).is_timeout
+    assert type(_cancellation_requested("cancelled", request_id="req-child", context=context)) is WorkflowCancelled
 
 
 def request(context: dict[str, Any]) -> dict[str, Any]:
