@@ -888,7 +888,7 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
     if workflow.get("type") in {
         "sdk.replay-conformance-report", "sdk.query-task-dispatch", "sdk.generator-query-task-dispatch",
         "sdk.generator-side-effect-query-task-dispatch", "sdk.observed-worker-replay", "sdk.local-activity-backoff",
-        "sdk.sticky-suffix",
+        "sdk.sticky-suffix", "sdk.completion-size-limit",
     }:
         _execute_fixture(fixture)
         return
