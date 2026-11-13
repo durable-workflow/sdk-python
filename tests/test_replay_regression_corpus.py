@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from durable_workflow import Replayer, Worker, activity, serializer, workflow
@@ -19,6 +20,7 @@ from durable_workflow.errors import (
     WorkflowPayloadDecodeError,
 )
 from durable_workflow.replay_conformance import compose_report
+from durable_workflow.retry_policy import TransportRetryPolicy
 from durable_workflow.workflow import (
     LocalActivityExecutionAborted,
     WorkflowContext,
@@ -583,6 +585,60 @@ def _execute_sticky_suffix(inputs: Any) -> list[dict[str, Any]]:
 
     return [asyncio.run(run(scenario)) for scenario in inputs]
 
+@workflow.defn(name="sdk.completion-size-limit.fan-out")
+class CompletionSizeFanOutWorkflow:
+    def run(self, ctx, activities, argument_bytes):  # type: ignore[no-untyped-def]
+        yield [ctx.schedule_activity("act", ["x" * argument_bytes]) for _ in range(activities)]
+
+
+def _execute_completion_size_limit(inputs: Any) -> list[dict[str, Any]]:
+    """Answer a fan-out completion with Server 3.6.0's typed 413 (.github#228) and report
+    every workflow-task request the real worker sends afterwards."""
+    assert isinstance(inputs, list) and len(inputs) == 1 and isinstance(inputs[0], dict)
+    scenario = inputs[0]
+    refusal = {"message": "Workflow task completion exceeds the maximum allowed size.", "reason": "payload_too_large",
+               "limit": scenario["limit"], "limit_kind": "workflow_task_completion_bytes"}
+    requests: list[httpx.Request] = []
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/cluster/info":
+            return httpx.Response(200, json={"worker_protocol": {"server_capabilities": {}}})
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(413, json=refusal)
+        return httpx.Response(200, json={"outcome": "completed"})
+
+    async def run() -> list[dict[str, Any]]:
+        client = Client("https://corpus.example", worker_token="corpus", namespace="default",
+                        retry_policy=TransportRetryPolicy(max_attempts=1))
+        client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(reply))
+        async with client:
+            worker = Worker(client, task_queue="queue", worker_id="holder", workflows=[CompletionSizeFanOutWorkflow])
+            await worker._run_workflow_task({
+                "task_id": "task", "workflow_id": "workflow", "run_id": "run", "workflow_task_attempt": 1,
+                "workflow_type": "sdk.completion-size-limit.fan-out", "payload_codec": "avro",
+                "arguments": serializer.encode([scenario["activities"], scenario["argument_bytes"]], codec="avro"),
+                "history_events": [{"event_type": "WorkflowStarted", "payload": {}}],
+            })
+        observed = []
+        for request in requests:
+            body = json.loads(request.content)
+            commands = body.get("commands", [])
+            observed.append({
+                "type": "workflow_task_request",
+                "route": request.url.path.rsplit("/", 1)[-1],
+                "command_types": [command["type"] for command in commands],
+                "non_retryable": [command.get("non_retryable", False) for command in commands],
+                "structural_limit": [
+                    command.get("message", "").startswith("Structural limit exceeded: workflow_task_completion_bytes:")
+                    for command in commands
+                ],
+            })
+        return observed
+
+    return asyncio.run(run())
+
+
 def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     assert fixture.get("fixture_schema") == FIXTURE_SCHEMA
     assert "python" in fixture.get("bindings", [])
@@ -595,6 +651,11 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
         return _execute_observed_worker_replay(fixture)
     if workflow_type == "sdk.sticky-suffix":
         commands = _execute_sticky_suffix(workflow.get("input"))
+        _assert_matches(fixture["command_sequence"], commands, f"{fixture['id']}.command_sequence")
+        _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
+        return commands
+    if workflow_type == "sdk.completion-size-limit":
+        commands = _execute_completion_size_limit(workflow.get("input"))
         _assert_matches(fixture["command_sequence"], commands, f"{fixture['id']}.command_sequence")
         _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
         return commands
@@ -827,7 +888,7 @@ def test_checked_in_replay_regression_corpus_uses_official_replayer(
     if workflow.get("type") in {
         "sdk.replay-conformance-report", "sdk.query-task-dispatch", "sdk.generator-query-task-dispatch",
         "sdk.generator-side-effect-query-task-dispatch", "sdk.observed-worker-replay", "sdk.local-activity-backoff",
-        "sdk.sticky-suffix",
+        "sdk.sticky-suffix", "sdk.completion-size-limit",
     }:
         _execute_fixture(fixture)
         return

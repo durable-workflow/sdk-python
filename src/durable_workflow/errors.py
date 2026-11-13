@@ -301,6 +301,60 @@ class ServerError(DurableWorkflowError):
         )
 
 
+WORKFLOW_TASK_COMPLETION_BYTES = "workflow_task_completion_bytes"
+
+
+class WorkflowTaskCompletionTooLarge(ServerError):
+    """The Server refused a workflow-task completion as too large (typed 413).
+
+    Server 3.6.0 and later accept a workflow-task completion of up to 16
+    payload limits (32 MiB by default) and refuse a larger one with ``413
+    payload_too_large`` and ``limit_kind: workflow_task_completion_bytes``.
+    Replaying the task produces the same commands, so resending it cannot
+    succeed: this error is not retryable. The worker fails the run with a
+    ``structural_limit`` failure instead of resending the completion.
+
+    :attr:`limit` is the Server's aggregate limit in bytes, when it reported
+    one. :attr:`size` is the encoded request body the SDK sent, in bytes.
+    """
+
+    non_retryable = True
+    limit_kind = WORKFLOW_TASK_COMPLETION_BYTES
+
+    def __init__(self, status: int, body: object, *, size: int | None = None) -> None:
+        super().__init__(status, body)
+        limit = body.get("limit") if isinstance(body, dict) else None
+        message = body.get("message") if isinstance(body, dict) else None
+        self.limit: int | None = limit if type(limit) is int else None
+        self.size = size
+        self.server_message: str | None = message if isinstance(message, str) and message else None
+        self.args = (self.structural_limit_message(),)
+
+    @staticmethod
+    def matches(status: int, body: object) -> bool:
+        """Whether a response is the typed completion-size refusal."""
+        return (
+            status == 413
+            and isinstance(body, dict)
+            and body.get("reason") == "payload_too_large"
+            and body.get("limit_kind") == WORKFLOW_TASK_COMPLETION_BYTES
+        )
+
+    def structural_limit_message(self) -> str:
+        """The failure message the worker records on the run.
+
+        It starts with ``Structural limit exceeded:``, which the Server
+        classifies as the ``structural_limit`` failure category.
+        """
+        size = f"{self.size} bytes" if self.size is not None else "larger than the limit"
+        limit = f"the server limit of {self.limit} bytes" if self.limit is not None else "the server limit"
+        return (
+            f"Structural limit exceeded: {WORKFLOW_TASK_COMPLETION_BYTES}: the workflow task completion is "
+            f"{size}, over {limit}. Split the fan-out into smaller batches, move work into child workflows, "
+            "or continue-as-new; offload large payloads with external payload storage."
+        )
+
+
 class NexusOperationFailed(DurableWorkflowError):
     """A Nexus service operation completed with a typed service failure."""
 
@@ -979,9 +1033,14 @@ class AvroNotInstalledError(DurableWorkflowError, ImportError):
     """Raised when the core ``avro`` runtime dependency is unavailable."""
 
 
-def _raise_for_status(status: int, body: object, *, context: str = "") -> None:
+def _raise_for_status(
+    status: int, body: object, *, context: str = "", request_bytes: int | None = None,
+) -> None:
     if status < 400:
         return
+
+    if WorkflowTaskCompletionTooLarge.matches(status, body):
+        raise WorkflowTaskCompletionTooLarge(status, body, size=request_bytes)
 
     reason = body.get("reason") if isinstance(body, dict) else None
     message = body.get("message", "") if isinstance(body, dict) else str(body)
