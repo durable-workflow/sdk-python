@@ -1,5 +1,50 @@
 # Client
 
+## Read an update outcome
+
+`Client.update_workflow()` returns a Server receipt. Its default wait stage is
+`accepted`: the handler may still be running when the call returns. Keep the
+receipt's `update_id` to read the result later without submitting another update.
+
+```python
+from durable_workflow import UpdateStillPending
+
+receipt = await client.update_workflow(
+    "order-1", "rename", args=["new name"], wait_for="accepted",
+)
+update_id = receipt["update_id"]
+
+try:
+    result = await client.update_outcome("order-1", update_id, wait_timeout_seconds=30)
+except UpdateStillPending as pending:
+    update_id = pending.update_id
+    print(f"Update {update_id} is still running; read its outcome again later.")
+else:
+    print(result)  # A completed handler may return None.
+```
+
+`update_outcome()` waits for completion by default. A pending update raises
+`UpdateStillPending`, carrying the workflow, run, update and request identities.
+It never returns pending work as `None`. To inspect the raw receipt without
+waiting for completion, call `update_outcome_receipt()`; pass
+`wait_for="completed"` to wait there too. Reads follow an update across
+continue-as-new and never admit another update.
+
+| Outcome | Result |
+| --- | --- |
+| Completed | The decoded handler result, including `None` |
+| Still running | `UpdateStillPending`; keep its `update_id` and read again |
+| Handler failed or validator rejected | `UpdateFailed` or `UpdateRejected` |
+| No retained update with this id | `UpdateNotFound`, including after pruning |
+| Response does not identify the requested update or a recognized status | `UnrecognizedUpdateOutcome` |
+
+Both read methods require Server discovery to advertise
+`capabilities.update_outcome_reads`. An unsupported Server raises
+`RuntimeCapabilityUnsupported`; it does not fall back to resubmitting the update.
+`WorkflowHandle` and `durable_workflow.sync.Client` provide the same methods.
+See the [complete update reference](../sdk-reference.md#workflow-signals-queries-and-updates)
+for wait stages, validation and response checks.
+
 ## Trust a private certificate authority
 
 The `tls_context` option requires Python SDK 2.10.0 or later.

@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.17.1] - 2026-11-13
+
 ### Fixed
 
 - Replay supports histories in which a run's own close settled the work it never awaited (server#1193, workflow#1117/#1121, Workflow 2.28.0). When a run completes, fails or continues as new, each still-open activity, such as a `select()` loser, gets an `ActivityCancelled` with `cancellation_reason: run_closed` just before the terminal event. Replay, query and update replay now skip that cancellation and leave the activity open, as the workflow saw it. It never resolves a selection member, never supplies replay time, and is never taken as a list group's first positional failure. Before this fix, a close's cancellation of a lower-index member could replace the failure the workflow handled. Replay also accepts the new `abandoned_activities` key on `WorkflowCompleted`, `WorkflowFailed` and `WorkflowContinuedAsNew`, which lists abandon-policy activities left running at close.
