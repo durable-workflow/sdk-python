@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from durable_workflow import Client, Worker, WorkflowTaskCompletionTooLarge, serializer, workflow
-from durable_workflow.errors import ServerError, _raise_for_status
+from durable_workflow.errors import InvalidArgument, ServerError, _raise_for_status
 from durable_workflow.retry_policy import TransportRetryPolicy
 from durable_workflow.worker import _should_fail_workflow_task_after_completion_error
 
@@ -132,23 +132,43 @@ async def test_typed_413_fails_the_run_once_without_resending_the_completion() -
     assert "sticky_cache" not in failure
 
 
+@pytest.mark.parametrize("status, payload", [
+    (409, {"reason": "invalid_commands"}),
+    (409, {}),
+    (422, {"reason": "validation_failed"}),
+    (401, {"reason": "unauthorized"}),
+])
 @pytest.mark.asyncio
-async def test_failed_structural_limit_completion_falls_back_without_looping() -> None:
+async def test_rejected_structural_limit_completion_never_calls_fail(status: int, payload: Any) -> None:
     requests: list[httpx.Request] = []
-    client, worker = worker_for([(413, TYPED_413), (409, {"reason": "invalid_commands"})], requests)
+    client, worker = worker_for([(413, TYPED_413), (status, payload)], requests)
     async with client:
         result = await worker._run_workflow_task(task())
 
     assert result is None
-    paths = [request.url.path for request in requests]
-    # The refused completion is never resent; the existing handling reports
-    # the fallback's definite rejection once.
-    assert paths == [
+    # The refused completion is never resent, and a rejected follow-up is not
+    # reported through /fail, which would retry into the same 413 or block
+    # replay on the Server.
+    assert [request.url.path for request in requests] == [
         "/api/worker/workflow-tasks/task-413/complete",
         "/api/worker/workflow-tasks/task-413/complete",
-        "/api/worker/workflow-tasks/task-413/fail",
     ]
     assert body(requests[1])["commands"][0]["type"] == "fail_workflow"
+
+
+@pytest.mark.asyncio
+async def test_rejected_structural_limit_completion_reraises_the_typed_error() -> None:
+    requests: list[httpx.Request] = []
+    client, worker = worker_for([(413, TYPED_413), (422, {"reason": "validation_failed"})], requests)
+    async with client:
+        with pytest.raises(WorkflowTaskCompletionTooLarge) as caught:
+            await worker._complete_workflow_task_with_retry(
+                task_id="task-413", attempt=3, commands=[{"type": "complete_workflow"}],
+            )
+
+    assert (caught.value.limit, caught.value.size) == (LIMIT, len(requests[0].content))
+    assert isinstance(caught.value.__cause__, InvalidArgument)
+    assert [request.url.path for request in requests] == ["/api/worker/workflow-tasks/task-413/complete"] * 2
 
 
 @pytest.mark.asyncio

@@ -998,8 +998,9 @@ report a workflow-task failure. It completes the same task once with a
 non-retryable `fail_workflow` command whose message starts with
 `Structural limit exceeded: workflow_task_completion_bytes:`, which the Server
 records with the `structural_limit` failure category. If that small completion
-also fails, the usual completion-error handling applies to it. Other 413
-responses keep the previous handling.
+also fails, the worker logs it and stops: it resends neither completion and
+does not report a workflow-task failure, so the task is left to its lease.
+Other 413 responses keep the previous handling.
 
 To stay under the aggregate, schedule a large fan-out in bounded batches
 across workflow tasks, move groups of work into child workflows, or

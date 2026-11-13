@@ -3085,8 +3085,10 @@ class Worker:
         commands. The same leased task completes with one small
         ``fail_workflow`` command instead, which the Server records with the
         ``structural_limit`` failure category. If that completion also fails,
-        its error replaces this one so the existing completion-error handling
-        applies to it.
+        the typed error is raised again with the follow-up's error as its
+        cause, so the caller never reports a workflow-task failure (``/fail``)
+        on this path: the Server would retry the task into the same 413 or
+        block replay.
         """
         message = error.structural_limit_message()
         log.error(
@@ -3111,7 +3113,7 @@ class Worker:
                 task_id,
                 fail_error,
             )
-            raise fail_error from error
+            raise error from fail_error
 
     async def _send_workflow_task_completion(
         self,
