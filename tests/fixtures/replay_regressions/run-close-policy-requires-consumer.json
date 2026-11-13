@@ -1,0 +1,56 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "run-close-policy-requires-consumer",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.parallel-failure-policy",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-01-01T00:00:00Z",
+      "payload": {},
+      "sequence": 1
+    },
+    {
+      "event_type": "ActivityCancelled",
+      "recorded_at": "2026-01-01T00:00:09Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "execution-0",
+        "activity_type": "slow-first",
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_policy": "propagate"
+          }
+        ],
+        "parallel_group_policy": "propagate",
+        "cancellation_reason": "run_closed"
+      },
+      "sequence": 2
+    }
+  ],
+  "expected": {
+    "command_sequence": []
+  },
+  "expected_replay_error": {
+    "type": "LocalActivityExecutionAborted",
+    "message_contains": "parallel_group_policy_not_supported"
+  }
+}

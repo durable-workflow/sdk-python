@@ -343,6 +343,19 @@ class BusinessReplayClock:
             events.append(event)
         self._pending = (None, _activity_group_time(events, failed_member))
 
+    def observe_propagated_activity_failure(self, member: _GroupMember, *, reconstruction: bool) -> None:
+        """Use only the qualified first-recorded failure of an explicit group."""
+        self._pending = (None, None)
+        if reconstruction:
+            return
+        event = self._activity_group_boundary(member)
+        if event is None or _kind(event) == "ActivityCompleted":
+            return
+        time = _group_event_time(event)
+        milliseconds = canonical_milliseconds(time) if time is not None else None
+        if milliseconds is not None:
+            self._pending = (member[0], from_canonical_milliseconds(milliseconds))
+
     def _activity_group_boundary(self, member: _GroupMember) -> Mapping[str, Any] | None:
         index, sequence, activity_type, path = member
         indices = self._by_sequence.get(sequence, [])
