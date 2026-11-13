@@ -4,24 +4,25 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from urllib.parse import urlunsplit
 
 OWNER = "dev.durable-workflow.fixture-owner"
 RUN = "dev.durable-workflow.fixture-run"
 ROLE = "dev.durable-workflow.fixture-role"
+PRIVATE_64M = "noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=64m"
 TMPFS = {
     "runtime": {
-        "/tmp": "noexec,nosuid,nodev,mode=1777,size=128m",
+        "/run/runtime-tmp": "noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=128m",
         "/app/database": "noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=128m",
-        "/app/storage": "noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=64m",
+        "/app/storage": PRIVATE_64M,
     },
     "consumer": {
-        "/run/acceptance-data": "noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=64m",
-        "/run/acceptance-wheels": "noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=64m",
+        "/run/acceptance-data": PRIVATE_64M,
+        "/run/acceptance-wheels": PRIVATE_64M,
         "/run/acceptance-env": "exec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=256m",
     },
 }
 ENVIRONMENT = {
+    "TMPDIR": "/run/runtime-tmp",
     "DB_CONNECTION": "sqlite",
     "DB_DATABASE": "/app/database/activity-identity.sqlite",
     "DW_AUTH_TOKEN": "published-activity-test-token",
@@ -36,7 +37,11 @@ def full_id(value):
 def created_identity(stdout, cidfile):
     """Retain both valid channels for cleanup, even when admission must refuse."""
     captured, printed = cidfile.strip(), stdout.strip()
-    identity = captured if full_id(captured) else printed if full_id(printed) else None
+    identity = None
+    if full_id(captured):
+        identity = captured
+    elif full_id(printed):
+        identity = printed
     candidates = sorted({value for value in (captured, printed) if full_id(value)})
     return identity, bool(identity and printed == identity and captured == identity), candidates
 
@@ -82,10 +87,10 @@ def expected_command(image, role, bootstrap):
 def verify_container(record, identity, nonce, image, network, child_digest, role, bootstrap=""):
     require_owner(record, identity, nonce, role)
     config, host = record["Config"], record["HostConfig"]
-    environment = dict(item.split("=", 1) for item in image["Config"]["Env"])
+    environment = {key: value for key, value in (item.split("=", 1) for item in image["Config"]["Env"])}
     if role == "runtime":
         environment.update(ENVIRONMENT)
-    received = dict(item.split("=", 1) for item in config["Env"])
+    received = {key: value for key, value in (item.split("=", 1) for item in config["Env"])}
     if len(received) != len(config["Env"]) or received != environment:
         raise ValueError("container environment differs")
     entrypoint, command, working_directory = expected_command(image, role, bootstrap)
@@ -172,7 +177,7 @@ def verify_attachments(network, runtime_record, consumer_record):
     subnets = [ipaddress.ip_network(item["Subnet"]) for item in network["IPAM"]["Config"]]
     if not any(ipaddress.ip_address(address) in subnet for subnet in subnets):
         raise ValueError("runtime address differs from network IPAM")
-    return urlunsplit(("http", address + ":8080", "", "", ""))
+    return address
 
 
 def create_arguments(image, network, nonce, cidfile, role, bootstrap=""):

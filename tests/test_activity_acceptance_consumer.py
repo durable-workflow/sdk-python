@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import ipaddress
 import os
 import subprocess
 import sys
@@ -14,7 +15,8 @@ ROOT = Path(__file__).parents[1] / "scripts/ci"
 
 def load(name):
     spec = importlib.util.spec_from_file_location(name, ROOT / (name + ".py"))
-    assert spec and spec.loader
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -27,12 +29,17 @@ transport = load("activity_acceptance_session")
 @pytest.mark.parametrize(
     "url",
     [
-        "http://127.0.0.1:8080",
-        "http://8.8.8.8:8080",
-        "http://foreign.example:8080",
-        "https://172.29.0.2:8080",
-        "http://172.29.0.2:9000",
-        "http://172.29.0.2:8080/?query=1",
+        "http://172.29.0.2:8080",
+        "foreign.example",
+        None,
+        True,
+        -1,
+        2**32,
+        int(ipaddress.IPv4Address("127.0.0.1")),
+        int(ipaddress.IPv4Address("8.8.8.8")),
+        int(ipaddress.IPv4Address("0.0.0.0")),
+        int(ipaddress.IPv4Address("224.0.0.1")),
+        int(ipaddress.IPv4Address("169.254.1.1")),
     ],
 )
 def test_consumer_refuses_unselected_endpoint_before_any_request(url, monkeypatch):
@@ -63,7 +70,7 @@ def test_consumer_uses_empty_proxies_for_its_numeric_internal_readiness_request(
 
     monkeypatch.setattr(consumer.urllib.request, "ProxyHandler", handler)
     monkeypatch.setattr(consumer.urllib.request, "build_opener", lambda _handler: SimpleNamespace(open=open_url))
-    consumer.await_runtime("http://172.29.0.2:8080")
+    consumer.await_runtime(int(ipaddress.IPv4Address("172.29.0.2")))
     assert seen == [{}, ("http://172.29.0.2:8080/api/health", 2)]
 
 

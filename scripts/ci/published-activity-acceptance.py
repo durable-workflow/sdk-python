@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -29,6 +30,10 @@ except ModuleNotFoundError as error:
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "published-activity-results"
+REQUIREMENTS = "requirements.txt"
+OWNER_VALUE = "=sdk-python"
+LABEL_FILTER = "label="
+ID_FORMAT = "{{.ID}}"
 # No inherited context, registry credentials, proxy, SSH or remote Docker endpoint.
 # This kernel directory is private to each CLI process and contains no config.json.
 DOCKER_ENVIRONMENT = {
@@ -90,7 +95,7 @@ def capture_source(report):
     if re.fullmatch(r"[0-9a-f]{40}", commit) is None or os.environ.get("GITHUB_SHA", commit) != commit:
         raise ValueError("checkout differs from the selected Actions commit")
     paths = {
-        "requirements.txt": "scripts/ci/published-activity-requirements.txt",
+        REQUIREMENTS: "scripts/ci/published-activity-requirements.txt",
         "verify_activity_install.py": "scripts/ci/verify_activity_install.py",
         "test_activity_identity.py": "tests/integration/test_activity_identity.py",
         "conftest.py": "tests/integration/conftest.py",
@@ -109,7 +114,7 @@ def download_wheels(selected, captured, files):
     approval_path = ".github/release-candidates/" + selected["sdk_version"] + ".json"
     approval = json.loads(call("git", "show", "HEAD:" + approval_path, cwd=ROOT).stdout)
     wheel_name = next(name for name in approval["files"] if name.endswith(".whl"))
-    files.write("requirements.txt", captured["requirements.txt"])
+    files.write(REQUIREMENTS, captured[REQUIREMENTS])
     files.check()
     wheelhouse = OUTPUT / "wheels"
     wheelhouse.mkdir(mode=0o700)
@@ -132,7 +137,7 @@ def download_wheels(selected, captured, files):
         "--dest",
         str(wheelhouse),
         "-r",
-        str(OUTPUT / "requirements.txt"),
+        str(OUTPUT / REQUIREMENTS),
         env=environment,
     )
     files.write("download.log", result.stdout + result.stderr)
@@ -147,7 +152,7 @@ def download_wheels(selected, captured, files):
     return {
         "files": {
             name: packet_file(captured[name])
-            for name in ("requirements.txt", "verify_activity_install.py", "test_activity_identity.py", "conftest.py")
+            for name in (REQUIREMENTS, "verify_activity_install.py", "test_activity_identity.py", "conftest.py")
         },
         "wheels": wheels,
         "wheel_name": wheel_name,
@@ -209,7 +214,7 @@ class OwnedDocker:
     def labels(self, role):
         return [
             "--label",
-            runtime.OWNER + "=sdk-python",
+            runtime.OWNER + OWNER_VALUE,
             "--label",
             runtime.RUN + "=" + self.nonce,
             "--label",
@@ -277,9 +282,9 @@ class OwnedDocker:
     def discover(self):
         filters = [
             "--filter",
-            "label=" + runtime.OWNER + "=sdk-python",
+            LABEL_FILTER + runtime.OWNER + OWNER_VALUE,
             "--filter",
-            "label=" + runtime.RUN + "=" + self.nonce,
+            LABEL_FILTER + runtime.RUN + "=" + self.nonce,
         ]
         for role in self.containers:
             result = cleanup_call(
@@ -289,9 +294,9 @@ class OwnedDocker:
                 "--no-trunc",
                 *filters,
                 "--filter",
-                "label=" + runtime.ROLE + "=" + role,
+                LABEL_FILTER + runtime.ROLE + "=" + role,
                 "--format",
-                "{{.ID}}",
+                ID_FORMAT,
             )
             self.containers[role].update(value for value in result.stdout.splitlines() if runtime.full_id(value))
         result = cleanup_call(
@@ -301,9 +306,9 @@ class OwnedDocker:
             "--no-trunc",
             *filters,
             "--filter",
-            "label=" + runtime.ROLE + "=network",
+            LABEL_FILTER + runtime.ROLE + "=network",
             "--format",
-            "{{.ID}}",
+            ID_FORMAT,
         )
         self.networks.update(value for value in result.stdout.splitlines() if runtime.full_id(value))
 
@@ -334,7 +339,7 @@ class OwnedDocker:
             raise ValueError("network retains an attachment; refusing removal")
         cleanup_call("docker", "network", "rm", identity)
         result = cleanup_call(
-            "docker", "network", "ls", "--no-trunc", "--filter", "id=" + identity, "--format", "{{.ID}}"
+            "docker", "network", "ls", "--no-trunc", "--filter", "id=" + identity, "--format", ID_FORMAT
         )
         return {"absent": not result.stdout.strip()}
 
@@ -379,12 +384,12 @@ class OwnedDocker:
     def verify_label_absence(self):
         filters = [
             "--filter",
-            "label=" + runtime.OWNER + "=sdk-python",
+            LABEL_FILTER + runtime.OWNER + OWNER_VALUE,
             "--filter",
-            "label=" + runtime.RUN + "=" + self.nonce,
+            LABEL_FILTER + runtime.RUN + "=" + self.nonce,
         ]
-        containers = cleanup_call("docker", "ps", "-a", "--no-trunc", *filters, "--format", "{{.ID}}")
-        networks = cleanup_call("docker", "network", "ls", "--no-trunc", *filters, "--format", "{{.ID}}")
+        containers = cleanup_call("docker", "ps", "-a", "--no-trunc", *filters, "--format", ID_FORMAT)
+        networks = cleanup_call("docker", "network", "ls", "--no-trunc", *filters, "--format", ID_FORMAT)
         return {"absent": not containers.stdout.strip() and not networks.stdout.strip()}
 
 
@@ -397,9 +402,9 @@ def run_case(owned, selected, images, packet, bootstrap, report):
     try:
         session.send(packet)
         ready = session.receive("ACTIVITY_CONSUMER_READY=")
-        verify_distributions(ready, base64.b64decode(packet["files"]["requirements.txt"]["base64"]))
+        verify_distributions(ready, base64.b64decode(packet["files"][REQUIREMENTS]["base64"]))
         url = owned.boundary(images, selected, bootstrap, "before-sdk")
-        session.send({"server_url": url, "token": runtime.ENVIRONMENT["DW_AUTH_TOKEN"]})
+        session.send({"runtime_ipv4": int(ipaddress.IPv4Address(url)), "token": runtime.ENVIRONMENT["DW_AUTH_TOKEN"]})
         result = session.receive("ACTIVITY_CONSUMER_RESULT=")
         verify_case_result(result)
         if owned.boundary(images, selected, bootstrap, "after-sdk") != url:

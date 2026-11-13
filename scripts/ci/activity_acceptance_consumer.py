@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import stat
@@ -12,12 +13,13 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 
 DATA = Path("/run/acceptance-data")
 WHEELS = Path("/run/acceptance-wheels")
 ENVIRONMENT = Path("/run/acceptance-env")
 LIMIT = 64 * 1024 * 1024
+JUNIT = DATA / "identity.xml"
 
 
 def receive(maximum):
@@ -41,8 +43,10 @@ def write(directory, name, item):
         os.close(descriptor)
 
 
-def run(arguments, environment):
-    return subprocess.run(arguments, env=environment, capture_output=True, text=True, timeout=90, check=True).stdout
+def run(arguments, environment, input_data=None):
+    return subprocess.run(
+        arguments, env=environment, input=input_data, capture_output=True, text=True, timeout=90, check=True
+    ).stdout
 
 
 def validate_setup(packet):
@@ -57,43 +61,50 @@ def validate_setup(packet):
         raise ValueError("SDK wheel packet differs from approval")
 
 
-def await_runtime(url):
-    parsed = urlsplit(url)
-    if parsed.scheme != "http" or parsed.port != 8080 or parsed.path or parsed.query or parsed.fragment:
-        raise ValueError("consumer endpoint shape differs")
+def await_runtime(number):
+    if type(number) is not int or not 0 <= number <= 0xFFFFFFFF:
+        raise ValueError("consumer endpoint must be an unsigned IPv4 integer")
     # The controller binds this numeric endpoint to the two inspected IDs.
-    import ipaddress
-
-    address = ipaddress.ip_address(parsed.hostname)
-    if address.version != 4 or not address.is_private or address.is_loopback:
+    address = ipaddress.IPv4Address(number)
+    if (
+        not address.is_private
+        or address.is_loopback
+        or address.is_unspecified
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_link_local
+    ):
         raise ValueError("consumer endpoint must be a private numeric IPv4 address")
+    octets = [(number >> shift) & 255 for shift in (24, 16, 8, 0)]
+    numeric_host = ".".join(str(octet) for octet in octets)
+    url = urlunsplit(("http", numeric_host + ":8080", "", "", ""))
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         try:
             with opener.open(url + "/api/health", timeout=2) as response:
                 if response.status == 200:
-                    return
+                    return url
         except OSError:
             time.sleep(0.2)
     raise TimeoutError("published runtime readiness")
 
 
-def inventory(python, wheel, packet, environment):
+def inventory(python, packet, environment):
+    captured = {
+        "wheel_base64": packet["wheels"][packet["wheel_name"]]["base64"],
+        "wheel_sha256": packet["wheel_sha256"],
+        "sdk_version": packet["sdk_version"],
+    }
     output = run(
         [
             str(python),
             "-I",
             "-B",
             str(DATA / "verify_activity_install.py"),
-            "--wheel",
-            str(wheel),
-            "--sha256",
-            packet["wheel_sha256"],
-            "--version",
-            packet["sdk_version"],
         ],
         environment,
+        input_data=json.dumps(captured) + "\n",
     )
     return json.loads(output)
 
@@ -101,8 +112,7 @@ def inventory(python, wheel, packet, environment):
 def main():
     packet = prepare_inputs()
     environment, python = prepare_environment()
-    wheel = WHEELS / packet["wheel_name"]
-    before = inventory(python, wheel, packet, environment)
+    before = inventory(python, packet, environment)
     ready = {
         "sdk_inventory": before,
         "python": sys.version,
@@ -121,10 +131,10 @@ def main():
     }
     print("ACTIVITY_CONSUMER_READY=" + json.dumps(ready, sort_keys=True), flush=True)
     admission = receive(8192)
-    if set(admission) != {"server_url", "token"}:
+    if set(admission) != {"runtime_ipv4", "token"}:
         raise ValueError("consumer admission shape differs")
-    await_runtime(admission["server_url"])
-    output = execute_case(python, wheel, packet, before, environment, admission)
+    admission["server_url"] = await_runtime(admission["runtime_ipv4"])
+    output = execute_case(python, packet, before, environment, admission)
     print("ACTIVITY_CONSUMER_RESULT=" + json.dumps(output, sort_keys=True), flush=True)
     # Remain attached while the controller rechecks the same two IDs and IP.
     if receive(8192) != {"release": True}:
@@ -158,6 +168,8 @@ def prepare_environment():
         "PYTHONNOUSERSITE": "1",
         "PIP_CONFIG_FILE": os.devnull,
         "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_CACHE_DIR": "1",
+        "PIP_NO_INPUT": "1",
         "TMPDIR": str(DATA),
     }
     python = ENVIRONMENT / "bin/python"
@@ -186,7 +198,7 @@ def prepare_environment():
     return environment, python
 
 
-def execute_case(python, wheel, packet, before, environment, admission):
+def execute_case(python, packet, before, environment, admission):
     environment.update(
         {
             "DURABLE_WORKFLOW_SERVER_URL": admission["server_url"],
@@ -213,21 +225,21 @@ def execute_case(python, wheel, packet, before, environment, admission):
             "-v",
             "--capture=tee-sys",
             str(DATA / "test_activity_identity.py"),
-            "--junitxml=" + str(DATA / "identity.xml"),
+            "--junitxml=" + str(JUNIT),
         ],
         env=environment,
         capture_output=True,
         text=True,
         timeout=90,
     )
-    after = inventory(python, wheel, packet, environment)
+    after = inventory(python, packet, environment)
     if after != before:
         raise ValueError("installed SDK inventory changed")
     return {
         "complete": result.returncode == 0,
         "sdk_inventory": after,
         "case_output": result.stdout + result.stderr,
-        "junit": (DATA / "identity.xml").read_text() if (DATA / "identity.xml").is_file() else "",
+        "junit": JUNIT.read_text() if JUNIT.is_file() else "",
     }
 
 

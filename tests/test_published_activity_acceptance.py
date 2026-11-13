@@ -10,7 +10,8 @@ import pytest
 
 PATH = Path(__file__).parents[1] / "scripts/ci/published-activity-acceptance.py"
 SPEC = importlib.util.spec_from_file_location("published_activity_acceptance", PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 runtime = runner.runtime
@@ -168,7 +169,7 @@ def network_fixture():
 def test_endpoint_is_bound_to_exact_two_ids_network_and_numeric_ip():
     network, records = network_fixture()
     runtime.verify_network(network, "c" * 64, "ours")
-    assert runtime.verify_attachments(network, *records) == "http://172.29.0.2:8080"
+    assert runtime.verify_attachments(network, *records) == "172.29.0.2"
 
 
 @pytest.mark.parametrize(
@@ -303,8 +304,9 @@ def test_partial_cleanup_failure_cannot_disable_other_owned_removals(monkeypatch
 )
 def test_complete_lock_rejects_ambient_missing_or_changed_distributions(actual):
     lock = b"durable-workflow==2.17.2 \\\n    --hash=sha256:abc\npytest==9.2.0 \\\n    --hash=sha256:def\n"
+    ready = {"distributions": json.dumps(actual)}
     with pytest.raises(ValueError, match="complete dependency lock"):
-        runner.verify_distributions({"distributions": json.dumps(actual)}, lock)
+        runner.verify_distributions(ready, lock)
 
 
 def test_complete_lock_accepts_only_the_exact_private_environment():

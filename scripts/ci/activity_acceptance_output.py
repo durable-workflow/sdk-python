@@ -7,6 +7,8 @@ import os
 import stat
 from pathlib import Path
 
+RESULT_NAME = "result.json"
+
 
 class Output:
     def __init__(self, path):
@@ -16,7 +18,7 @@ class Output:
         self.identity = os.fstat(self.directory)
         self.files = {}
         self.file_identities = {}
-        self.reserve("result.json")
+        self.reserve(RESULT_NAME)
 
     def check(self):
         current = self.path.lstat()
@@ -74,7 +76,7 @@ class Output:
         # on traversing the output pathname to retain a terminal failure receipt.
         try:
             self.check()
-            self.check_file("result.json")
+            self.check_file(RESULT_NAME)
         except OSError as error:
             report["output_failure"] = type(error).__name__
             report["complete"] = False
@@ -84,7 +86,7 @@ class Output:
         encoded = json.dumps(report, indent=2) + "\n"
         if len(encoded.encode()) > 128 * 1024:
             raise ValueError("terminal result exceeded its bound")
-        self._write(self.files["result.json"], encoded)
+        self._write(self.files[RESULT_NAME], encoded)
 
     def close(self):
         for descriptor in self.files.values():

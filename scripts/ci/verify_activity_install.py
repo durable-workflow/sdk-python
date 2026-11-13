@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import base64
 import csv
 import hashlib
@@ -11,6 +10,7 @@ import importlib.util
 import io
 import json
 import stat
+import sys
 import sysconfig
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -43,8 +43,7 @@ def member(archive, path, checksum, size):
     return content
 
 
-def wheel_members(wheel, expected_sha256):
-    data = Path(wheel).read_bytes()
+def wheel_members(data, expected_sha256):
     if sha256(data) != expected_sha256:
         raise ValueError("SDK wheel differs from its reviewed digest")
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -91,17 +90,19 @@ def verify_sdk(site, origin, wheel, expected_sha256):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--wheel", required=True, type=Path)
-    parser.add_argument("--sha256", required=True)
-    parser.add_argument("--version", required=True)
-    args = parser.parse_args()
+    encoded = sys.stdin.buffer.readline(64 * 1024 * 1024 + 1)
+    if len(encoded) > 64 * 1024 * 1024 or not encoded.endswith(b"\n"):
+        raise ValueError("SDK inventory input exceeds its bound")
+    packet = json.loads(encoded)
+    if set(packet) != {"wheel_base64", "wheel_sha256", "sdk_version"}:
+        raise ValueError("SDK inventory input shape differs")
+    wheel = base64.b64decode(packet["wheel_base64"], validate=True)
     spec = importlib.util.find_spec("durable_workflow")
     if spec is None or spec.origin is None:
         raise ValueError("installed SDK is unavailable")
-    if importlib.metadata.version("durable-workflow") != args.version:
+    if importlib.metadata.version("durable-workflow") != packet["sdk_version"]:
         raise ValueError("installed SDK version differs")
-    result = verify_sdk(sysconfig.get_path("purelib"), spec.origin, args.wheel, args.sha256)
+    result = verify_sdk(sysconfig.get_path("purelib"), spec.origin, wheel, packet["wheel_sha256"])
     print(json.dumps(result, sort_keys=True))
 
 

@@ -12,7 +12,8 @@ import pytest
 
 PATH = Path(__file__).parents[1] / "scripts/ci/verify_activity_install.py"
 SPEC = importlib.util.spec_from_file_location("verify_activity_install", PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 inventory = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(inventory)
 
@@ -41,7 +42,7 @@ def installed_fixture(tmp_path):
 
 def test_installed_member_matches_the_independently_reviewed_wheel(tmp_path):
     site, origin, wheel, digest = installed_fixture(tmp_path)
-    result = inventory.verify_sdk(site, origin, wheel, digest)
+    result = inventory.verify_sdk(site, origin, wheel.read_bytes(), digest)
     assert "durable_workflow/__init__.py" in result
     assert "durable_workflow-1.0.dist-info/RECORD" in result
 
@@ -58,7 +59,7 @@ def test_version_and_origin_alone_cannot_approve_substituted_or_extra_sdk_bytes(
     else:
         digest = "0" * 64
     with pytest.raises(ValueError):
-        inventory.verify_sdk(site, origin, wheel, digest)
+        inventory.verify_sdk(site, origin, wheel.read_bytes(), digest)
 
 
 def test_repeated_installed_record_row_cannot_hide_a_replaced_member(tmp_path):
@@ -66,4 +67,4 @@ def test_repeated_installed_record_row_cannot_hide_a_replaced_member(tmp_path):
     record = next(site.glob("*.dist-info/RECORD"))
     record.write_text(record.read_text() + record.read_text().splitlines()[0] + "\n")
     with pytest.raises(ValueError, match="RECORD repeats"):
-        inventory.verify_sdk(site, origin, wheel, digest)
+        inventory.verify_sdk(site, origin, wheel.read_bytes(), digest)
