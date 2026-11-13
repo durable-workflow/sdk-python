@@ -118,3 +118,68 @@ def test_schema_authority_uses_native_marker_not_sqlite_user_version():
         connection.execute("INSERT INTO dw_server_schema VALUES ('rust-development',13)")
         with pytest.raises(ValueError, match="marker differs"):
             controller.native_marker(connection, 13)
+
+
+def upgrade_snapshots():
+    columns = ["version", "description", "installed_on", "success", "checksum", "execution_time"]
+    before = {
+        "schema": [("table", "business", "business", "business schema")],
+        "user_version": 0,
+        "application_id": 0,
+        "tables": {
+            "business": {"columns": ["id"], "rows": [[["text", "preserve"]]]},
+            "dw_server_schema": {
+                "columns": ["engine", "version"],
+                "rows": [[["text", "rust-development"], ["integer", 12]]],
+            },
+            "_sqlx_migrations": {"columns": columns, "rows": []},
+        },
+    }
+    added = [("table", "dw_command_intents", "dw_command_intents", "tagged schema")]
+    after = copy.deepcopy(before)
+    after["schema"] = sorted(before["schema"] + added)
+    after["tables"]["dw_server_schema"]["rows"][0][1] = ["integer", 13]
+    after["tables"]["dw_command_intents"] = {"columns": ["command_id", "namespace", "intent_digest"], "rows": []}
+    after["tables"]["_sqlx_migrations"]["rows"] = [
+        [
+            ["integer", 13],
+            ["text", controller.JOURNAL_DESCRIPTION],
+            ["text", "2026-01-01 00:00:01"],
+            ["integer", 1],
+            ["blob", controller.JOURNAL_SHA384],
+            ["integer", 0],
+        ]
+    ]
+    return before, after, added
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value["tables"]["business"]["rows"].clear(),
+        lambda value: value.update(user_version=13),
+        lambda value: value["tables"]["dw_command_intents"]["rows"].append([["text", "unexpected"]]),
+        lambda value: value["tables"]["_sqlx_migrations"]["rows"][0].__setitem__(0, ["integer", 12]),
+        lambda value: value["tables"]["_sqlx_migrations"]["rows"][0].__setitem__(1, ["text", "other description"]),
+        lambda value: value["tables"]["_sqlx_migrations"]["rows"][0].__setitem__(2, ["text", "2025-01-01 00:00:00"]),
+        lambda value: value["tables"]["_sqlx_migrations"]["rows"][0].__setitem__(3, ["integer", 0]),
+        lambda value: value["tables"]["_sqlx_migrations"]["rows"][0].__setitem__(4, ["blob", "wrong checksum"]),
+        lambda value: value["tables"]["_sqlx_migrations"]["rows"][0].__setitem__(5, ["integer", 1]),
+    ],
+)
+def test_upgrade_preserves_all_business_rows_and_closes_every_journal_field(mutation):
+    before, after, added = upgrade_snapshots()
+    began, finished = 1767225600.5, 1767225602.5
+    controller.validate_upgrade(before, after, added, began, finished)
+    mutation(after)
+    with pytest.raises(ValueError):
+        controller.validate_upgrade(before, after, added, began, finished)
+
+
+def test_unapproved_helper_bytes_cannot_execute(tmp_path):
+    script = tmp_path / "helper.py"
+    marker = tmp_path / "executed"
+    script.write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n")
+    with pytest.raises(ValueError, match="source identity differs"):
+        controller.load(script, "unapproved_fixture", "0" * 64)
+    assert not marker.exists()

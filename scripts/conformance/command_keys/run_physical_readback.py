@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 import secrets
@@ -15,21 +14,36 @@ import subprocess
 import time
 import urllib.request
 from contextlib import closing
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
+from types import ModuleType
 from uuid import uuid4
 
 HELPER_SHA256 = "6fc6054ce087c136a86d7b6b222daeefaa87c58fa0b613b155a5df39e6a26fad"
 BASELINE_SHA256 = "7d1826f7681342bb3a5974509648e2e8d75e7a21d262f65f3ec1f58727ccbc0c"
 SEED_SHA256 = "8c728ce827df3a11621dfb0e82cdd404bbab48784182a5e92c8d632d49047fc5"
+STEP_SHA256 = "fc3ad1730682c09704027dcbabc17cd6ded9c642a3ff20d7988d5f4b4a5726fd"
+JOURNAL_SHA384 = "53b752529a1f7addaefe62ab61160dd42b3990f805cfdc4ecd1b48927a6c2f7ce42526fc04522ac887a37208f343fc73"
+JOURNAL_DESCRIPTION = (
+    "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, "
+    "service call deadlines, service admission counters and committed external payload deletions and "
+    "task ready origins and poll expiry indexes and bound run command contracts and task queue activity "
+    "dispatch pauses and keyed command intents"
+)
 
 
-def load(path, name):
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise ValueError("required source module is unavailable")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+def load(path, name, expected=None):
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if expected is not None and digest != expected:
+        raise ValueError("required executable source identity differs")
+    module = ModuleType(name)
+    module.__file__ = str(path)
+    # Execute precisely the bytes that were hashed, rather than reopening the
+    # external helper through an import loader after its identity check.
+    exec(compile(data, str(path), "exec"), module.__dict__)
+    module.source_sha256 = digest
     return module
 
 
@@ -44,12 +58,63 @@ def native_marker(connection, expected):
         raise ValueError("native schema ownership/version marker differs")
 
 
+def validate_journal(table, began, finished):
+    columns = table["columns"]
+    if (
+        set(columns) != {"version", "description", "installed_on", "success", "checksum", "execution_time"}
+        or len(table["rows"]) != 1
+    ):
+        raise ValueError("upgraded migration journal shape differs")
+    row = dict(zip(columns, table["rows"][0], strict=True))
+    expected = {
+        "version": ["integer", 13],
+        "description": ["text", JOURNAL_DESCRIPTION],
+        "success": ["integer", 1],
+        "checksum": ["blob", JOURNAL_SHA384],
+        "execution_time": ["integer", 0],
+    }
+    if any(row[key] != value for key, value in expected.items()):
+        raise ValueError("upgraded migration journal field differs from tagged source")
+    installed = row["installed_on"]
+    if installed[0] != "text":
+        raise ValueError("migration timestamp type differs")
+    timestamp = datetime.fromisoformat(installed[1]).replace(tzinfo=timezone.utc).timestamp()
+    if not int(began) <= timestamp <= finished:
+        raise ValueError("migration timestamp is outside the actual upgrade window")
+
+
+def validate_upgrade(before, after, added_schema, began, finished):
+    # Preserve every business row and catalog entry. Only the exact source-defined
+    # marker/journal changes and empty new intent table may differ.
+    if sorted(before["schema"] + added_schema) != after["schema"]:
+        raise ValueError("upgrade changed unexpected schema objects")
+    validate_journal(after["tables"]["_sqlx_migrations"], began, finished)
+    expected = deepcopy(before)
+    expected["schema"] = after["schema"]
+    marker = expected["tables"]["dw_server_schema"]
+    version = marker["columns"].index("version")
+    if len(marker["rows"]) != 1 or marker["rows"][0][version] != ["integer", 12]:
+        raise ValueError("baseline marker differs")
+    marker["rows"][0][version] = ["integer", 13]
+    expected["tables"]["_sqlx_migrations"] = after["tables"]["_sqlx_migrations"]
+    expected["tables"]["dw_command_intents"] = {"columns": ["command_id", "namespace", "intent_digest"], "rows": []}
+    if expected != after:
+        raise ValueError("upgrade changed business rows or unexpected metadata")
+
+
 def run(args):
+    if not __debug__:
+        raise ValueError("acceptance assertions require Python without optimization")
     # No Docker action or backup copy precedes all input identity checks.
     verify_file(args.baseline, BASELINE_SHA256)
     verify_file(args.seed, SEED_SHA256)
     verify_file(args.snapshot_helper, HELPER_SHA256)
-    legacy = load(args.snapshot_helper, "accepted_sqlite_snapshot")
+    verify_file(args.step_sql, STEP_SHA256)
+    legacy = load(args.snapshot_helper, "accepted_sqlite_snapshot", HELPER_SHA256)
+    with closing(sqlite3.connect(":memory:")) as catalog:
+        catalog.execute("CREATE TABLE dw_server_schema(engine TEXT, version INTEGER)")
+        catalog.executescript(args.step_sql.read_text())
+        added_schema = [row for row in legacy.snapshot(catalog)["schema"] if row[2] != "dw_server_schema"]
     controls = load(Path(__file__).with_name("run_response_loss.py"), "native_runtime_identity")
     root = args.output.absolute()
     root.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -91,6 +156,8 @@ def run(args):
         "baseline_sha256": BASELINE_SHA256,
         "seed_sha256": SEED_SHA256,
         "snapshot_helper_sha256": HELPER_SHA256,
+        "runtime_verifier_sha256": controls.source_sha256,
+        "tagged_step_sha256": STEP_SHA256,
         "expected_server": controls.EXPECTED_SERVER,
         "observed_image": observed,
         "controller_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -124,18 +191,25 @@ def run(args):
         verify_file(copied, BASELINE_SHA256)
         with closing(sqlite3.connect(copied)) as connection:
             native_marker(connection, 12)
+        baseline_snapshot = snapshot()
+        upgrade_began = time.time()
         call("create", "--name", names[0], "--network", "none", *common, image, "schema-upgrade")
         call("start", names[0])
         assert call("wait", names[0]).stdout.strip() == "0"
         upgrade = json.loads(call("logs", names[0]).stdout)
         assert upgrade == {"backend": "sqlite", "from_schema_version": 12, "schema_version": 13, "status": "upgraded"}
         report["upgrade"] = upgrade
+        upgrade_finished = time.time()
         upgrade_state = json.loads(call("inspect", names[0]).stdout)[0]
         assert upgrade_state["State"]["OOMKilled"] is False
         call("rm", "-v", names[0])
         with closing(sqlite3.connect(copied)) as connection:
             native_marker(connection, 13)
             assert connection.execute("SELECT count(*) FROM dw_command_intents").fetchone()[0] == 0
+        upgraded_snapshot = snapshot()
+        validate_upgrade(baseline_snapshot, upgraded_snapshot, added_schema, upgrade_began, upgrade_finished)
+        report["upgrade_row_preservation"] = True
+        report["journal_sha384"] = JOURNAL_SHA384
         call("create", "--name", names[1], "-p", "127.0.0.1::8080", *common, image)
         call("start", names[1])
         address = call("port", names[1], "8080/tcp").stdout.strip()
@@ -233,7 +307,7 @@ def run(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("python", "wheel", "baseline", "seed", "snapshot-helper", "output"):
+    for name in ("python", "wheel", "baseline", "seed", "snapshot-helper", "step-sql", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     return parser.parse_args()
 
