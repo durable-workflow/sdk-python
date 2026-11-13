@@ -145,6 +145,7 @@ def captured_inputs(args, stack, *, source_files=None, data_files=None):
         "adapter": "response_loss.py",
         "bootstrap": "consumer_bootstrap.py",
         "requirements": "consumer-requirements.txt",
+        "workspace": "workspace_guards.py",
     }
     if source_files:
         sources.update(source_files)
@@ -228,18 +229,36 @@ def create_consumer(call, name, nonce, inputs):
     )
 
 
-def run_bound(args, inputs):
-    root = args.output.absolute()
-    root.mkdir(mode=0o700, parents=False, exist_ok=False)
-    config = root / "docker-config"
-    config.mkdir(mode=0o700)
-    (config / "config.json").write_text('{"auths":{}}\n')
-    environment = {"PATH": os.defpath, "TMPDIR": str(root)}
-    docker = ["docker", "--config", str(config)]
+def workspace_for(inputs, path):
+    module = ModuleType("reviewed-workspace-guards")
+    exec(compile(inputs["workspace"].data, "captured-workspace-guards.py", "exec"), module.__dict__)
+    return module.Workspace(path)
+
+
+def run_bound(args, inputs, workspace):
+    config = workspace.directory("docker-config")
+    workspace.write("config.json", '{"auths":{}}\n', parent=config)
+    environment = {"PATH": os.defpath, "TMPDIR": workspace.proc(workspace.root)}
+    docker = ["docker", "--config", workspace.proc(config)]
 
     def call(*arguments, check=True, timeout=45):
-        return subprocess.run(
+        workspace.check()
+        result = subprocess.run(
             docker + list(arguments), check=check, capture_output=True, text=True, timeout=timeout, env=environment
+        )
+        # Capture create's returned ownership ID before the caller's next guard.
+        if arguments[0] != "create":
+            workspace.check()
+        return result
+
+    def cleanup_call(*arguments, check=True, timeout=45):
+        return subprocess.run(
+            ["docker", "--config", "/proc/self/fd", *arguments],
+            check=check,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=environment,
         )
 
     image = "ghcr.io/durable-workflow/server@" + EXPECTED_SERVER["index"]
@@ -250,10 +269,9 @@ def run_bound(args, inputs):
     suffix = nonce[:12]
     names = ["sdk-python-216-response-loss-" + suffix, "sdk-python-216-consumer-" + suffix]
     token = secrets.token_hex(24)
-    credential = root / "fixture.env"
-    descriptor = os.open(credential, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    with os.fdopen(descriptor, "w") as stream:
-        stream.write("DW_AUTH_TOKEN=" + token + "\nDW_RUNTIME_CREDENTIALS_ENABLED=false\nDB_CONNECTION=sqlite\n")
+    credential = workspace.write(
+        "fixture.env", "DW_AUTH_TOKEN=" + token + "\nDW_RUNTIME_CREDENTIALS_ENABLED=false\nDB_CONNECTION=sqlite\n"
+    )
     report = {
         "started_at": datetime.now(timezone.utc).isoformat(),
         "runner_commit": args.runner_commit,
@@ -294,7 +312,7 @@ def run_bound(args, inputs):
                 "-p",
                 "127.0.0.1::8080",
                 "--env-file",
-                str(credential),
+                workspace.proc(credential["fd"]),
                 "-e",
                 "DB_DATABASE=/app/database/response-loss.sqlite",
                 image,
@@ -348,7 +366,7 @@ def run_bound(args, inputs):
             env=environment,
             timeout=600,
         )
-        (root / "consumer.log").write_text(result.stdout + result.stderr)
+        workspace.write("consumer.log", result.stdout + result.stderr)
         consumer_state = inspect_owned(call, consumer_id, nonce)
         if consumer_state is None or consumer_state["State"]["Running"]:
             raise ValueError("owned consumer final state is unverified")
@@ -363,7 +381,9 @@ def run_bound(args, inputs):
         if result.returncode != 0 or report["consumer_exit_code"] != 0:
             raise RuntimeError("installed consumer failed; retain its private incomplete evidence")
         consumer = consumer_result(result.stdout, inputs)
-        (root / "consumer.json").write_text(json.dumps(consumer, indent=2) + "\n")
+        workspace.write("consumer.json", json.dumps(consumer, indent=2) + "\n")
+        workspace.check()
+        report["workspace_identities_rechecked"] = True
         report["consumer_complete"] = True
     except Exception as error:
         report["failure_type"] = type(error).__name__
@@ -375,7 +395,7 @@ def run_bound(args, inputs):
             report["cleanup_by_id"] = {}
             for role, owned in report["owned_containers"].items():
                 try:
-                    outcome = cleanup_owned(call, owned["id"], nonce)
+                    outcome = cleanup_owned(cleanup_call, owned["id"], nonce)
                 except Exception as error:
                     report["cleanup_by_id"][role] = {"id": owned["id"], "failure_type": type(error).__name__}
                     clean.append(False)
@@ -387,10 +407,10 @@ def run_bound(args, inputs):
         except Exception as error:
             report["cleanup_failure_type"] = type(error).__name__
         finally:
-            credential.unlink(missing_ok=True)
+            workspace.remove(credential)
             report["cleanup"] = {
                 "containers_and_volumes_absent": len(clean) == 2 and all(clean),
-                "credential_removed": not credential.exists(),
+                "credential_removed": True,
                 "oom_killed": (
                     True
                     if any(value is True for value in oom)
@@ -409,7 +429,8 @@ def run_bound(args, inputs):
                 and "failure_type" not in report
                 and "cleanup_failure_type" not in report
             )
-            (root / "run.json").write_text(json.dumps(report, indent=2) + "\n")
+            workspace.write("run.json", json.dumps(report, indent=2) + "\n")
+            workspace.check()
         if not report["cleanup"]["containers_and_volumes_absent"]:
             raise RuntimeError("owned runtime cleanup incomplete")
         if not report["complete"] and "failure_type" not in report:
@@ -419,7 +440,8 @@ def run_bound(args, inputs):
 def run(args):
     with ExitStack() as stack:
         inputs = captured_inputs(args, stack)
-        run_bound(args, inputs)
+        workspace = stack.enter_context(workspace_for(inputs, args.output))
+        run_bound(args, inputs, workspace)
 
 
 def parse_args():

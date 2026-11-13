@@ -67,22 +67,35 @@ def validate_distinct_counts(before, after):
             raise ValueError("case-distinct admissions did not create exactly two new command identities")
 
 
-def run_bound(args, inputs, controls):
+def run_bound(args, inputs, controls, workspace):
     validate_cell(args.state, args.scenario)
     legacy = accepted_helper(inputs)
-    root = args.output.absolute()
-    root.mkdir(mode=0o700, parents=False, exist_ok=False)
-    database = root / "database"
-    database.mkdir(mode=0o700)
-    config = root / "docker-config"
-    config.mkdir(mode=0o700)
-    (config / "config.json").write_text('{"auths":{}}\n')
-    environment = {"PATH": os.defpath, "TMPDIR": str(root)}
-    docker = ["docker", "--config", str(config)]
+    database_fd = workspace.directory("database")
+    database = Path(workspace.proc(database_fd))
+    canonical_database = Path(workspace.mount_path(database_fd))
+    held_databases = {}
+    config = workspace.directory("docker-config")
+    workspace.write("config.json", '{"auths":{}}\n', parent=config)
+    environment = {"PATH": os.defpath, "TMPDIR": workspace.proc(workspace.root)}
+    docker = ["docker", "--config", workspace.proc(config)]
 
     def call(*arguments, check=True, timeout=45):
-        return subprocess.run(
+        workspace.check()
+        result = subprocess.run(
             docker + list(arguments), env=environment, check=check, capture_output=True, text=True, timeout=timeout
+        )
+        if arguments[0] != "create":
+            workspace.check()
+        return result
+
+    def cleanup_call(*arguments, check=True, timeout=45):
+        return subprocess.run(
+            ["docker", "--config", "/proc/self/fd", *arguments],
+            env=environment,
+            check=check,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
 
     image = "ghcr.io/durable-workflow/server@" + controls.EXPECTED_SERVER["index"]
@@ -91,13 +104,12 @@ def run_bound(args, inputs, controls):
     interpreter = controls.interpreter_identity(json.loads(call("image", "inspect", python_image).stdout))
     nonce = uuid4().hex
     token = secrets.token_hex(24)
-    credential = root / "fixture.env"
-    with os.fdopen(os.open(credential, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w") as stream:
-        stream.write(
-            "DW_AUTH_TOKEN="
-            + token
-            + "\nDW_RUNTIME_CREDENTIALS_ENABLED=false\nDW_RUST_MAINTENANCE_LOOP=0\nDB_CONNECTION=sqlite\n"
-        )
+    credential = workspace.write(
+        "fixture.env",
+        "DW_AUTH_TOKEN="
+        + token
+        + "\nDW_RUNTIME_CREDENTIALS_ENABLED=false\nDW_RUST_MAINTENANCE_LOOP=0\nDB_CONNECTION=sqlite\n",
+    )
     report = {
         "runner_commit": args.runner_commit,
         "started_at": datetime.now(timezone.utc).isoformat(),
@@ -149,14 +161,17 @@ def run_bound(args, inputs, controls):
                     "--tmpfs",
                     "/app/database:uid=1000,gid=1000,mode=0700,size=16m",
                     "-v",
-                    str(database) + ":/cohort:rw",
+                    str(canonical_database) + ":/cohort:rw",
                     "--env-file",
-                    str(credential),
+                    workspace.proc(credential["fd"]),
                     "-e",
                     "DB_DATABASE=/cohort/" + filename,
                     "-p",
                     "127.0.0.1::8080",
+                    "--entrypoint",
+                    "/bin/sh",
                     image,
+                    *workspace.native_arguments(database_fd, held_databases[filename]),
                 ).stdout
             ),
         )
@@ -185,12 +200,15 @@ def run_bound(args, inputs, controls):
         state = controls.inspect_owned(call, identity, nonce)
         if state is None or state["State"]["Running"] or state["State"]["ExitCode"] != 0:
             raise ValueError("owned runtime did not stop cleanly")
-        report["cleanup_by_id"][role] = controls.cleanup_owned(call, identity, nonce)
+        report["cleanup_by_id"][role] = controls.cleanup_owned(cleanup_call, identity, nonce)
 
     def snapshot(path):
+        workspace.check()
         with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
             connection.execute("BEGIN")
-            return legacy.snapshot(connection)
+            result = legacy.snapshot(connection)
+        workspace.check()
+        return result
 
     def consume(phase, upstream, seed=None):
         for value in inputs.values():
@@ -232,18 +250,19 @@ def run_bound(args, inputs, controls):
             text=True,
             timeout=600,
         )
-        (root / (phase + ".log")).write_text(result.stdout + result.stderr)
+        workspace.write(phase + ".log", result.stdout + result.stderr)
         state = controls.inspect_owned(call, identity, nonce)
         if state is None or state["State"]["Running"] or state["State"]["ExitCode"] != 0 or result.returncode != 0:
             raise RuntimeError("installed synthetic consumer failed")
         proof = controls.consumer_result(result.stdout, captured, scenario="synthetic_legacy")
-        (root / (phase + ".json")).write_text(json.dumps(proof, indent=2) + "\n")
+        workspace.write(phase + ".json", json.dumps(proof, indent=2) + "\n")
         for value in inputs.values():
             value.recheck()
-        report["cleanup_by_id"][phase] = controls.cleanup_owned(call, identity, nonce)
+        report["cleanup_by_id"][phase] = controls.cleanup_owned(cleanup_call, identity, nonce)
         return proof
 
     try:
+        held_databases["source.sqlite"] = workspace.write("source.sqlite", b"", parent=database_fd, immutable=False)
         _, upstream = start("source", "source.sqlite")
         seed = consume("prepare", upstream)["seed"]
         stop("source")
@@ -251,6 +270,8 @@ def run_bound(args, inputs, controls):
         if args.scenario == "modern-raw":
             # No transform is appropriate for this ambiguity cell. SQLite backup
             # still creates a separately owned complete copy of the stopped DB.
+            held_databases["copied.sqlite"] = workspace.write("copied.sqlite", b"", parent=database_fd, immutable=False)
+            workspace.check()
             with (
                 closing(sqlite3.connect(source.as_uri() + "?mode=ro&immutable=1", uri=True)) as original,
                 closing(sqlite3.connect(copied)) as destination,
@@ -260,7 +281,12 @@ def run_bound(args, inputs, controls):
                 raise ValueError("unmodified modern copy differs")
             report["transform"] = {"transformed": 0, "manifest_sha256": MANIFEST_SHA256}
         else:
-            report["transform"] = legacy.transform_copy(source, copied, seed["selections"], stopped=True)
+            workspace.check()
+            report["transform"] = legacy.transform_copy(
+                canonical_database / source.name, canonical_database / copied.name, seed["selections"], stopped=True
+            )
+            workspace.check()
+            held_databases["copied.sqlite"] = workspace.capture(database_fd, "copied.sqlite")
         _, upstream = start("readback", copied.name)
         before = snapshot(copied)
         proof = consume("read", upstream, seed)
@@ -279,6 +305,8 @@ def run_bound(args, inputs, controls):
                 "after_sha256": legacy.fingerprint(after),
             }
         report["consumer_complete"] = True
+        workspace.check()
+        report["workspace_identities_rechecked"] = True
     except Exception as error:
         report["failure_type"] = type(error).__name__
         raise
@@ -286,17 +314,15 @@ def run_bound(args, inputs, controls):
         for role, entry in report["owned_containers"].items():
             if role not in report["cleanup_by_id"]:
                 try:
-                    report["cleanup_by_id"][role] = controls.cleanup_owned(call, entry["id"], nonce)
+                    report["cleanup_by_id"][role] = controls.cleanup_owned(cleanup_call, entry["id"], nonce)
                 except Exception as error:
                     report["cleanup_by_id"][role] = {"id": entry["id"], "failure_type": type(error).__name__}
         clean = bool(report["cleanup_by_id"]) and all(
             value.get("absent") and value.get("volumes_absent") for value in report["cleanup_by_id"].values()
         )
-        credential.unlink(missing_ok=True)
+        workspace.remove(credential)
         if clean:
-            for path in database.iterdir():
-                path.unlink()
-            database.rmdir()
+            workspace.remove_database(database_fd)
         try:
             for value in inputs.values():
                 value.recheck()
@@ -308,18 +334,20 @@ def run_bound(args, inputs, controls):
             report["post_input_failure_type"] = type(error).__name__
         report["cleanup"] = {
             "containers_and_volumes_absent": clean,
-            "database_removed": not database.exists(),
-            "credential_removed": not credential.exists(),
+            "database_removed": clean,
+            "credential_removed": True,
         }
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
         report["complete"] = (
             clean
             and report.get("consumer_complete") is True
+            and report.get("workspace_identities_rechecked") is True
             and "failure_type" not in report
             and "post_input_failure_type" not in report
             and all(value.get("oom_killed") is False for value in report["cleanup_by_id"].values())
         )
-        (root / "run.json").write_text(json.dumps(report, indent=2) + "\n")
+        workspace.write("run.json", json.dumps(report, indent=2) + "\n")
+        workspace.check()
         if not clean:
             raise RuntimeError("synthetic owned cleanup incomplete")
         if not report["complete"] and "failure_type" not in report:
@@ -347,7 +375,8 @@ def run(args):
                 "manifest": (args.manifest, 128 * 1024, MANIFEST_SHA256),
             },
         )
-        run_bound(args, inputs, controls)
+        workspace = stack.enter_context(controls.workspace_for(inputs, args.output))
+        run_bound(args, inputs, controls, workspace)
 
 
 def parse_args():
