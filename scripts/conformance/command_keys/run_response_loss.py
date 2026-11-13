@@ -164,7 +164,7 @@ def captured_inputs(args, stack, *, source_files=None, data_files=None):
 
 
 def consumer_result(stdout, inputs, *, scenario="response_loss"):
-    if scenario not in {"response_loss", "physical_readback"}:
+    if scenario not in {"response_loss", "physical_readback", "synthetic_legacy"}:
         raise ValueError("unknown installed consumer scenario")
     lines = [line[len(RESULT_PREFIX) :] for line in stdout.splitlines() if line.startswith(RESULT_PREFIX)]
     if len(lines) != 1:
@@ -181,7 +181,7 @@ def consumer_result(stdout, inputs, *, scenario="response_loss"):
         raise ValueError("consumer result does not bind the captured inputs/toolchain")
     if scenario == "response_loss" and result.get("proxy_sha256") != PROXY_SHA256:
         raise ValueError("consumer proxy identity differs")
-    if scenario == "physical_readback" and result.get("seed_sha256") != inputs["seed"].sha256:
+    if scenario in {"physical_readback", "synthetic_legacy"} and result.get("seed_sha256") != inputs["seed"].sha256:
         raise ValueError("consumer seed identity differs")
     return result
 

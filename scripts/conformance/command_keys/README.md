@@ -131,3 +131,51 @@ control preserves their original history and business identities only.
 A producer upgrade receipt alone does not qualify this SDK. The exact consumer
 source, installed proof, complete snapshots, immutable input/toolchain rechecks,
 all three captured-ID cleanup records and independent review remain required.
+
+## Synthetic SQLite legacy cases
+
+`run_synthetic_legacy.py` prepares real current-producer API admissions, stops
+that owned runtime, then calls the unchanged accepted common helper on a private
+stopped copy. Its helper source is Rust `4add871b175517f2031f71c868ce278bbfbba486`,
+SHA-256 `6fc6054ce087c136a86d7b6b222daeefaa87c58fa0b613b155a5df39e6a26fad`.
+The producer manifest is Server `d66e33bfb5c76f94c5b202f8c9f7a9e8cd75cf1c`,
+SHA-256 `da1990000c611d7377690c7526487d6415fa4f9cb42d299f59585a7c2eebf769`.
+The helper's manifest data lookup uses the captured accepted bytes. Its SQL,
+preconditions, complete-copy comparison and exact allowed row changes are unchanged.
+This setup is separate from the producer-owned physical historical seed.
+
+```sh
+python3 -I scripts/conformance/command_keys/run_synthetic_legacy.py \
+  --runner-commit FULL_REVIEWED_RUNNER_COMMIT \
+  --state open --scenario readback \
+  --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
+  --snapshot-helper /path/to/accepted/sqlite_legacy.py \
+  --manifest /path/to/accepted/command-key-legacy-v1-vectors.json \
+  --output /path/to/private-disk-scratch/new-synthetic-run
+```
+
+Run the readback scenario separately for `open`, `completed` and `continued`.
+The actual installed Worker creates closed/continued states and null update
+results before the copy. No Worker runs during the readback window. Four
+concurrent changed-input retries must retain original identities and unknown
+intent; changed names and explicit signal-run targets must conflict. The Python
+update helper uses its existing unscoped route. GET-only outcomes preserve the
+pending/completed-null distinction.
+
+The other scenarios require `--state open`: `two-rows`, `legacy-token` and
+`modern-raw` must refuse with explicit ambiguous/unverified/non-retryable fields.
+`case-only` first checks exact-byte retained readback, then admits the lower-case
+key in a separate write interval under SQLite's binary comparison. Complete
+logical snapshots must match for readback/ambiguity windows. The distinct-key
+interval must create two new command/intent identities and has no zero-write claim.
+
+Every phase executes captured adapter/bootstrap bytes in the fixed published
+Python image with all nine dependency wheel hashes and the reviewed SDK wheel.
+Lifecycle and cleanup use captured full creation IDs plus ownership labels.
+Source and copied runtimes are sequential; at most one runtime and one consumer
+coexist, each capped at 1 CPU, 1 GiB and 256 PIDs. All declared inputs and the
+interpreter are rechecked after return, and both private database copies are
+removed after exact-ID container/volume cleanup. Record each state/scenario and
+any NONPASS separately. Independent review, exact-head checks and actual
+installed evidence are required before qualification; another SDK's result does
+not qualify this adapter or complete shared216.
