@@ -1,0 +1,45 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "python-completion-size-limit-fails-run-once",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "sdk.completion-size-limit",
+    "input": [{"activities": 4, "argument_bytes": 2048, "limit": 4096}]
+  },
+  "command_sequence": [
+    {
+      "type": "workflow_task_request",
+      "route": "complete",
+      "command_types": ["schedule_activity", "schedule_activity", "schedule_activity", "schedule_activity"],
+      "non_retryable": [false, false, false, false],
+      "structural_limit": [false, false, false, false]
+    },
+    {
+      "type": "workflow_task_request",
+      "route": "complete",
+      "command_types": ["fail_workflow"],
+      "non_retryable": [true],
+      "structural_limit": [true]
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "workflow_task_request",
+        "route": "complete",
+        "command_types": ["schedule_activity", "schedule_activity", "schedule_activity", "schedule_activity"],
+        "non_retryable": [false, false, false, false],
+        "structural_limit": [false, false, false, false]
+      },
+      {
+        "type": "workflow_task_request",
+        "route": "complete",
+        "command_types": ["fail_workflow"],
+        "non_retryable": [true],
+        "structural_limit": [true]
+      }
+    ]
+  }
+}
