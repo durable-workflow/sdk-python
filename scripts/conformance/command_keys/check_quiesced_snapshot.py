@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import hashlib
 import json
 import os
 import subprocess
@@ -64,6 +63,7 @@ def main(args):
                 "capture": "quiesced_capture.py",
                 "snapshot_bootstrap": "snapshot_bootstrap.py",
                 "native_control": "native_open_capture_control.py",
+                "snapshot_reader": "snapshot_runtime.py",
             },
             data_files={
                 "helper": (args.helper, 128 * 1024, HELPER_SHA256),
@@ -71,7 +71,6 @@ def main(args):
             },
         )
         workspace = stack.enter_context(controls.workspace_for(inputs, args.output))
-        capture = module(inputs["capture"].data, "captured_capture", "captured-quiesced-capture.py")
         database = workspace.directory("database")
         held = workspace.write("sample.sqlite", b"", parent=database, immutable=False)
         nonce = uuid4().hex
@@ -105,6 +104,26 @@ def main(args):
             "cleanup": {},
             "complete": False,
         }
+        report["owned_containers"] = {}
+        report["cleanup_by_id"] = report["cleanup"]
+        reader_module = module(
+            inputs["snapshot_reader"].data, "captured_snapshot_reader", "captured-snapshot-runtime.py"
+        )
+        reader_inputs = {**inputs, "snapshot_helper": inputs["helper"]}
+        reader = reader_module.SnapshotReader(
+            workspace,
+            reader_inputs,
+            controls,
+            call,
+            cleanup_call,
+            report,
+            nonce,
+            lambda: [
+                identity
+                for role, identity in report["owned"].items()
+                if role == "writer" and role not in report["cleanup"]
+            ],
+        )
         common = [
             "--init",
             "--read-only",
@@ -127,6 +146,7 @@ def main(args):
                 call("create", "--name", "sdk-python-snapshot-" + role + "-" + nonce[:12], *common, *arguments).stdout
             )
             report["owned"][role] = identity
+            report["owned_containers"][role] = {"id": identity}
             if controls.inspect_owned(call, identity, nonce) is None:
                 raise ValueError("created snapshot control disappeared")
             return identity
@@ -135,54 +155,7 @@ def main(args):
             report["cleanup"][role] = controls.cleanup_owned(cleanup_call, report["owned"][role], nonce)
 
         def recover(role, files):
-            identity = create(
-                role,
-                "--memory",
-                "1g",
-                "--pids-limit",
-                "128",
-                "--user",
-                "0:0",
-                "--cap-add",
-                "SETUID",
-                "--cap-add",
-                "SETGID",
-                "--tmpfs",
-                "/snapshot:mode=0700,size=192m,noexec,nosuid,nodev",
-                "-i",
-                "--entrypoint",
-                "/usr/local/bin/python3",
-                image,
-                "-I",
-                "-B",
-                "-c",
-                inputs["snapshot_bootstrap"].data.decode(),
-            )
-            record = controls.inspect_owned(call, identity, nonce)
-            if record["Mounts"] or record["HostConfig"]["NetworkMode"] != "none":
-                raise ValueError("private recovery has a host mount or network")
-            packet = {"schema": "sdk-python.quiesced-snapshot.v1"}
-            for name, data in {"main": files["main"], "wal": files["wal"], "helper": inputs["helper"].data}.items():
-                packet[name] = {"base64": base64.b64encode(data).decode(), "sha256": hashlib.sha256(data).hexdigest()}
-            result = subprocess.run(
-                ["docker", "--config", "/proc/self/fd", "start", "-a", "-i", identity],
-                input=json.dumps(packet),
-                env=environment,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            workspace.write(role + ".log", result.stdout + result.stderr)
-            record = controls.inspect_owned(call, identity, nonce)
-            if result.returncode or record["State"]["Running"] or record["State"]["ExitCode"]:
-                raise RuntimeError("private recovery control failed")
-            output = json.loads(result.stdout)
-            if output["uid"] != 65534 or any(
-                output[name + "_sha256"] != packet[name]["sha256"] for name in ("main", "wal")
-            ):
-                raise ValueError("private recovery input/provenance differs")
-            cleanup(role)
-            return output
+            return reader.recover(files, {"primitive_role": role})
 
         try:
             writer = create(
@@ -212,38 +185,26 @@ def main(args):
                 time.sleep(0.1)
             else:
                 raise TimeoutError("synthetic multi-connection WAL writer readiness")
-            call("pause", writer)
+            files, report["capture"] = reader.capture_bytes(held)
+            if not files["wal"] or not files["shm"]:
+                raise ValueError("positive WAL control has no WAL/SHM")
+            report["paused_writer_verified"] = True
 
-            def attest():
-                state = controls.inspect_owned(call, writer, nonce)
-                if state is None or not state["State"]["Running"] or not state["State"]["Paused"]:
-                    raise ValueError("synthetic writer is not paused")
-
-            try:
-                files, report["capture"] = capture.capture(workspace, held, attest)
-                if not files["wal"]:
-                    raise ValueError("positive WAL control has no WAL")
-                report["paused_writer_verified"] = True
-            finally:
-                # Unpause/cleanup use captured IDs even if the held workspace
-                # check refuses. Never recover ownership through a name.
-                cleanup_call("unpause", writer)
-            # A deliberately refused capture must still resume the exact writer.
-            call("pause", writer)
-
-            def refuse_capture():
+            def refuse_capture(*_args):
                 raise ValueError("injected refusal")
 
+            actual_capture = reader.capture.capture
+            reader.capture.capture = refuse_capture
             try:
                 try:
-                    capture.capture(workspace, held, refuse_capture)
+                    reader.capture_bytes(held)
                 except ValueError as error:
                     if str(error) != "injected refusal":
                         raise
                 else:
                     raise ValueError("injected capture refusal did not fire")
             finally:
-                cleanup_call("unpause", writer)
+                reader.capture.capture = actual_capture
             state = controls.inspect_owned(call, writer, nonce)
             if state is None or state["State"]["Paused"] or not state["State"]["Running"]:
                 raise ValueError("writer did not resume after refused capture")
@@ -318,9 +279,9 @@ def main(args):
                 value.recheck()
             report["complete"] = True
         finally:
-            for role in report["owned"]:
+            for role, entry in report["owned_containers"].items():
                 if role not in report["cleanup"]:
-                    cleanup(role)
+                    report["cleanup"][role] = controls.cleanup_owned(cleanup_call, entry["id"], nonce)
             report["finished_at"] = datetime.now(timezone.utc).isoformat()
             report["complete"] = report["complete"] and all(
                 value["absent"] and value["volumes_absent"] and value["oom_killed"] is False

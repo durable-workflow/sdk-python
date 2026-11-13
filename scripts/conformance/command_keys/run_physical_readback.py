@@ -43,8 +43,12 @@ def load_bytes(data, name, expected, *, filename=None):
     return module
 
 
-def native_marker(connection, expected):
-    if connection.execute("SELECT engine,version FROM dw_server_schema").fetchall() != [("rust-development", expected)]:
+def native_marker(snapshot, expected):
+    marker = snapshot["tables"]["dw_server_schema"]
+    if set(marker["columns"]) != {"engine", "version"} or len(marker["rows"]) != 1:
+        raise ValueError("native schema ownership/version marker shape differs")
+    row = dict(zip(marker["columns"], marker["rows"][0], strict=True))
+    if row != {"engine": ["text", "rust-development"], "version": ["integer", expected]}:
         raise ValueError("native schema ownership/version marker differs")
 
 
@@ -110,7 +114,9 @@ def run_bound(args, inputs, controls, workspace):
     with closing(sqlite3.connect(":memory:")) as catalog:
         catalog.execute("CREATE TABLE dw_server_schema(engine TEXT, version INTEGER)")
         catalog.executescript(inputs["step_sql"].data.decode())
-        added_schema = [row for row in legacy.snapshot(catalog)["schema"] if row[2] != "dw_server_schema"]
+        added_schema = json.loads(
+            json.dumps([row for row in legacy.snapshot(catalog)["schema"] if row[2] != "dw_server_schema"])
+        )
     database = workspace.directory("database")
     config = workspace.directory("docker-config")
     workspace.write("config.json", '{"auths":{}}\n', parent=config)
@@ -137,7 +143,7 @@ def run_bound(args, inputs, controls, workspace):
         )
 
     def snapshot():
-        return workspace.read_database(held_database, legacy.snapshot)
+        return reader.snapshot(held_database)
 
     image = "ghcr.io/durable-workflow/server@" + controls.EXPECTED_SERVER["index"]
     python_image = "docker.io/library/python@" + controls.PYTHON_INDEX
@@ -200,12 +206,30 @@ def run_bound(args, inputs, controls, workspace):
             raise ValueError("created object vanished")
         return identity
 
+    reader_module = load_bytes(
+        inputs["snapshot_reader"].data, "captured_snapshot_reader", inputs["snapshot_reader"].sha256
+    )
+    reader = reader_module.SnapshotReader(
+        workspace,
+        inputs,
+        controls,
+        call,
+        cleanup_call,
+        report,
+        nonce,
+        lambda: [
+            entry["id"]
+            for role, entry in report["owned_containers"].items()
+            if role in {"upgrade", "runtime"} and role not in report["cleanup_by_id"]
+        ],
+    )
+
     try:
         for value in inputs.values():
             value.recheck()
         held_database = workspace.write("upgraded.sqlite", inputs["baseline"].data, parent=database, immutable=False)
-        workspace.read_database(held_database, lambda connection: native_marker(connection, 12))
         baseline = snapshot()
+        native_marker(baseline, 12)
         began = time.time()
         upgrade_id = create(
             "upgrade",
@@ -225,8 +249,9 @@ def run_bound(args, inputs, controls, workspace):
         finished = time.time()
         report["upgrade"] = upgrade
         report["cleanup_by_id"]["upgrade"] = controls.cleanup_owned(cleanup_call, upgrade_id, nonce)
-        workspace.read_database(held_database, lambda connection: native_marker(connection, 13))
-        validate_upgrade(baseline, snapshot(), added_schema, began, finished)
+        upgraded = snapshot()
+        native_marker(upgraded, 13)
+        validate_upgrade(baseline, upgraded, added_schema, began, finished)
         report["upgrade_row_preservation"] = True
         report["journal_sha384"] = JOURNAL_SHA384
         runtime_id = create(
@@ -334,7 +359,9 @@ def run_bound(args, inputs, controls, workspace):
         }
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
         report["complete"] = (
-            len(report["cleanup_by_id"]) == 3
+            {"upgrade", "runtime", "consumer"}.issubset(report["cleanup_by_id"])
+            and len(report.get("snapshots", [])) == 4
+            and len(report["cleanup_by_id"]) == 7
             and clean
             and report.get("consumer_complete") is True
             and all(value.get("oom_killed") is False for value in report["cleanup_by_id"].values())
@@ -362,6 +389,9 @@ def run(args):
                 "support": "run_response_loss.py",
                 "adapter": "physical_readback.py",
                 "verifier": "response_loss.py",
+                "capture": "quiesced_capture.py",
+                "snapshot_bootstrap": "snapshot_bootstrap.py",
+                "snapshot_reader": "snapshot_runtime.py",
             },
             data_files={
                 "wheel": (args.wheel, 4 * 1024 * 1024, controls.WHEEL_SHA256),

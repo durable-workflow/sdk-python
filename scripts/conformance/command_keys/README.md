@@ -233,10 +233,26 @@ any NONPASS separately. Independent review, exact-head checks and actual
 installed evidence are required before qualification; another SDK's result does
 not qualify this adapter or complete shared216.
 
-Every SQLite snapshot targets the retained real database file descriptor through
-`file:/proc/self/fd/<fd>?mode=ro`. A directory descriptor followed by a mutable
-basename does not protect against swap/open/restore races. Read-only snapshot
-connections include active WAL frames; immutable mode is unsuitable for a live
-database. The positive control keeps a second writer connection open, proves a
-committed row remains WAL-only, and requires the snapshot to include that row.
-Stopped helper copies have their separate checkpoint/source-descriptor contract.
+Physical and synthetic SQLite qualification is currently **HOLD**. SQLite's
+native VFS can canonicalize even a real proc-FD URI and reopen its mutable
+pathname. Historical business observations using that boundary remain useful,
+but cannot qualify the
+physical or synthetic cells. The separately qualified response-loss cell does
+not read SQLite files and keeps its existing scope.
+
+`check_quiesced_snapshot.py` is a preparation-only synthetic control. It pauses
+the captured owned writer ID, checks that state while reading held main/WAL/SHM
+descriptors twice, and resumes the writer in `finally`, including on refusal.
+Complete equality does not make an unquiesced byte capture a live snapshot.
+The captured main/WAL bytes enter a fixed official interpreter container with
+no host mounts or network. Official SQLite recovers them and backs up into
+memory while root is the sole actor. The accepted snapshot helper consumes that
+same memory connection after UID/GID/capability drop. The lower native-open
+counterexample uses the exact C source from Rust PR265, commit701c17f. No
+installed cell is authorized by these primitive controls. The physical runner
+prepares this same reader for baseline, upgraded, pre-request and post-request
+snapshots. Its schema marker checks consume the resulting typed snapshot rather
+than opening a second host SQLite connection. That integration still needs
+exact-source review and installed evidence. The synthetic runner's stopped
+transform/copy path remains on hold. The stopped transform
+helper's descriptor API is owned and reviewed separately in the Rust repository.

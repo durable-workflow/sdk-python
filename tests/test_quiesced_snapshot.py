@@ -5,6 +5,7 @@ import os
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -112,3 +113,42 @@ def test_sidecar_symlink_refuses(tmp_path):
         Path(str(path) + "-wal").symlink_to(path)
         with pytest.raises(OSError):
             capture_module.capture(workspace, held, lambda: None)
+
+
+@pytest.mark.parametrize("failure", ["after_pause", "during_capture", "second_writer"])
+def test_id_bound_writer_resumes_after_workspace_or_capture_refusal(failure):
+    runtime = load("snapshot_runtime")
+    first, second = "a" * 64, "b" * 64
+    states = {first: {"State": {"Running": True, "Paused": False}}}
+    calls = []
+
+    def call(action, identity):
+        calls.append((action, identity))
+        if action == "pause":
+            states[identity]["State"]["Paused"] = True
+            if failure == "after_pause":
+                raise ValueError("workspace replaced after successful Docker pause")
+        elif action == "unpause":
+            states[identity]["State"]["Paused"] = False
+
+    controls = SimpleNamespace(inspect_owned=lambda _call, identity, _nonce: states.get(identity))
+    inputs = {"capture": SimpleNamespace(data=(ROOT / "quiesced_capture.py").read_bytes())}
+    reader = runtime.SnapshotReader(
+        None,
+        inputs,
+        controls,
+        call,
+        call,
+        {},
+        "nonce",
+        lambda: [first, second] if failure == "second_writer" else [first],
+    )
+
+    def refuse(*_args):
+        raise ValueError("workspace replaced during capture")
+
+    reader.capture.capture = refuse
+    with pytest.raises(ValueError):
+        reader.capture_bytes(None)
+    assert states[first]["State"] == {"Running": True, "Paused": False}
+    assert calls[-1] == ("unpause", first)
