@@ -40,9 +40,9 @@ python3 -I scripts/conformance/command_keys/run_response_loss.py \
 
 The output parent must exist. The new private output directory must not exist.
 One runtime is capped at 1 CPU, 1 GiB and 256 PIDs, with a read-only root,
-`--init` and one ephemeral loopback port. The consumer is sequential and bounded
-to ten minutes. Bounded tmpfs mounts supply writable SQLite, storage and temporary
-paths inside the container's memory ceiling. The consumer is sequential and bounded
+`--init` and one ephemeral loopback port. Bounded tmpfs mounts supply writable
+SQLite, storage and temporary paths inside the container's memory ceiling.
+The consumer is sequential and bounded
 to ten minutes. A private empty Docker config and minimal subprocess environment
 exclude host credentials. The controller owns exact-name runtime/anonymous-volume
 cleanup and removes its generated credential even after consumer failure.
@@ -53,7 +53,8 @@ update routes, and one continuation. The adapter independently compares sender
 and proxy request bytes, requires successful complete upstream consumption,
 checks four concurrent identical retries and a typed changed-intent conflict,
 then verifies one business execution/admission and retained identities after
-closure or continuation. Typed nested values include integers, booleans, bytes
+closure or continuation. Explicit keys use the corrected 255-code-point Unicode
+boundary, exceeding 255 UTF-8 bytes. Typed nested values include integers, booleans, bytes
 and Unicode. Query reads consume the receipt's `result` field.
 
 Keep a failed attempt as NONPASS. `consumer.json` and `run.json` must both report
@@ -65,6 +66,6 @@ Keep diagnostic logs private and temporary; do not commit generated payloads.
 This does not qualify synthetic legacy transforms or physical upgrades. The
 accepted common stopped-copy helper is separately maintained by
 [SDK Rust260](https://github.com/durable-workflow/sdk-rust/pull/260), and Server1210
-owns the real published historical seed/upgrade. Namespace/run fences and maximum
-Unicode key acceptance also remain distinct installed cells. No full shared216
+owns the real published historical seed/upgrade. Namespace/run fences also remain
+distinct installed cells. No full shared216
 PASS follows from this adapter alone.

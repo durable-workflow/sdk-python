@@ -23,6 +23,14 @@ controller = importlib.util.module_from_spec(CONTROLLER_SPEC)
 CONTROLLER_SPEC.loader.exec_module(controller)
 
 
+@pytest.mark.parametrize("kind", ["signal", "update"])
+def test_explicit_key_exercises_unicode_character_not_byte_limit(kind):
+    key = adapter.explicit_key(kind)
+    assert len(key) == 255
+    assert len(key.encode()) > 255
+    assert key != adapter.explicit_key(kind)
+
+
 def record(**changes):
     return {
         "method": "POST",

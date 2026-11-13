@@ -43,6 +43,13 @@ PAYLOAD = {
 IDENTITIES = ("command_id", "command_sequence", "run_id", "resolved_run_id", "update_id", "accepted_at")
 
 
+def explicit_key(kind):
+    prefix = kind + "-" + uuid4().hex
+    # This is the corrected producer's 255-code-point boundary, deliberately
+    # longer than 255 UTF-8 bytes. Caller keys are opaque Unicode strings.
+    return prefix + "日" * (255 - len(prefix))
+
+
 def installed_identity(wheel):
     """Compare installed code to the exact published wheel, without importing project source."""
     if hashlib.sha256(wheel.read_bytes()).hexdigest() != WHEEL_SHA256:
@@ -281,7 +288,7 @@ async def main(args):
                         lossy._http.event_hooks["request"].append(observe)
                         for kind in kinds:
                             path = route(kind, handle)
-                            key = kind + "-" + uuid4().hex if explicit else None
+                            key = explicit_key(kind) if explicit else None
                             proxy.arm("POST", path)
                             diagnostic = None
                             if automatic:
@@ -337,6 +344,8 @@ async def main(args):
                             else:
                                 raise AssertionError("changed command intent was admitted")
                             cell["commands"][kind] = {
+                                "key_characters": len(receipt["request_id"]),
+                                "key_utf8_bytes": len(receipt["request_id"].encode()),
                                 "wire": requests,
                                 "loss": records,
                                 "transport_exception": diagnostic,
