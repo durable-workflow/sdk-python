@@ -61,15 +61,10 @@ def validate_cell(state, scenario):
         raise ValueError("ambiguity/case scenarios require their own open cell")
 
 
-def validate_distinct_counts(before, after):
-    for table, increase in (("workflow_commands", 2), ("dw_command_intents", 2)):
-        if len(after["tables"][table]["rows"]) != len(before["tables"][table]["rows"]) + increase:
-            raise ValueError("case-distinct admissions did not create exactly two new command identities")
-
-
 def run_bound(args, inputs, controls, workspace):
     validate_cell(args.state, args.scenario)
     legacy = accepted_helper(inputs)
+    delta = load(inputs["delta"].data, "captured_case_delta", "captured-case-delta.py")
     database_fd = workspace.directory("database")
     database = Path(workspace.proc(database_fd))
     canonical_database = Path(workspace.mount_path(database_fd))
@@ -287,8 +282,17 @@ def run_bound(args, inputs, controls, workspace):
             )
             workspace.check()
             held_databases["copied.sqlite"] = workspace.capture(database_fd, "copied.sqlite")
+        stopped_copy = snapshot(copied)
+        stopped_fingerprint = legacy.fingerprint(stopped_copy)
+        if args.scenario != "modern-raw" and report["transform"]["after_sha256"] != stopped_fingerprint:
+            raise ValueError("stopped copy no longer matches the accepted transform")
+        report["stopped_copy_sha256"] = stopped_fingerprint
+        workspace.write("stopped-copy.json", json.dumps(stopped_copy, sort_keys=True) + "\n")
         _, upstream = start("readback", copied.name)
         before = snapshot(copied)
+        delta.validate_restart(stopped_copy, before)
+        report["restarted_copy_sha256"] = legacy.fingerprint(before)
+        workspace.write("restarted-copy.json", json.dumps(before, sort_keys=True) + "\n")
         proof = consume("read", upstream, seed)
         after = snapshot(copied)
         if before != after:
@@ -297,9 +301,12 @@ def run_bound(args, inputs, controls, workspace):
         report["cells"] = proof["cells"]
         if args.scenario == "case-only":
             before = snapshot(copied)
-            report["distinct_cells"] = consume("case_distinct", upstream, seed)["cells"]
+            distinct_proof = consume("case_distinct", upstream, seed)
+            report["distinct_cells"] = distinct_proof["cells"]
             after = snapshot(copied)
-            validate_distinct_counts(before, after)
+            workspace.write("case-before.json", json.dumps(before, sort_keys=True) + "\n")
+            workspace.write("case-after.json", json.dumps(after, sort_keys=True) + "\n")
+            report["case_distinct_delta"] = delta.validate(before, after, seed, distinct_proof)
             report["case_distinct_writes"] = {
                 "before_sha256": legacy.fingerprint(before),
                 "after_sha256": legacy.fingerprint(after),
@@ -368,6 +375,7 @@ def run(args):
                 "support": "run_response_loss.py",
                 "adapter": "synthetic_legacy.py",
                 "verifier": "response_loss.py",
+                "delta": "case_delta.py",
             },
             data_files={
                 "wheel": (args.wheel, 4 * 1024 * 1024, controls.WHEEL_SHA256),

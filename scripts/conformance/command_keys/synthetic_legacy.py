@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from durable_workflow import Client, Worker, workflow
 from durable_workflow.errors import ServerError, SignalFailed, UpdateFailed
+from durable_workflow.serializer import decode_envelope
 
 MANIFEST_SHA256 = "da1990000c611d7377690c7526487d6415fa4f9cb42d299f59585a7c2eebf769"
 WORKFLOW_TYPE = "sdk-python-synthetic-legacy"
@@ -221,13 +222,95 @@ async def read(client, value):
 async def case_distinct(client, value):
     seed = value["seed"]
     cells = []
-    for kind, original in seed["commands"].items():
-        admitted = await command(client, kind, seed, "casesensitive")
-        assert admitted["command_id"] != original["original"]["command_id"]
-        assert admitted["run_id"] == seed["run_id"]
-        assert admitted["request_id"] == "casesensitive" and admitted.get("retained") is not True
-        cells.append({"kind": kind, "new_command_id": admitted["command_id"], "distinct_key_admitted": True})
-    return cells
+    sent = []
+
+    async def observe(response):
+        request = response.request
+        if request.method != "POST" or not request.url.path.endswith(("/signal/touch", "/update/mutate")):
+            return
+        body = json.loads(request.content)
+        headers = {
+            field: request.headers[name]
+            for name, field in (("x-request-id", "x_request_id"), ("x-correlation-id", "x_correlation_id"))
+            if name in request.headers
+        }
+        fingerprint = {
+            "method": "POST",
+            "path": request.url.path,
+            "payload": json.loads(json.dumps(body, sort_keys=True)),
+            "headers": headers or [],
+        }
+        sent.append(
+            {
+                "status": response.status_code,
+                "fingerprint": "sha256:"
+                + hashlib.sha256(
+                    json.dumps(fingerprint, separators=(",", ":"), ensure_ascii=False).encode()
+                ).hexdigest(),
+            }
+        )
+
+    client._http.event_hooks["response"].append(observe)
+    try:
+        for kind, original in seed["commands"].items():
+            start = len(sent)
+            admitted = await command(client, kind, seed, "casesensitive")
+            assert len(sent) == start + 1 and sent[start]["status"] == 202
+            assert admitted["command_id"] != original["original"]["command_id"]
+            assert admitted["run_id"] == seed["run_id"]
+            assert admitted["request_id"] == "casesensitive" and admitted.get("retained") is not True
+            assert admitted["intent_verified"] is True
+            same = await command(client, kind, seed, "casesensitive")
+            assert same["command_id"] == admitted["command_id"] and same["retained"] is True
+            assert same["intent_verified"] is True
+            try:
+                await command(client, kind, seed, "casesensitive", 1000)
+            except (SignalFailed, UpdateFailed) as error:
+                assert error.reason == "request_id_conflict"
+            else:
+                raise AssertionError("fresh case-distinct intent was not fenced")
+            cells.append(
+                {
+                    "kind": kind,
+                    "receipt": admitted,
+                    "request_fingerprint": sent[start]["fingerprint"],
+                    "status": 202,
+                    "same_intent_retained": True,
+                    "changed_intent_conflict": True,
+                }
+            )
+    finally:
+        client._http.event_hooks["response"].remove(observe)
+    history = [event async for event in client.iter_history(seed["workflow_id"], seed["run_id"])]
+    assert history[: len(seed["history"])] == seed["history"]
+    events = history[len(seed["history"]) :]
+    assert len(events) == 2
+    for cell, event in zip(cells, events, strict=True):
+        payload = event["payload"]
+        snapshot = payload["command"]
+        old_event = next(
+            item
+            for item in seed["history"]
+            if item["payload"].get("workflow_command_id") == seed["commands"][cell["kind"]]["original"]["command_id"]
+        )
+        expected = dict(old_event["payload"]["command"])
+        expected.update(
+            id=cell["receipt"]["command_id"],
+            sequence=expected["sequence"] + 2,
+            message_sequence=expected["message_sequence"] + 2,
+            payload=snapshot["payload"],
+            request_id=cell["kind"] + "-v1:" + hashlib.sha256(b"casesensitive").hexdigest(),
+            request_fingerprint=cell["request_fingerprint"],
+            accepted_at=snapshot["accepted_at"],
+        )
+        assert snapshot == expected
+        assert decode_envelope(payload["arguments"]) == [999]
+        assert decode_envelope(snapshot["payload"]) == {
+            "name": "touch" if cell["kind"] == "signal" else "mutate",
+            "arguments": [999],
+            "validation_errors": [],
+        }
+    return {"cells": cells, "events": events}
 
 
 async def main(args):
@@ -261,7 +344,7 @@ async def main(args):
             if value["phase"] == "prepare":
                 report["seed"] = await prepare(client, value)
             elif value["phase"] == "case_distinct":
-                report["cells"] = await case_distinct(client, value)
+                report.update(await case_distinct(client, value))
             else:
                 report["cells"] = await read(client, value)
         report["complete"] = True

@@ -116,15 +116,52 @@ def test_controller_refuses_unsupported_cell_combinations(state, scenario):
         controller.validate_cell(state, scenario)
 
 
-def test_case_distinct_control_requires_two_new_durable_commands_and_intents():
-    before = {"tables": {"workflow_commands": {"rows": [[1]]}, "dw_command_intents": {"rows": []}}}
-    after = copy.deepcopy(before)
-    after["tables"]["workflow_commands"]["rows"] += [[2], [3]]
-    after["tables"]["dw_command_intents"]["rows"] += [[2], [3]]
-    controller.validate_distinct_counts(before, after)
-    after["tables"]["dw_command_intents"]["rows"].pop()
+def test_case_delta_preserves_all_prior_rows_and_rejects_unrelated_writes():
+    delta = module("case_delta_control", "case_delta.py")
+    before = {
+        "schema": [],
+        "user_version": 0,
+        "application_id": 0,
+        "tables": {
+            "workflow_commands": {"columns": ["id"], "rows": [[["text", "old"]]]},
+            "dw_command_intents": {"columns": ["command_id"], "rows": [[["text", "old"]]]},
+            "unrelated": {"columns": ["value"], "rows": [[["text", "preserve"]]]},
+        },
+    }
+    expected = copy.deepcopy(before)
+    for name in ("workflow_commands", "dw_command_intents"):
+        expected["tables"][name]["rows"] += [[["text", "new1"]], [["text", "new2"]]]
+        expected["tables"][name]["rows"].sort()
+    delta.stable_catalog(before, expected)
+    delta.finish_expected(copy.deepcopy(expected), expected)
+    unrelated = copy.deepcopy(expected)
+    unrelated["tables"]["unrelated"]["rows"][0][0][1] = "changed"
+    replaced = copy.deepcopy(expected)
+    replaced["tables"]["workflow_commands"]["rows"].remove([["text", "old"]])
+    replaced["tables"]["workflow_commands"]["rows"].append([["text", "third-new"]])
+    for changed in (unrelated, replaced):
+        # The predecessor count control accepts both corruptions.
+        assert all(
+            len(changed["tables"][name]["rows"]) == len(before["tables"][name]["rows"]) + 2
+            for name in ("workflow_commands", "dw_command_intents")
+        )
+        with pytest.raises(ValueError):
+            delta.finish_expected(copy.deepcopy(expected), changed)
+    columns = copy.deepcopy(expected)
+    columns["tables"]["unrelated"]["columns"] = ["different"]
     with pytest.raises(ValueError):
-        controller.validate_distinct_counts(before, after)
+        delta.stable_catalog(before, columns)
+
+
+def test_stopped_copy_must_equal_the_first_restart_before_later_zero_writes():
+    delta = module("case_delta_restart", "case_delta.py")
+    stopped = {"business": [["original"]]}
+    restarted = {"business": [["substituted"]]}
+    # The predecessor only compares the two later snapshots and accepts this.
+    assert restarted == copy.deepcopy(restarted)
+    with pytest.raises(ValueError):
+        delta.validate_restart(stopped, restarted)
+    delta.validate_restart(stopped, copy.deepcopy(stopped))
 
 
 def test_synthetic_bundle_has_the_same_closed_roles_as_physical_not_the_proxy():

@@ -214,7 +214,13 @@ The other scenarios require `--state open`: `two-rows`, `legacy-token` and
 `case-only` first checks exact-byte retained readback, then admits the lower-case
 key in a separate write interval under SQLite's binary comparison. Complete
 logical snapshots must match for readback/ambiguity windows. The distinct-key
-interval must create two new command/intent identities and has no zero-write claim.
+interval has no zero-write claim. Its complete logical delta must preserve every
+old row except the exact source-defined sequence/summary advances, add the two
+receipt-bound command/intent rows and corresponding signal/update/history/wait
+records, and leave all other tables and columns unchanged. The installed sender
+fingerprint, official codec decode and retained/conflict controls bind the new
+rows to the two intended fresh admissions. The stopped transformed/copy snapshot
+must also equal the first restarted snapshot before any readback begins.
 
 Every phase executes captured adapter/bootstrap bytes in the fixed published
 Python image with all nine dependency wheel hashes and the reviewed SDK wheel.
