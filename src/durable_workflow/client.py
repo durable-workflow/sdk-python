@@ -1885,6 +1885,16 @@ def _request_body_bytes(request: httpx.Request) -> int | None:
         return None
 
 
+def _validate_static_credential(option: str, value: str | None) -> None:
+    if not value:
+        return
+    # Python's extra whitespace code points are Cc controls, also forbidden here.
+    # Validate the original value, including credentials masked by role fallback.
+    if (value[0].isspace() or value[-1].isspace()
+            or any(ord(char) <= 0x1F or 0x7F <= ord(char) <= 0x9F for char in value)):
+        raise ValueError(f"{option} must not have edge whitespace or control characters")
+
+
 class Client:
     """Async HTTP client for Durable Workflow control-plane and worker APIs.
 
@@ -1897,6 +1907,9 @@ class Client:
     ``tls_context`` selects an explicit trust configuration. It must require
     certificate and hostname verification. Treat the context as read-only after
     construction; worker query clones and Nexus namespace views reuse it.
+
+    Static tokens must have no edge whitespace or control characters. Invalid
+    values raise ``ValueError`` naming the option, without exposing its value.
     """
 
     def __init__(
@@ -1920,6 +1933,9 @@ class Client:
         external_storage_cache: ExternalPayloadCache | None = None,
         telemetry: ExecutionTelemetry | None = None,
     ) -> None:
+        _validate_static_credential("token", token)
+        _validate_static_credential("control_token", control_token)
+        _validate_static_credential("worker_token", worker_token)
         if tls_context is not None:
             if not isinstance(tls_context, ssl.SSLContext):
                 raise TypeError("tls_context must be an ssl.SSLContext")
