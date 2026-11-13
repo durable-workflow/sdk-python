@@ -7,16 +7,25 @@ from pathlib import Path
 import pytest
 
 from durable_workflow import serializer, workflow
-from durable_workflow.errors import ActivityFailed, ChildWorkflowFailed, TypedValueError
+from durable_workflow.errors import (
+    ActivityFailed,
+    ChildWorkflowFailed,
+    QueryFailed,
+    TypedValueError,
+    UpdateValidationFailed,
+)
 from durable_workflow.workflow import (
     CompleteWorkflow,
+    FailUpdate,
     LocalActivityExecutionAborted,
     WorkflowContext,
     _read_parallel_group_policies,
     _replay_state,
+    apply_update,
     commands_to_server_commands,
     query_state,
     replay,
+    validate_update,
 )
 from tests.business_clock_workflows import ParallelFailureBusinessClockWorkflow, clock_text
 from tests.test_parallel_completion_order_replay import ParallelCompletionOrderMixed, _terminal_event
@@ -252,6 +261,57 @@ def test_invalid_policy_is_refused_before_constructing_application_state() -> No
     with pytest.raises(ValueError, match="parallel_group_policy"):
         draft_replay(history, NoApplication)
     assert NoApplication.calls == 0
+
+
+@pytest.mark.parametrize("operation", ["replay", "query", "update", "validation"])
+@pytest.mark.parametrize("as_iterator", [False, True])
+def test_policy_on_run_close_settlement_refuses_before_application_construction(
+    operation: str, as_iterator: bool,
+) -> None:
+    @workflow.defn(name="tests.parallel-policy-close-preflight")
+    class Probe(ParallelFailurePolicyWorkflow):
+        calls = 0
+
+        def __init__(self) -> None:
+            type(self).calls += 1
+            super().__init__()
+
+        @workflow.update("noop")
+        def noop(self) -> None:
+            pass
+
+        @workflow.update_validator("noop")
+        def validate_noop(self) -> None:
+            pass
+
+    history = json.loads(FIXTURE.with_name("run-close-policy-requires-consumer.json").read_text())["history"]
+    history = iter(history) if as_iterator else history
+    if operation == "update":
+        result = apply_update(Probe, history, [], "update-id")
+        assert isinstance(result, FailUpdate)
+        assert result.exception_type == "LocalActivityExecutionAborted"
+        assert "parallel_group_policy_not_supported" in result.message
+    else:
+        actions = {
+            "replay": lambda: replay(Probe, history, []),
+            "query": lambda: query_state(Probe, history, [], "caught"),
+            "validation": lambda: validate_update(Probe, history, [], "noop", []),
+        }
+        errors = {"replay": LocalActivityExecutionAborted, "query": QueryFailed,
+                  "validation": UpdateValidationFailed}
+        action = actions[operation]
+        with pytest.raises(errors[operation], match="parallel_group_policy_not_supported"):
+            action()
+    assert Probe.calls == 0
+
+
+def test_draft_consumer_does_not_resolve_a_group_from_run_close_settlement() -> None:
+    history = json.loads(FIXTURE.with_name("run-close-policy-requires-consumer.json").read_text())["history"]
+    state = _replay_state(ParallelFailurePolicyWorkflow, iter(history), [], parallel_group_policies=("propagate",))
+    assert state.instance.caught is None
+    assert not any(isinstance(command, CompleteWorkflow) for command in state.outcome.commands)
+    assert state.context._business_clock.snapshot() is None
+    state.outcome.close()
 
 
 def test_typed_success_decoding_errors_are_raised_at_the_group_yield() -> None:

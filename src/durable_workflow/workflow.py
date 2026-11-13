@@ -4979,11 +4979,16 @@ def _replay_state(
                 exception_type=type(exception).__name__,
             ) from exception
 
+    # Retained metadata still requires a qualified consumer when its event is
+    # excluded from semantic outcomes, including run-close settlements.
+    retained_events = list(history_events)
+    recorded_group_policies = _read_parallel_group_policies(retained_events, parallel_group_policies)
     # A run-close cancellation never resolves a select() member, never fails
     # an all() group and never supplies replay time: the workflow had closed
     # past it. Every history reader below sees the activity as still open.
-    events = [event for event in history_events if not _settled_at_close(event)]
-    recorded_group_policies = _read_parallel_group_policies(events, parallel_group_policies)
+    events = [event for event in retained_events if not _settled_at_close(event)]
+    if len(events) != len(retained_events):
+        recorded_group_policies = _read_parallel_group_policies(events, parallel_group_policies)
     # A malformed delivery span refuses replay before any history parser can
     # read it more permissively.
     _assert_delivery_spans(events)
