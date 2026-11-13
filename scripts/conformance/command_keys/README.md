@@ -69,3 +69,44 @@ accepted common stopped-copy helper is separately maintained by
 owns the real published historical seed/upgrade. Namespace/run fences also remain
 distinct installed cells. No full shared216
 PASS follows from this adapter alone.
+
+## Physical upgrade consumer
+
+`physical_readback.py` consumes the producer-owned JSON receipt contract from
+[Server1210](https://github.com/durable-workflow/server/pull/1210). Source/execution
+reuse is held until that PR's final source review and checks qualify. This is
+separate from the accepted synthetic-copy helper and its older manifest hash.
+
+The consumer invokes the registry-only Python Client against an already upgraded
+disposable runtime. The producer receipt must include all original signal/update
+open/completed/continued cases, complete captured histories and original update
+identities. The manifest includes the historical unkeyed-signal clarification.
+It refuses a changed receipt hash, incomplete seed, missing identities or package
+overlay before issuing a command.
+
+An outer runner must bind the producer source, stopped backup and receipt hashes,
+upgrade a private copy with the qualified image, preserve the original, disable
+unrelated maintenance writes and compare complete logical snapshots around this
+consumer. It owns the image/source check, exact runtime/database/credential
+cleanup and the final qualification receipt. Never run against the retained
+original database or reuse a production runtime credential.
+
+```sh
+/path/to/registry-venv/bin/python -I \
+  scripts/conformance/command_keys/physical_readback.py \
+  --upstream http://127.0.0.1:12345 --server-version 3.9.2 \
+  --credential-file /path/to/private/fixture.env \
+  --seed /path/to/producer-receipt.json --seed-sha256 FULL_PRODUCER_RECEIPT_SHA256 \
+  --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
+  --output /path/to/private/new-consumer-receipt.json
+```
+
+For each original keyed update it issues four concurrent retries with changed
+input, requires original command/run/update/acceptance identities and explicit
+`intent_verified: false`, checks a changed-name conflict, then uses GET-only
+outcome reads to distinguish pending from completed-null. Python's update helper
+uses its unscoped route; this does not claim a new explicit-run update API.
+Historical NULL-key signals receive no fabricated retry key. Their compatibility
+control reads the original history, including completed/continued boundaries.
+Neither this consumer's completion flag nor a producer-only upgrade receipt alone
+qualifies the installed SDK physical cell without the outer snapshot/cleanup proof.
