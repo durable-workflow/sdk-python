@@ -37,7 +37,7 @@ def capture(workspace, database, attest_quiescent):
     sidecars = {}
     try:
         attest_quiescent()
-        for suffix in ("-wal", "-journal"):
+        for suffix in ("-wal", "-shm", "-journal"):
             name = database["name"] + suffix
             try:
                 descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=database["parent"])
@@ -59,7 +59,7 @@ def capture(workspace, database, attest_quiescent):
                 if info.st_size:
                     raise ValueError("rollback journal requires a separate recovery contract")
             else:
-                descriptors["wal"] = descriptor
+                descriptors[suffix[1:]] = descriptor
 
         def recheck():
             attest_quiescent()
