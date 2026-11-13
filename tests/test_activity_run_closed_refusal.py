@@ -50,7 +50,9 @@ async def test_completion_refused_because_the_run_closed_is_final(caplog: pytest
     """An abandon-policy activity kept running after close reports its outcome;
     the Server accepts it with ``recorded: false, reason: run_closed``."""
     client = AsyncMock(spec=Client)
-    client.complete_activity_task.side_effect = ServerError(409, {**RUN_CLOSED_OUTCOME})
+    client.complete_activity_task.side_effect = ServerError(
+        409, {**RUN_CLOSED_OUTCOME, "activity_status": "completed"},
+    )
 
     @activity.defn(name="abandoned-at-close")
     async def handler() -> str:
@@ -62,6 +64,39 @@ async def test_completion_refused_because_the_run_closed_is_final(caplog: pytest
     client.complete_activity_task.assert_awaited_once()
     client.fail_activity_task.assert_not_called()
     assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert any(
+        record.levelno == logging.INFO and "late-task completed" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_completion_refused_because_the_close_cancelled_the_activity_is_aborted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A select() loser the close cancelled finishes anyway and reports its
+    result; the Server drops it with ``recorded: false, reason: run_closed``
+    and ``activity_status: cancelled``. The worker reports an abort, never a
+    completion, and never retries or reports again."""
+    client = AsyncMock(spec=Client)
+    client.complete_activity_task.side_effect = ServerError(
+        409, {**RUN_CLOSED_OUTCOME, "activity_status": "cancelled"},
+    )
+
+    @activity.defn(name="loser-finished-after-close")
+    async def handler() -> str:
+        return "late result"
+
+    with caplog.at_level(logging.INFO, logger="durable_workflow.worker"):
+        outcome = await _worker(client, handler)._run_activity_task(_task("loser-finished-after-close"))
+
+    assert outcome == "claim_aborted"
+    client.complete_activity_task.assert_awaited_once()
+    client.fail_activity_task.assert_not_called()
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "closed and cancelled the activity" in warnings[0].getMessage()
+    assert not [record for record in caplog.records if "late-task completed" in record.getMessage()]
 
 
 @pytest.mark.asyncio

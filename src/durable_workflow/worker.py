@@ -178,6 +178,23 @@ def _run_closed_refusal(error: BaseException) -> bool:
     if isinstance(error, ActivityLeaseAuthorityLost):
         return error.reason == _RUN_CLOSED_REFUSAL
     return isinstance(error, ServerError) and error.reason() == _RUN_CLOSED_REFUSAL
+
+
+def _run_closed_completion_kept(error: BaseException) -> bool | None:
+    """Classify a completion refused with ``run_closed``, as the PHP worker does.
+
+    ``True``: an abandon-policy activity its run left running at close, whose
+    own outcome closed it (``activity_status`` completed or failed); nothing
+    is recorded on the closed run. ``False``: the close cancelled the activity
+    and its outcome was dropped. ``None``: not a ``run_closed`` refusal with
+    ``recorded: false``.
+    """
+    if not isinstance(error, ServerError) or error.status != 409 or error.reason() != _RUN_CLOSED_REFUSAL:
+        return None
+    body = error.body
+    if not isinstance(body, dict) or body.get("recorded") is not False:
+        return None
+    return body.get("activity_status") in ("completed", "failed")
 _QUERY_TASK_FINAL_REJECTION_REASONS = {
     "lease_expired",
     "query_task_not_found",
@@ -3393,11 +3410,23 @@ class Worker:
                 **self._external_storage_completion_kwargs(),
             )
         except Exception as e:
-            if _run_closed_refusal(e):
-                # Final: an activity the run left running under the abandon
-                # policy ends with this outcome, any other was settled at close.
-                log.info("activity task %s outcome not recorded: its workflow run closed", task_id)
+            kept = _run_closed_completion_kept(e)
+            if kept is True:
+                # The run left this activity running under the abandon policy:
+                # its outcome closed it, and nothing is appended to the run.
+                log.info(
+                    "activity task %s completed; its workflow run closed, so the outcome is not recorded on the run",
+                    task_id,
+                )
                 return "completed"
+            if kept is False:
+                # The run's close cancelled this activity: the outcome is
+                # dropped, and the refusal is final, never retried.
+                log.warning(
+                    "activity task %s outcome not recorded: its workflow run closed and cancelled the activity",
+                    task_id,
+                )
+                return "claim_aborted"
             log.warning("failed to complete activity task %s: %s", task_id, e)
             return "complete_error"
         return "completed"
