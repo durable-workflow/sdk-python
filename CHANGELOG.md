@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.17.1] - 2026-11-13
+
+### Fixed
+
+- `Client` refuses supplied `token`, `control_token` and `worker_token` values with edge whitespace or control characters before choosing a role or opening an HTTP client. The error names only the option. Values are never trimmed, and empty values retain their existing fallback behavior. (#304)
+
+- Replay supports histories in which a run's own close settled the work it never awaited (server#1193, workflow#1117/#1121, Workflow 2.28.0). When a run completes, fails or continues as new, each still-open activity, such as a `select()` loser, gets an `ActivityCancelled` with `cancellation_reason: run_closed` just before the terminal event. Replay, query and update replay now skip that cancellation and leave the activity open, as the workflow saw it. It never resolves a selection member, never supplies replay time, and is never taken as a list group's first positional failure. Before this fix, a close's cancellation of a lower-index member could replace the failure the workflow handled. Replay also accepts the new `abandoned_activities` key on `WorkflowCompleted`, `WorkflowFailed` and `WorkflowContinuedAsNew`, which lists abandon-policy activities left running at close.
+- Activity workers treat a `run_closed` refusal as final. A completion refused with `recorded: false, reason: run_closed` is split on its `activity_status`, as in the PHP worker. When it is `completed` or `failed`, the activity was an abandon-policy activity that kept running after its run closed and its own outcome closed it: the task counts as completed and logs at info level. Otherwise the close cancelled the activity: its outcome is dropped, the task is reported as aborted (never completed), and a warning is logged. A failure or cancellation report refused with `run_closed` is not reported again and logs at info level. A claim refused with `run_closed` counts as an answered poll, with no failure backoff. A heartbeat refused with `run_closed` raises `ActivityLeaseAuthorityLost` and publishes no outcome, as before.
+
+## [2.17.0] - 2026-11-13
+
 ### Added
 
 - `Client.update_outcome()` and `Client.update_outcome_receipt()` read an accepted update's outcome later by its update id with `GET /api/workflows/{workflow_id}/updates/{update_id}`, and never submit the update again (durable-workflow/.github#212, server#1131). `update_outcome()` waits for the outcome by default and returns the decoded result, including `None`, with optional `result_type` decoding. A still-pending update raises the new `UpdateStillPending`, which carries `workflow_id`, `run_id`, `update_name`, `update_id`, `request_id` and `update_status` and tells the caller to read again by update id; it is never returned as `None`. A failed update raises `UpdateFailed`, a rejected one `UpdateRejected`, and an unknown or pruned id the new `UpdateNotFound` (a subclass of `UpdateFailed`). `update_outcome_receipt()` returns the raw receipt and answers at once by default. Both need a Server that advertises `capabilities.update_outcome_reads` (native 3.6.0 and later); on an older Server they raise `RuntimeCapabilityUnsupported` after discovery, without reading or resubmitting anything. `WorkflowHandle` and the synchronous client and handle have the same methods.
