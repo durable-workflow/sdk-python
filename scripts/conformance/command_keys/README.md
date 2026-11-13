@@ -91,6 +91,23 @@ consumer. It owns the image/source check, exact runtime/database/credential
 cleanup and the final qualification receipt. Never run against the retained
 original database or reuse a production runtime credential.
 
+`run_physical_readback.py` supplies that outer integration for the frozen producer
+handoff. It binds the exact stopped-backup/JSON/helper hashes, copies into a new
+private directory, checks native schema markers, runs the qualified image's
+`schema-upgrade`, and verifies the empty intent table. It then brackets this
+consumer with complete typed logical snapshots from the accepted helper.
+The request window ends before shutdown; later repair work cannot be relabeled
+as part of that zero-write window. The retained original backup is hash-checked
+again after cleanup. Two sequential containers have the same 1 CPU/1 GiB/256-PID
+limits, read-only roots and bounded tmpfs paths; no compile or historical reseed
+occurs. Original seed/upgrade authority remains Server-owned.
+
+Once the producer's final source gate permits execution reuse, invoke the outer
+controller with `--python`, `--wheel`, `--baseline`, `--seed`, `--snapshot-helper`
+and a new private `--output` directory. The original file inputs come from the
+producer handoff and accepted common snapshot helper, not an invented fixture.
+This draft has no installed physical result yet.
+
 ```sh
 /path/to/registry-venv/bin/python -I \
   scripts/conformance/command_keys/physical_readback.py \
