@@ -68,6 +68,15 @@ def _text(snapshot: Mapping[str, Any], key: str) -> str:
     return value
 
 
+CANCELLATION_CAUSE = "cancellation"
+TIMEOUT_CAUSE = "timeout"
+_TIMEOUT_KINDS = ("execution", "run")
+
+
+def _format_timestamp(value: datetime) -> str:
+    return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
 def _timestamp(value: str) -> datetime:
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", value):
         raise ValueError("cancellation timestamp requires an ISO date, time and timezone")
@@ -112,6 +121,12 @@ class CancellationContext:
     lineage: tuple[CancellationLineage, ...]
     _replay_clock: Callable[[], datetime] | None = field(default=None, repr=False, compare=False)
     scope_origin: ScopedCancellationContext | None = None
+    cause: str | None = None
+    """``"timeout"`` for a timeout-cleanup request, else ``None`` or ``"cancellation"`` (ordinary)."""
+    timeout_kind: str | None = None
+    """``"execution"`` or ``"run"`` when a timeout-cleanup request names the deadline that passed."""
+    work_deadline_at: datetime | None = None
+    """The work deadline that passed, when a timeout-cleanup request carries it."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "requester", MappingProxyType(dict(self.requester)))
@@ -121,6 +136,11 @@ class CancellationContext:
     def deadline(self) -> datetime:
         """The original immutable cleanup deadline."""
         return self.cleanup_deadline_at
+
+    @property
+    def is_timeout(self) -> bool:
+        """Whether the run's work deadline passed and this request opens its timeout cleanup."""
+        return self.cause == TIMEOUT_CAUSE
 
     def remaining(self) -> float:
         """Seconds left at the consumed replay boundary, clamped to zero.
@@ -194,10 +214,11 @@ class CancellationContext:
             raise ValueError("cancellation deadline must follow the original request")
         if scope_origin is not None:
             _assert_scope_origin(snapshot, scope_origin, normalized, normalized_requester, requested_at, deadline)
+        cause, timeout_kind, work_deadline_at = _cause(snapshot, deadline)
         return cls(
             request_id, root_request_id, root_instance_id, root_run_id, parent_request_id,
             reason, normalized_requester, _text(snapshot, "source"), requested_at, deadline, tuple(normalized),
-            scope_origin=scope_origin,
+            scope_origin=scope_origin, cause=cause, timeout_kind=timeout_kind, work_deadline_at=work_deadline_at,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -213,14 +234,43 @@ class CancellationContext:
             "reason": self.reason,
             "requester": dict(self.requester),
             "source": self.source,
-            "requested_at": self.requested_at.isoformat(timespec="microseconds").replace("+00:00", "Z"),
-            "cleanup_deadline_at": self.cleanup_deadline_at.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+            "requested_at": _format_timestamp(self.requested_at),
+            "cleanup_deadline_at": _format_timestamp(self.cleanup_deadline_at),
             "lineage": [entry.to_dict() for entry in self.lineage],
         }
+        if self.cause is not None:
+            snapshot["cause"] = self.cause
+        if self.timeout_kind is not None:
+            snapshot["timeout_kind"] = self.timeout_kind
+        if self.work_deadline_at is not None:
+            snapshot["work_deadline_at"] = _format_timestamp(self.work_deadline_at)
         if self.scope_origin is not None:
             snapshot["scope_origin"] = self.scope_origin.to_dict()
             snapshot["scope_authority_deadline_at"] = snapshot["cleanup_deadline_at"]
         return snapshot
+
+
+def _cause(snapshot: Mapping[str, Any], deadline: datetime) -> tuple[str | None, str | None, datetime | None]:
+    """Read the optional top-level cause and the timeout fields only a timeout cause may carry."""
+    cause = snapshot.get("cause")
+    if cause is not None and cause not in (CANCELLATION_CAUSE, TIMEOUT_CAUSE):
+        raise ValueError("cancellation cause must be cancellation or timeout")
+    timeout_kind = snapshot.get("timeout_kind")
+    work_deadline = snapshot.get("work_deadline_at")
+    if cause != TIMEOUT_CAUSE:
+        if timeout_kind is not None or work_deadline is not None:
+            raise ValueError("cancellation timeout fields require the timeout cause")
+        return cause, None, None
+    if timeout_kind is not None and timeout_kind not in _TIMEOUT_KINDS:
+        raise ValueError("cancellation timeout_kind must be execution or run")
+    work_deadline_at = None
+    if work_deadline is not None:
+        if not isinstance(work_deadline, str):
+            raise ValueError("cancellation timestamp requires an ISO date, time and timezone")
+        work_deadline_at = _timestamp(work_deadline)
+        if work_deadline_at >= deadline:
+            raise ValueError("cancellation work deadline must precede its cleanup deadline")
+    return cause, timeout_kind, work_deadline_at
 
 
 @dataclass(frozen=True)
@@ -239,7 +289,7 @@ class ScopedCancellationLineage:
             "workflow_instance_id": self.workflow_instance_id,
             "workflow_run_id": self.workflow_run_id,
             "scope_id": self.scope_id,
-            "cleanup_deadline_at": self.cleanup_deadline_at.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+            "cleanup_deadline_at": _format_timestamp(self.cleanup_deadline_at),
         }
 
 

@@ -119,6 +119,7 @@ from .errors import (
     WorkflowTaskCompletionTooLarge,
     WorkflowTerminated,
     WorkflowTimedOut,
+    WorkflowTimeoutCleanupRequested,
 )
 from .external_storage import (
     EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
@@ -428,6 +429,7 @@ __all__ = [
     "WorkflowTaskCompletionTooLarge",
     "WorkflowTerminated",
     "WorkflowTimedOut",
+    "WorkflowTimeoutCleanupRequested",
     "EXTERNAL_TASK_INPUT_CONTRACT_SCHEMA",
     "EXTERNAL_TASK_INPUT_MEDIA_TYPE",
     "EXTERNAL_TASK_INPUT_SCHEMA",
