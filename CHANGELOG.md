@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.17.1] - 2026-11-13
+
 ### Fixed
 
 - `Client` refuses supplied `token`, `control_token` and `worker_token` values with edge whitespace or control characters before choosing a role or opening an HTTP client. The error names only the option. Values are never trimmed, and empty values retain their existing fallback behavior. (#304)
