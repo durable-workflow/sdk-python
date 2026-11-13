@@ -4966,11 +4966,14 @@ class Client:
     async def query_workflow(
         self, workflow_id: str, query_name: str, *, args: list[Any] | None = None
     ) -> Any:
-        """Execute a named read-only query against a workflow and return the result.
+        """Execute a named read-only query and return the Server's receipt.
 
         Queries are synchronous and non-mutating. The server runs the named
-        query handler inside the workflow process and returns the decoded
-        result. Raises :class:`~durable_workflow.errors.QueryFailed` if the
+        query handler inside the workflow process. The returned ``dict``
+        includes workflow/run identities and ``query_name``; its ``result``
+        member holds the decoded handler value, which may be ``None``.
+        Read ``receipt["result"]`` to obtain that value.
+        Raises :class:`~durable_workflow.errors.QueryFailed` if the
         query was rejected, the handler errored, or the original query timed
         out. A canonical query timeout is surfaced without automatically
         admitting another query.
