@@ -168,7 +168,28 @@ jobs:
           path: dist/
 
       - name: Package the privileged PyPI handoff as one immutable file
-        run: tar -cf dist-handoff.tar -C dist .
+        env:
+          PROMOTE_REVIEWED: ${{ steps.release_source.outputs.publish }}
+          RELEASE_VERSION: ${{ steps.release_source.outputs.tag }}
+          REVIEWED_WHEEL_SHA256: ${{ steps.candidate.outputs.wheel-sha256 }}
+          REVIEWED_SDIST_SHA256: ${{ steps.candidate.outputs.sdist-sha256 }}
+        run: |
+          set -euo pipefail
+          if [ "$PROMOTE_REVIEWED" = true ]; then
+            [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            [[ "$REVIEWED_WHEEL_SHA256" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$REVIEWED_SDIST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+            shopt -s dotglob nullglob
+            files=(dist/*)
+            test "${#files[@]}" -eq 2
+            wheel="dist/durable_workflow-${RELEASE_VERSION}-py3-none-any.whl"
+            sdist="dist/durable_workflow-${RELEASE_VERSION}.tar.gz"
+            test -f "$wheel" && test ! -L "$wheel"
+            test -f "$sdist" && test ! -L "$sdist"
+            printf '%s  %s\n%s  %s\n' \
+              "$REVIEWED_WHEEL_SHA256" "$wheel" "$REVIEWED_SDIST_SHA256" "$sdist" | sha256sum --check --strict -
+          fi
+          tar -cf dist-handoff.tar -C dist .
 
       - name: Bind the privileged PyPI handoff identity and digest
         id: privileged-handoff

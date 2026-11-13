@@ -16,7 +16,8 @@ import yaml
 
 SCRIPT = Path(__file__).parents[1] / ".github/scripts/promote_release.py"
 spec = importlib.util.spec_from_file_location("promote_release", SCRIPT)
-assert spec is not None and spec.loader is not None
+assert spec is not None
+assert spec.loader is not None
 promotion = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(promotion)
 VERSION = "2.17.2"
@@ -25,11 +26,15 @@ FILES = {f"durable_workflow-{VERSION}-py3-none-any.whl": b"reviewed wheel",
          f"durable_workflow-{VERSION}.tar.gz": b"reviewed sdist"}
 
 
+def git(root: Path, *arguments: str) -> str:
+    return subprocess.check_output(["git", "-C", str(root), *arguments], text=True).strip()
+
+
 def commit(root: Path) -> str:
-    promotion.git(root, "add", ".")
-    promotion.git(root, "-c", "user.name=Release test", "-c", "user.email=release@example.invalid",
+    git(root, "add", ".")
+    git(root, "-c", "user.name=Release test", "-c", "user.email=release@example.invalid",
                   "commit", "--quiet", "-m", "fixture")
-    return promotion.git(root, "rev-parse", "HEAD")
+    return git(root, "rev-parse", "HEAD")
 
 
 def write_tar(path: Path, entries: list[tuple[str, bytes, bytes, int]]) -> None:
@@ -50,7 +55,7 @@ def digest(path: Path) -> str:
 def candidate(tmp_path: Path) -> tuple[Path, dict, Path]:
     root = tmp_path / "source"
     root.mkdir()
-    promotion.git(root, "init", "--quiet")
+    git(root, "init", "--quiet")
     (root / "pyproject.toml").write_text(f'[project]\nversion = "{VERSION}"\n')
     source = commit(root)
     incoming = tmp_path / "incoming"
@@ -60,7 +65,7 @@ def candidate(tmp_path: Path) -> tuple[Path, dict, Path]:
         ("./" + name, data, tarfile.REGTYPE, 0o644) for name, data in FILES.items()
     ])
     approval = {"schema": "sdk-python.reviewed-release/v1", "version": VERSION,
-                "source_commit": source, "source_tree": promotion.git(root, "rev-parse", "HEAD^{tree}"),
+                "source_commit": source, "source_tree": git(root, "rev-parse", "HEAD^{tree}"),
                 "run_id": 12345, "run_attempt": 1, "artifact_id": 67890,
                 "artifact_sha256": digest(archive),
                 "files": {name: hashlib.sha256(data).hexdigest() for name, data in FILES.items()}}
@@ -89,7 +94,7 @@ def test_build_only_source_resolution_requires_the_event_commit(candidate, tmp_p
     output = tmp_path / "output"
     environment = {**os.environ, "PUBLISH_REQUESTED": "false", "REQUESTED_TAG": "release-branch",
                    "REQUESTED_COMMIT": "", "GITHUB_OUTPUT": str(output),
-                   "GITHUB_SHA": "0" * 40 if stale else promotion.git(root, "rev-parse", "HEAD"),
+                   "GITHUB_SHA": "0" * 40 if stale else git(root, "rev-parse", "HEAD"),
                    "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"]}
     result = subprocess.run(["bash", "-c", step["run"]], cwd=root, env=environment, capture_output=True)
     if stale:
@@ -244,3 +249,46 @@ def test_cannot_overwrite_existing_output(candidate, tmp_path: Path) -> None:
     with pytest.raises(FileExistsError):
         promotion.extract_reviewed(approval, incoming, dist)
     assert (dist / "retain").read_text() == "keep"
+
+
+@pytest.mark.parametrize("fault", [
+    None, "changed_wheel", "changed_sdist", "extra", "hidden", "symlink", "missing", "directory", "empty_digest",
+])
+def test_final_handoff_rechecks_reviewed_bytes_after_candidate_execution(tmp_path: Path, fault: str | None) -> None:
+    workflow = yaml.safe_load((SCRIPT.parents[1] / "workflows/publish.yml").read_text())
+    step = next(step for step in workflow["jobs"]["build"]["steps"]
+                if step.get("name") == "Package the privileged PyPI handoff as one immutable file")
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    for name, data in FILES.items():
+        (dist / name).write_bytes(data)
+    wheel = next(name for name in FILES if name.endswith(".whl"))
+    sdist = next(name for name in FILES if name.endswith(".tar.gz"))
+    environment = {**os.environ, "PROMOTE_REVIEWED": "true", "RELEASE_VERSION": VERSION,
+                   "REVIEWED_WHEEL_SHA256": hashlib.sha256(FILES[wheel]).hexdigest(),
+                   "REVIEWED_SDIST_SHA256": hashlib.sha256(FILES[sdist]).hexdigest()}
+    if fault in ("changed_wheel", "changed_sdist"):
+        target = wheel if fault == "changed_wheel" else sdist
+        (dist / target).write_bytes(b"changed after smoke")
+    elif fault in ("extra", "hidden"):
+        (dist / ("extra" if fault == "extra" else ".extra")).write_bytes(b"unexpected")
+    elif fault in ("symlink", "missing", "directory"):
+        (dist / wheel).unlink()
+        if fault == "symlink":
+            (tmp_path / "external").write_bytes(FILES[wheel])
+            (dist / wheel).symlink_to(tmp_path / "external")
+        elif fault == "directory":
+            (dist / wheel).mkdir()
+    elif fault == "empty_digest":
+        environment["REVIEWED_WHEEL_SHA256"] = ""
+    result = subprocess.run(["bash", "-c", step["run"]], cwd=tmp_path, env=environment, capture_output=True)
+    archive = tmp_path / "dist-handoff.tar"
+    if fault is not None:
+        assert result.returncode != 0
+        assert not archive.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        with tarfile.open(archive) as handle:
+            promoted = {Path(member.name).name: handle.extractfile(member).read()
+                        for member in handle if member.isreg()}
+        assert promoted == FILES

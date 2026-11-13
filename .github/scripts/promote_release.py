@@ -20,10 +20,6 @@ KEYS = {"schema", "version", "source_commit", "source_tree", "run_id", "run_atte
         "artifact_id", "artifact_sha256", "files"}
 
 
-def git(root: Path, *args: str) -> str:
-    return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
-
-
 def unique_object(pairs: list[tuple[str, object]]) -> dict:
     result = {}
     for key, value in pairs:
@@ -33,14 +29,18 @@ def unique_object(pairs: list[tuple[str, object]]) -> dict:
     return result
 
 
-def load_approval(root: Path, version: str) -> dict:
-    if re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
+def distribution_names(version: str) -> set[str]:
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
         raise ValueError("release version must be exact stable SemVer")
-    name = f".github/release-candidates/{version}.json"
-    path = root / name
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
-        raise ValueError("release approval must be a bounded regular file")
-    approval = json.loads(path.read_text(), object_pairs_hook=unique_object)
+    return {f"durable_workflow-{version}-py3-none-any.whl", f"durable_workflow-{version}.tar.gz"}
+
+
+def require_digest(value: object) -> None:
+    if not isinstance(value, str) or DIGEST.fullmatch(value) is None:
+        raise ValueError("release approval requires exact artifact digests")
+
+
+def validate_descriptor(approval: dict, version: str) -> None:
     if (not isinstance(approval, dict) or set(approval) != KEYS
             or approval["schema"] != "sdk-python.reviewed-release/v1" or approval["version"] != version):
         raise ValueError("release approval schema or version mismatch")
@@ -51,19 +51,38 @@ def load_approval(root: Path, version: str) -> dict:
         if type(approval[key]) is not int or approval[key] <= 0:
             raise ValueError("release approval requires positive numeric producer identities")
     files = approval["files"]
-    expected = {f"durable_workflow-{version}-py3-none-any.whl", f"durable_workflow-{version}.tar.gz"}
+    expected = distribution_names(version)
     if not isinstance(files, dict) or set(files) != expected:
         raise ValueError("release approval must name exactly the wheel and sdist")
     for value in (approval["artifact_sha256"], *files.values()):
-        if not isinstance(value, str) or DIGEST.fullmatch(value) is None:
-            raise ValueError("release approval requires exact artifact digests")
+        require_digest(value)
+
+
+def load_approval(root: Path, version: str) -> dict:
+    distribution_names(version)
+    name = f".github/release-candidates/{version}.json"
+    path = root / name
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
+        raise ValueError("release approval must be a bounded regular file")
+    approval = json.loads(path.read_text(), object_pairs_hook=unique_object)
+    validate_descriptor(approval, version)
     source = approval["source_commit"]
-    subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", source, "HEAD"], check=True)
-    if git(root, "rev-parse", f"{source}^{{tree}}") != approval["source_tree"]:
+    if SHA.fullmatch(source) is None:
+        raise ValueError("reviewed source must be an exact commit")
+    directory = str(root.resolve())
+    subprocess.run(["git", "-C", directory, "merge-base", "--is-ancestor", "--", source, "HEAD"], check=True)
+    tree = subprocess.check_output(
+        ["git", "-C", directory, "rev-parse", "--verify", "--end-of-options", f"{source}^{{tree}}"], text=True,
+    ).strip()
+    if tree != approval["source_tree"]:
         raise ValueError("reviewed source tree mismatch")
     # The approval cannot be embedded in its own reviewed source commit.
     # Every executable/configuration/package change must precede the build.
-    if git(root, "diff", "--no-renames", "--name-status", source, "HEAD") != f"A\t{name}":
+    changed = subprocess.check_output(
+        ["git", "-C", directory, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+         "--name-status", source, "HEAD", "--"], text=True,
+    ).strip()
+    if changed != f"A\t{name}":
         raise ValueError("publication source differs from reviewed source beyond its approval file")
     return approval
 
@@ -122,10 +141,8 @@ def extract_reviewed(approval: dict, incoming: Path, dist: Path) -> None:
                     or name.name not in approval["files"] or name.name in contents
                     or not member.isreg() or member.mode != 0o644 or not 0 < member.size <= MAX_FILE_BYTES):
                 raise ValueError("producer artifact has unexpected, duplicate or unsafe members")
-            stream = handle.extractfile(member)
-            if stream is None:
-                raise ValueError("producer artifact member cannot be read")
-            data = stream.read(MAX_FILE_BYTES + 1)
+            with handle.extractfile(member) as stream:
+                data = stream.read(MAX_FILE_BYTES + 1)
             if len(data) != member.size or hashlib.sha256(data).hexdigest() != approval["files"][name.name]:
                 raise ValueError("distribution differs from reviewed bytes")
             contents[name.name] = data
@@ -133,28 +150,28 @@ def extract_reviewed(approval: dict, incoming: Path, dist: Path) -> None:
         raise ValueError("producer artifact does not contain both reviewed distributions")
     # Validate everything before creating output; never extract archive paths.
     dist.mkdir()
-    for name, data in sorted(contents.items()):
+    for name in sorted(distribution_names(approval["version"])):
         descriptor = os.open(dist / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
         with os.fdopen(descriptor, "wb") as output:
-            output.write(data)
+            output.write(contents[name])
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("resolve", "extract"))
     parser.add_argument("--version", required=True)
-    parser.add_argument("--root", type=Path, default=Path.cwd())
-    parser.add_argument("--incoming", type=Path, default=Path(".release-candidate"))
-    parser.add_argument("--dist", type=Path, default=Path("dist"))
     args = parser.parse_args()
-    approval = load_approval(args.root, args.version)
+    approval = load_approval(Path.cwd(), args.version)
     if args.operation == "resolve":
         verify_authority(approval, api(f"actions/runs/{approval['run_id']}"),
                          api(f"actions/artifacts/{approval['artifact_id']}"), int(os.environ["GITHUB_REPOSITORY_ID"]))
         with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
             output.write(f"run-id={approval['run_id']}\nartifact-id={approval['artifact_id']}\n")
+            for name in sorted(distribution_names(args.version)):
+                kind = "wheel" if name.endswith(".whl") else "sdist"
+                output.write(f"{kind}-sha256={approval['files'][name]}\n")
     else:
-        extract_reviewed(approval, args.incoming, args.dist)
+        extract_reviewed(approval, Path(".release-candidate"), Path("dist"))
 
 
 if __name__ == "__main__":

@@ -41,6 +41,8 @@ The final tag may differ from the reviewed build's source only by adding that
 approval file. Any other source or workflow change requires a new build and
 review. Tagged publication checks the successful same-repository producer and
 promotes its exact distribution bytes through the existing protected handoff;
-it does not rebuild them. Missing, expired, changed or unreviewed artifacts
+it does not rebuild them. After package checks and smoke execution, the handoff
+step rechecks both files against digests captured before that execution.
+Missing, expired, changed or unreviewed artifacts
 refuse publication before upload. Finish registry installation and stable
 portal readback after publication.
