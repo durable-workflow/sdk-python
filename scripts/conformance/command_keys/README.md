@@ -135,9 +135,13 @@ all three captured-ID cleanup records and independent review remain required.
 The host workspace also retains no-follow descriptors for every ancestor,
 private directory and created file. Config/credential bytes are immutable;
 the copied SQLite file may change contents but must keep its owned single-link
-inode. Docker configuration, credential reads and database binds use held
-`/proc/<controller-pid>/fd` paths. Snapshots and lifecycle calls check workspace
-identities before and after use. Evidence is created exclusively relative to the
+inode. Docker configuration and credential reads use held
+`/proc/<controller-pid>/fd` paths. The canonical database bind has a preflight
+inside the immutable published image: it verifies the mounted directory/file
+device, inode, owner, mode and single-link identities before executing the
+native entrypoint. Host snapshots and lifecycle calls check workspace
+identities before and after use. Cleanup uses an explicit empty kernel FD
+configuration directory, so workspace substitution cannot block known-ID cleanup. Evidence is created exclusively relative to the
 held directory, with the creation descriptor retained through verification.
 A substituted parent, copied database, configuration, credential or report refuses
 qualification. Known-container cleanup stays bound to captured IDs and preserves

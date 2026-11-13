@@ -114,7 +114,7 @@ def run_bound(args, inputs, controls, workspace):
     database = workspace.directory("database")
     copied = Path(workspace.proc(database, "upgraded.sqlite"))
     config = workspace.directory("docker-config")
-    configuration = workspace.write("config.json", '{"auths":{}}\n', parent=config)
+    workspace.write("config.json", '{"auths":{}}\n', parent=config)
     environment = {"PATH": os.defpath, "TMPDIR": workspace.proc(workspace.root)}
     docker = ["docker", "--config", workspace.proc(config)]
 
@@ -128,9 +128,13 @@ def run_bound(args, inputs, controls, workspace):
         return result
 
     def cleanup_call(*arguments, check=True, timeout=45):
-        workspace.check_file(configuration)
         return subprocess.run(
-            docker + list(arguments), env=environment, check=check, capture_output=True, text=True, timeout=timeout
+            ["docker", "--config", "/proc/self/fd", *arguments],
+            env=environment,
+            check=check,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
 
     def snapshot():
@@ -187,7 +191,7 @@ def run_bound(args, inputs, controls, workspace):
         "--tmpfs",
         "/app/database:uid=1000,gid=1000,mode=0700,size=16m",
         "-v",
-        workspace.proc(database) + ":/cohort:rw",
+        workspace.mount_path(database) + ":/cohort:rw",
         "--env-file",
         workspace.proc(credential["fd"]),
     ]
@@ -205,12 +209,20 @@ def run_bound(args, inputs, controls, workspace):
     try:
         for value in inputs.values():
             value.recheck()
-        workspace.write("upgraded.sqlite", inputs["baseline"].data, parent=database, immutable=False)
+        held_database = workspace.write("upgraded.sqlite", inputs["baseline"].data, parent=database, immutable=False)
         with closing(sqlite3.connect(copied)) as connection:
             native_marker(connection, 12)
         baseline = snapshot()
         began = time.time()
-        upgrade_id = create("upgrade", "--network", "none", image, "schema-upgrade")
+        upgrade_id = create(
+            "upgrade",
+            "--network",
+            "none",
+            "--entrypoint",
+            "/bin/sh",
+            image,
+            *workspace.native_arguments(database, held_database, "schema-upgrade"),
+        )
         call("start", upgrade_id)
         if call("wait", upgrade_id).stdout.strip() != "0":
             raise RuntimeError("schema upgrade failed")
@@ -225,7 +237,15 @@ def run_bound(args, inputs, controls, workspace):
         validate_upgrade(baseline, snapshot(), added_schema, began, finished)
         report["upgrade_row_preservation"] = True
         report["journal_sha384"] = JOURNAL_SHA384
-        runtime_id = create("runtime", "-p", "127.0.0.1::8080", image)
+        runtime_id = create(
+            "runtime",
+            "-p",
+            "127.0.0.1::8080",
+            "--entrypoint",
+            "/bin/sh",
+            image,
+            *workspace.native_arguments(database, held_database),
+        )
         call("start", runtime_id)
         address = call("port", runtime_id, "8080/tcp").stdout.strip()
         host, port = address.split(":")

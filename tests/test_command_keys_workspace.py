@@ -131,3 +131,50 @@ def test_workspace_parent_replacement_refuses_before_create(tmp_path):
         with pytest.raises(ValueError):
             workspace.write("consumer.log", "must not write")
         assert not (parent / "work/consumer.log").exists()
+
+
+@pytest.mark.parametrize("replacement", ["none", "file", "directory", "symlink", "hardlink"])
+def test_native_preflight_refuses_substitution_before_native_execution(tmp_path, replacement):
+    import subprocess
+
+    root = tmp_path / "work"
+    marker = tmp_path / "native-executed"
+    with module.Workspace(root) as workspace:
+        directory = workspace.directory("database")
+        database = workspace.write("copied.sqlite", b"original", parent=directory, immutable=False)
+        arguments = workspace.native_arguments(directory, database, str(marker))
+        # Keep the actual inode/type preflight; substitute a harmless stand-in
+        # only for the immutable image's native executable in this unit control.
+        arguments[1] = arguments[1].replace("exec /usr/local/bin/durable-workflow-server", "exec /usr/bin/touch")
+        arguments[3] = str(root / "database")
+        path = root / "database/copied.sqlite"
+        if replacement == "directory":
+            (root / "database").rename(root / "original-database")
+            (root / "database").mkdir(mode=0o700)
+            path.write_bytes(b"foreign")
+        elif replacement != "none":
+            path.rename(root / "database/original.sqlite")
+            if replacement == "file":
+                path.write_bytes(b"foreign")
+                path.chmod(0o600)
+            elif replacement == "symlink":
+                path.symlink_to(root / "database/original.sqlite")
+            else:
+                os.link(root / "database/original.sqlite", path)
+        result = subprocess.run(["/bin/sh", *arguments], capture_output=True, text=True)
+        if replacement == "none":
+            assert result.returncode == 0 and marker.exists()
+        else:
+            assert result.returncode == 78 and not marker.exists()
+            # The predecessor entrypoint has no independent mounted-inode gate.
+            subprocess.run(["/usr/bin/touch", str(marker)], check=True)
+            assert marker.exists()
+
+
+def test_cleanup_configuration_is_an_immutable_empty_kernel_namespace():
+    # proc's FD directory contains only numeric names and cannot be seeded with
+    # a config.json after the controller's workspace/config path is replaced.
+    path = Path("/proc/self/fd/config.json")
+    assert not path.exists()
+    with pytest.raises(OSError):
+        path.write_text("must not create")

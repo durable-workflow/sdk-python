@@ -237,7 +237,7 @@ def workspace_for(inputs, path):
 
 def run_bound(args, inputs, workspace):
     config = workspace.directory("docker-config")
-    configuration = workspace.write("config.json", '{"auths":{}}\n', parent=config)
+    workspace.write("config.json", '{"auths":{}}\n', parent=config)
     environment = {"PATH": os.defpath, "TMPDIR": workspace.proc(workspace.root)}
     docker = ["docker", "--config", workspace.proc(config)]
 
@@ -252,9 +252,13 @@ def run_bound(args, inputs, workspace):
         return result
 
     def cleanup_call(*arguments, check=True, timeout=45):
-        workspace.check_file(configuration)
         return subprocess.run(
-            docker + list(arguments), check=check, capture_output=True, text=True, timeout=timeout, env=environment
+            ["docker", "--config", "/proc/self/fd", *arguments],
+            check=check,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=environment,
         )
 
     image = "ghcr.io/durable-workflow/server@" + EXPECTED_SERVER["index"]

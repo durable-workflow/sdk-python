@@ -7,6 +7,15 @@ import os
 import stat
 from pathlib import Path
 
+NATIVE_PREFLIGHT = """set -eu
+test -d "$1" && test ! -L "$1" || exit 78
+test -f "$1/$2" && test ! -L "$1/$2" || exit 78
+test "$(stat -c '%d:%i:%u:%g:%a' -- "$1")" = "$3" || exit 78
+test "$(stat -c '%d:%i:%u:%g:%a:%h' -- "$1/$2")" = "$4" || exit 78
+shift 4
+exec /usr/local/bin/durable-workflow-server "$@"
+"""
+
 
 def shape(info):
     return info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink
@@ -68,6 +77,34 @@ class Workspace:
     @staticmethod
     def proc(descriptor, name=None):
         return "/proc/" + str(os.getpid()) + "/fd/" + str(descriptor) + ("/" + name if name else "")
+
+    def mount_path(self, directory):
+        self.check()
+        entry = next(value for value in self.directories if value[2] == directory)
+        if entry[0] != self.root:
+            raise ValueError("bind source is not one held workspace child")
+        return str(self.path / entry[1])
+
+    def native_arguments(self, directory, database, *arguments):
+        self.check()
+        folder = os.fstat(directory)
+        file = os.fstat(database["fd"])
+        directory_key = (
+            f"{folder.st_dev}:{folder.st_ino}:{folder.st_uid}:{folder.st_gid}:{stat.S_IMODE(folder.st_mode):o}"
+        )
+        file_key = (
+            f"{file.st_dev}:{file.st_ino}:{file.st_uid}:{file.st_gid}:{stat.S_IMODE(file.st_mode):o}:{file.st_nlink}"
+        )
+        return [
+            "-c",
+            NATIVE_PREFLIGHT,
+            "checked-native",
+            "/cohort",
+            database["name"],
+            directory_key,
+            file_key,
+            *arguments,
+        ]
 
     def check_file(self, item):
         current = os.stat(item["name"], dir_fd=item["parent"], follow_symlinks=False)
