@@ -4153,6 +4153,38 @@ class TestQueryTasks:
             assert serializer.decode_envelope(body["result_envelope"]) == {"ok": True}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("nested", [False, True])
+    async def test_complete_query_task_encodes_bytes_through_real_http_transport(
+        self, client: Client, nested: bool,
+    ) -> None:
+        fixture_path = Path(__file__).parent / "fixtures/codec_regressions/query-result-nested-bytes.json"
+        fixture = json.loads(fixture_path.read_text())
+        value = serializer.decode(fixture["framing"]["wire_base64"], codec="avro")
+        result_value = value if nested else value["payload"]
+        seen = []
+
+        def receive(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            seen.append(body)
+            assert request.url.path == "/api/worker/query-tasks/qt-bytes/complete"
+            assert "result" not in body
+            assert body["result_envelope"]["codec"] == "avro"
+            assert serializer.decode_envelope(body["result_envelope"]) == result_value
+            if nested:
+                assert body["result_envelope"]["blob"] == fixture["framing"]["wire_base64"]
+            return httpx.Response(200, json={"outcome": "completed"})
+
+        client._cluster_info = _supported_runtime_info()
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(receive))
+        async with client:
+            receipt = await client.complete_query_task(
+                query_task_id="qt-bytes", lease_owner="worker-bytes", query_task_attempt=1, result=result_value,
+            )
+        assert receipt["outcome"] == "completed"
+        assert len(seen) == 1
+
+    @pytest.mark.asyncio
     async def test_complete_query_task_rejects_json_payload_codec(self, client: Client) -> None:
         with pytest.raises(ValueError, match="unsupported_payload_codec.*HTTP document transport"):
             await client.complete_query_task(

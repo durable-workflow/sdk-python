@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import copy
 import hashlib
+import json
 import json as json_module
 import math
 import os
@@ -6612,7 +6613,6 @@ class Client:
         body: dict[str, Any] = {
             "lease_owner": lease_owner,
             "query_task_attempt": query_task_attempt,
-            "result": result,
             "result_envelope": self._payload_envelope(
                 result,
                 codec=codec,
@@ -6624,6 +6624,14 @@ class Client:
                 external_storage_threshold_bytes=external_storage_threshold_bytes,
             ),
         }
+        # The envelope is authoritative. The optional plain projection must
+        # not impose a JSON-only restriction on valid Avro values such as bytes.
+        try:
+            json.dumps(result, allow_nan=False)
+        except (TypeError, ValueError):
+            pass
+        else:
+            body["result"] = result
         return await self._request(
             "POST", f"/worker/query-tasks/{query_task_id}/complete", worker=True, json=body
         )

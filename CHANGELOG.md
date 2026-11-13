@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The query client guide, SDK reference and API docstring now document the Server receipt returned by `Client.query_workflow()`, `WorkflowHandle.query()` and the synchronous client. Read `receipt["result"]` for the decoded handler value, including a successful `None`. Runtime behavior is unchanged. (#316, #317)
+- Query workers return valid Avro values containing bytes without also trying to serialize those bytes as plain JSON. The authoritative `result_envelope` is unchanged; JSON-compatible results retain their optional plain projection. (#319)
 
 ### Changed
 
