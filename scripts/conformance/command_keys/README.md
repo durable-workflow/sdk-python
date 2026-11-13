@@ -24,11 +24,40 @@ Store both as regular, single-link, owned files in owner-controlled directories.
 Before the experiment, check host/Docker capacity and pull both exact images
 with an empty Docker config. The controller itself does not pull images.
 
-Run from an exact committed checkout:
+Run from an exact committed checkout. Qualifying execution uses a literal trusted
+bootstrap to verify the reviewed controller Git bytes before compiling them.
+Set `REVIEWED_COMMIT` and `REVIEWED_SHA` from the independent review for the
+chosen controller. The expected identity is supplied by that review.
 
 ```sh
-python3 -I scripts/conformance/command_keys/run_response_loss.py \
-  --runner-commit FULL_REVIEWED_RUNNER_COMMIT \
+BOOTSTRAP='import hashlib, os, re, subprocess, sys
+from pathlib import Path
+commit, relative, expected = sys.argv[1:4]
+del sys.argv[1:4]
+allowed = {"scripts/conformance/command_keys/" + name for name in
+           ("run_response_loss.py", "run_physical_readback.py", "run_synthetic_legacy.py")}
+if (re.fullmatch(r"[0-9a-f]{40}", commit) is None
+        or re.fullmatch(r"[0-9a-f]{64}", expected) is None or relative not in allowed):
+    raise ValueError("require reviewed controller identities")
+data = subprocess.check_output(["/usr/bin/git", "show", commit + ":" + relative],
+                               env={"PATH": os.defpath}, timeout=10)
+if hashlib.sha256(data).hexdigest() != expected:
+    raise ValueError("reviewed controller Git bytes differ")
+context = {"__name__": "__main__", "__file__": str(Path.cwd() / relative)}
+exec(compile(data, context["__file__"], "exec"), context)
+'
+```
+
+The [frozen physical/loss invocation and pre-open substitution controls](https://github.com/durable-workflow/sdk-python/pull/321#issuecomment-6862370654)
+show the complete recorded trust root. The adapter still captures and verifies
+all host source/data files against the declared commit before creating its
+workspace. Opening the host controller pathname first is insufficient for
+qualification.
+
+```sh
+/usr/bin/python3 -I -B -c "$BOOTSTRAP" "$REVIEWED_COMMIT" \
+  scripts/conformance/command_keys/run_response_loss.py "$REVIEWED_SHA" \
+  --runner-commit "$REVIEWED_COMMIT" \
   --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
   --proxy /path/to/verified/committed_response_loss.py \
   --output /path/to/private-disk-scratch/new-run
@@ -101,8 +130,9 @@ reviewed response-loss runner. No host interpreter or executable input pathname
 is accepted.
 
 ```sh
-python3 -I scripts/conformance/command_keys/run_physical_readback.py \
-  --runner-commit FULL_REVIEWED_RUNNER_COMMIT \
+/usr/bin/python3 -I -B -c "$BOOTSTRAP" "$REVIEWED_COMMIT" \
+  scripts/conformance/command_keys/run_physical_readback.py "$REVIEWED_SHA" \
+  --runner-commit "$REVIEWED_COMMIT" \
   --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
   --baseline /path/to/producer/stopped-backup.sqlite \
   --seed /path/to/producer/seed-receipts.json \
@@ -161,8 +191,9 @@ preconditions, complete-copy comparison and exact allowed row changes are unchan
 This setup is separate from the producer-owned physical historical seed.
 
 ```sh
-python3 -I scripts/conformance/command_keys/run_synthetic_legacy.py \
-  --runner-commit FULL_REVIEWED_RUNNER_COMMIT \
+/usr/bin/python3 -I -B -c "$BOOTSTRAP" "$REVIEWED_COMMIT" \
+  scripts/conformance/command_keys/run_synthetic_legacy.py "$REVIEWED_SHA" \
+  --runner-commit "$REVIEWED_COMMIT" \
   --state open --scenario readback \
   --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
   --snapshot-helper /path/to/accepted/sqlite_legacy.py \
