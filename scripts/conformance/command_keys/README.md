@@ -55,6 +55,9 @@ bootstrap/input bundle travels through stdin; executable files are never reopene
 from host paths. Controller readiness explicitly disables environment proxies.
 The consumer has a ten-minute bound, and cleanup owns both containers, anonymous
 volumes and the generated fixture credential.
+Creation returns full container IDs bound to per-run ownership labels. Start,
+inspection, port lookup, removal and absence verification use those IDs. A reused
+human name grants no cleanup authority over its replacement or volumes.
 
 Six workflows exercise eight intentionally lost complete upstream successes:
 automatic/manual recovery with generated/explicit keys on both routes, including

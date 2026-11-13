@@ -31,6 +31,8 @@ PYTHON_VERSION = "3.12.16"
 WHEEL_SHA256 = "7dc77d3882fa5cbddbeaee6a4cc63b05285e280523c8ea40dc31e03cc12a40bc"
 PROXY_SHA256 = "bd1e8ccbbf76f63fc2eafa278a023eb181d405b68d9c30016392e395a1eff725"
 RESULT_PREFIX = "SDK_PYTHON_CONSUMER_RESULT="
+OWNER_LABEL = "dev.durable-workflow.fixture-owner"
+RUN_LABEL = "dev.durable-workflow.fixture-run"
 
 
 def image_identity(document):
@@ -73,6 +75,47 @@ def interpreter_identity(document):
 def missing_object(result, name, *, volume=False):
     expected = f"Error response from daemon: get {name}: no such volume" if volume else f"error: no such object: {name}"
     return result.returncode == 1 and result.stderr.strip() == expected
+
+
+def created_id(stdout):
+    value = stdout.strip()
+    if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError("Docker create did not return one full immutable container ID")
+    return value
+
+
+def inspect_owned(call, container_id, nonce):
+    created_id(container_id)
+    response = call("inspect", container_id, check=False)
+    if missing_object(response, container_id):
+        return None
+    if response.returncode != 0:
+        raise RuntimeError("owned container state is unverified")
+    records = json.loads(response.stdout)
+    if len(records) != 1:
+        raise ValueError("owned container inspection is ambiguous")
+    record = records[0]
+    labels = record.get("Config", {}).get("Labels") or {}
+    if record["Id"] != container_id or labels.get(OWNER_LABEL) != "sdk-python" or labels.get(RUN_LABEL) != nonce:
+        raise ValueError("container ID/ownership identity differs; preserve it")
+    return record
+
+
+def cleanup_owned(call, container_id, nonce):
+    record = inspect_owned(call, container_id, nonce)
+    volumes = []
+    oom = None
+    if record is not None:
+        volumes = [mount["Name"] for mount in record["Mounts"] if mount["Type"] == "volume"]
+        oom = record["State"]["OOMKilled"]
+        call("rm", "-f", "-v", container_id)
+    # Never inspect, remove or recover by a reusable name. If the owned ID
+    # vanished, any same-name replacement and its volumes remain untouched.
+    absent = inspect_owned(call, container_id, nonce) is None
+    volumes_absent = all(
+        missing_object(call("volume", "inspect", volume, check=False), volume, volume=True) for volume in volumes
+    )
+    return {"id": container_id, "absent": absent, "volumes_absent": volumes_absent, "oom_killed": oom}
 
 
 def git_bytes(root, commit, relative):
@@ -152,7 +195,8 @@ def run_bound(args, inputs):
     python_image = "docker.io/library/python@" + PYTHON_INDEX
     observed = image_identity(json.loads(call("image", "inspect", image).stdout))
     interpreter = interpreter_identity(json.loads(call("image", "inspect", python_image).stdout))
-    suffix = uuid4().hex[:12]
+    nonce = uuid4().hex
+    suffix = nonce[:12]
     names = ["sdk-python-216-response-loss-" + suffix, "sdk-python-216-consumer-" + suffix]
     token = secrets.token_hex(24)
     credential = root / "fixture.env"
@@ -166,39 +210,49 @@ def run_bound(args, inputs):
         "observed_image": observed,
         "interpreter_image": interpreter,
         "inputs": {role: {"sha256": value.sha256, "bytes": len(value.data)} for role, value in inputs.items()},
+        "owned_containers": {},
+        "ownership_nonce": nonce,
         "complete": False,
     }
     try:
         for value in inputs.values():
             value.recheck()
-        call(
-            "run",
-            "-d",
-            "--init",
-            "--read-only",
-            "--name",
-            names[0],
-            "--cpus",
-            "1",
-            "--memory",
-            "1g",
-            "--pids-limit",
-            "256",
-            "--tmpfs",
-            "/tmp:mode=1777,size=128m",
-            "--tmpfs",
-            "/app/storage:uid=1000,gid=1000,mode=0700,size=64m",
-            "--tmpfs",
-            "/app/database:uid=1000,gid=1000,mode=0700,size=64m",
-            "-p",
-            "127.0.0.1::8080",
-            "--env-file",
-            str(credential),
-            "-e",
-            "DB_DATABASE=/app/database/response-loss.sqlite",
-            image,
+        runtime_id = created_id(
+            call(
+                "create",
+                "--init",
+                "--read-only",
+                "--name",
+                names[0],
+                "--label",
+                OWNER_LABEL + "=sdk-python",
+                "--label",
+                RUN_LABEL + "=" + nonce,
+                "--cpus",
+                "1",
+                "--memory",
+                "1g",
+                "--pids-limit",
+                "256",
+                "--tmpfs",
+                "/tmp:mode=1777,size=128m",
+                "--tmpfs",
+                "/app/storage:uid=1000,gid=1000,mode=0700,size=64m",
+                "--tmpfs",
+                "/app/database:uid=1000,gid=1000,mode=0700,size=64m",
+                "-p",
+                "127.0.0.1::8080",
+                "--env-file",
+                str(credential),
+                "-e",
+                "DB_DATABASE=/app/database/response-loss.sqlite",
+                image,
+            ).stdout
         )
-        address = call("port", names[0], "8080/tcp").stdout.strip()
+        report["owned_containers"]["runtime"] = {"id": runtime_id, "requested_name": names[0]}
+        inspect_owned(call, runtime_id, nonce)
+        call("start", runtime_id)
+        address = call("port", runtime_id, "8080/tcp").stdout.strip()
         host, port = address.split(":")
         if host != "127.0.0.1" or not port.isdigit() or not 1 <= int(port) <= 65535:
             raise ValueError("runtime did not bind numeric loopback")
@@ -230,14 +284,17 @@ def run_bound(args, inputs):
         # Host networking is needed only for the fixture's numeric loopback.
         # It has no host mounts or inherited host environment. Only the synthetic
         # runtime token is delivered through the captured stdin bundle.
-        result = subprocess.run(
-            docker
-            + [
-                "run",
+        consumer_id = created_id(
+            call(
+                "create",
                 "--init",
                 "--read-only",
                 "--name",
                 names[1],
+                "--label",
+                OWNER_LABEL + "=sdk-python",
+                "--label",
+                RUN_LABEL + "=" + nonce,
                 "--network",
                 "host",
                 "--cpus",
@@ -264,7 +321,14 @@ def run_bound(args, inputs):
                 "-B",
                 "-c",
                 inputs["bootstrap"].data.decode(),
-            ],
+            ).stdout
+        )
+        if consumer_id == runtime_id:
+            raise ValueError("Docker create reused an existing container ID")
+        report["owned_containers"]["consumer"] = {"id": consumer_id, "requested_name": names[1]}
+        inspect_owned(call, consumer_id, nonce)
+        result = subprocess.run(
+            docker + ["start", "-a", "-i", consumer_id],
             input=json.dumps(bundle),
             capture_output=True,
             text=True,
@@ -272,14 +336,18 @@ def run_bound(args, inputs):
             timeout=600,
         )
         (root / "consumer.log").write_text(result.stdout + result.stderr)
-        report["consumer_exit_code"] = result.returncode
+        consumer_state = inspect_owned(call, consumer_id, nonce)
+        if consumer_state is None or consumer_state["State"]["Running"]:
+            raise ValueError("owned consumer final state is unverified")
+        report["consumer_exit_code"] = consumer_state["State"]["ExitCode"]
+        report["docker_attach_exit_code"] = result.returncode
         for value in inputs.values():
             value.recheck()
         report["input_identities_rechecked"] = True
         if interpreter_identity(json.loads(call("image", "inspect", python_image).stdout)) != interpreter:
             raise ValueError("interpreter image identity changed")
         report["interpreter_identity_rechecked"] = True
-        if result.returncode != 0:
+        if result.returncode != 0 or report["consumer_exit_code"] != 0:
             raise RuntimeError("installed consumer failed; retain its private incomplete evidence")
         consumer = consumer_result(result.stdout, inputs)
         (root / "consumer.json").write_text(json.dumps(consumer, indent=2) + "\n")
@@ -291,20 +359,18 @@ def run_bound(args, inputs):
         clean = []
         oom = []
         try:
-            for name in names:
-                inspection = call("inspect", name, check=False)
-                volumes = []
-                if inspection.returncode == 0:
-                    state = json.loads(inspection.stdout)[0]
-                    volumes = [mount["Name"] for mount in state["Mounts"] if mount["Type"] == "volume"]
-                    oom.append(state["State"]["OOMKilled"])
-                    call("rm", "-f", "-v", name)
-                absent = missing_object(call("inspect", name, check=False), name)
-                absent_volumes = all(
-                    missing_object(call("volume", "inspect", volume, check=False), volume, volume=True)
-                    for volume in volumes
-                )
-                clean.append(absent and absent_volumes)
+            report["cleanup_by_id"] = {}
+            for role, owned in report["owned_containers"].items():
+                try:
+                    outcome = cleanup_owned(call, owned["id"], nonce)
+                except Exception as error:
+                    report["cleanup_by_id"][role] = {"id": owned["id"], "failure_type": type(error).__name__}
+                    clean.append(False)
+                    oom.append(None)
+                    continue
+                report["cleanup_by_id"][role] = outcome
+                oom.append(outcome["oom_killed"])
+                clean.append(outcome["absent"] and outcome["volumes_absent"])
         except Exception as error:
             report["cleanup_failure_type"] = type(error).__name__
         finally:
@@ -312,7 +378,13 @@ def run_bound(args, inputs):
             report["cleanup"] = {
                 "containers_and_volumes_absent": len(clean) == 2 and all(clean),
                 "credential_removed": not credential.exists(),
-                "oom_killed": any(oom),
+                "oom_killed": (
+                    True
+                    if any(value is True for value in oom)
+                    else False
+                    if len(oom) == 2 and all(value is False for value in oom)
+                    else None
+                ),
             }
             report["finished_at"] = datetime.now(timezone.utc).isoformat()
             report["complete"] = (
@@ -320,7 +392,7 @@ def run_bound(args, inputs):
                 and len(clean) == 2
                 and all(clean)
                 and len(oom) == 2
-                and not any(oom)
+                and all(value is False for value in oom)
                 and "failure_type" not in report
                 and "cleanup_failure_type" not in report
             )
