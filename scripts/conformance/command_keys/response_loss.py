@@ -6,11 +6,11 @@ No transport fault implementation or product source overlay lives here.
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import hashlib
 import importlib.metadata
 import importlib.util
+import io
 import json
 import platform
 import stat
@@ -19,6 +19,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from types import ModuleType
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -52,12 +53,13 @@ def explicit_key(kind):
 
 def installed_identity(wheel):
     """Compare installed code to the exact published wheel, without importing project source."""
-    if hashlib.sha256(wheel.read_bytes()).hexdigest() != WHEEL_SHA256:
+    wheel_bytes = wheel if isinstance(wheel, bytes) else wheel.read_bytes()
+    if hashlib.sha256(wheel_bytes).hexdigest() != WHEEL_SHA256:
         raise ValueError("published wheel identity mismatch")
     distribution = importlib.metadata.distribution("durable-workflow")
     if distribution.version != SDK_VERSION or distribution.read_text("direct_url.json") is not None:
         raise ValueError("require a registry-only installation of the bound SDK")
-    with ZipFile(wheel) as archive:
+    with ZipFile(io.BytesIO(wheel_bytes)) as archive:
         names = sorted(
             name for name in archive.namelist() if name.startswith("durable_workflow/") and not name.endswith("/")
         )
@@ -213,13 +215,12 @@ async def main(args):
         raise ValueError("acceptance assertions require Python without optimization")
     if args.output.exists():
         raise ValueError("refusing to overwrite an existing evidence file")
-    proxy_bytes = args.proxy_source.read_bytes()
+    proxy_bytes = args.proxy_data
     if hashlib.sha256(proxy_bytes).hexdigest() != PROXY_SHA256:
         raise ValueError("accepted proxy source hash mismatch")
-    package = installed_identity(args.wheel)
-    spec = importlib.util.spec_from_file_location("shared_committed_response_loss", args.proxy_source)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    package = installed_identity(args.wheel_data)
+    module = ModuleType("shared_committed_response_loss")
+    exec(compile(proxy_bytes, "captured-committed-response-loss.py", "exec"), module.__dict__)
     mode = args.credential_file.lstat().st_mode
     if not stat.S_ISREG(mode) or mode & 0o077:
         raise ValueError("fixture credential file must be owner-only")
@@ -231,7 +232,7 @@ async def main(args):
         "sdk": package,
         "proxy_commit": PROXY_COMMIT,
         "proxy_sha256": PROXY_SHA256,
-        "adapter_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "adapter_sha256": args.adapter_sha256,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "cells": [],
         "complete": False,
@@ -401,18 +402,8 @@ async def main(args):
     report["complete"] = True
     report["finished_at"] = datetime.now(timezone.utc).isoformat()
     save()
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--upstream", required=True)
-    parser.add_argument("--credential-file", type=Path, required=True)
-    parser.add_argument("--proxy-source", type=Path, required=True)
-    parser.add_argument("--wheel", type=Path, required=True)
-    parser.add_argument("--server-version", required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    return parser.parse_args()
+    return report
 
 
 if __name__ == "__main__":
-    asyncio.run(main(parse_args()))
+    raise SystemExit("Use the bound run_response_loss.py controller; standalone executable paths are refused")
