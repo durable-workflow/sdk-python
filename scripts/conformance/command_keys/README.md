@@ -45,6 +45,9 @@ reporting the original hash. The host does not supply an interpreter or virtuale
 The new private output directory must not exist; its parent must already exist.
 One runtime and one consumer are each capped at 1 CPU, 1 GiB and 256 PIDs, with
 read-only roots and `--init`. Bounded tmpfs paths remain within each memory cap.
+The consumer's ordinary scratch is noexec. Its separate private wheel environment
+permits native-extension mapping for the hash-locked codec wheel; it is not a
+host mount and accepts no unverified executable input.
 The runtime publishes one ephemeral loopback port. The consumer uses host
 networking for the numeric loopback-only proxy and has no host mounts. Registry
 installation precedes creation of its synthetic credential file. Its entire

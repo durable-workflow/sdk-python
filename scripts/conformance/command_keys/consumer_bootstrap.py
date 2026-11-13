@@ -85,7 +85,7 @@ def prepare(bundle, sources):
     if "prepared" in bundle:
         raise ValueError("caller may not supply a prepared interpreter")
     root = Path(tempfile.mkdtemp(prefix="sdk-python-installed-"))
-    environment = root / "venv"
+    environment = Path(tempfile.mkdtemp(prefix="environment-", dir="/opt/sdk-python")) / "venv"
     # Scratch remains noexec. These fresh internal links may target only the
     # immutable interpreter in the fixed image, never a host/caller program.
     venv.EnvBuilder(with_pip=True, symlinks=True).create(environment)
@@ -141,6 +141,7 @@ def prepare(bundle, sources):
     before = inventory(environment)
     bundle["prepared"] = {
         "root": str(environment),
+        "scratch": str(root),
         "binary_sha256": binary_sha256,
         "config_sha256": hashlib.sha256((environment / "pyvenv.cfg").read_bytes()).hexdigest(),
         "inventory": before,
@@ -179,7 +180,7 @@ def main():
     before = inventory(environment)
     if before != prepared["inventory"]:
         raise ValueError("prepared environment changed before consumer execution")
-    root = environment.parent
+    root = Path(prepared["scratch"])
     credential = root / "fixture.env"
     descriptor = os.open(credential, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as stream:
