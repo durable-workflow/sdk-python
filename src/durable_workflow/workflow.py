@@ -74,6 +74,7 @@ from .errors import (
     WorkflowCancelled,
     WorkflowEntryArgumentsMismatchError,
     WorkflowPayloadDecodeError,
+    _cancellation_requested,
 )
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .nexus import NexusOperationResult, stable_nexus_idempotency_key
@@ -2359,7 +2360,7 @@ class WorkflowContext:
     def throw_if_cancellation_requested(self) -> None:
         """Raise :class:`WorkflowCancelled` at an explicit safe point."""
         if self._cancel_requested and self._cancellation_shield_depth == 0:
-            raise WorkflowCancelled(
+            raise _cancellation_requested(
                 "workflow cancellation was requested", request_id=self._cancellation_request_id,
                 context=self._cancellation_context,
             )
@@ -7161,7 +7162,7 @@ def _replay_state(
             authored_sequence += 1
         try:
             _refresh_replay_logging()
-            advanced_cmd = _resume_business(gen.throw, WorkflowCancelled(
+            advanced_cmd = _resume_business(gen.throw, _cancellation_requested(
                 "workflow cancellation was requested", request_id=boundary.request_id,
                 context=ctx._cancellation_context,
             ))

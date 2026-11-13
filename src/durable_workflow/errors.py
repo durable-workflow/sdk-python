@@ -970,6 +970,38 @@ class WorkflowCancelled(BaseException):
         self.context = context
 
 
+class WorkflowTimeoutCleanupRequested(WorkflowCancelled):
+    """The run's work deadline passed and its timeout cleanup has started.
+
+    Raised at the authored call, like a cooperative cancellation request, when a
+    run that opted in to timeout cleanup reaches its work deadline. It is a
+    :class:`WorkflowCancelled`, so existing ``except WorkflowCancelled:``
+    handlers (saga compensation, cleanup) run unchanged. The run still ends
+    timed out, whatever the cleanup returns.
+
+    Like :class:`WorkflowCancelled` it is :class:`BaseException`-rooted, and it
+    is not an :class:`asyncio.CancelledError`. ``context.cause`` is
+    ``"timeout"``; test ``cause`` rather than the type when telling the two
+    apart, since ``cause`` is the cross-SDK discriminator. ``context.cleanup_deadline_at``
+    is the cleanup deadline. Experimental.
+    """
+
+    def __init__(
+        self, message: str = "workflow work deadline passed: timeout cleanup requested", *,
+        request_id: str | None = None, context: CancellationContext | ScopedCancellationContext | None = None,
+    ) -> None:
+        super().__init__(message, request_id=request_id, context=context)
+
+
+def _cancellation_requested(
+    message: str, *, request_id: str | None, context: CancellationContext | ScopedCancellationContext | None,
+) -> WorkflowCancelled:
+    """The exception for a delivered run request: the timeout subtype when timeout cleanup requested it."""
+    if isinstance(context, CancellationContext) and context.is_timeout:
+        return WorkflowTimeoutCleanupRequested(request_id=request_id, context=context)
+    return WorkflowCancelled(message, request_id=request_id, context=context)
+
+
 class ActivityCancelled(BaseException):
     """An in-flight activity was cancelled.
 

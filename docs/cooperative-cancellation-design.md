@@ -33,6 +33,25 @@ metadata is limited to caller type, ID and label. It is a read-only mapping and
 lineage is a tuple of immutable `CancellationLineage` entries. Timestamp values
 are immutable UTC dates. `to_dict()` returns a detached portable snapshot.
 
+### Timeout cleanup cause
+
+A run that opts in to timeout cleanup (workflow issue 863) is interrupted at its
+work deadline through the same cooperative delivery. The context then has
+`cause == "timeout"` (`is_timeout` is true), and the delivered exception is
+`WorkflowTimeoutCleanupRequested`, a subclass of `WorkflowCancelled`. Existing
+`except WorkflowCancelled:` handlers therefore run on timeout too. Like
+`WorkflowCancelled`, it derives from `BaseException`, never from
+`asyncio.CancelledError`. Test `cause`, the cross-SDK discriminator, rather than
+the type, to tell the two apart. The run still ends timed out.
+
+`cause` is `None` (absent) or `"cancellation"` for an ordinary request; any
+other value is refused. `cleanup_deadline_at` is the cleanup deadline. The
+context carries no other timeout fields: the timeout kind and work deadline are
+recorded on `WorkflowTimeoutCleanupStarted`. `cause` is never inherited: a child
+cancelled under a timeout request, scoped or not, receives an ordinary
+cancellation. `to_dict()` writes `cause` back exactly as received, including an
+explicit `"cancellation"`, and leaves ordinary contexts unchanged.
+
 A child preserves the root request time and budget even when its local request
 arrives later. Canonical request history supplies the context on cold replay,
 while transport observation retains the opaque refresh route. The parser rejects

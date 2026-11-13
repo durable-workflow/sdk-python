@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Timeout cleanup interruption (workflow#863, workflow#1129). `CancellationContext.from_dict()` reads the context's optional top-level `cause`: absent or `"cancellation"` is an ordinary cancellation, `"timeout"` marks a timeout-cleanup request (the run passed its work deadline and is now in cleanup), and any other value raises `ValueError`. The context carries no other timeout fields: its existing `cleanup_deadline_at` is the cleanup deadline, and the timeout kind and work deadline stay on the `WorkflowTimeoutCleanupStarted` event. `cause` and `is_timeout` are readable on the context, and `to_dict()` writes `cause` back exactly as received, including an explicit `"cancellation"`, leaving ordinary contexts byte-identical. A timeout request is raised at the authored call as the new experimental `WorkflowTimeoutCleanupRequested`, a subclass of `WorkflowCancelled`, so existing `except WorkflowCancelled:` handlers, such as saga compensation, run on timeout too. It stays `BaseException`-rooted and is not an `asyncio.CancelledError`. Test `cause`, the cross-SDK discriminator, to tell the two apart. `cause` is never inherited: a child cancelled under a timeout request, scoped or not, receives an ordinary cancellation without `cause`.
+
 ## [2.17.1] - 2026-11-13
 
 ### Fixed

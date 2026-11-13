@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from durable_workflow import Replayer, Worker, activity, serializer, workflow
+from durable_workflow import CancellationContext, Replayer, Worker, activity, serializer, workflow
 from durable_workflow.client import PROTOCOL_VERSION, Client, WorkflowExecution, WorkflowStreamAppendItem
 from durable_workflow.errors import (
     DurableWorkflowError,
@@ -310,6 +310,20 @@ class CooperativeReopenedConditionCleanupWorkflow:
         return "not cancelled"
 
 
+@workflow.defn(name="tests.replay.cooperative-timeout-cleanup-cause")
+class CooperativeTimeoutCleanupCauseWorkflow:
+    """Cancellation handling written before timeout cleanup also catches it."""
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.start_timer(120)
+        except WorkflowCancelled as exc:
+            context = exc.context
+            assert isinstance(context, CancellationContext)
+            return [type(exc).__name__, context.cause, exc.request_id]
+        return "not cancelled"
+
+
 @workflow.defn(name="tests.replay.child-policy-author")
 class ChildPolicyAuthorWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -408,6 +422,7 @@ WORKFLOWS = [
     ChildPolicyAuthorWorkflow,
     ColdReplacementSatisfiedConditionWorkflow,
     CooperativeReopenedConditionCleanupWorkflow,
+    CooperativeTimeoutCleanupCauseWorkflow,
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
     GoldenSingleActivityWorkflow,
