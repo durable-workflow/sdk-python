@@ -19,6 +19,10 @@ on:
         description: Optional exact public Native source overlay SHA for candidate qualification
         type: string
         default: ""
+      published_activity_acceptance:
+        description: Run the reviewed published SDK/Server activity identity tuple
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -28,6 +32,31 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  published-activity-acceptance:
+    if: github.event_name == 'workflow_dispatch' && inputs.published_activity_acceptance
+    needs: [action-policy, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+      - name: Bootstrap patched pip trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python
+      - name: Run the published activity identity case
+        run: python scripts/ci/published-activity-acceptance.py
+      - name: Retain published tuple and scenario evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: published-activity-acceptance-${{ github.sha }}
+          path: published-activity-results/
+          retention-days: 7
   action-policy:
     name: Central action policy preflight
     if: ${{ github.server_url == 'https://github.com' }}
