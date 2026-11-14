@@ -32,7 +32,8 @@ _COLD_PYTHON = ""
 
 
 def instant(value: Any) -> datetime:
-    assert isinstance(value, str) and value
+    assert isinstance(value, str)
+    assert value
     assert not re.search(r"\.\d{7}", value), "clock precision exceeds Python's exact microsecond representation"
     result = datetime.fromisoformat(value.replace("Z", "+00:00"))
     assert result.tzinfo is not None
@@ -67,12 +68,15 @@ def verify_reuse(
     assert instant(started["replayed_started_at"]) == source_start
     inherited_start = one(predecessor, "WorkflowStarted")["payload"].get("replayed_started_at")
     if inherited_start is not None:
-        assert isinstance(inherited_start, str) and started["replayed_started_at"] == inherited_start
+        assert isinstance(inherited_start, str)
+        assert started["replayed_started_at"] == inherited_start
     assert instant(source_start_text) == source_start
     scheduled = one(events, "TimerScheduled", step=2)["payload"]
     fired = one(events, "TimerFired", step=2)["payload"]
     timer_id = scheduled["timer_id"]
-    assert isinstance(timer_id, str) and timer_id and timer_id not in used_timer_ids
+    assert isinstance(timer_id, str)
+    assert timer_id
+    assert timer_id not in used_timer_ids
     assert fired["timer_id"] == timer_id
     assert fired["reused_from_run_id"] == predecessor_id
     assert instant(fired["reused_recorded_at"]) == source_clock
@@ -80,7 +84,8 @@ def verify_reuse(
     expected_fired = deepcopy(one(predecessor, "TimerFired", step=2)["payload"])
     inherited_clock = expected_fired.get("reused_recorded_at")
     if inherited_clock is not None:
-        assert isinstance(inherited_clock, str) and fired["reused_recorded_at"] == inherited_clock
+        assert isinstance(inherited_clock, str)
+        assert fired["reused_recorded_at"] == inherited_clock
     assert instant(source_clock_text) == source_clock
     for payload in (expected_scheduled, expected_fired):
         payload.pop("task", None)
@@ -164,7 +169,9 @@ async def cold_worker(packet: dict[str, Any]) -> None:
 
 
 def run_cold_worker(packet: dict[str, Any]) -> dict[str, Any]:
-    assert _COLD_BOOTSTRAP and _COLD_INVENTORY and _COLD_PYTHON
+    assert _COLD_BOOTSTRAP
+    assert _COLD_INVENTORY
+    assert _COLD_PYTHON
     environment = {"PATH": os.defpath, "PYTHONDONTWRITEBYTECODE": "1"}
     result = subprocess.run(
         [_COLD_PYTHON, "-I", "-S", "-B", "-c", _COLD_BOOTSTRAP],
@@ -179,11 +186,14 @@ def run_cold_worker(packet: dict[str, Any]) -> dict[str, Any]:
 
 
 def verify_export(document: dict[str, Any], workflow_id: str, run_id: str, *, terminal: bool, source: bool) -> None:
-    assert document["schema"] == "durable-workflow.v2.history-export" and document["schema_version"] == 2
+    assert document["schema"] == "durable-workflow.v2.history-export"
+    assert document["schema_version"] == 2
     selected = document["workflow"]
-    assert selected["instance_id"] == workflow_id and selected["run_id"] == run_id
+    assert selected["instance_id"] == workflow_id
+    assert selected["run_id"] == run_id
     assert selected["workflow_type"] == WORKFLOW_TYPE
-    assert selected["details_state"] == "retained" and selected["details_pruned_at"] is None
+    assert selected["details_state"] == "retained"
+    assert selected["details_pruned_at"] is None
     assert document["history_complete"] is terminal
     assert document["selected_run"]["waits_projection_source"] == "workflow_run_waits"
     assert document["redaction"]["applied"] is False
@@ -198,7 +208,8 @@ def verify_export(document: dict[str, Any], workflow_id: str, run_id: str, *, te
 def verify_recorded_fingerprints(observations: list[dict[str, Any]], histories: list[list[dict[str, Any]]]) -> None:
     assert len(observations) == len(histories) == 3
     expected = observations[0]["fingerprints"][WORKFLOW_TYPE]
-    assert isinstance(expected, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", expected)
+    assert isinstance(expected, str)
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", expected)
     for observed, events in zip(observations, histories, strict=True):
         assert observed["fingerprints"] == {WORKFLOW_TYPE: expected}
         started = one(events, "WorkflowStarted")["payload"]
@@ -212,7 +223,9 @@ def verify_worker(
     assert observed["definition_sha256"] == DEFINITION_SHA
     assert set(observed["fingerprints"]) == {WORKFLOW_TYPE}
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", observed["fingerprints"][WORKFLOW_TYPE])
-    assert observed["worker_id"] and isinstance(observed["pid"], int) and observed["pid"] > 0
+    assert observed["worker_id"]
+    assert isinstance(observed["pid"], int)
+    assert observed["pid"] > 0
     assert all(set(completion) == {"task_id", "commands"} for completion in observed["completions"])
     task_ids = [completion["task_id"] for completion in observed["completions"]]
     assert all(isinstance(identity, str) and identity for identity in task_ids)
@@ -249,8 +262,10 @@ def verify_worker(
         required = {"type", "message", "failed_step_sequence", "failed_activity_execution_id"}
         allowed = required | {"exception_type", "exception_class", "exception", "non_retryable"}
         assert required <= set(terminal) <= allowed
-        assert terminal["type"] == "fail_workflow" and terminal["failed_step_sequence"] == 3
-        assert isinstance(terminal["message"], str) and terminal["message"]
+        assert terminal["type"] == "fail_workflow"
+        assert terminal["failed_step_sequence"] == 3
+        assert isinstance(terminal["message"], str)
+        assert terminal["message"]
         assert terminal["failed_activity_execution_id"] == observed["callbacks"][-1]["execution_id"]
     assert instant(observed["callbacks"][-1]["clock"]) == clock
 
@@ -268,10 +283,14 @@ async def admit_redrive(
     try:
         await client.redrive_workflow(queue, run_id)
     except ServerError as error:
-        assert error.status == 409 and error.reason() == "workflow_definition_unavailable_or_changed"
-        assert isinstance(error.body, dict) and error.body["outcome"] == "rejected"
-        assert error.body["workflow_id"] == queue and error.body["run_id"] == run_id
-        assert error.body["accepted"] is False and error.body["workflow_run_id"] is None
+        assert error.status == 409
+        assert error.reason() == "workflow_definition_unavailable_or_changed"
+        assert isinstance(error.body, dict)
+        assert error.body["outcome"] == "rejected"
+        assert error.body["workflow_id"] == queue
+        assert error.body["run_id"] == run_id
+        assert error.body["accepted"] is False
+        assert error.body["workflow_run_id"] is None
         assert error.body["task_id"] is None
         refusal = {"status": error.status, "body": error.body}
     else:
@@ -279,16 +298,20 @@ async def admit_redrive(
     assert [run.run_id for run in (await client.list_workflow_runs(queue)).runs] == before
     assert [event async for event in client.iter_history(queue, run_id)] == events
     request = deepcopy(observed["registration"])
-    assert request["task_queue"] == queue and request["supported_workflow_types"] == [WORKFLOW_TYPE]
+    assert request["task_queue"] == queue
+    assert request["supported_workflow_types"] == [WORKFLOW_TYPE]
     assert request["workflow_definition_fingerprints"] == {WORKFLOW_TYPE: fingerprint}
     holder_id = "python-clock-admission-" + uuid4().hex
     request["worker_id"] = holder_id
     acknowledgement = await client.register_worker(**request)
     token = acknowledgement.get("registration_token")
-    assert isinstance(token, str) and re.fullmatch(r"[0-9a-f]{32}", token)
+    assert isinstance(token, str)
+    assert re.fullmatch(r"[0-9a-f]{32}", token)
     try:
-        assert acknowledgement["worker_id"] == holder_id and acknowledgement["registered"] is True
-        assert acknowledgement["namespace"] == "default" and acknowledgement["task_queue"] == queue
+        assert acknowledgement["worker_id"] == holder_id
+        assert acknowledgement["registered"] is True
+        assert acknowledgement["namespace"] == "default"
+        assert acknowledgement["task_queue"] == queue
         # The holder never creates a Worker or polls: only the later cold child
         # may claim and execute the successor's task.
         receipt = await client.redrive_workflow(queue, run_id)
@@ -296,7 +319,8 @@ async def admit_redrive(
         removed = await client.deregister_worker_registration(
             holder_id, registration_token=token, expected_namespace="default", timeout=10,
         )
-        assert removed["outcome"] == "deregistered" and removed["recovered_workflow_task_count"] == 0
+        assert removed["outcome"] == "deregistered"
+        assert removed["recovered_workflow_task_count"] == 0
     return receipt, {
         "absent_registration": refusal, "matching_registration": request,
         "registration_token_sha256": hashlib.sha256(token.encode()).hexdigest(),
@@ -339,7 +363,9 @@ async def test_cold_workers_preserve_fractional_timer_clock_across_repeated_redr
         for repeat in (1, 2):
             receipt, admission = await admit_redrive(client, queue, run_ids[-1], observations[-1], histories[-1])
             admissions.append(admission)
-            assert receipt.outcome == "redriven" and receipt.run_id and receipt.run_id not in run_ids
+            assert receipt.outcome == "redriven"
+            assert receipt.run_id
+            assert receipt.run_id not in run_ids
             run_id = receipt.run_id
             prefix = [event async for event in client.iter_history(queue, run_id)]
             timer_id = verify_reuse(

@@ -48,13 +48,15 @@ def test_no_site_entry_can_execute_only_the_verified_inert_source(sandbox):
     environment, _data, _site, case = sandbox
     installed = entry.snapshot(environment)
     result = launch(case, installed)
-    assert result.returncode == 0 and result.stdout == "fixed inert result owned\n"
+    assert result.returncode == 0
+    assert result.stdout == "fixed inert result owned\n"
 
 
 def test_entry_refuses_normal_site_even_when_other_inputs_match(sandbox):
     environment, _data, _site, case = sandbox
     result = launch(case, entry.snapshot(environment), no_site=False)
-    assert result.returncode != 0 and "no-site Python" in result.stderr
+    assert result.returncode != 0
+    assert "no-site Python" in result.stderr
     assert not result.stdout
 
 
@@ -63,8 +65,10 @@ def test_added_startup_hook_refuses_before_any_case_code(sandbox):
     installed = entry.snapshot(environment)
     (site / "sitecustomize.py").write_text("raise RuntimeError('startup replacement executed')\n")
     result = launch(case, installed)
-    assert result.returncode != 0 and "install inventory changed" in result.stderr
-    assert "startup replacement executed" not in result.stderr and not result.stdout
+    assert result.returncode != 0
+    assert "install inventory changed" in result.stderr
+    assert "startup replacement executed" not in result.stderr
+    assert not result.stdout
 
 
 def test_predecessor_runs_pth_before_guard_successor_refuses_source_before_effect(sandbox, tmp_path):
@@ -83,7 +87,8 @@ def test_predecessor_runs_pth_before_guard_successor_refuses_source_before_effec
         [str(environment / "bin/python"), "-I", "-B", "-c", "raise RuntimeError('late guard')"],
         env={"PATH": os.defpath}, capture_output=True, text=True, timeout=10,
     )
-    assert old.returncode != 0 and marker.read_text() == "pre-open"
+    assert old.returncode != 0
+    assert marker.read_text() == "pre-open"
     marker.unlink()
     case.write_text("raise RuntimeError('foreign case executed')\n")
     corrected = subprocess.run(
@@ -91,8 +96,11 @@ def test_predecessor_runs_pth_before_guard_successor_refuses_source_before_effec
         input=json.dumps({"inventory": installed, "worker": {"marker": "owned"}}),
         env={"PATH": os.defpath}, capture_output=True, text=True, timeout=10,
     )
-    assert corrected.returncode != 0 and "captured case source differs" in corrected.stderr
-    assert "foreign case executed" not in corrected.stderr and not marker.exists() and not corrected.stdout
+    assert corrected.returncode != 0
+    assert "captured case source differs" in corrected.stderr
+    assert "foreign case executed" not in corrected.stderr
+    assert not marker.exists()
+    assert not corrected.stdout
 
 
 def test_post_capture_path_replacement_keeps_the_verified_bytes(sandbox):

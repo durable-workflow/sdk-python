@@ -49,7 +49,7 @@ def test_exact_fraction_and_immediate_predecessor_preserve_unchanged_inputs():
     events, previous, arguments = prefix()
     original = deepcopy((events, previous, arguments))
     assert cell.verify_reuse(events, previous, **arguments)
-    assert (events, previous, arguments) == original
+    assert original == (events, previous, arguments)
 
 
 @pytest.mark.parametrize("reformat", [None, "clock", "start"])
@@ -320,7 +320,8 @@ async def test_matching_nonconsuming_registration_is_required_and_fenced_cleanup
             return SimpleNamespace(outcome="redriven", run_id="next")
 
         async def deregister_worker_registration(self, worker_id, **arguments):
-            assert worker_id == self.worker_id and arguments == {
+            assert worker_id == self.worker_id
+            assert arguments == {
                 "registration_token": "b" * 32, "expected_namespace": "default", "timeout": 10,
             }
             self.calls.append(("deregister", worker_id))
@@ -335,7 +336,8 @@ async def test_matching_nonconsuming_registration_is_required_and_fenced_cleanup
         assert not client.registered
     else:
         receipt, evidence = await cell.admit_redrive(client, "queue", "source", observed, events)
-        assert receipt.run_id == "next" and not client.registered
+        assert receipt.run_id == "next"
+        assert not client.registered
         assert [name for name, _value in client.calls] == ["redrive", "register", "redrive", "deregister"]
         assert "b" * 32 not in json.dumps(evidence)
         assert evidence["matching_registration"]["workflow_definition_fingerprints"] == {
