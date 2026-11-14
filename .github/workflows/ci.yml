@@ -23,6 +23,23 @@ on:
         description: Run the reviewed published SDK/Server activity identity tuple
         type: boolean
         default: false
+      published_timer_redrive:
+        description: Run the reviewed published SDK/native timer-redrive tuple
+        type: boolean
+        default: false
+      published_pagination:
+        description: Read real history and filtered workflow-list pages with the published SDK
+        type: boolean
+        default: false
+      activity_retry_cap:
+        description: Run the reviewed installed scalar local retry-cap case
+        type: boolean
+        default: false
+      retry_cap_artifact_source:
+        description: Select the approved build candidate or its identical registry wheel
+        type: choice
+        options: [candidate, registry]
+        default: candidate
 
 permissions:
   contents: read
@@ -32,6 +49,108 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  published-pagination:
+    if: github.event_name == 'workflow_dispatch' && inputs.published_pagination
+    needs: [action-policy, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12.16"
+      - name: Bootstrap patched pip trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python
+      - name: Read the published pagination fixture
+        run: python scripts/ci/published-activity-acceptance.py --scenario pagination
+      - name: Retain published tuple and page evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: published-pagination-${{ github.sha }}
+          path: published-activity-results/
+          retention-days: 7
+  activity-retry-cap:
+    if: github.event_name == 'workflow_dispatch' && inputs.activity_retry_cap
+    needs: [action-policy, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RETRY_CAP_ARTIFACT_SOURCE: ${{ inputs.retry_cap_artifact_source }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12.16"
+      - name: Resolve the exact approved build candidate
+        if: inputs.retry_cap_artifact_source == 'candidate'
+        id: retry-candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/promote_release.py resolve --version 2.18.0
+      - name: Download the approved candidate handoff
+        if: inputs.retry_cap_artifact_source == 'candidate'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          artifact-ids: ${{ steps.retry-candidate.outputs.artifact-id }}
+          run-id: ${{ steps.retry-candidate.outputs.run-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          path: .release-candidate
+          archive: false
+      - name: Verify candidate archive and distribution bytes
+        if: inputs.retry_cap_artifact_source == 'candidate'
+        run: python .github/scripts/promote_release.py extract --version 2.18.0
+      - name: Bootstrap patched pip trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python
+      - name: Run the approved scalar local retry case
+        run: >-
+          python scripts/ci/published-activity-acceptance.py
+          --scenario retry-cap --artifact-source "$RETRY_CAP_ARTIFACT_SOURCE"
+      - name: Retain exact package and retry evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: activity-retry-cap-${{ github.sha }}
+          path: published-activity-results/
+          retention-days: 7
+  published-timer-redrive:
+    if: github.event_name == 'workflow_dispatch' && inputs.published_timer_redrive
+    needs: [action-policy, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12.16"
+      - name: Bootstrap patched pip trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python
+      - name: Run the published cold Worker timer-redrive case
+        run: python scripts/ci/published-activity-acceptance.py --scenario timer-redrive
+      - name: Retain published tuple and scenario evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: published-timer-redrive-${{ github.sha }}
+          path: published-activity-results/
+          retention-days: 7
   published-activity-acceptance:
     if: github.event_name == 'workflow_dispatch' && inputs.published_activity_acceptance
     needs: [action-policy, lint]

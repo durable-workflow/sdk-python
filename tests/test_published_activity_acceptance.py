@@ -374,6 +374,17 @@ def test_complete_case_requires_the_actual_single_retry_test_to_pass():
     runner.verify_case_result(case_result())
 
 
+def test_timer_scenario_cannot_borrow_a_passing_identity_receipt(monkeypatch):
+    monkeypatch.setattr(runner, "SCENARIO", "timer-redrive")
+    result = case_result()
+    with pytest.raises(ValueError, match="inventory differs"):
+        runner.verify_case_result(result)
+    result["junit"] = result["junit"].replace(
+        "test_retry_preserves_received_execution_id_and_changes_attempt_id", runner.SCENARIOS["timer-redrive"][1],
+    )
+    runner.verify_case_result(result)
+
+
 @pytest.mark.parametrize("change", ["skip", "failure", "error", "wrong_case", "empty", "reported_failure"])
 def test_exit_zero_cannot_qualify_a_skipped_missing_or_different_case(change):
     result = case_result()

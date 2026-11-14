@@ -1,7 +1,8 @@
-"""Run one exact published SDK retry-identity case inside an owned internal network."""
+"""Run one fixed approved SDK acceptance case inside an owned internal network."""
 
 from __future__ import annotations
 
+import argparse
 import base64
 import hashlib
 import ipaddress
@@ -18,6 +19,7 @@ from xml.etree import ElementTree
 
 try:
     from scripts.ci import activity_acceptance_output as output_files
+    from scripts.ci import activity_acceptance_release as release
     from scripts.ci import activity_acceptance_runtime as runtime
     from scripts.ci.activity_acceptance_buildx import BuildxState
     from scripts.ci.activity_acceptance_session import Session
@@ -26,6 +28,7 @@ except ModuleNotFoundError as error:
         raise
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from scripts.ci import activity_acceptance_output as output_files
+    from scripts.ci import activity_acceptance_release as release
     from scripts.ci import activity_acceptance_runtime as runtime
     from scripts.ci.activity_acceptance_buildx import BuildxState
     from scripts.ci.activity_acceptance_session import Session
@@ -38,6 +41,22 @@ OWNER_VALUE = "=sdk-python"
 LABEL_FILTER = "label="
 ID_FORMAT = "{{.ID}}"
 DIAGNOSTIC_LIMIT = 64 * 1024
+SCENARIO = "activity-identity"
+ARTIFACT_SOURCE = "registry"
+SCENARIOS = {
+    "pagination": (
+        "test_published_pagination.py", "test_published_iterators_cross_real_page_boundaries",
+    ),
+    "activity-identity": (
+        "test_activity_identity.py", "test_retry_preserves_received_execution_id_and_changes_attempt_id",
+    ),
+    "timer-redrive": (
+        "test_native_timer_redrive.py", "test_cold_workers_preserve_fractional_timer_clock_across_repeated_redrive",
+    ),
+    "retry-cap": (
+        "test_activity_retry_cap.py", "test_installed_local_retries_preserve_cap_tail_and_committed_replay",
+    ),
+}
 # No inherited context, registry credentials, proxy, SSH or remote Docker endpoint.
 # This kernel directory is private to each CLI process and contains no config.json.
 DOCKER_ENVIRONMENT = {
@@ -111,7 +130,7 @@ def verify_case_result(result):
         raise ValueError("published retry case reported failure")
     root = ElementTree.fromstring(result["junit"])
     cases = list(root.iter("testcase"))
-    expected = "test_retry_preserves_received_execution_id_and_changes_attempt_id"
+    expected = SCENARIOS[SCENARIO][1]
     if len(cases) != 1 or cases[0].get("name") != expected:
         raise ValueError("published retry case inventory differs")
     if any(cases[0].find(tag) is not None for tag in ("failure", "error", "skipped")):
@@ -131,10 +150,12 @@ def packet_file(data):
 
 def bind_bootstrap(captured):
     source = captured["bootstrap.py"].decode()
-    placeholder = 'CAPTURED_VERIFIER = ""'
-    if source.count(placeholder) != 1:
-        raise ValueError("consumer verifier binding placeholder differs")
-    return source.replace(placeholder, "CAPTURED_VERIFIER = " + repr(captured[VERIFIER_FILENAME].decode()), 1)
+    for name, filename in (("CAPTURED_VERIFIER", VERIFIER_FILENAME), ("CAPTURED_ENTRY", "entry.py")):
+        placeholder = name + ' = ""'
+        if source.count(placeholder) != 1:
+            raise ValueError("consumer source binding placeholder differs")
+        source = source.replace(placeholder, name + " = " + repr(captured[filename].decode()), 1)
+    return source
 
 
 def capture_source(report):
@@ -142,13 +163,26 @@ def capture_source(report):
     if re.fullmatch(r"[0-9a-f]{40}", commit) is None or os.environ.get("GITHUB_SHA", commit) != commit:
         raise ValueError("checkout differs from the selected Actions commit")
     paths = {
-        REQUIREMENTS: "scripts/ci/published-activity-requirements.txt",
+        REQUIREMENTS: "scripts/ci/" + (
+            "retry-cap-dependencies.txt" if SCENARIO == "retry-cap" else "published-activity-requirements.txt"
+        ),
         VERIFIER_FILENAME: "scripts/ci/verify_activity_install.py",
-        "test_activity_identity.py": "tests/integration/test_activity_identity.py",
+        SCENARIOS[SCENARIO][0]: "tests/integration/" + SCENARIOS[SCENARIO][0],
         "conftest.py": "tests/integration/conftest.py",
         "bootstrap.py": "scripts/ci/activity_acceptance_consumer.py",
-        "tuple.json": "tests/fixtures/published-activity-acceptance.json",
+        "entry.py": "scripts/ci/activity_acceptance_entry.py",
+        "tuple.json": "tests/fixtures/" + (
+            {"timer-redrive": "published-timer-redrive.json", "retry-cap": "published-retry-cap.json",
+             "pagination": "published-pagination.json"}.get(
+                SCENARIO, "published-activity-acceptance.json"
+            )
+        ),
     }
+    if SCENARIO == "timer-redrive":
+        paths["redrive_timer_clock_workflow.py"] = "tests/integration/redrive_timer_clock_workflow.py"
+    if SCENARIO == "retry-cap":
+        paths["release.json"] = f".github/release-candidates/{release.VERSION}.json"
+        paths["release-loader.py"] = "scripts/ci/activity_acceptance_release.py"
     captured = {
         name: call("git", "show", commit + ":" + path, cwd=ROOT).stdout.encode() for name, path in paths.items()
     }
@@ -158,10 +192,21 @@ def capture_source(report):
 
 
 def download_wheels(selected, captured, files):
+    if ARTIFACT_SOURCE == "candidate" and SCENARIO != "retry-cap":
+        raise ValueError("candidate artifacts require the fixed retry-cap case")
     approval_path = ".github/release-candidates/" + selected["sdk_version"] + ".json"
     approval = json.loads(call("git", "show", "HEAD:" + approval_path, cwd=ROOT).stdout)
     wheel_name = next(name for name in approval["files"] if name.endswith(".whl"))
+    dependency_lock = captured[REQUIREMENTS]
+    if SCENARIO == "retry-cap":
+        if selected["sdk_version"] != release.VERSION or approval != json.loads(captured["release.json"]):
+            raise ValueError("retry release selection differs from captured authority")
+        captured[REQUIREMENTS], _digest = release.lock(dependency_lock, approval)
     files.write(REQUIREMENTS, captured[REQUIREMENTS])
+    download_requirements = REQUIREMENTS
+    if ARTIFACT_SOURCE == "candidate":
+        download_requirements = "retry-dependencies.txt"
+        files.write(download_requirements, dependency_lock)
     files.check()
     wheelhouse = OUTPUT / "wheels"
     wheelhouse.mkdir(mode=0o700)
@@ -184,11 +229,16 @@ def download_wheels(selected, captured, files):
         "--dest",
         str(wheelhouse),
         "-r",
-        str(OUTPUT / REQUIREMENTS),
+        str(OUTPUT / download_requirements),
         env=environment,
     )
     files.write("download.log", result.stdout + result.stderr)
     files.check()
+    if ARTIFACT_SOURCE == "candidate":
+        data = release.candidate_wheel(ROOT, approval["files"][wheel_name])
+        descriptor = os.open(wheelhouse / wheel_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(data)
     wheels = {}
     for path in sorted(wheelhouse.iterdir()):
         if path.is_symlink() or not path.is_file() or path.suffix != ".whl":
@@ -196,10 +246,14 @@ def download_wheels(selected, captured, files):
         wheels[path.name] = packet_file(path.read_bytes())
     if wheels[wheel_name]["sha256"] != approval["files"][wheel_name]:
         raise ValueError("registry wheel differs from the independently reviewed release")
+    inputs = [REQUIREMENTS, VERIFIER_FILENAME, SCENARIOS[SCENARIO][0], "conftest.py"]
+    if SCENARIO == "timer-redrive":
+        inputs.append("redrive_timer_clock_workflow.py")
     return {
+        "scenario": SCENARIO,
         "files": {
             name: packet_file(captured[name])
-            for name in (REQUIREMENTS, VERIFIER_FILENAME, "test_activity_identity.py", "conftest.py")
+            for name in inputs
         },
         "wheels": wheels,
         "wheel_name": wheel_name,
@@ -468,8 +522,9 @@ def run_case(owned, selected, images, packet, bootstrap, report):
         if ready["sdk_inventory"] != result["sdk_inventory"]:
             raise ValueError("installed SDK bytes changed during the case")
         owned.files.write("sdk-inventory.json", json.dumps(result["sdk_inventory"], indent=2))
-        owned.files.write("identity.log", result["case_output"])
-        owned.files.write("identity.xml", result["junit"])
+        name = "identity" if SCENARIO == "activity-identity" else SCENARIO
+        owned.files.write(name + ".log", result["case_output"])
+        owned.files.write(name + ".xml", result["junit"])
         report["consumer_ready"] = {key: value for key, value in ready.items() if key != "sdk_inventory"}
         session.send({"release": True})
         code = session.finish()
@@ -482,7 +537,8 @@ def run_case(owned, selected, images, packet, bootstrap, report):
 
 def main():
     files = output_files.Output(OUTPUT)
-    report = {"complete": False, "started_at": datetime.now(timezone.utc).isoformat()}
+    report = {"complete": False, "scenario": SCENARIO, "artifact_source": ARTIFACT_SOURCE,
+              "started_at": datetime.now(timezone.utc).isoformat()}
     owned = OwnedDocker(uuid4().hex, files, report)
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(360)
@@ -492,6 +548,7 @@ def main():
         report["tuple"] = selected
         report["engine"] = engine()
         packet = download_wheels(selected, captured, files)
+        report["requirements_sha256"] = packet["files"][REQUIREMENTS]["sha256"]
         report["wheel_sha256"] = packet["wheel_sha256"]
         report["wheel_set"] = {name: item["sha256"] for name, item in packet["wheels"].items()}
         images = {role: verify_published_image(selected, role, files) for role in ("runtime", "consumer")}
@@ -513,4 +570,11 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scenario", choices=tuple(SCENARIOS), default=SCENARIO)
+    parser.add_argument("--artifact-source", choices=("registry", "candidate"), default=ARTIFACT_SOURCE)
+    arguments = parser.parse_args()
+    SCENARIO, ARTIFACT_SOURCE = arguments.scenario, arguments.artifact_source
+    if ARTIFACT_SOURCE == "candidate" and SCENARIO != "retry-cap":
+        parser.error("candidate artifacts are accepted only by the fixed retry-cap case")
     main()

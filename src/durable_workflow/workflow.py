@@ -366,6 +366,10 @@ class ActivityRetryPolicy:
     ``non_retryable_error_types`` names failure types that should bypass this
     retry budget. An activity worker can also report ``non_retryable=True`` on
     a failure to stop retrying that activity execution.
+
+    Use :meth:`exponential` for generated backoff with a finite default cap.
+    The legacy constructor preserves its original omission behavior: no
+    maximum is applied when ``maximum_interval_seconds`` is ``None``.
     """
 
     max_attempts: int = 3
@@ -374,6 +378,47 @@ class ActivityRetryPolicy:
     maximum_interval_seconds: float | None = None
     non_retryable_error_types: list[str] = field(default_factory=list)
     backoff_seconds: list[int] | None = None
+
+    @classmethod
+    def exponential(
+        cls,
+        *,
+        max_attempts: int = 3,
+        initial_interval_seconds: float = 1.0,
+        backoff_coefficient: float = 2.0,
+        maximum_interval_seconds: float = 60.0,
+        non_retryable_error_types: list[str] | None = None,
+    ) -> ActivityRetryPolicy:
+        """Generate capped backoff, counting the first attempt in ``max_attempts``.
+
+        The maximum defaults to 60 seconds and must be finite and non-negative.
+        Generated fractional intervals retain the constructor's rounding to
+        whole command seconds. This factory does not change existing policies
+        or the legacy constructor's defaults.
+        """
+        if type(max_attempts) is not int or max_attempts < 1:
+            raise ValueError("max_attempts must be an integer >= 1")
+        for name, value, minimum in (
+            ("initial_interval_seconds", initial_interval_seconds, 0),
+            ("backoff_coefficient", backoff_coefficient, 1),
+            ("maximum_interval_seconds", maximum_interval_seconds, 0),
+        ):
+            try:
+                valid = (
+                    isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(value) and value >= minimum
+                )
+            except OverflowError:
+                valid = False
+            if not valid:
+                raise ValueError(f"{name} must be a finite number >= {minimum}")
+        return cls(
+            max_attempts=max_attempts,
+            initial_interval_seconds=initial_interval_seconds,
+            backoff_coefficient=backoff_coefficient,
+            maximum_interval_seconds=maximum_interval_seconds,
+            non_retryable_error_types=list(non_retryable_error_types or []),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Return the server command shape for this activity retry policy."""

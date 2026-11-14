@@ -235,7 +235,7 @@ from durable_workflow import ActivityRetryPolicy
 result = yield ctx.schedule_activity(
     "charge-card",
     [order],
-    retry_policy=ActivityRetryPolicy(
+    retry_policy=ActivityRetryPolicy.exponential(
         max_attempts=4,
         initial_interval_seconds=1,
         backoff_coefficient=2,
@@ -247,6 +247,20 @@ result = yield ctx.schedule_activity(
     heartbeat_timeout=15,
 )
 ```
+
+Use `ActivityRetryPolicy.exponential(...)` for new generated retry schedules.
+Its maximum defaults to 60 seconds. For nine total attempts, the default
+intervals are `1, 2, 4, 8, 16, 32, 60, 60` seconds. `max_attempts` includes
+the first attempt; retries still share the activity's schedule-to-close
+deadline. An explicit `maximum_interval_seconds` selects a different finite,
+non-negative cap. Fractional intervals are capped before rounding up to whole
+command seconds. `None`, infinities and NaN are refused by the factory.
+
+The legacy `ActivityRetryPolicy(...)` constructor keeps its existing behavior:
+omitting `maximum_interval_seconds`, or supplying `None`, applies no cap.
+Existing explicit backoff lists and policies already recorded in history keep
+their original values. Adopt the factory in new workflow definitions without
+changing commands that an existing run must replay.
 
 Child workflow starts use the same retry policy shape and workflow-level
 execution/run timeout names:
@@ -386,6 +400,8 @@ entry. For example, five attempts with `[1, 2]` wait `1, 2, 2, 2` seconds before
 attempts two through five. An empty list adds no retry wait. A committed local
 result replays its recorded attempts without rerunning the handler, including
 older records made with a zero-delay tail.
+For a generated local policy, pass `ActivityRetryPolicy.exponential(...).to_dict()`
+as `retry_policy` to select the same finite cap and total-attempt rule.
 
 ## Worker sessions
 

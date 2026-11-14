@@ -19,6 +19,11 @@ SDK wheel member, complete distribution metadata and installed RECORD, and uses
 isolated Python with explicit pytest plugins. Installer-created metadata and
 console scripts have exact expected bytes. The checker stays in the trusted
 bootstrap's memory through the case. The checkout is never installed as the SDK.
+The complete private installed-file inventory is captured before SDK admission.
+Parent pytest uses the read-only base interpreter with `-I -S -B`; its literal
+entry verifies captured test bytes and the installed inventory before enabling
+the exact private site directory. A captured collector and fixed fixtures avoid
+executing mutable test/conftest paths, and no `.pth` startup is processed.
 
 The published native runtime and official Python consumer share one owned
 internal network. Neither publishes a port or receives a host mount. The

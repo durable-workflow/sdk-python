@@ -1,4 +1,4 @@
-"""Install a closed wheel set, then await admission to the ordinary retry case."""
+"""Install a closed wheel set, then await admission to one fixed reviewed case."""
 
 from __future__ import annotations
 
@@ -23,6 +23,13 @@ ENVIRONMENT = Path("/run/acceptance-env")
 LIMIT = 64 * 1024 * 1024
 JUNIT = DATA / "identity.xml"
 CAPTURED_VERIFIER = ""
+CAPTURED_ENTRY = ""
+CASE_FILES = {
+    "pagination": {"test_published_pagination.py"},
+    "activity-identity": {"test_activity_identity.py"},
+    "timer-redrive": {"test_native_timer_redrive.py", "redrive_timer_clock_workflow.py"},
+    "retry-cap": {"test_activity_retry_cap.py"},
+}
 
 
 def receive(maximum):
@@ -53,9 +60,11 @@ def run(arguments, environment, input_data=None):
 
 
 def validate_setup(packet):
-    if set(packet) != {"files", "wheels", "wheel_name", "wheel_sha256", "sdk_version"}:
+    if set(packet) != {"files", "wheels", "wheel_name", "wheel_sha256", "sdk_version", "scenario"}:
         raise ValueError("consumer setup shape differs")
-    expected_files = {"requirements.txt", "verify_activity_install.py", "test_activity_identity.py", "conftest.py"}
+    if packet["scenario"] not in CASE_FILES:
+        raise ValueError("consumer scenario differs")
+    expected_files = {"requirements.txt", "verify_activity_install.py", "conftest.py"} | CASE_FILES[packet["scenario"]]
     if set(packet["files"]) != expected_files or not 1 <= len(packet["wheels"]) <= 30:
         raise ValueError("consumer setup membership differs")
     if packet["wheel_name"] not in packet["wheels"]:
@@ -132,28 +141,27 @@ def main():
     verifier = retained_verifier()
     environment, python = prepare_environment()
     before = inventory(verifier, python, packet)
+    entry = captured_entry()
+    installed = entry["snapshot"](ENVIRONMENT)
+    site = ENVIRONMENT / "lib" / ("python" + str(sys.version_info.major) + "." + str(sys.version_info.minor))
+    distributions = sorted(
+        (item.metadata["Name"], item.version)
+        for item in importlib.metadata.distributions(path=[str(site / "site-packages")])
+    )
     ready = {
         "sdk_inventory": before,
         "python": sys.version,
         "environment": str(ENVIRONMENT),
-        "distributions": run(
-            [
-                str(python),
-                "-I",
-                "-B",
-                "-c",
-                "import importlib.metadata,json; print(json.dumps(sorted((d.metadata['Name'],"
-                "d.version) for d in importlib.metadata.distributions())))",
-            ],
-            environment,
-        ),
+        "distributions": json.dumps(distributions),
+        "environment_inventory": installed,
+        "environment_inventory_sha256": entry["digest"](installed),
     }
     print("ACTIVITY_CONSUMER_READY=" + json.dumps(ready, sort_keys=True), flush=True)
     admission = receive(8192)
     if set(admission) != {"runtime_ipv4", "token"}:
         raise ValueError("consumer admission shape differs")
     admission["server_url"] = await_runtime(admission["runtime_ipv4"])
-    output = execute_case(verifier, python, packet, before, environment, admission)
+    output = execute_case(verifier, python, packet, before, environment, admission, installed)
     print("ACTIVITY_CONSUMER_RESULT=" + json.dumps(output, sort_keys=True), flush=True)
     # Remain attached while the controller rechecks the same two IDs and IP.
     if receive(8192) != {"release": True}:
@@ -217,7 +225,35 @@ def prepare_environment():
     return environment, python
 
 
-def execute_case(verifier, python, packet, before, environment, admission):
+def captured_entry():
+    if not CAPTURED_ENTRY:
+        raise ValueError("controller did not bind the Git-captured entry")
+    namespace = {"__name__": "captured_entry"}
+    exec(compile(CAPTURED_ENTRY, "<captured entry>", "exec"), namespace)
+    return namespace
+
+
+def entry_source(mode, case_name, case_sha, installed, worker_entry=""):
+    source = CAPTURED_ENTRY
+    values = {
+        "MODE": mode, "INVENTORY_SHA256": captured_entry()["digest"](installed),
+        "CASE_SHA256": case_sha, "CASE_NAME": case_name, "WORKER_ENTRY": worker_entry,
+    }
+    for name, value in values.items():
+        placeholder = name + ' = ""'
+        if source.count(placeholder) != 1:
+            raise ValueError("captured entry binding placeholder differs")
+        source = source.replace(placeholder, name + " = " + repr(value), 1)
+    return source
+
+
+def execute_case(verifier, python, packet, before, environment, admission, installed):
+    redrive = packet["scenario"] == "timer-redrive"
+    test_name = {
+        "timer-redrive": "test_native_timer_redrive.py", "retry-cap": "test_activity_retry_cap.py",
+        "activity-identity": "test_activity_identity.py",
+        "pagination": "test_published_pagination.py",
+    }[packet["scenario"]]
     environment.update(
         {
             "DURABLE_WORKFLOW_SERVER_URL": admission["server_url"],
@@ -226,34 +262,34 @@ def execute_case(verifier, python, packet, before, environment, admission):
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         }
     )
+    if redrive:
+        environment["DURABLE_WORKFLOW_REDRIVE_CELL"] = "1"
+    if packet["scenario"] == "pagination":
+        environment["DURABLE_WORKFLOW_PAGINATION_CELL"] = "1"
+    if packet["scenario"] == "retry-cap":
+        environment["DURABLE_WORKFLOW_RETRY_CAP_CELL"] = "1"
+    worker_entry = entry_source("worker", test_name, packet["files"][test_name]["sha256"], installed)
+    parent_entry = entry_source("pytest", test_name, packet["files"][test_name]["sha256"], installed, worker_entry)
     result = subprocess.run(
         [
-            str(python),
+            sys.executable,
             "-I",
+            "-S",
             "-B",
-            "-m",
-            "pytest",
             "-c",
-            "/dev/null",
-            "-p",
-            "pytest_asyncio.plugin",
-            "-p",
-            "no:cacheprovider",
-            "--asyncio-mode=auto",
-            "--import-mode=importlib",
-            "-v",
-            "--capture=tee-sys",
-            str(DATA / "test_activity_identity.py"),
-            "--junitxml=" + str(JUNIT),
+            parent_entry,
         ],
         env=environment,
+        input=json.dumps({"inventory": installed}),
         capture_output=True,
         text=True,
-        timeout=90,
+        timeout=90 if packet["scenario"] == "activity-identity" else 180,
     )
     after = inventory(verifier, python, packet)
     if after != before:
         raise ValueError("installed SDK inventory changed")
+    if captured_entry()["snapshot"](ENVIRONMENT) != installed:
+        raise ValueError("private install changed during the case")
     return {
         "complete": result.returncode == 0,
         "sdk_inventory": after,
