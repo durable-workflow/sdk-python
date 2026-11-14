@@ -44,6 +44,9 @@ DIAGNOSTIC_LIMIT = 64 * 1024
 SCENARIO = "activity-identity"
 ARTIFACT_SOURCE = "registry"
 SCENARIOS = {
+    "pagination": (
+        "test_published_pagination.py", "test_published_iterators_cross_real_page_boundaries",
+    ),
     "activity-identity": (
         "test_activity_identity.py", "test_retry_preserves_received_execution_id_and_changes_attempt_id",
     ),
@@ -169,7 +172,8 @@ def capture_source(report):
         "bootstrap.py": "scripts/ci/activity_acceptance_consumer.py",
         "entry.py": "scripts/ci/activity_acceptance_entry.py",
         "tuple.json": "tests/fixtures/" + (
-            {"timer-redrive": "published-timer-redrive.json", "retry-cap": "published-retry-cap.json"}.get(
+            {"timer-redrive": "published-timer-redrive.json", "retry-cap": "published-retry-cap.json",
+             "pagination": "published-pagination.json"}.get(
                 SCENARIO, "published-activity-acceptance.json"
             )
         ),

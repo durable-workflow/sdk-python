@@ -25,6 +25,7 @@ JUNIT = DATA / "identity.xml"
 CAPTURED_VERIFIER = ""
 CAPTURED_ENTRY = ""
 CASE_FILES = {
+    "pagination": {"test_published_pagination.py"},
     "activity-identity": {"test_activity_identity.py"},
     "timer-redrive": {"test_native_timer_redrive.py", "redrive_timer_clock_workflow.py"},
     "retry-cap": {"test_activity_retry_cap.py"},
@@ -251,6 +252,7 @@ def execute_case(verifier, python, packet, before, environment, admission, insta
     test_name = {
         "timer-redrive": "test_native_timer_redrive.py", "retry-cap": "test_activity_retry_cap.py",
         "activity-identity": "test_activity_identity.py",
+        "pagination": "test_published_pagination.py",
     }[packet["scenario"]]
     environment.update(
         {
@@ -262,6 +264,8 @@ def execute_case(verifier, python, packet, before, environment, admission, insta
     )
     if redrive:
         environment["DURABLE_WORKFLOW_REDRIVE_CELL"] = "1"
+    if packet["scenario"] == "pagination":
+        environment["DURABLE_WORKFLOW_PAGINATION_CELL"] = "1"
     if packet["scenario"] == "retry-cap":
         environment["DURABLE_WORKFLOW_RETRY_CAP_CELL"] = "1"
     worker_entry = entry_source("worker", test_name, packet["files"][test_name]["sha256"], installed)
