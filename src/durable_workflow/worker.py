@@ -151,7 +151,7 @@ TYPED_SEARCH_ATTRIBUTES_CAPABILITY = "typed_search_attributes"
 DURABLE_SELECTION_CAPABILITY = "durable_selection"
 LOCAL_ACTIVITIES_CAPABILITY = "local_activities"
 
-# Command capabilities implemented by every high-level Python worker. Keep this
+# Base capabilities implemented by every high-level Python worker. Keep this
 # advertisement explicit: worker capabilities are not inferred from runtime,
 # SDK, or protocol-version metadata.
 _WORKFLOW_COMMAND_CAPABILITIES = (
@@ -160,6 +160,7 @@ _WORKFLOW_COMMAND_CAPABILITIES = (
     DURABLE_SELECTION_CAPABILITY,
     LOCAL_ACTIVITIES_CAPABILITY,
     "workflow_entry_arguments_validation",
+    "activity_heartbeat_resume",
 )
 
 _WORKFLOW_WORK_TASK_KINDS = ("workflow", "update_validation")
@@ -3416,6 +3417,7 @@ class Worker:
                 task_queue=self.task_queue,
                 worker_id=self.worker_id,
                 task_metadata=task,
+                task_namespace=getattr(self.client, "namespace", None),
             ),
             client=self.client,
         )

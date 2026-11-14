@@ -7,6 +7,7 @@ except PackageNotFoundError:  # source checkout without installed metadata
     __version__ = "0.0.0+unknown"
 
 from . import activity, sync, testing, workflow
+from ._activity_checkpoint import ActivityHeartbeatCheckpoint
 from .activity import ActivityContext, ActivityInfo, ActivityRetryInfo
 from .auth_composition import (
     AUTH_COMPOSITION_CONTRACT_SCHEMA,
@@ -70,6 +71,7 @@ from .client import (
 from .errors import (
     ActivityCancelled,
     ActivityFailed,
+    ActivityHeartbeatResumeUnavailable,
     ChildWorkflowCancelled,
     ChildWorkflowFailed,
     ChildWorkflowTerminated,
@@ -260,6 +262,8 @@ __all__ = [
     "ActivityHandler",
     "ActivityInfo",
     "ActivityRetryInfo",
+    "ActivityHeartbeatCheckpoint",
+    "ActivityHeartbeatResumeUnavailable",
     "ActivityInterceptorContext",
     "ActivityRetryPolicy",
     "BridgeAdapterOutcome",
