@@ -44,7 +44,9 @@ def test_exact_policy_attempt_history_and_monotonic_observations_pass_without_mu
     assert values == original
 
 
-@pytest.mark.parametrize("fault", ["actual_wait", "tail_report", "attempt_order", "extra_command", "policy", "history"])
+@pytest.mark.parametrize("fault", [
+    "actual_wait", "tail_report", "attempt_order", "extra_command", "policy", "history", "callback_bool", "report_bool",
+])
 def test_incomplete_or_invented_retry_evidence_refuses(fault):
     callbacks, commands, history = observations("short-list")
     if fault == "actual_wait":
@@ -53,6 +55,10 @@ def test_incomplete_or_invented_retry_evidence_refuses(fault):
         commands[0]["attempts"][-2]["backoff_seconds"] = 0
     elif fault == "attempt_order":
         callbacks[-1]["attempt"] = 1
+    elif fault == "callback_bool":
+        callbacks[0]["attempt"] = True
+    elif fault == "report_bool":
+        commands[0]["attempts"][0]["attempt_number"] = True
     elif fault == "extra_command":
         commands.append({"type": "start_timer"})
     elif fault == "policy":
@@ -63,6 +69,13 @@ def test_incomplete_or_invented_retry_evidence_refuses(fault):
         ] = 0
     with pytest.raises(AssertionError):
         cell.verify_retry("short-list", callbacks, commands, history)
+
+
+def test_empty_backoff_does_not_admit_a_backwards_monotonic_clock():
+    callbacks, commands, history = observations("empty-list")
+    callbacks[-1]["at_ns"] -= 1
+    with pytest.raises(AssertionError):
+        cell.verify_retry("empty-list", callbacks, commands, history)
 
 
 def approval(digest="a" * 64):

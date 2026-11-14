@@ -45,9 +45,11 @@ def verify_retry(
 ) -> None:
     backoff = CASES[mode]
     count = len(backoff) + 1
+    assert all(type(item["attempt"]) is int for item in callbacks)
     assert [item["attempt"] for item in callbacks] == list(range(1, count + 1))
     assert all(type(item["at_ns"]) is int and item["at_ns"] > 0 for item in callbacks)
     gaps = [later["at_ns"] - earlier["at_ns"] for earlier, later in zip(callbacks[:-1], callbacks[1:], strict=True)]
+    assert all(gap >= 0 for gap in gaps)
     # A monotonic clock observes actual callbacks, separately from reported
     # durations. Scheduling may add time; it must not erase a declared wait.
     assert all(gap >= delay * 1_000_000_000 - 10_000_000 for gap, delay in zip(gaps, backoff, strict=True))
@@ -57,6 +59,7 @@ def verify_retry(
     assert recorded["execution_mode"] == "local"
     assert recorded["retry_policy"] == selected_policy(mode)
     assert recorded["outcome"] == "completed"
+    assert all(type(item["attempt_number"]) is int for item in recorded["attempts"])
     assert [item["attempt_number"] for item in recorded["attempts"]] == list(range(1, count + 1))
     assert [item["outcome"] for item in recorded["attempts"]] == [*(["failed"] * len(backoff)), "completed"]
     assert [item.get("backoff_seconds") for item in recorded["attempts"]] == [*backoff, None]
