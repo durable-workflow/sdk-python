@@ -67,16 +67,18 @@ def test_version_and_origin_alone_cannot_approve_substituted_or_extra_sdk_bytes(
         origin = tmp_path / "checkout/src/durable_workflow/__init__.py"
     else:
         digest = "0" * 64
+    data = wheel.read_bytes()
     with pytest.raises(ValueError):
-        inventory.verify_sdk(site, origin, wheel.read_bytes(), digest)
+        inventory.verify_sdk(site, origin, data, digest)
 
 
 def test_repeated_installed_record_row_cannot_hide_a_replaced_member(tmp_path):
     site, origin, wheel, digest = installed_fixture(tmp_path)
     record = next(site.glob("*.dist-info/RECORD"))
     record.write_text(record.read_text() + record.read_text().splitlines()[0] + "\n")
+    data = wheel.read_bytes()
     with pytest.raises(ValueError, match="RECORD repeats"):
-        inventory.verify_sdk(site, origin, wheel.read_bytes(), digest)
+        inventory.verify_sdk(site, origin, data, digest)
 
 
 @pytest.mark.parametrize("change", ["extra_metadata", "foreign_entry_points", "extra_record_row", "installer_bytes"])

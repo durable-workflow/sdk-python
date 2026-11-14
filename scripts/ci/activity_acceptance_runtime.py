@@ -112,11 +112,19 @@ def bind_local_image(index_record, platform_record, index_digest, child_digest, 
     }
 
 
+def environment_values(entries):
+    values = {}
+    for entry in entries:
+        key, value = entry.split("=", 1)
+        values[key] = value
+    return values
+
+
 def verify_config(config, identity, nonce, image, role, bootstrap):
-    environment = {key: value for key, value in (item.split("=", 1) for item in image["Config"]["Env"])}
+    environment = environment_values(image["Config"]["Env"])
     if role == "runtime":
         environment.update(ENVIRONMENT)
-    received = {key: value for key, value in (item.split("=", 1) for item in config["Env"])}
+    received = environment_values(config["Env"])
     if len(received) != len(config["Env"]) or received != environment:
         raise ValueError("container environment differs")
     entrypoint, command, directory = expected_command(image, role, bootstrap)

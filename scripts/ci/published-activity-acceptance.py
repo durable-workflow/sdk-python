@@ -31,6 +31,7 @@ except ModuleNotFoundError as error:
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "published-activity-results"
 REQUIREMENTS = "requirements.txt"
+VERIFIER_FILENAME = "verify_activity_install.py"
 OWNER_VALUE = "=sdk-python"
 LABEL_FILTER = "label="
 ID_FORMAT = "{{.ID}}"
@@ -95,9 +96,7 @@ def bind_bootstrap(captured):
     placeholder = 'CAPTURED_VERIFIER = ""'
     if source.count(placeholder) != 1:
         raise ValueError("consumer verifier binding placeholder differs")
-    return source.replace(
-        placeholder, "CAPTURED_VERIFIER = " + repr(captured["verify_activity_install.py"].decode()), 1
-    )
+    return source.replace(placeholder, "CAPTURED_VERIFIER = " + repr(captured[VERIFIER_FILENAME].decode()), 1)
 
 
 def capture_source(report):
@@ -106,7 +105,7 @@ def capture_source(report):
         raise ValueError("checkout differs from the selected Actions commit")
     paths = {
         REQUIREMENTS: "scripts/ci/published-activity-requirements.txt",
-        "verify_activity_install.py": "scripts/ci/verify_activity_install.py",
+        VERIFIER_FILENAME: "scripts/ci/verify_activity_install.py",
         "test_activity_identity.py": "tests/integration/test_activity_identity.py",
         "conftest.py": "tests/integration/conftest.py",
         "bootstrap.py": "scripts/ci/activity_acceptance_consumer.py",
@@ -162,7 +161,7 @@ def download_wheels(selected, captured, files):
     return {
         "files": {
             name: packet_file(captured[name])
-            for name in (REQUIREMENTS, "verify_activity_install.py", "test_activity_identity.py", "conftest.py")
+            for name in (REQUIREMENTS, VERIFIER_FILENAME, "test_activity_identity.py", "conftest.py")
         },
         "wheels": wheels,
         "wheel_name": wheel_name,
