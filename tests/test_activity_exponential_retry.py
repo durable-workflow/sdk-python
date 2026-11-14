@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from durable_workflow import ActivityRetryPolicy, serializer, workflow
-from durable_workflow.workflow import CompleteWorkflow, RecordLocalActivity, replay
+from durable_workflow.workflow import CompleteWorkflow, RecordLocalActivity, ScheduleActivity, replay
 
 
 def test_generated_default_cap_is_finite_without_changing_total_attempts():
@@ -27,6 +27,16 @@ def test_generated_default_cap_is_finite_without_changing_total_attempts():
 def test_explicit_cap_retains_whole_second_command_resolution(maximum, expected):
     policy = ActivityRetryPolicy.exponential(max_attempts=5, maximum_interval_seconds=maximum)
     assert policy.to_dict()["backoff_seconds"] == expected
+
+
+def test_generated_policy_preserves_the_total_execution_deadline_on_the_command():
+    policy = ActivityRetryPolicy.exponential(max_attempts=9)
+    command = ScheduleActivity(
+        "tests.retry", [], retry_policy=policy, start_to_close_timeout=5, schedule_to_close_timeout=15,
+    ).to_server_command("queue")
+    assert command["retry_policy"] == policy.to_dict()
+    assert command["start_to_close_timeout"] == 5
+    assert command["schedule_to_close_timeout"] == 15
 
 
 @pytest.mark.parametrize("field", ["initial_interval_seconds", "maximum_interval_seconds", "backoff_coefficient"])
