@@ -1,0 +1,32 @@
+{
+  "sdk_version": "2.17.2",
+  "wheel_sha256": "7dc77d3882fa5cbddbeaee6a4cc63b05285e280523c8ea40dc31e03cc12a40bc",
+  "samples": [
+    {
+      "id": "omitted-maximum",
+      "options": {
+        "max_attempts": 20
+      },
+      "command_json": "{\"activity_type\":\"tests.retry\",\"arguments\":{\"blob\":\"wwHioz3/VYAiNwwCCgppbnB1dAA=\",\"codec\":\"avro\"},\"queue\":\"queue\",\"retry_policy\":{\"backoff_seconds\":[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144],\"max_attempts\":20,\"non_retryable_error_types\":[]},\"type\":\"schedule_activity\"}"
+    },
+    {
+      "id": "explicit-none",
+      "options": {
+        "max_attempts": 20,
+        "maximum_interval_seconds": null
+      },
+      "command_json": "{\"activity_type\":\"tests.retry\",\"arguments\":{\"blob\":\"wwHioz3/VYAiNwwCCgppbnB1dAA=\",\"codec\":\"avro\"},\"queue\":\"queue\",\"retry_policy\":{\"backoff_seconds\":[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144],\"max_attempts\":20,\"non_retryable_error_types\":[]},\"type\":\"schedule_activity\"}"
+    },
+    {
+      "id": "short-explicit-list",
+      "options": {
+        "max_attempts": 5,
+        "backoff_seconds": [
+          1,
+          2
+        ]
+      },
+      "command_json": "{\"activity_type\":\"tests.retry\",\"arguments\":{\"blob\":\"wwHioz3/VYAiNwwCCgppbnB1dAA=\",\"codec\":\"avro\"},\"queue\":\"queue\",\"retry_policy\":{\"backoff_seconds\":[1,2],\"max_attempts\":5,\"non_retryable_error_types\":[]},\"type\":\"schedule_activity\"}"
+    }
+  ]
+}
