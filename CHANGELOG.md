@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Read-only acknowledged heartbeat checkpoint accessors distinguish unsupported claims from an explicitly empty checkpoint. Received details, contract version and acknowledgement time remain immutable across heartbeat outcomes. This source addition still requires package publication and installed replacement qualification. (durable-workflow/.github#218)
+
 ## [2.18.0] - 2026-11-14
 
 ### Added

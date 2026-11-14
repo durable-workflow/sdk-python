@@ -437,6 +437,7 @@ class TestWorkerRegistration:
                 "workflow_entry_arguments_validation",
                 "query_tasks",
                 MESSAGE_STREAMS_CAPABILITY,
+                "activity_heartbeat_resume",
                 "worker_sessions",
             ],
             "capability_manifest": {
@@ -586,6 +587,7 @@ class TestWorkerRegistration:
             "query_tasks",
             WORKFLOW_UPDATES_CAPABILITY,
             MESSAGE_STREAMS_CAPABILITY,
+            "activity_heartbeat_resume",
             "worker_sessions",
         ]
 
@@ -675,6 +677,7 @@ class TestWorkerRegistration:
             UPDATE_VALIDATION_TASKS_CAPABILITY,
             WORKFLOW_UPDATES_CAPABILITY,
             MESSAGE_STREAMS_CAPABILITY,
+            "activity_heartbeat_resume",
             "worker_sessions",
         ]
 
@@ -783,6 +786,7 @@ class TestWorkerRegistration:
             "local_activities",
             "workflow_entry_arguments_validation",
             MESSAGE_STREAMS_CAPABILITY,
+            "activity_heartbeat_resume",
             "worker_sessions",
         ]
 

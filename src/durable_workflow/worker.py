@@ -1531,6 +1531,7 @@ class Worker:
         if any(contract["updates"] for contract in self.workflow_command_contracts.values()):
             capabilities.append(WORKFLOW_UPDATES_CAPABILITY)
         capabilities.append(MESSAGE_STREAMS_CAPABILITY)
+        capabilities.append("activity_heartbeat_resume")
         capabilities.extend(self.capabilities)
         if self._nexus_cooperative_cancellation_supported and "nexus_cooperative_cancellation" not in capabilities:
             capabilities.append("nexus_cooperative_cancellation")
@@ -3416,6 +3417,7 @@ class Worker:
                 task_queue=self.task_queue,
                 worker_id=self.worker_id,
                 task_metadata=task,
+                task_namespace=getattr(self.client, "namespace", None),
             ),
             client=self.client,
         )

@@ -1390,6 +1390,32 @@ supervision. The SDK cannot forcibly stop a running native thread or undo its
 external effects. Keep side effects idempotent and heartbeat at useful progress
 boundaries.
 
+### Acknowledged heartbeat checkpoints (unreleased)
+
+The source API adds `activity.context().last_heartbeat_checkpoint()`,
+`last_heartbeat_details(result_type=...)`, `last_heartbeat_at()` and
+`heartbeat_resume_version()`. Package publication and installed cold-replacement
+qualification are pending under [shared #218](https://github.com/durable-workflow/.github/issues/218).
+
+A participating claim must advertise `activity_heartbeat_resume` version 1 and
+carry both checkpoint fields for its original execution, attempt, run and
+namespace. `None` means this supported claim explicitly has no checkpoint.
+Older or nonparticipating claims, inline local activities and Server-free tests
+raise `ActivityHeartbeatResumeUnavailable`; they do not invent empty state.
+
+The checkpoint preserves received details and the original RFC3339
+acknowledgement timestamp. Details are returned as independent copies, with
+optional decoding to the SDK's supported annotated types. Its immutable
+`contract_version` is the negotiated format version, not a write counter.
+Server v1 supplies no per-checkpoint sequence number.
+
+This is the snapshot received at claim time. A successful, rejected or uncertain
+heartbeat cannot change it. After a lost response, a later replacement claim
+may contain the committed checkpoint even though the earlier caller could not
+confirm acknowledgement. A checkpoint does not atomically commit an external
+business effect. Keep stable idempotency keys, provider reconciliation and
+external fencing where the effect requires them.
+
 ## Metrics
 
 Pass a recorder to `Client(metrics=...)` or `Worker(metrics=...)` to collect request, poll, and task metrics. The SDK ships a no-op default, an `InMemoryMetrics` recorder for tests or custom exporter loops, and `PrometheusMetrics` for deployments that install the optional extra:

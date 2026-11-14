@@ -27,6 +27,13 @@ class DurableWorkflowError(Exception):
     """Base class for every exception raised by the SDK."""
 
 
+class ActivityHeartbeatResumeUnavailable(DurableWorkflowError):
+    """This claim did not supply the supported heartbeat-resume contract."""
+
+    def __init__(self) -> None:
+        super().__init__("activity_heartbeat_resume v1 is unavailable for this claim")
+
+
 class ReplayClockUnavailable(DurableWorkflowError):
     """The current execution has no proved business replay-time boundary."""
 
