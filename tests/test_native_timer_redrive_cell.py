@@ -21,6 +21,9 @@ def prefix():
     for event in previous["history"]:
         if event["event_type"] in {"TimerScheduled", "TimerFired"}:
             event["payload"]["timer_id"] = "old-timer"
+            event["payload"].pop("reused_recorded_at", None)
+            event["payload"].pop("reused_from_run_id", None)
+    cell.one(previous["history"], "WorkflowStarted")["payload"].pop("replayed_started_at", None)
     events = current["history"]
     cell.one(events, "WorkflowStarted")["payload"]["continued_from_run_id"] = "previous"
     fired = cell.one(events, "TimerFired")["payload"]
@@ -34,6 +37,7 @@ def prefix():
     return events, previous["history"], {
         "predecessor_id": "previous", "source_clock": source_time, "source_start": source_start,
         "used_timer_ids": {"old-timer"},
+        "source_clock_text": source_time.isoformat(), "source_start_text": source_start.isoformat(),
     }
 
 
@@ -42,6 +46,44 @@ def test_exact_fraction_and_immediate_predecessor_preserve_unchanged_inputs():
     original = deepcopy((events, previous, arguments))
     assert cell.verify_reuse(events, previous, **arguments)
     assert (events, previous, arguments) == original
+
+
+@pytest.mark.parametrize("reformat", [None, "clock", "start"])
+def test_repeated_reuse_preserves_inherited_strings_as_well_as_instants(reformat):
+    events, previous, arguments = prefix()
+    original_clock = arguments["source_clock"].isoformat()
+    original_start = arguments["source_start"].isoformat()
+    cell.one(previous, "TimerFired")["payload"]["reused_recorded_at"] = original_clock
+    cell.one(previous, "WorkflowStarted")["payload"]["replayed_started_at"] = original_start
+    if reformat == "clock":
+        cell.one(events, "TimerFired")["payload"]["reused_recorded_at"] = original_clock.replace("+00:00", "Z")
+    elif reformat == "start":
+        cell.one(events, "WorkflowStarted")["payload"]["replayed_started_at"] = original_start.replace("+00:00", "Z")
+    if reformat:
+        assert cell.instant(cell.one(events, "TimerFired")["payload"]["reused_recorded_at"]) == arguments[
+            "source_clock"
+        ]
+        assert cell.instant(cell.one(events, "WorkflowStarted")["payload"]["replayed_started_at"]) == arguments[
+            "source_start"
+        ]
+        with pytest.raises(AssertionError):
+            cell.verify_reuse(events, previous, **arguments)
+    else:
+        cell.verify_reuse(events, previous, **arguments)
+
+
+@pytest.mark.parametrize("field", ["clock", "start"])
+def test_first_reuse_cannot_reformat_authoritative_source_strings(field):
+    events, previous, arguments = prefix()
+    kind, name, source_name = (
+        ("TimerFired", "reused_recorded_at", "source_clock") if field == "clock"
+        else ("WorkflowStarted", "replayed_started_at", "source_start")
+    )
+    payload = cell.one(events, kind)["payload"]
+    payload[name] = payload[name].replace("+00:00", "Z")
+    assert cell.instant(payload[name]) == arguments[source_name]
+    with pytest.raises(AssertionError):
+        cell.verify_reuse(events, previous, **arguments)
 
 
 @pytest.mark.parametrize("fault", [

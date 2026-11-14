@@ -51,12 +51,17 @@ def one(events: list[dict[str, Any]], kind: str, *, step: int | None = None) -> 
 def verify_reuse(
     events: list[dict[str, Any]], predecessor: list[dict[str, Any]], *,
     predecessor_id: str, source_clock: datetime, source_start: datetime, used_timer_ids: set[str],
+    source_clock_text: str, source_start_text: str,
 ) -> str:
     started = one(events, "WorkflowStarted")["payload"]
     assert started["continued_from_run_id"] == predecessor_id
     assert started["recovery_kind"] == "redrive"
     assert started["resume_step_sequence"] == 3
     assert instant(started["replayed_started_at"]) == source_start
+    inherited_start = one(predecessor, "WorkflowStarted")["payload"].get("replayed_started_at")
+    expected_start = source_start_text if inherited_start is None else inherited_start
+    assert isinstance(expected_start, str) and started["replayed_started_at"] == expected_start
+    assert instant(source_start_text) == source_start
     scheduled = one(events, "TimerScheduled", step=2)["payload"]
     fired = one(events, "TimerFired", step=2)["payload"]
     timer_id = scheduled["timer_id"]
@@ -66,6 +71,10 @@ def verify_reuse(
     assert instant(fired["reused_recorded_at"]) == source_clock
     expected_scheduled = deepcopy(one(predecessor, "TimerScheduled", step=2)["payload"])
     expected_fired = deepcopy(one(predecessor, "TimerFired", step=2)["payload"])
+    inherited_clock = expected_fired.get("reused_recorded_at")
+    expected_clock = source_clock_text if inherited_clock is None else inherited_clock
+    assert isinstance(expected_clock, str) and fired["reused_recorded_at"] == expected_clock
+    assert instant(source_clock_text) == source_clock
     for payload in (expected_scheduled, expected_fired):
         payload.pop("task", None)
         payload.pop("command", None)
@@ -316,7 +325,8 @@ async def test_cold_workers_preserve_fractional_timer_clock_across_repeated_redr
         frozen_source = deepcopy(histories[0])
         original = await client.describe_workflow_run(queue, handle.run_id)
         source_start = instant(original.started_at)
-        source_clock = instant(one(histories[0], "TimerFired", step=2)["recorded_at"])
+        source_clock_text = one(histories[0], "TimerFired", step=2)["recorded_at"]
+        source_clock = instant(source_clock_text)
         assert source_clock.microsecond != 0, "real TimerFired must expose nonzero source precision"
         exports.append(await client.export_history(queue, handle.run_id))
         verify_export(exports[0], queue, handle.run_id, terminal=True, source=True)
@@ -330,6 +340,7 @@ async def test_cold_workers_preserve_fractional_timer_clock_across_repeated_redr
             timer_id = verify_reuse(
                 prefix, histories[-1], predecessor_id=run_ids[-1], source_clock=source_clock,
                 source_start=source_start, used_timer_ids=used_timer_ids,
+                source_start_text=original.started_at, source_clock_text=source_clock_text,
             )
             used_timer_ids.add(timer_id)
             before = await client.describe_workflow_run(queue, run_id)
@@ -356,6 +367,7 @@ async def test_cold_workers_preserve_fractional_timer_clock_across_repeated_redr
                       "resumed": "resumed"}
     print(json.dumps({
         "scope": "published cold-Worker timer redrive", "runs": run_ids, "source_started_at": original.started_at,
-        "source_timer_clock": source_clock.isoformat(), "definition_sha256": DEFINITION_SHA,
+        "source_timer_clock": source_clock_text, "source_timer_clock_utc": source_clock.isoformat(),
+        "definition_sha256": DEFINITION_SHA,
         "workers": observations, "histories": histories, "exports": exports, "admissions": admissions,
     }, sort_keys=True))
