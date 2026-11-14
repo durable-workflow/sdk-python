@@ -135,11 +135,30 @@ def test_closed_consumer_refuses_sdk_wheel_omission_or_substitution():
         "wheel_name": "sdk.whl",
         "wheel_sha256": "b" * 64,
         "sdk_version": "test",
+        "scenario": "activity-identity",
     }
     with pytest.raises(ValueError, match="differs from approval"):
         consumer.validate_setup(packet)
     packet["wheel_name"] = "absent.whl"
     with pytest.raises(ValueError, match="wheel is missing"):
+        consumer.validate_setup(packet)
+
+
+@pytest.mark.parametrize("scenario", ["activity-identity", "timer-redrive", "foreign"])
+def test_consumer_scenario_has_closed_captured_file_membership(scenario):
+    inputs = {"requirements.txt", "verify_activity_install.py", "conftest.py"}
+    inputs |= consumer.CASE_FILES.get(scenario, set())
+    packet = {
+        "scenario": scenario, "files": dict.fromkeys(inputs, {}), "wheels": {"sdk.whl": {"sha256": "a" * 64}},
+        "wheel_name": "sdk.whl", "wheel_sha256": "a" * 64, "sdk_version": "test",
+    }
+    if scenario == "foreign":
+        with pytest.raises(ValueError, match="scenario differs"):
+            consumer.validate_setup(packet)
+        return
+    consumer.validate_setup(packet)
+    packet["files"]["unreviewed.py"] = {}
+    with pytest.raises(ValueError, match="membership differs"):
         consumer.validate_setup(packet)
 
 

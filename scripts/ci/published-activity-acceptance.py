@@ -1,7 +1,8 @@
-"""Run one exact published SDK retry-identity case inside an owned internal network."""
+"""Run one fixed published SDK acceptance case inside an owned internal network."""
 
 from __future__ import annotations
 
+import argparse
 import base64
 import hashlib
 import ipaddress
@@ -38,6 +39,15 @@ OWNER_VALUE = "=sdk-python"
 LABEL_FILTER = "label="
 ID_FORMAT = "{{.ID}}"
 DIAGNOSTIC_LIMIT = 64 * 1024
+SCENARIO = "activity-identity"
+SCENARIOS = {
+    "activity-identity": (
+        "test_activity_identity.py", "test_retry_preserves_received_execution_id_and_changes_attempt_id",
+    ),
+    "timer-redrive": (
+        "test_native_timer_redrive.py", "test_cold_workers_preserve_fractional_timer_clock_across_repeated_redrive",
+    ),
+}
 # No inherited context, registry credentials, proxy, SSH or remote Docker endpoint.
 # This kernel directory is private to each CLI process and contains no config.json.
 DOCKER_ENVIRONMENT = {
@@ -111,7 +121,7 @@ def verify_case_result(result):
         raise ValueError("published retry case reported failure")
     root = ElementTree.fromstring(result["junit"])
     cases = list(root.iter("testcase"))
-    expected = "test_retry_preserves_received_execution_id_and_changes_attempt_id"
+    expected = SCENARIOS[SCENARIO][1]
     if len(cases) != 1 or cases[0].get("name") != expected:
         raise ValueError("published retry case inventory differs")
     if any(cases[0].find(tag) is not None for tag in ("failure", "error", "skipped")):
@@ -131,10 +141,12 @@ def packet_file(data):
 
 def bind_bootstrap(captured):
     source = captured["bootstrap.py"].decode()
-    placeholder = 'CAPTURED_VERIFIER = ""'
-    if source.count(placeholder) != 1:
-        raise ValueError("consumer verifier binding placeholder differs")
-    return source.replace(placeholder, "CAPTURED_VERIFIER = " + repr(captured[VERIFIER_FILENAME].decode()), 1)
+    for name, filename in (("CAPTURED_VERIFIER", VERIFIER_FILENAME), ("CAPTURED_ENTRY", "entry.py")):
+        placeholder = name + ' = ""'
+        if source.count(placeholder) != 1:
+            raise ValueError("consumer source binding placeholder differs")
+        source = source.replace(placeholder, name + " = " + repr(captured[filename].decode()), 1)
+    return source
 
 
 def capture_source(report):
@@ -144,11 +156,16 @@ def capture_source(report):
     paths = {
         REQUIREMENTS: "scripts/ci/published-activity-requirements.txt",
         VERIFIER_FILENAME: "scripts/ci/verify_activity_install.py",
-        "test_activity_identity.py": "tests/integration/test_activity_identity.py",
+        SCENARIOS[SCENARIO][0]: "tests/integration/" + SCENARIOS[SCENARIO][0],
         "conftest.py": "tests/integration/conftest.py",
         "bootstrap.py": "scripts/ci/activity_acceptance_consumer.py",
-        "tuple.json": "tests/fixtures/published-activity-acceptance.json",
+        "entry.py": "scripts/ci/activity_acceptance_entry.py",
+        "tuple.json": "tests/fixtures/" + (
+            "published-timer-redrive.json" if SCENARIO == "timer-redrive" else "published-activity-acceptance.json"
+        ),
     }
+    if SCENARIO == "timer-redrive":
+        paths["redrive_timer_clock_workflow.py"] = "tests/integration/redrive_timer_clock_workflow.py"
     captured = {
         name: call("git", "show", commit + ":" + path, cwd=ROOT).stdout.encode() for name, path in paths.items()
     }
@@ -196,10 +213,14 @@ def download_wheels(selected, captured, files):
         wheels[path.name] = packet_file(path.read_bytes())
     if wheels[wheel_name]["sha256"] != approval["files"][wheel_name]:
         raise ValueError("registry wheel differs from the independently reviewed release")
+    inputs = [REQUIREMENTS, VERIFIER_FILENAME, SCENARIOS[SCENARIO][0], "conftest.py"]
+    if SCENARIO == "timer-redrive":
+        inputs.append("redrive_timer_clock_workflow.py")
     return {
+        "scenario": SCENARIO,
         "files": {
             name: packet_file(captured[name])
-            for name in (REQUIREMENTS, VERIFIER_FILENAME, "test_activity_identity.py", "conftest.py")
+            for name in inputs
         },
         "wheels": wheels,
         "wheel_name": wheel_name,
@@ -468,8 +489,9 @@ def run_case(owned, selected, images, packet, bootstrap, report):
         if ready["sdk_inventory"] != result["sdk_inventory"]:
             raise ValueError("installed SDK bytes changed during the case")
         owned.files.write("sdk-inventory.json", json.dumps(result["sdk_inventory"], indent=2))
-        owned.files.write("identity.log", result["case_output"])
-        owned.files.write("identity.xml", result["junit"])
+        name = "timer-redrive" if SCENARIO == "timer-redrive" else "identity"
+        owned.files.write(name + ".log", result["case_output"])
+        owned.files.write(name + ".xml", result["junit"])
         report["consumer_ready"] = {key: value for key, value in ready.items() if key != "sdk_inventory"}
         session.send({"release": True})
         code = session.finish()
@@ -482,7 +504,7 @@ def run_case(owned, selected, images, packet, bootstrap, report):
 
 def main():
     files = output_files.Output(OUTPUT)
-    report = {"complete": False, "started_at": datetime.now(timezone.utc).isoformat()}
+    report = {"complete": False, "scenario": SCENARIO, "started_at": datetime.now(timezone.utc).isoformat()}
     owned = OwnedDocker(uuid4().hex, files, report)
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(360)
@@ -513,4 +535,7 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scenario", choices=tuple(SCENARIOS), default=SCENARIO)
+    SCENARIO = parser.parse_args().scenario
     main()
