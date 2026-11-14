@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from copy import deepcopy
 from pathlib import Path
 
@@ -92,3 +93,75 @@ async def test_case_observer_preserves_public_responses_and_namespace_before_nex
         controls = await case.check_controls(client, factory, expected, 1)
         assert controls["resume_pages"][0]["request"]["next_page_token"] == "opaque+/="
     assert all(request.headers["X-Namespace"] == "default" for request in requests)
+
+
+@pytest.mark.parametrize("field", ["workflow_id", "run_id"])
+async def test_history_observer_refuses_foreign_response_identity(field):
+    response = {"workflow_id": "wf", "run_id": "run", "events": []}
+    response[field] = "foreign"
+    client = case.ObservedClient("https://runtime.example", control_token="synthetic-control", namespace="default")
+    client._http = httpx.AsyncClient(
+        base_url=client.base_url, transport=httpx.MockTransport(lambda _: httpx.Response(200, json=response)),
+    )
+    async with client:
+        with pytest.raises(AssertionError):
+            await client.get_history("wf", "run", page_size=1)
+    assert client.pages == []
+
+
+async def test_complete_fixture_uses_timestamp_sequence_public_shape_without_worker(monkeypatch):
+    runs = {}
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        path = request.url.path
+        if path == "/api/cluster/info":
+            return httpx.Response(200, json={"namespace": {"name": "default", "external_payload_storage": None}})
+        if request.method == "POST" and path == "/api/workflows":
+            body = json.loads(request.content)
+            item = {key: body[key] for key in ("workflow_id", "workflow_type", "task_queue")}
+            item.update(run_id="run-" + str(len(runs)), status="pending")
+            runs[item["workflow_id"]] = item
+            return httpx.Response(202, json=item)
+        if request.method == "POST" and path.endswith("/cancel"):
+            runs[path.split("/")[3]]["status"] = "cancelled"
+            return httpx.Response(200, json={})
+        size = int(request.url.params["page_size"])
+        token = request.url.params.get("next_page_token")
+        start = 0 if token is None else {"opaque+/=1": 1, "opaque+/=2": 2, "opaque+/=4": 4}[token]
+        if path == "/api/workflows":
+            items = [item for item in reversed(list(runs.values())) if (
+                item["workflow_type"] == request.url.params["workflow_type"]
+                and item["status"] == "cancelled"
+                and request.url.params["query"] in item["workflow_id"]
+            )]
+            result = {"workflows": items[start:start + size]}
+        else:
+            parts = path.split("/")
+            assert parts[4] == "runs"
+            assert parts[6] == "history"
+            assert runs[parts[3]]["run_id"] == parts[5]
+            items = [{"sequence": index, "event_type": kind, "timestamp": "2026-11-14T12:34:56.123456Z",
+                      "principal": None, "payload": {}} for index, kind in enumerate(
+                          ["StartAccepted", "WorkflowStarted", "WorkflowCancelled"], start=1,
+                      )]
+            result = {"workflow_id": parts[3], "run_id": parts[5], "events": items[start:start + size]}
+        following = start + size
+        result["next_page_token"] = "opaque+/=" + str(following) if following < len(items) else None
+        return httpx.Response(200, json=result)
+
+    original = case.Client.__init__
+
+    def initialize(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self._http = httpx.AsyncClient(base_url=self.base_url, transport=httpx.MockTransport(respond))
+
+    monkeypatch.setattr(case.Client, "__init__", initialize)
+    result = await case.pagination_case("https://runtime.example", "synthetic-control")
+    assert [len(page["items"]) for page in result["list_pages"]] == [2, 2, 1]
+    assert len(result["history_pages"]) == 3
+    assert len(runs) == 8
+    assert all(item["status"] == "cancelled" for item in runs.values())
+    assert all(request.headers["X-Namespace"] == "default" for request in requests)
+    assert not any("worker" in request.url.path for request in requests)
