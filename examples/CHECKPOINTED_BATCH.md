@@ -18,6 +18,8 @@ python -m examples.checkpointed_batch ./receipts-commit after-commit
 python -m examples.checkpointed_batch ./receipts-checkpoint after-checkpoint
 ```
 
+The importable `BatchActivity.execute` handler carries only serializable provider
+configuration, so it also passes the SDK's cooperative callback preflight.
 The activity processes three items, with a maximum of sixteen bounded items.
 Its two attempts, one-second retry delay, ten-second heartbeat timeout,
 thirty-second start-to-close timeout and sixty-second schedule-to-close timeout

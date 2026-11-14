@@ -1,13 +1,17 @@
 """Synthetic provider/acknowledgement boundaries; no Server or worker invocation."""
 from __future__ import annotations
 
-from dataclasses import replace
+import pickle
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
-from examples.checkpointed_batch import FAILURES, Batch, Progress, ReceiptStore, process_batch
+from examples.checkpointed_batch import ACTIVITY, FAILURES, Batch, BatchActivity, Progress, ReceiptStore, process_batch
 
+from durable_workflow import ActivityInfo, Client, Worker
+from durable_workflow._activity_process import CallbackInvocation
 from durable_workflow.errors import NonRetryableError
 
 
@@ -134,3 +138,37 @@ def test_existing_directory_and_partial_receipt_are_preserved(tmp_path: Path) ->
     with pytest.raises(NonRetryableError, match="partial"):
         store.commit_or_reconcile(business_id, fingerprint, 0, items[0])
     assert path.read_bytes() == b"partial"
+
+
+def test_actual_handler_survives_cooperative_preflight_and_callback_serialization(tmp_path: Path) -> None:
+    store = ReceiptStore.create(tmp_path / "provider")
+    handler = BatchActivity(store).execute
+    worker = Worker(AsyncMock(spec=Client), task_queue="queue", activities=[handler])
+    worker._cooperative_cancellation_supported = True
+    worker._validate_cooperative_activity_handlers()
+    assert worker.activities[ACTIVITY] == handler
+    invocation = CallbackInvocation(
+        handler=worker.activities[ACTIVITY], args=(asdict(batch()),),
+        info=ActivityInfo("task", ACTIVITY, "attempt", 2, "queue", "worker"), task={},
+    )
+    restored = pickle.loads(invocation.serialize())
+    assert isinstance(restored.handler.__self__, BatchActivity)
+    assert restored.handler.__self__.store == store
+    assert restored.args == (asdict(batch()),)
+    assert inventory(store) == []
+
+
+def test_nested_handler_is_refused_by_the_same_preflight_and_serializer() -> None:
+    async def legacy_nested_handler(_body: dict[str, Any]) -> None:
+        pass
+
+    worker = Worker(AsyncMock(spec=Client), task_queue="queue", activities=[legacy_nested_handler])
+    worker._cooperative_cancellation_supported = True
+    with pytest.raises(RuntimeError, match="spawn-compatible"):
+        worker._validate_cooperative_activity_handlers()
+    invocation = CallbackInvocation(
+        handler=legacy_nested_handler, args=(),
+        info=ActivityInfo("task", ACTIVITY, "attempt", 2, "queue", "worker"), task={},
+    )
+    with pytest.raises(ValueError, match="spawn-compatible"):
+        invocation.serialize()

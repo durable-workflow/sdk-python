@@ -122,11 +122,14 @@ class BatchWorkflow:
         ))
 
 
-async def run(root: Path, failure: str) -> None:
-    store = await asyncio.to_thread(ReceiptStore.create, root)
+@dataclass(frozen=True)
+class BatchActivity:
+    """Importable handler carrying only the provider's serializable configuration."""
+
+    store: ReceiptStore
 
     @activity.defn(name=ACTIVITY)
-    async def execute(body: dict[str, Any]) -> dict[str, Any]:
+    async def execute(self, body: dict[str, Any]) -> dict[str, Any]:
         ctx = activity.context()
         try:
             received = ctx.last_heartbeat_details(result_type=Progress)
@@ -136,12 +139,15 @@ async def run(root: Path, failure: str) -> None:
         async def acknowledge(progress: Progress) -> None:
             await ctx.heartbeat(asdict(progress))
 
-        return await process_batch(store, Batch(**body), received, ctx.info.attempt_number, acknowledge)
+        return await process_batch(self.store, Batch(**body), received, ctx.info.attempt_number, acknowledge)
 
+
+async def run(root: Path, failure: str) -> None:
+    store = await asyncio.to_thread(ReceiptStore.create, root)
     queue = "checkpointed-batch-" + uuid4().hex
     async with Client(os.environ.get("SERVER_URL", "http://127.0.0.1:8080"),
                       token=os.environ.get("WORKFLOW_TOKEN"), namespace="default", timeout=10) as client:
-        worker = Worker(client, task_queue=queue, workflows=[BatchWorkflow], activities=[execute])
+        worker = Worker(client, task_queue=queue, workflows=[BatchWorkflow], activities=[BatchActivity(store).execute])
         handle = await client.start_workflow(
             workflow_type=ACTIVITY, task_queue=queue, workflow_id=queue,
             input=[asdict(Batch("demo-" + uuid4().hex, ["first", "second", "third"], failure))],
