@@ -41,6 +41,14 @@ six-minute execution bound, followed by independent cleanup of each captured
 ID and then the network. Label-bound reconciliation covers uncertain create
 responses. A foreign replacement is preserved. A reserved result descriptor
 retains a terminal failure even if the output path refuses further use.
+Failed subprocesses retain up to 64 KiB of stdout and stderr, the full stream
+lengths and hashes, and the exit code or timeout. Losing an optional diagnostic
+file cannot disable cleanup or turn the terminal failure into a pass.
+Buildx receives fresh owner-only tool state for each manifest lookup, checked
+against a held directory identity and removed afterward. Its writable state is
+separate from Docker's empty credential configuration and never enters a
+container or artifact. Other Docker operations and cleanup keep their original
+credential and engine authority.
 
 The seven-day artifact contains the selected tuple, complete wheel hashes,
 dependency versions, SDK inventory, before/after container and network facts,

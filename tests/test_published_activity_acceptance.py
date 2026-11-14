@@ -541,3 +541,136 @@ def test_platform_image_binding_refuses_an_ambiguous_or_foreign_local_object(mut
         del platform["Descriptor"]
     with pytest.raises(ValueError):
         runtime.bind_local_image(index, platform, index_digest, child_digest, config_digest)
+
+
+def test_failed_command_retains_diagnostics_and_cleanup_in_the_terminal_failure(monkeypatch, tmp_path):
+    output = tmp_path / "result"
+    monkeypatch.setattr(runner, "OUTPUT", output)
+    error = runner.subprocess.CalledProcessError(
+        1, ["docker", "buildx", "imagetools", "inspect"], output="captured stdout\n", stderr="metadata reader failed\n"
+    )
+
+    def fail_source(_report):
+        raise error
+
+    cleaned = []
+    monkeypatch.setattr(runner, "capture_source", fail_source)
+    monkeypatch.setattr(runner.OwnedDocker, "cleanup", lambda self: cleaned.append(self.nonce))
+    with pytest.raises(RuntimeError, match="acceptance or cleanup is incomplete"):
+        runner.main()
+    result = json.loads((output / "result.json").read_text())
+    assert result["complete"] is False
+    assert result["command_failure"]["exit_code"] == 1
+    assert (output / "command-stdout.txt").read_text() == "captured stdout\n"
+    assert (output / "command-stderr.txt").read_text() == "metadata reader failed\n"
+    assert len(cleaned) == 1
+
+
+def test_failed_command_streams_are_bounded_and_keep_full_lengths_and_hashes(tmp_path):
+    files = runner.output_files.Output(tmp_path / "result")
+    data = b"x" * (runner.DIAGNOSTIC_LIMIT + 123)
+    error = runner.subprocess.TimeoutExpired(["docker", "buildx"], 5, output=data, stderr=b"timeout detail")
+    report = {"complete": True}
+    try:
+        runner.record_failure(files, report, error)
+        stream = report["command_failure"]["streams"]["stdout"]
+        assert stream["bytes"] == len(data)
+        assert stream["retained_bytes"] == runner.DIAGNOSTIC_LIMIT
+        assert stream["truncated"] is True
+        assert stream["sha256"] == runner.hashlib.sha256(data).hexdigest()
+        assert (files.path / "command-stdout.txt").stat().st_size == runner.DIAGNOSTIC_LIMIT
+        assert report["command_failure"]["timeout_seconds"] == 5
+        assert report["complete"] is False
+    finally:
+        files.close()
+
+
+def test_diagnostic_path_refusal_does_not_prevent_cleanup_or_the_held_failure_receipt(monkeypatch, tmp_path):
+    output = tmp_path / "result"
+    original = tmp_path / "original"
+    monkeypatch.setattr(runner, "OUTPUT", output)
+
+    def fail_source(_report):
+        output.rename(original)
+        output.mkdir()
+        raise runner.subprocess.CalledProcessError(1, ["docker", "buildx"], stderr="retained failure")
+
+    cleaned = []
+    monkeypatch.setattr(runner, "capture_source", fail_source)
+    monkeypatch.setattr(runner.OwnedDocker, "cleanup", lambda self: cleaned.append(self.nonce))
+    with pytest.raises(RuntimeError, match="acceptance or cleanup is incomplete"):
+        runner.main()
+    result = json.loads((original / "result.json").read_text())
+    assert result["complete"] is False
+    assert result["output_failure"] == "identity_changed"
+    assert result["diagnostic_retention_failures"] == {"stdout": "ValueError", "stderr": "ValueError"}
+    assert list(output.iterdir()) == []
+    assert len(cleaned) == 1
+
+
+def test_buildx_has_private_tool_state_without_changing_docker_credential_authority(monkeypatch, tmp_path):
+    original = runner.BuildxState
+    monkeypatch.setattr(runner, "BuildxState", lambda environment: original(environment, parent=tmp_path))
+    monkeypatch.setenv("DOCKER_CONFIG", "/foreign/credentials")
+    observed = []
+
+    def run(arguments, **kwargs):
+        environment = kwargs["env"]
+        state = Path(environment["BUILDX_CONFIG"])
+        assert environment["DOCKER_CONFIG"] == "/proc/self/fd"
+        assert environment["DOCKER_HOST"] == "unix:///var/run/docker.sock"
+        assert state.is_dir()
+        assert state.stat().st_mode & 0o777 == 0o700
+        assert list(state.iterdir()) == []
+        (state / "current").write_text("synthetic tool state")
+        observed.append(state)
+        return SimpleNamespace(stdout="manifest", returncode=0)
+
+    monkeypatch.setattr(runner.subprocess, "run", run)
+    result = runner.call("docker", "buildx", "imagetools", "inspect", "--raw", "public-image")
+    assert result.stdout == "manifest"
+    assert len(observed) == 1
+    assert not observed[0].exists()
+
+
+def test_regular_docker_and_cleanup_calls_do_not_inherit_buildx_state(monkeypatch):
+    observed = []
+    monkeypatch.setattr(runner, "BuildxState", lambda *_args: pytest.fail("unexpected Buildx state"))
+    monkeypatch.setattr(runner.subprocess, "run", lambda _arguments, **kwargs: observed.append(kwargs["env"]))
+    runner.call("docker", "image", "inspect", "selected-image")
+    runner.cleanup_call("docker", "ps", "-a")
+    assert observed == [runner.DOCKER_ENVIRONMENT, runner.DOCKER_ENVIRONMENT]
+    assert "BUILDX_CONFIG" not in runner.DOCKER_ENVIRONMENT
+
+
+def test_buildx_state_path_replacement_preserves_the_foreign_directory(tmp_path):
+    state = runner.BuildxState(runner.DOCKER_ENVIRONMENT, parent=tmp_path)
+    original = tmp_path / "original"
+    state.__enter__()
+    state.path.rename(original)
+    state.path.mkdir()
+    (state.path / "foreign").write_text("preserved")
+    with pytest.raises(ValueError, match="state directory changed"):
+        state.__exit__(None, None, None)
+    assert (state.path / "foreign").read_text() == "preserved"
+    assert original.is_dir()
+
+
+def test_buildx_state_refusal_preserves_the_command_error_and_its_stderr(tmp_path):
+    state = runner.BuildxState(runner.DOCKER_ENVIRONMENT, parent=tmp_path)
+    original = tmp_path / "original"
+    error = runner.subprocess.CalledProcessError(1, ["docker", "buildx"], stderr="original metadata failure")
+
+    def fail_with_replaced_state():
+        with state:
+            state.path.rename(original)
+            state.path.mkdir()
+            (state.path / "foreign").write_text("preserved")
+            raise error
+
+    with pytest.raises(runner.subprocess.CalledProcessError) as captured:
+        fail_with_replaced_state()
+    assert captured.value is error
+    assert captured.value.stderr == "original metadata failure"
+    assert captured.value.buildx_state_failure == "ValueError"
+    assert (state.path / "foreign").read_text() == "preserved"
