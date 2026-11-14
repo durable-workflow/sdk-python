@@ -24,11 +24,40 @@ Store both as regular, single-link, owned files in owner-controlled directories.
 Before the experiment, check host/Docker capacity and pull both exact images
 with an empty Docker config. The controller itself does not pull images.
 
-Run from an exact committed checkout:
+Run from an exact committed checkout. Qualifying execution uses a literal trusted
+bootstrap to verify the reviewed controller Git bytes before compiling them.
+Set `REVIEWED_COMMIT` and `REVIEWED_SHA` from the independent review for the
+chosen controller. The expected identity is supplied by that review.
 
 ```sh
-python3 -I scripts/conformance/command_keys/run_response_loss.py \
-  --runner-commit FULL_REVIEWED_RUNNER_COMMIT \
+BOOTSTRAP='import hashlib, os, re, subprocess, sys
+from pathlib import Path
+commit, relative, expected = sys.argv[1:4]
+del sys.argv[1:4]
+allowed = {"scripts/conformance/command_keys/" + name for name in
+           ("run_response_loss.py", "run_physical_readback.py", "run_synthetic_legacy.py")}
+if (re.fullmatch(r"[0-9a-f]{40}", commit) is None
+        or re.fullmatch(r"[0-9a-f]{64}", expected) is None or relative not in allowed):
+    raise ValueError("require reviewed controller identities")
+data = subprocess.check_output(["/usr/bin/git", "show", commit + ":" + relative],
+                               env={"PATH": os.defpath}, timeout=10)
+if hashlib.sha256(data).hexdigest() != expected:
+    raise ValueError("reviewed controller Git bytes differ")
+context = {"__name__": "__main__", "__file__": str(Path.cwd() / relative)}
+exec(compile(data, context["__file__"], "exec"), context)
+'
+```
+
+The [frozen physical/loss invocation and pre-open substitution controls](https://github.com/durable-workflow/sdk-python/pull/321#issuecomment-6862370654)
+show the complete recorded trust root. The adapter still captures and verifies
+all host source/data files against the declared commit before creating its
+workspace. Opening the host controller pathname first is insufficient for
+qualification.
+
+```sh
+/usr/bin/python3 -I -B -c "$BOOTSTRAP" "$REVIEWED_COMMIT" \
+  scripts/conformance/command_keys/run_response_loss.py "$REVIEWED_SHA" \
+  --runner-commit "$REVIEWED_COMMIT" \
   --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
   --proxy /path/to/verified/committed_response_loss.py \
   --output /path/to/private-disk-scratch/new-run
@@ -101,8 +130,9 @@ reviewed response-loss runner. No host interpreter or executable input pathname
 is accepted.
 
 ```sh
-python3 -I scripts/conformance/command_keys/run_physical_readback.py \
-  --runner-commit FULL_REVIEWED_RUNNER_COMMIT \
+/usr/bin/python3 -I -B -c "$BOOTSTRAP" "$REVIEWED_COMMIT" \
+  scripts/conformance/command_keys/run_physical_readback.py "$REVIEWED_SHA" \
+  --runner-commit "$REVIEWED_COMMIT" \
   --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
   --baseline /path/to/producer/stopped-backup.sqlite \
   --seed /path/to/producer/seed-receipts.json \
@@ -147,3 +177,82 @@ A substituted parent, copied database, configuration, credential or report refus
 qualification. Known-container cleanup stays bound to captured IDs and preserves
 replacement paths. Workspace substitution controls must pass before installed
 response-loss or physical results qualify.
+
+## Synthetic SQLite legacy cases
+
+`run_synthetic_legacy.py` prepares real current-producer API admissions, stops
+that owned runtime, then calls the unchanged accepted common helper on a private
+stopped copy. Its helper source is Rust `4add871b175517f2031f71c868ce278bbfbba486`,
+SHA-256 `6fc6054ce087c136a86d7b6b222daeefaa87c58fa0b613b155a5df39e6a26fad`.
+The producer manifest is Server `d66e33bfb5c76f94c5b202f8c9f7a9e8cd75cf1c`,
+SHA-256 `da1990000c611d7377690c7526487d6415fa4f9cb42d299f59585a7c2eebf769`.
+The helper's manifest data lookup uses the captured accepted bytes. Its SQL,
+preconditions, complete-copy comparison and exact allowed row changes are unchanged.
+This setup is separate from the producer-owned physical historical seed.
+
+```sh
+/usr/bin/python3 -I -B -c "$BOOTSTRAP" "$REVIEWED_COMMIT" \
+  scripts/conformance/command_keys/run_synthetic_legacy.py "$REVIEWED_SHA" \
+  --runner-commit "$REVIEWED_COMMIT" \
+  --state open --scenario readback \
+  --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
+  --snapshot-helper /path/to/accepted/sqlite_legacy.py \
+  --manifest /path/to/accepted/command-key-legacy-v1-vectors.json \
+  --output /path/to/private-disk-scratch/new-synthetic-run
+```
+
+Run the readback scenario separately for `open`, `completed` and `continued`.
+The actual installed Worker creates closed/continued states and null update
+results before the copy. No Worker runs during the readback window. Four
+concurrent changed-input retries must retain original identities and unknown
+intent; changed names and explicit signal-run targets must conflict. The Python
+update helper uses its existing unscoped route. GET-only outcomes preserve the
+pending/completed-null distinction.
+
+The other scenarios require `--state open`: `two-rows`, `legacy-token` and
+`modern-raw` must refuse with explicit ambiguous/unverified/non-retryable fields.
+`case-only` first checks exact-byte retained readback, then admits the lower-case
+key in a separate write interval under SQLite's binary comparison. Complete
+logical snapshots must match for readback/ambiguity windows. The distinct-key
+interval has no zero-write claim. Its complete logical delta must preserve every
+old row except the exact source-defined sequence/summary advances, add the two
+receipt-bound command/intent rows and corresponding signal/update/history/wait
+records, and leave all other tables and columns unchanged. The installed sender
+fingerprint, official codec decode and retained/conflict controls bind the new
+rows to the two intended fresh admissions. The stopped transformed/copy snapshot
+must also equal the first restarted snapshot before any readback begins.
+
+Every phase executes captured adapter/bootstrap bytes in the fixed published
+Python image with all nine dependency wheel hashes and the reviewed SDK wheel.
+Lifecycle and cleanup use captured full creation IDs plus ownership labels.
+Source and copied runtimes are sequential; at most one runtime and one consumer
+coexist, each capped at 1 CPU, 1 GiB and 256 PIDs. All declared inputs and the
+interpreter are rechecked after return, and both private database copies are
+removed after exact-ID container/volume cleanup. Record each state/scenario and
+any NONPASS separately. Independent review, exact-head checks and actual
+installed evidence are required before qualification; another SDK's result does
+not qualify this adapter or complete shared216.
+
+Physical and synthetic SQLite qualification is currently **HOLD**. SQLite's
+native VFS can canonicalize even a real proc-FD URI and reopen its mutable
+pathname. Historical business observations using that boundary remain useful,
+but cannot qualify the
+physical or synthetic cells. The separately qualified response-loss cell does
+not read SQLite files and keeps its existing scope.
+
+`check_quiesced_snapshot.py` is a preparation-only synthetic control. It pauses
+the captured owned writer ID, checks that state while reading held main/WAL/SHM
+descriptors twice, and resumes the writer in `finally`, including on refusal.
+Complete equality does not make an unquiesced byte capture a live snapshot.
+The captured main/WAL bytes enter a fixed official interpreter container with
+no host mounts or network. Official SQLite recovers them and backs up into
+memory while root is the sole actor. The accepted snapshot helper consumes that
+same memory connection after UID/GID/capability drop. The lower native-open
+counterexample uses the exact C source from Rust PR265, commit701c17f. No
+installed cell is authorized by these primitive controls. The physical runner
+prepares this same reader for baseline, upgraded, pre-request and post-request
+snapshots. Its schema marker checks consume the resulting typed snapshot rather
+than opening a second host SQLite connection. That integration still needs
+exact-source review and installed evidence. The synthetic runner's stopped
+transform/copy path remains on hold. The stopped transform
+helper's descriptor API is owned and reviewed separately in the Rust repository.
