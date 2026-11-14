@@ -19,20 +19,39 @@ and repeated redrive through the public client API. Each of the three Workers
 runs in a fresh Python process with the same definition and fingerprint.
 The first successor fails the second activity again; the next succeeds.
 
-The retained observations prove callback identity and clock, emitted commands,
-new shared timer-pair identities, immediate-predecessor lineage, original start
-anchor, completed-result reuse and unchanged source history. Successors must
+The retained observations prove callback identity and clock, closed emitted
+command/task inventories, new shared timer-pair identities, immediate-predecessor
+lineage, original start anchor, completed-result reuse and unchanged source
+history. Recorded nonempty Worker fingerprints must match every original and
+successor `WorkflowStarted` fingerprint with its `worker` source. Successors must
 already have the reused timer prefix before a Worker starts, issue no timer
 command, expose no timer wait, and execute only the failed activity. Parsed UTC
 instants retain all supported microseconds; unrepresentable precision refuses
 rather than being silently rounded. The original definition does not read an
 ordinary entry clock, so this does not advertise that separate SDK capability.
-Database timer/task invariants remain bound to the qualified native producer;
-the SDK case observes public history, Worker commands and callbacks.
+Unpruned public history exports bind the selected workflow/run and include every
+task/wait status. Original stored timer tasks/waits must each count one;
+successors must each count zero before and after their cold Worker. All emitted
+completion task IDs and activity callback task IDs must match the stored export
+inventory. Full timer payloads must match their predecessor modulo the explicitly
+authorized new pair ID, immediate predecessor and preserved clock fields.
 
-The trusted consumer binds case source to its Git-captured digest before each
-cold child. A literal child entry verifies those captured bytes before compile
-and execution; it opens no host dispatcher. Each Worker has a 45-second SDK
+An absent matching registration must refuse redrive without changing the chain
+or source history. Admission then holds a matching source-cohort registration
+that never polls or executes work; its metadata is copied from the actual source
+Worker and its cleanup uses the returned registration generation token. Only the
+fresh child may execute the accepted successor. Physical `workflow_run_timers`
+counts remain a separate actual published-producer observation. Reconstructed
+export timers and an immutable qualification link are not per-fixture physical
+counts; this API case makes no such claim.
+
+The trusted consumer captures the complete private installed-file inventory
+before admitting SDK execution. Parent pytest and every cold child use the
+read-only base interpreter with `-I -S -B`. Their literal entry verifies the
+independently fixed case digest and installed-inventory commitment before adding
+the exact private site directory, without processing `.pth` or sitecustomize.
+Pytest uses captured source bytes and fixed fixtures instead of reopening the
+mutable test or conftest as executable code. Each Worker has a 45-second SDK
 budget and a 55-second child wall limit. The selected pytest case has a
 180-second bound within the existing 240-second consumer exchange and
 six-minute controller deadline; cleanup keeps its independent per-call bounds.

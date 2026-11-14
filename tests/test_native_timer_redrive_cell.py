@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import subprocess
-import sys
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -48,6 +46,7 @@ def test_exact_fraction_and_immediate_predecessor_preserve_unchanged_inputs():
 
 @pytest.mark.parametrize("fault", [
     "floor", "root_lineage", "new_start", "pair_id", "old_id", "timer_task", "scheduled_activity", "changed_result",
+    "extra_fired", "extra_scheduled", "changed_delay",
 ])
 def test_false_reuse_evidence_refuses(fault):
     events, previous, arguments = prefix()
@@ -66,6 +65,12 @@ def test_false_reuse_evidence_refuses(fault):
         fired["task"] = {"id": "new-timer-work"}
     elif fault == "scheduled_activity":
         events.append({"event_type": "ActivityScheduled", "payload": {"sequence": 1}})
+    elif fault == "extra_fired":
+        fired["unreviewed"] = True
+    elif fault == "extra_scheduled":
+        cell.one(events, "TimerScheduled")["payload"]["unreviewed"] = True
+    elif fault == "changed_delay":
+        cell.one(events, "TimerScheduled")["payload"]["delay_seconds"] = 999
     else:
         cell.one(events, "ActivityCompleted")["payload"]["result"] = "changed"
     with pytest.raises(AssertionError):
@@ -78,30 +83,12 @@ def test_unrepresentable_or_unzoned_clock_cannot_hide_precision_loss(clock):
         cell.instant(clock)
 
 
-def test_changed_definition_or_case_source_refuses_before_child(monkeypatch):
+def test_changed_definition_or_absent_trusted_entry_refuses_before_child(monkeypatch):
     with pytest.raises(AssertionError):
         cell.definition("changed definition")
-    monkeypatch.setenv("DURABLE_WORKFLOW_REDRIVE_CASE_SHA256", "0" * 64)
     monkeypatch.setattr(cell.subprocess, "run", lambda *a, **k: pytest.fail("must refuse before any child"))
     with pytest.raises(AssertionError):
         cell.run_cold_worker({})
-
-
-@pytest.mark.parametrize("substitute", [False, True])
-def test_literal_child_bootstrap_binds_captured_bytes_without_opening_a_dispatcher(substitute):
-    source = "async def cold_worker(p): print('fixed inert result', p['marker'])\n"
-    packet = {"source": source, "source_sha256": hashlib.sha256(source.encode()).hexdigest(), "marker": "owned"}
-    if substitute:
-        packet["source"] += "\nraise RuntimeError('substitute executed')\n"
-    result = subprocess.run(
-        [sys.executable, "-I", "-B", "-c", cell.CHILD_ENTRY], input=json.dumps(packet),
-        env={"PATH": os.defpath}, capture_output=True, text=True, timeout=5,
-    )
-    if substitute:
-        assert result.returncode != 0 and "source differs" in result.stderr
-        assert "substitute executed" not in result.stderr and not result.stdout
-    else:
-        assert result.returncode == 0 and result.stdout == "fixed inert result owned\n"
 
 
 def test_accepted_workflow_definition_bytes_remain_frozen():
@@ -109,14 +96,31 @@ def test_accepted_workflow_definition_bytes_remain_frozen():
     assert hashlib.sha256(path.read_bytes()).hexdigest() == cell.DEFINITION_SHA
 
 
-@pytest.mark.parametrize("fault", [None, "timer_command", "first_callback", "no_task", "floor"])
+@pytest.mark.parametrize("fault", [
+    None, "timer_command", "extra_command", "extra_completion", "missing_task", "foreign_task",
+    "first_callback", "no_task", "floor", "empty_fingerprint",
+])
 def test_redrive_worker_evidence_requires_only_the_failed_activity_and_exact_clock(fault):
     clock = cell.instant("2026-11-03T00:00:06.654321Z")
     observed = {
         "definition_sha256": cell.DEFINITION_SHA, "fingerprints": {cell.WORKFLOW_TYPE: "sha256:" + "a" * 64},
         "worker_id": "fixed-worker", "pid": 123,
-        "completions": [{"commands": [{"type": "schedule_activity", "activity_type": "tests.redrive.second"}]}],
-        "callbacks": [{"activity": "second", "clock": clock.isoformat()}],
+        "status": "failed",
+        "completions": [
+            {"task_id": "one", "commands": [cell.ScheduleActivity(
+                "tests.redrive.second", ["Hello, Taylor!", clock.isoformat(timespec="microseconds")],
+                retry_policy=cell.ActivityRetryPolicy(max_attempts=1),
+            ).to_server_command("queue")]},
+            {"task_id": "two", "commands": [{"type": "fail_workflow", "message": "fixed failure",
+                                              "failed_step_sequence": 3, "failed_activity_execution_id": "execution"}]},
+        ],
+        "callbacks": [{"activity": "second", "clock": clock.isoformat(), "execution_id": "execution",
+                       "task_id": "activity", "attempt_id": "attempt", "run_id": "run"}],
+    }
+    exported = {
+        "workflow": {"run_id": "run"},
+        "tasks": [{"id": "one", "type": "workflow"}, {"id": "two", "type": "workflow"},
+                  {"id": "activity", "type": "activity"}],
     }
     if fault == "timer_command":
         observed["completions"][0]["commands"].append({"type": "start_timer"})
@@ -124,10 +128,140 @@ def test_redrive_worker_evidence_requires_only_the_failed_activity_and_exact_clo
         observed["callbacks"].insert(0, {"activity": "first"})
     elif fault == "no_task":
         observed["completions"] = []
+    elif fault == "extra_command":
+        observed["completions"][0]["commands"].append({"type": "upsert_search_attributes"})
+    elif fault == "extra_completion":
+        observed["completions"].append(deepcopy(observed["completions"][0]))
+    elif fault == "missing_task":
+        observed["completions"][0]["task_id"] = ""
+    elif fault == "foreign_task":
+        observed["completions"][0]["task_id"] = "foreign"
+    elif fault == "empty_fingerprint":
+        observed["fingerprints"][cell.WORKFLOW_TYPE] = ""
     elif fault == "floor":
         observed["callbacks"][0]["clock"] = "2026-11-03T00:00:06Z"
     if fault:
         with pytest.raises(AssertionError):
-            cell.verify_worker(observed, redrive=True, clock=clock)
+            cell.verify_worker(observed, redrive=True, clock=clock, queue="queue", exported=exported)
     else:
-        cell.verify_worker(observed, redrive=True, clock=clock)
+        cell.verify_worker(observed, redrive=True, clock=clock, queue="queue", exported=exported)
+
+
+@pytest.mark.parametrize("fault", [None, "empty", "changed", "source"])
+def test_recorded_worker_fingerprint_is_exact_across_original_and_successors(fault):
+    fingerprint = "sha256:" + "a" * 64
+    observations = [{"fingerprints": {cell.WORKFLOW_TYPE: fingerprint}} for _ in range(3)]
+    histories = [[{"event_type": "WorkflowStarted", "payload": {
+        "workflow_definition_fingerprint": fingerprint, "workflow_definition_fingerprint_source": "worker",
+    }}] for _ in range(3)]
+    if fault == "empty":
+        observations[0]["fingerprints"][cell.WORKFLOW_TYPE] = ""
+    elif fault == "changed":
+        histories[1][0]["payload"]["workflow_definition_fingerprint"] = "sha256:" + "b" * 64
+    elif fault == "source":
+        histories[2][0]["payload"]["workflow_definition_fingerprint_source"] = "unrelated"
+    if fault:
+        with pytest.raises(AssertionError):
+            cell.verify_recorded_fingerprints(observations, histories)
+    else:
+        cell.verify_recorded_fingerprints(observations, histories)
+
+
+@pytest.mark.parametrize("fault", [None, "done_timer", "cancelled_wait", "pruned", "run", "redacted", "incomplete"])
+def test_export_requires_bound_retained_all_status_inventory(fault):
+    document = {
+        "schema": "durable-workflow.v2.history-export", "schema_version": 2, "history_complete": True,
+        "workflow": {"instance_id": "workflow", "run_id": "run", "workflow_type": cell.WORKFLOW_TYPE,
+                     "details_state": "retained", "details_pruned_at": None},
+        "selected_run": {"waits_projection_source": "workflow_run_waits"}, "redaction": {"applied": False},
+        "tasks": [{"id": "workflow-task", "type": "workflow", "status": "completed"}], "waits": [],
+        "timers": [{"id": "history-reconstructed-pair"}],
+    }
+    if fault == "done_timer":
+        document["tasks"].append({"id": "timer", "type": "timer", "status": "completed"})
+    elif fault == "cancelled_wait":
+        document["waits"].append({"kind": "timer", "status": "cancelled"})
+    elif fault == "pruned":
+        document["workflow"]["details_state"] = "pruned"
+    elif fault == "run":
+        document["workflow"]["run_id"] = "foreign"
+    elif fault == "redacted":
+        document["redaction"]["applied"] = True
+    elif fault == "incomplete":
+        document["history_complete"] = False
+    if fault:
+        with pytest.raises(AssertionError):
+            cell.verify_export(document, "workflow", "run", terminal=True, source=False)
+    else:
+        cell.verify_export(document, "workflow", "run", terminal=True, source=False)
+
+
+@pytest.mark.parametrize("fault", [None, "absent_admitted", "wrong_refusal", "positive_failure"])
+async def test_matching_nonconsuming_registration_is_required_and_fenced_cleanup_runs(fault):
+    fingerprint = "sha256:" + "a" * 64
+    events = [{"event_type": "WorkflowStarted", "payload": {
+        "workflow_definition_fingerprint": fingerprint, "workflow_definition_fingerprint_source": "worker",
+    }}]
+    observed = {
+        "fingerprints": {cell.WORKFLOW_TYPE: fingerprint}, "registration_namespace": "default",
+        "registration": {"worker_id": "original", "task_queue": "queue",
+                         "supported_workflow_types": [cell.WORKFLOW_TYPE],
+                         "workflow_definition_fingerprints": {cell.WORKFLOW_TYPE: fingerprint},
+                         "capability_manifest": {}},
+    }
+
+    class FakeClient:
+        namespace = "default"
+
+        def __init__(self):
+            self.calls = []
+            self.registered = False
+
+        async def list_workflow_runs(self, queue):
+            return SimpleNamespace(runs=[SimpleNamespace(run_id="source")])
+
+        async def iter_history(self, queue, run_id):
+            for event in events:
+                yield event
+
+        async def register_worker(self, **request):
+            self.calls.append(("register", request))
+            self.registered = True
+            self.worker_id = request["worker_id"]
+            return {"worker_id": self.worker_id, "registered": True, "registration_token": "b" * 32,
+                    "namespace": "default", "task_queue": "queue"}
+
+        async def redrive_workflow(self, queue, run_id):
+            self.calls.append(("redrive", self.registered))
+            if not self.registered and fault != "absent_admitted":
+                raise cell.ServerError(409, {
+                    "reason": "other" if fault == "wrong_refusal" else "workflow_definition_unavailable_or_changed",
+                    "outcome": "rejected", "workflow_id": queue, "run_id": run_id,
+                    "workflow_run_id": None, "accepted": False, "task_id": None,
+                })
+            if self.registered and fault == "positive_failure":
+                raise cell.ServerError(503, {"reason": "fixed admission failure"})
+            return SimpleNamespace(outcome="redriven", run_id="next")
+
+        async def deregister_worker_registration(self, worker_id, **arguments):
+            assert worker_id == self.worker_id and arguments == {
+                "registration_token": "b" * 32, "expected_namespace": "default", "timeout": 10,
+            }
+            self.calls.append(("deregister", worker_id))
+            self.registered = False
+            return {"worker_id": worker_id, "registration_token": "b" * 32,
+                    "outcome": "deregistered", "recovered_workflow_task_count": 0}
+
+    client = FakeClient()
+    if fault:
+        with pytest.raises(cell.ServerError if fault == "positive_failure" else AssertionError):
+            await cell.admit_redrive(client, "queue", "source", observed, events)
+        assert not client.registered
+    else:
+        receipt, evidence = await cell.admit_redrive(client, "queue", "source", observed, events)
+        assert receipt.run_id == "next" and not client.registered
+        assert [name for name, _value in client.calls] == ["redrive", "register", "redrive", "deregister"]
+        assert "b" * 32 not in json.dumps(evidence)
+        assert evidence["matching_registration"]["workflow_definition_fingerprints"] == {
+            cell.WORKFLOW_TYPE: fingerprint,
+        }

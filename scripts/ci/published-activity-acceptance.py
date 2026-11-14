@@ -141,10 +141,12 @@ def packet_file(data):
 
 def bind_bootstrap(captured):
     source = captured["bootstrap.py"].decode()
-    placeholder = 'CAPTURED_VERIFIER = ""'
-    if source.count(placeholder) != 1:
-        raise ValueError("consumer verifier binding placeholder differs")
-    return source.replace(placeholder, "CAPTURED_VERIFIER = " + repr(captured[VERIFIER_FILENAME].decode()), 1)
+    for name, filename in (("CAPTURED_VERIFIER", VERIFIER_FILENAME), ("CAPTURED_ENTRY", "entry.py")):
+        placeholder = name + ' = ""'
+        if source.count(placeholder) != 1:
+            raise ValueError("consumer source binding placeholder differs")
+        source = source.replace(placeholder, name + " = " + repr(captured[filename].decode()), 1)
+    return source
 
 
 def capture_source(report):
@@ -157,6 +159,7 @@ def capture_source(report):
         SCENARIOS[SCENARIO][0]: "tests/integration/" + SCENARIOS[SCENARIO][0],
         "conftest.py": "tests/integration/conftest.py",
         "bootstrap.py": "scripts/ci/activity_acceptance_consumer.py",
+        "entry.py": "scripts/ci/activity_acceptance_entry.py",
         "tuple.json": "tests/fixtures/" + (
             "published-timer-redrive.json" if SCENARIO == "timer-redrive" else "published-activity-acceptance.json"
         ),
