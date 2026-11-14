@@ -435,9 +435,9 @@ class TestWorkerRegistration:
                 DURABLE_SELECTION_CAPABILITY,
                 "local_activities",
                 "workflow_entry_arguments_validation",
+                "activity_heartbeat_resume",
                 "query_tasks",
                 MESSAGE_STREAMS_CAPABILITY,
-                "activity_heartbeat_resume",
                 "worker_sessions",
             ],
             "capability_manifest": {
@@ -584,10 +584,10 @@ class TestWorkerRegistration:
             DURABLE_SELECTION_CAPABILITY,
             "local_activities",
             "workflow_entry_arguments_validation",
+            "activity_heartbeat_resume",
             "query_tasks",
             WORKFLOW_UPDATES_CAPABILITY,
             MESSAGE_STREAMS_CAPABILITY,
-            "activity_heartbeat_resume",
             "worker_sessions",
         ]
 
@@ -673,11 +673,11 @@ class TestWorkerRegistration:
             DURABLE_SELECTION_CAPABILITY,
             "local_activities",
             "workflow_entry_arguments_validation",
+            "activity_heartbeat_resume",
             "query_tasks",
             UPDATE_VALIDATION_TASKS_CAPABILITY,
             WORKFLOW_UPDATES_CAPABILITY,
             MESSAGE_STREAMS_CAPABILITY,
-            "activity_heartbeat_resume",
             "worker_sessions",
         ]
 
@@ -785,8 +785,8 @@ class TestWorkerRegistration:
             DURABLE_SELECTION_CAPABILITY,
             "local_activities",
             "workflow_entry_arguments_validation",
-            MESSAGE_STREAMS_CAPABILITY,
             "activity_heartbeat_resume",
+            MESSAGE_STREAMS_CAPABILITY,
             "worker_sessions",
         ]
 
