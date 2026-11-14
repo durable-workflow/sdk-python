@@ -148,6 +148,15 @@ def packet_file(data):
     return {"base64": base64.b64encode(data).decode(), "sha256": hashlib.sha256(data).hexdigest()}
 
 
+def retain_consumer_ready(files, report, ready):
+    # The complete environment inventory can exceed the terminal receipt bound.
+    # Keep its bytes independently and bind them rather than duplicating them.
+    data = json.dumps({key: value for key, value in ready.items() if key != "sdk_inventory"}, indent=2).encode()
+    name = "consumer-ready.json"
+    files.write(name, data)
+    report["consumer_ready"] = {"file": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
 def bind_bootstrap(captured):
     source = captured["bootstrap.py"].decode()
     for name, filename in (("CAPTURED_VERIFIER", VERIFIER_FILENAME), ("CAPTURED_ENTRY", "entry.py")):
@@ -525,7 +534,7 @@ def run_case(owned, selected, images, packet, bootstrap, report):
         name = "identity" if SCENARIO == "activity-identity" else SCENARIO
         owned.files.write(name + ".log", result["case_output"])
         owned.files.write(name + ".xml", result["junit"])
-        report["consumer_ready"] = {key: value for key, value in ready.items() if key != "sdk_inventory"}
+        retain_consumer_ready(owned.files, report, ready)
         session.send({"release": True})
         code = session.finish()
         report["consumer_exit"] = code

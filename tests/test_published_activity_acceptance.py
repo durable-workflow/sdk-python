@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from copy import deepcopy
@@ -15,6 +16,26 @@ assert SPEC.loader is not None
 runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 runtime = runner.runtime
+
+
+def test_large_readiness_inventory_is_retained_and_hash_bound_without_terminal_duplication(tmp_path):
+    ready = {"distributions": "fixed locked wheels", "environment_inventory": {"entry": "x" * 200_000},
+             "sdk_inventory": {"already": "retained separately"}}
+    report = {"complete": True}
+    files = runner.output_files.Output(tmp_path / "result")
+    try:
+        runner.retain_consumer_ready(files, report, ready)
+        files.finish(report)
+        data = (files.path / "consumer-ready.json").read_bytes()
+        assert json.loads(data) == {key: value for key, value in ready.items() if key != "sdk_inventory"}
+        assert report["consumer_ready"] == {
+            "file": "consumer-ready.json", "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+        }
+        result = (files.path / "result.json").read_bytes()
+        assert len(result) < runner.output_files.RESULT_LIMIT
+        assert json.loads(result)["complete"] is True
+    finally:
+        files.close()
 
 
 def configuration(role="runtime"):
