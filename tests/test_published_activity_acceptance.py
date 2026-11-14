@@ -46,6 +46,10 @@ def configuration(role="runtime"):
         "PublishAllPorts": False,
         "AutoRemove": False,
         "OomKillDisable": False,
+        "ContainerIDFile": "",
+        "ConsoleSize": [0, 0],
+        "MaskedPaths": sorted(runtime.expected_masked_paths()),
+        "ReadonlyPaths": sorted(runtime.READONLY_PATHS),
         "MemorySwappiness": None,
         "ShmSize": 67_108_864,
         "Runtime": "runc",
@@ -67,6 +71,13 @@ def configuration(role="runtime"):
             "WorkingDir": directory,
             "Tty": False,
             "OpenStdin": role == "consumer",
+            "StdinOnce": role == "consumer",
+            "AttachStdin": role == "consumer",
+            "AttachStdout": True,
+            "AttachStderr": True,
+            "Hostname": "a" * 12,
+            "Domainname": "",
+            "Volumes": None,
         },
         "HostConfig": host,
         "Mounts": [],
@@ -407,3 +418,126 @@ def test_undeclared_group_oom_sysctl_device_cgroup_dns_and_resource_overrides_re
         runtime.verify_container(
             record, "a" * 64, "ours", image, "c" * 64, "sha256:" + "d" * 64, "consumer", "captured source"
         )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("Healthcheck", {"Test": ["CMD", "unreviewed"]}),
+        ("StopSignal", "SIGKILL"),
+        ("StopTimeout", 999),
+        ("Shell", ["/bin/sh", "-c"]),
+        ("NetworkDisabled", True),
+        ("MacAddress", "02:00:00:00:00:01"),
+        ("Volumes", {"/foreign": {}}),
+        ("ExposedPorts", {"9999/tcp": {}}),
+        ("OnBuild", ["RUN unreviewed"]),
+        ("AttachStdin", False),
+        ("StdinOnce", False),
+        ("Hostname", "foreign"),
+        ("UnreviewedRunHook", "foreign"),
+    ],
+)
+def test_unreviewed_effectful_config_fields_are_refused(field, value):
+    record, image = configuration("consumer")
+    record["Config"][field] = value
+    with pytest.raises(ValueError):
+        runtime.verify_container(
+            record, "a" * 64, "ours", image, "c" * 64, "sha256:" + "d" * 64, "consumer", "captured source"
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("MaskedPaths", []),
+        ("ReadonlyPaths", []),
+        ("IOMaximumIOps", 1),
+        ("IOMaximumBandwidth", 1),
+        ("UnreviewedHostFlag", True),
+        ("ContainerIDFile", "/foreign/container.cid"),
+    ],
+)
+def test_protected_paths_io_limits_and_unknown_host_fields_are_closed(field, value):
+    record, image = configuration("consumer")
+    record["HostConfig"][field] = value
+    with pytest.raises(ValueError):
+        runtime.verify_container(
+            record, "a" * 64, "ours", image, "c" * 64, "sha256:" + "d" * 64, "consumer", "captured source"
+        )
+
+
+@pytest.mark.parametrize("value", [False, None])
+def test_observed_docker29_false_null_oom_equivalence_keeps_the_killer_enabled(value):
+    record, image = configuration("consumer")
+    record["HostConfig"]["OomKillDisable"] = value
+    runtime.verify_container(
+        record, "a" * 64, "ours", image, "c" * 64, "sha256:" + "d" * 64, "consumer", "captured source"
+    )
+
+
+@pytest.mark.parametrize("value", [True, 0, 1, "false", "missing"])
+def test_oom_enabled_equivalence_does_not_admit_true_wrong_types_or_missing_evidence(value):
+    record, image = configuration("consumer")
+    if value == "missing":
+        del record["HostConfig"]["OomKillDisable"]
+    else:
+        record["HostConfig"]["OomKillDisable"] = value
+    with pytest.raises(ValueError):
+        runtime.verify_container(
+            record, "a" * 64, "ours", image, "c" * 64, "sha256:" + "d" * 64, "consumer", "captured source"
+        )
+
+
+def test_only_the_reviewed_image_healthcheck_is_admitted():
+    record, image = configuration("runtime")
+    image["Config"]["Healthcheck"] = {"Test": ["CMD", "/app/reviewed-health"]}
+    record["Config"]["Healthcheck"] = deepcopy(image["Config"]["Healthcheck"])
+    runtime.verify_container(record, "a" * 64, "ours", image, "c" * 64, "sha256:" + "d" * 64, "runtime")
+    del record["Config"]["Healthcheck"]
+    with pytest.raises(ValueError):
+        runtime.verify_container(record, "a" * 64, "ours", image, "c" * 64, "sha256:" + "d" * 64, "runtime")
+
+
+def image_binding_fixture(store):
+    index_digest, child_digest, config_digest = ["sha256:" + value * 64 for value in ("a", "b", "c")]
+    record = {
+        "Id": config_digest,
+        "RepoDigests": ["example/image@" + index_digest],
+        "Architecture": "amd64",
+        "Os": "linux",
+        "Config": {},
+    }
+    index, platform = deepcopy(record), deepcopy(record)
+    if store == "containerd":
+        index["Id"], platform["Id"] = index_digest, child_digest
+        platform["Descriptor"] = {"digest": child_digest, "platform": {"architecture": "amd64", "os": "linux"}}
+    return index, platform, index_digest, child_digest, config_digest
+
+
+@pytest.mark.parametrize("store", ["classic", "containerd"])
+def test_image_store_identity_binds_immutable_index_platform_and_config(store):
+    result = runtime.bind_local_image(*image_binding_fixture(store))
+    assert result["ImageStore"] == store
+    assert result["PlatformConfigDigest"] == "sha256:" + "c" * 64
+
+
+@pytest.mark.parametrize(
+    "mutation", ["index_id", "child_id", "descriptor", "platform", "repo_digest", "missing_descriptor"]
+)
+def test_platform_image_binding_refuses_an_ambiguous_or_foreign_local_object(mutation):
+    index, platform, index_digest, child_digest, config_digest = image_binding_fixture("containerd")
+    if mutation == "index_id":
+        index["Id"] = "sha256:" + "e" * 64
+    elif mutation == "child_id":
+        platform["Id"] = "sha256:" + "e" * 64
+    elif mutation == "descriptor":
+        platform["Descriptor"]["digest"] = "sha256:" + "e" * 64
+    elif mutation == "platform":
+        platform["Descriptor"]["platform"]["architecture"] = "arm64"
+    elif mutation == "repo_digest":
+        platform["RepoDigests"] = ["example/image@sha256:" + "e" * 64]
+    else:
+        del platform["Descriptor"]
+    with pytest.raises(ValueError):
+        runtime.bind_local_image(index, platform, index_digest, child_digest, config_digest)

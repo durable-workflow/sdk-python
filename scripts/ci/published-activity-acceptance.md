@@ -29,6 +29,13 @@ container has a read-only root, an unprivileged user, all capabilities dropped,
 no new privileges, one CPU, 1 GiB RAM with no additional swap and 256 PIDs.
 Writable temporary storage stays inside that memory limit.
 
+Config and HostConfig use closed projections. Healthchecks must match the
+published image, and protected system paths must match the local daemon's
+reviewed defaults, including kernel-exposed thermal-throttle paths. Docker 29's
+observed false/null OOM-disable transition is accepted; true still refuses.
+Platform-specific inspection binds containerd's index/child identities or a
+classic store's config identity to the selected immutable manifest chain.
+
 Central action-policy and lint gates precede execution. The controller has a
 six-minute execution bound, followed by independent cleanup of each captured
 ID and then the network. Label-bound reconciliation covers uncertain create

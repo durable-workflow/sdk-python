@@ -185,21 +185,20 @@ def verify_published_image(selected, role, files):
         for item in index["manifests"]
         if item.get("platform") == {"architecture": "amd64", "os": "linux"}
     ]
-    observed = json.loads(call("docker", "image", "inspect", image).stdout)[0]
-    if (
-        platforms != [child_digest]
-        or observed["Architecture"] != "amd64"
-        or observed["Os"] != "linux"
-        or not any(value.rsplit("@", 1)[-1] == image.rsplit("@", 1)[-1] for value in observed["RepoDigests"])
-        or observed["Id"] != child["config"]["digest"]
-    ):
-        raise ValueError("local image differs from the exact published platform child")
+    if platforms != [child_digest]:
+        raise ValueError("published index differs from the selected platform child")
+    local_index = json.loads(call("docker", "image", "inspect", image).stdout)[0]
+    local_platform = json.loads(call("docker", "image", "inspect", "--platform", "linux/amd64", image).stdout)[0]
+    observed = runtime.bind_local_image(
+        local_index, local_platform, image.rsplit("@", 1)[-1], child_digest, child["config"]["digest"]
+    )
     if role == "runtime":
         if observed["Config"]["Labels"]["org.opencontainers.image.revision"] != selected["server_source"]:
             raise ValueError("runtime source differs")
     elif "PYTHON_VERSION=" + selected["python_version"] not in observed["Config"]["Env"]:
         raise ValueError("consumer interpreter image differs")
     files.write(role + "-image.json", json.dumps(observed, indent=2))
+    files.write(role + "-local-index.json", json.dumps(local_index, indent=2))
     files.write(role + "-index.json", index_text)
     files.write(role + "-manifest.json", child_text)
     return observed
@@ -273,7 +272,17 @@ class OwnedDocker:
     def verify(self, role, image, child, bootstrap):
         identity = self.identities[role]
         record = self.inspect("container", identity)
-        runtime.verify_container(record, identity, self.nonce, image, self.network, child, role, bootstrap)
+        runtime.verify_container(
+            record,
+            identity,
+            self.nonce,
+            image,
+            self.network,
+            child,
+            role,
+            bootstrap,
+            cidfile=str(OUTPUT / (role + ".cid")),
+        )
         return record
 
     def boundary(self, images, selected, bootstrap, phase):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from pathlib import Path
 
 OWNER = "dev.durable-workflow.fixture-owner"
 RUN = "dev.durable-workflow.fixture-run"
@@ -81,39 +82,139 @@ def verify_network(record, identity, nonce):
 def expected_command(image, role, bootstrap):
     if role == "consumer":
         return ["/usr/local/bin/python3"], ["-I", "-B", "-c", bootstrap], "/"
-    return image["Config"]["Entrypoint"], image["Config"]["Cmd"], image["Config"]["WorkingDir"]
+    return image["Config"].get("Entrypoint"), image["Config"].get("Cmd"), image["Config"].get("WorkingDir", "")
 
 
-def verify_container(record, identity, nonce, image, network, child_digest, role, bootstrap=""):
-    require_owner(record, identity, nonce, role)
-    config, host = record["Config"], record["HostConfig"]
+def bind_local_image(index_record, platform_record, index_digest, child_digest, config_digest):
+    if platform_record["Architecture"] != "amd64" or platform_record["Os"] != "linux":
+        raise ValueError("local platform image differs")
+    for record in (index_record, platform_record):
+        if not any(value.rsplit("@", 1)[-1] == index_digest for value in record["RepoDigests"]):
+            raise ValueError("local image lacks the selected immutable index")
+    descriptor = platform_record.get("Descriptor")
+    if index_record["Id"] == config_digest and platform_record["Id"] == config_digest:
+        store = "classic"
+    elif index_record["Id"] == index_digest and platform_record["Id"] == child_digest:
+        store = "containerd"
+    else:
+        raise ValueError("local image IDs do not bind the selected manifest/config")
+    if (store == "containerd" or descriptor is not None) and (
+        descriptor is None
+        or descriptor.get("digest") != child_digest
+        or descriptor.get("platform") != {"architecture": "amd64", "os": "linux"}
+    ):
+        raise ValueError("local platform descriptor differs")
+    return {
+        **platform_record,
+        "CreateReference": index_record["Id"],
+        "PlatformConfigDigest": config_digest,
+        "ImageStore": store,
+    }
+
+
+def verify_config(config, identity, nonce, image, role, bootstrap):
     environment = {key: value for key, value in (item.split("=", 1) for item in image["Config"]["Env"])}
     if role == "runtime":
         environment.update(ENVIRONMENT)
     received = {key: value for key, value in (item.split("=", 1) for item in config["Env"])}
     if len(received) != len(config["Env"]) or received != environment:
         raise ValueError("container environment differs")
-    entrypoint, command, working_directory = expected_command(image, role, bootstrap)
+    entrypoint, command, directory = expected_command(image, role, bootstrap)
+    labels = {**(image["Config"].get("Labels") or {}), OWNER: "sdk-python", RUN: nonce, ROLE: role}
     expected = {
-        "Image": image["Id"],
+        "Hostname": identity[:12],
+        "Domainname": "",
+        "Image": image.get("CreateReference", image["Id"]),
         "User": "1000:1000",
         "Entrypoint": entrypoint,
         "Cmd": command,
-        "WorkingDir": working_directory,
+        "WorkingDir": directory,
         "Tty": False,
         "OpenStdin": role == "consumer",
+        "StdinOnce": role == "consumer",
+        "AttachStdin": role == "consumer",
+        "AttachStdout": True,
+        "AttachStderr": True,
+        "Labels": labels,
+        "Volumes": image["Config"].get("Volumes"),
+        "ExposedPorts": image["Config"].get("ExposedPorts"),
+        "Healthcheck": image["Config"].get("Healthcheck"),
+        "StopSignal": image["Config"].get("StopSignal", ""),
+        "StopTimeout": image["Config"].get("StopTimeout"),
+        "Shell": image["Config"].get("Shell"),
+        "OnBuild": image["Config"].get("OnBuild"),
+        "ArgsEscaped": image["Config"].get("ArgsEscaped", False),
+        "NetworkDisabled": False,
+        "MacAddress": "",
     }
-    if record["Image"] != image["Id"] or any(config.get(key) != value for key, value in expected.items()):
-        raise ValueError("container image or command differs")
+    if set(config) - (set(expected) | {"Env"}):
+        raise ValueError("container has an unreviewed Config field")
+    optional = {
+        "ExposedPorts": None,
+        "Healthcheck": None,
+        "StopSignal": "",
+        "StopTimeout": None,
+        "Shell": None,
+        "OnBuild": None,
+        "ArgsEscaped": False,
+        "NetworkDisabled": False,
+        "MacAddress": "",
+    }
+    if (set(expected) - set(optional)) - set(config):
+        raise ValueError("container Config lacks a required observation")
+    for key, value in expected.items():
+        received_value = config.get(key, optional[key]) if key in optional else config[key]
+        if received_value != value:
+            raise ValueError("container Config differs from the closed image/role projection")
+
+
+def verify_container(record, identity, nonce, image, network, child_digest, role, bootstrap="", *, cidfile=""):
+    require_owner(record, identity, nonce, role)
+    verify_config(record["Config"], identity, nonce, image, role, bootstrap)
+    if record["Image"] != image.get("CreateReference", image["Id"]):
+        raise ValueError("container image identity differs")
     descriptor = record.get("ImageManifestDescriptor")
     if descriptor is not None and descriptor.get("digest") != child_digest:
         raise ValueError("container platform child differs")
-    verify_host(host, role, network)
+    if image.get("ImageStore") == "containerd" and (
+        descriptor is None or descriptor.get("platform") != {"os": "linux", "architecture": "amd64"}
+    ):
+        raise ValueError("containerd platform descriptor is missing or different")
+    verify_host(record["HostConfig"], role, network, cidfile=cidfile)
     if any(mount["Type"] != "tmpfs" or mount["Destination"] not in TMPFS[role] for mount in record["Mounts"]):
         raise ValueError("container has an undeclared mount")
 
 
-def verify_host(host, role, network):
+MASKED_PATHS = {
+    "/proc/acpi",
+    "/proc/asound",
+    "/proc/interrupts",
+    "/proc/kcore",
+    "/proc/keys",
+    "/proc/latency_stats",
+    "/proc/sched_debug",
+    "/proc/scsi",
+    "/proc/timer_list",
+    "/proc/timer_stats",
+    "/sys/devices/virtual/powercap",
+    "/sys/firmware",
+}
+READONLY_PATHS = {"/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"}
+
+
+def expected_masked_paths():
+    # The fixed local daemon also masks the kernel's CPU thermal-throttle paths.
+    return MASKED_PATHS | {str(path) for path in Path("/sys/devices/system/cpu").glob("cpu[0-9]*/thermal_throttle")}
+
+
+def verify_protected_paths(host):
+    for field, expected in (("MaskedPaths", expected_masked_paths()), ("ReadonlyPaths", READONLY_PATHS)):
+        actual = host.get(field)
+        if not isinstance(actual, list) or len(actual) != len(set(actual)) or set(actual) != expected:
+            raise ValueError("container protected system paths differ")
+
+
+def verify_host(host, role, network, *, cidfile=""):
     expected = {
         "NetworkMode": network,
         "ReadonlyRootfs": True,
@@ -128,7 +229,8 @@ def verify_host(host, role, network):
         "Tmpfs": TMPFS[role],
         "PublishAllPorts": False,
         "AutoRemove": False,
-        "OomKillDisable": False,
+        "ContainerIDFile": cidfile,
+        "ConsoleSize": [0, 0],
         "MemorySwappiness": None,
         "ShmSize": 67_108_864,
         "Runtime": "runc",
@@ -139,7 +241,12 @@ def verify_host(host, role, network):
     }
     if any(host.get(key) != value for key, value in expected.items()):
         raise ValueError("container resource/network/security configuration differs")
+    if "OomKillDisable" not in host or (host["OomKillDisable"] is not False and host["OomKillDisable"] is not None):
+        raise ValueError("container disables the OOM killer or lacks its lifecycle value")
+    verify_protected_paths(host)
     zero_fields = (
+        "IOMaximumIOps",
+        "IOMaximumBandwidth",
         "CpuShares",
         "CpuPeriod",
         "CpuQuota",
@@ -156,6 +263,7 @@ def verify_host(host, role, network):
     if any(host.get(key, 0) != 0 for key in zero_fields):
         raise ValueError("container has an undeclared resource override")
     forbidden = (
+        "Annotations",
         "Binds",
         "VolumesFrom",
         "Devices",
@@ -188,6 +296,9 @@ def verify_host(host, role, network):
         "BlkioDeviceReadIOps",
         "BlkioDeviceWriteIOps",
     )
+    known = set(expected) | set(zero_fields) | set(forbidden) | {"OomKillDisable", "MaskedPaths", "ReadonlyPaths"}
+    if set(host) - known:
+        raise ValueError("container has an unreviewed HostConfig field")
     if any(host.get(key) for key in forbidden):
         raise ValueError("container has an undeclared host resource")
 
@@ -225,6 +336,8 @@ def create_arguments(image, network, nonce, cidfile, role, bootstrap=""):
         "docker",
         "create",
         "--pull=never",
+        "--platform",
+        "linux/amd64",
         "--cidfile",
         str(cidfile),
         "--name",
@@ -278,7 +391,7 @@ def create_arguments(image, network, nonce, cidfile, role, bootstrap=""):
             "/",
             "--entrypoint",
             "/usr/local/bin/python3",
-            image["Id"],
+            image.get("CreateReference", image["Id"]),
             "-I",
             "-B",
             "-c",
@@ -286,4 +399,4 @@ def create_arguments(image, network, nonce, cidfile, role, bootstrap=""):
         ]
     for key, value in ENVIRONMENT.items():
         arguments.extend(["-e", key + "=" + value])
-    return [*arguments, image["Id"]]
+    return [*arguments, image.get("CreateReference", image["Id"])]
