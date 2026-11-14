@@ -78,3 +78,45 @@ def test_replaced_result_cannot_become_a_successful_terminal_receipt(tmp_path):
         assert (output.path / "result.json").read_text() == "foreign"
     finally:
         output.close()
+
+
+def test_oversized_report_retains_bounded_nonpass_and_exact_cleanup_ids(tmp_path):
+    output = files.Output(tmp_path / "result")
+    cleanup = {"a" * 64: {"absent": True, "oom_killed": False}, "remaining-owned-labels": {"absent": True}}
+    report = {"complete": True, "scenario": "pagination", "runtime_id": "a" * 64,
+              "consumer_id": "b" * 64, "network_id": "c" * 64, "cleanup": cleanup,
+              "large_inventory": "x" * (files.RESULT_LIMIT + 1)}
+    try:
+        output.finish(report)
+        data = (output.path / "result.json").read_bytes()
+        receipt = json.loads(data)
+        assert len(data) <= files.RESULT_LIMIT
+        assert receipt["complete"] is report["complete"] is False
+        assert receipt["output_failure"] == "terminal_result_exceeded_bound"
+        assert receipt["runtime_id"] == "a" * 64
+        assert receipt["consumer_id"] == "b" * 64
+        assert receipt["network_id"] == "c" * 64
+        assert receipt["cleanup"] == cleanup
+        assert receipt["oversized_report_bytes"] > files.RESULT_LIMIT
+    finally:
+        output.close()
+
+
+def test_oversized_unbounded_cleanup_is_explicitly_unqualified_and_cannot_overwrite_foreign_path(tmp_path):
+    output = files.Output(tmp_path / "result")
+    original = tmp_path / "retained"
+    output.path.rename(original)
+    output.path.mkdir()
+    (output.path / "result.json").write_text("foreign")
+    report = {"complete": True, "cleanup": {"untrusted": "x" * (files.RESULT_LIMIT * 2)}}
+    try:
+        output.finish(report)
+        data = (original / "result.json").read_bytes()
+        receipt = json.loads(data)
+        assert len(data) <= files.RESULT_LIMIT
+        assert receipt["complete"] is False
+        assert receipt["output_boundary_failure"] == "identity_changed"
+        assert receipt["cleanup"]["retained"] is False
+        assert (output.path / "result.json").read_text() == "foreign"
+    finally:
+        output.close()

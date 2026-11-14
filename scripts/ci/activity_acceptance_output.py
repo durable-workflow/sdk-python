@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
 from pathlib import Path
 
 RESULT_NAME = "result.json"
+RESULT_LIMIT = 128 * 1024
 
 
 class Output:
@@ -83,9 +85,25 @@ class Output:
         except ValueError:
             report["output_failure"] = "identity_changed"
             report["complete"] = False
-        encoded = json.dumps(report, indent=2) + "\n"
-        if len(encoded.encode()) > 128 * 1024:
-            raise ValueError("terminal result exceeded its bound")
+        encoded = (json.dumps(report, indent=2) + "\n").encode()
+        if len(encoded) > RESULT_LIMIT:
+            report["complete"] = False
+            receipt = {
+                "complete": False, "output_failure": "terminal_result_exceeded_bound",
+                "oversized_report_bytes": len(encoded), "oversized_report_sha256": hashlib.sha256(encoded).hexdigest(),
+            }
+            if "output_failure" in report:
+                receipt["output_boundary_failure"] = str(report["output_failure"])[:1024]
+            for name in ("scenario", "artifact_source", "source_commit", "started_at", "finished_at",
+                         "runtime_id", "consumer_id", "network_id"):
+                value = report.get(name)
+                if isinstance(value, str) and len(value) <= 1024:
+                    receipt[name] = value
+            cleanup = json.dumps(report.get("cleanup"), sort_keys=True).encode()
+            receipt["cleanup"] = report.get("cleanup") if len(cleanup) <= RESULT_LIMIT // 2 else {
+                "retained": False, "bytes": len(cleanup), "sha256": hashlib.sha256(cleanup).hexdigest(),
+            }
+            encoded = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
         self._write(self.files[RESULT_NAME], encoded)
 
     def close(self):
