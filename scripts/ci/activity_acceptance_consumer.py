@@ -27,6 +27,7 @@ CAPTURED_ENTRY = ""
 CASE_FILES = {
     "activity-identity": {"test_activity_identity.py"},
     "timer-redrive": {"test_native_timer_redrive.py", "redrive_timer_clock_workflow.py"},
+    "retry-cap": {"test_activity_retry_cap.py"},
 }
 
 
@@ -247,7 +248,10 @@ def entry_source(mode, case_name, case_sha, installed, worker_entry=""):
 
 def execute_case(verifier, python, packet, before, environment, admission, installed):
     redrive = packet["scenario"] == "timer-redrive"
-    test_name = "test_native_timer_redrive.py" if redrive else "test_activity_identity.py"
+    test_name = {
+        "timer-redrive": "test_native_timer_redrive.py", "retry-cap": "test_activity_retry_cap.py",
+        "activity-identity": "test_activity_identity.py",
+    }[packet["scenario"]]
     environment.update(
         {
             "DURABLE_WORKFLOW_SERVER_URL": admission["server_url"],
@@ -258,6 +262,8 @@ def execute_case(verifier, python, packet, before, environment, admission, insta
     )
     if redrive:
         environment["DURABLE_WORKFLOW_REDRIVE_CELL"] = "1"
+    if packet["scenario"] == "retry-cap":
+        environment["DURABLE_WORKFLOW_RETRY_CAP_CELL"] = "1"
     worker_entry = entry_source("worker", test_name, packet["files"][test_name]["sha256"], installed)
     parent_entry = entry_source("pytest", test_name, packet["files"][test_name]["sha256"], installed, worker_entry)
     result = subprocess.run(
@@ -273,7 +279,7 @@ def execute_case(verifier, python, packet, before, environment, admission, insta
         input=json.dumps({"inventory": installed}),
         capture_output=True,
         text=True,
-        timeout=180 if redrive else 90,
+        timeout=90 if packet["scenario"] == "activity-identity" else 180,
     )
     after = inventory(verifier, python, packet)
     if after != before:
