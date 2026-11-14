@@ -144,7 +144,7 @@ def test_closed_consumer_refuses_sdk_wheel_omission_or_substitution():
         consumer.validate_setup(packet)
 
 
-@pytest.mark.parametrize("scenario", ["activity-identity", "timer-redrive", "foreign"])
+@pytest.mark.parametrize("scenario", ["activity-identity", "timer-redrive", "pagination", "foreign"])
 def test_consumer_scenario_has_closed_captured_file_membership(scenario):
     inputs = {"requirements.txt", "verify_activity_install.py", "conftest.py"}
     inputs |= consumer.CASE_FILES.get(scenario, set())
