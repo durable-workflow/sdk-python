@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ActivityRetryPolicy.exponential(...)` creates generated activity retry schedules with a finite 60-second default maximum. It rejects `None` or nonfinite maxima and retains the existing wire shape and interval rounding. The legacy constructor, explicit backoff lists and policies already recorded in history keep their original values. (durable-workflow/.github#219)
+
 ## [2.17.2] - 2026-11-13
 
 ### Fixed

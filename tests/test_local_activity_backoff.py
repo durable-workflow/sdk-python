@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from durable_workflow import Client, Worker, activity
+from durable_workflow import ActivityRetryPolicy, Client, Worker, activity
 from durable_workflow import worker as worker_module
 from durable_workflow.workflow import RecordLocalActivity
 
@@ -47,3 +47,10 @@ async def test_local_retries_without_a_backoff_list_do_not_wait(monkeypatch: pyt
     slept, attempts = await _run_failing_local_activity(monkeypatch, {"max_attempts": 3})
     assert slept == []
     assert len(attempts) == 3
+
+
+async def test_new_generated_cap_reaches_the_existing_local_executor(monkeypatch: pytest.MonkeyPatch) -> None:
+    policy = ActivityRetryPolicy.exponential(max_attempts=9).to_dict()
+    slept, attempts = await _run_failing_local_activity(monkeypatch, policy)
+    assert slept == [1, 2, 4, 8, 16, 32, 60, 60]
+    assert [attempt.get("backoff_seconds") for attempt in attempts] == [*slept, None]
