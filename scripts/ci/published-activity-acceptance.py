@@ -35,6 +35,7 @@ VERIFIER_FILENAME = "verify_activity_install.py"
 OWNER_VALUE = "=sdk-python"
 LABEL_FILTER = "label="
 ID_FORMAT = "{{.ID}}"
+DIAGNOSTIC_LIMIT = 64 * 1024
 # No inherited context, registry credentials, proxy, SSH or remote Docker endpoint.
 # This kernel directory is private to each CLI process and contains no config.json.
 DOCKER_ENVIRONMENT = {
@@ -52,6 +53,35 @@ def call(*arguments, check=True, **kwargs):
 
 def cleanup_call(*arguments, check=True):
     return subprocess.run(arguments, check=check, capture_output=True, text=True, timeout=10, env=DOCKER_ENVIRONMENT)
+
+
+def record_failure(files, report, error):
+    report["failure"] = type(error).__name__ + ": " + str(error)[:1000]
+    report["complete"] = False
+    if not isinstance(error, subprocess.CalledProcessError | subprocess.TimeoutExpired):
+        return
+    arguments = list(error.cmd) if isinstance(error.cmd, tuple | list) else [error.cmd]
+    report["command_failure"] = {
+        "program": arguments[0],
+        "operation": arguments[1:4],
+        "argv_sha256": hashlib.sha256(json.dumps(arguments).encode()).hexdigest(),
+        "exit_code": getattr(error, "returncode", None),
+        "timeout_seconds": getattr(error, "timeout", None),
+        "streams": {},
+    }
+    for name, value in (("stdout", error.stdout), ("stderr", error.stderr)):
+        data = value.encode() if isinstance(value, str) else value or b""
+        retained = data[:DIAGNOSTIC_LIMIT]
+        report["command_failure"]["streams"][name] = {
+            "bytes": len(data),
+            "retained_bytes": len(retained),
+            "truncated": len(data) > len(retained),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+        try:
+            files.write("command-" + name + ".txt", retained)
+        except (OSError, ValueError) as retention_error:
+            report.setdefault("diagnostic_retention_failures", {})[name] = type(retention_error).__name__
 
 
 def deadline(_signum, _frame):
@@ -463,8 +493,7 @@ def main():
         if engine() != report["engine"]:
             raise ValueError("Docker engine authority changed")
     except Exception as error:
-        report["failure"] = type(error).__name__ + ": " + str(error)[:1000]
-        report["complete"] = False
+        record_failure(files, report, error)
     finally:
         signal.alarm(0)
         owned.cleanup()
