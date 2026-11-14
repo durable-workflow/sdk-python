@@ -15,8 +15,10 @@ The checked-in release approval supplies the SDK wheel digest. The complete
 dependency set, including pytest and its plugin, is hash locked. Downloads
 happen before the SDK consumer starts. The consumer installs those captured
 wheels without network access into a fresh private environment, checks every
-SDK wheel member and installed RECORD, and uses isolated Python with explicit
-pytest plugins. The checkout is never installed as the SDK.
+SDK wheel member, complete distribution metadata and installed RECORD, and uses
+isolated Python with explicit pytest plugins. Installer-created metadata and
+console scripts have exact expected bytes. The checker stays in the trusted
+bootstrap's memory through the case. The checkout is never installed as the SDK.
 
 The published native runtime and official Python consumer share one owned
 internal network. Neither publishes a port or receives a host mount. The

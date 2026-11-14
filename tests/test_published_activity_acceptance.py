@@ -45,6 +45,10 @@ def configuration(role="runtime"):
         "Tmpfs": deepcopy(runtime.TMPFS[role]),
         "PublishAllPorts": False,
         "AutoRemove": False,
+        "OomKillDisable": False,
+        "MemorySwappiness": None,
+        "ShmSize": 67_108_864,
+        "Runtime": "runc",
         "IpcMode": "private",
         "CgroupnsMode": "private",
         "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0},
@@ -375,3 +379,31 @@ def test_exit_zero_cannot_qualify_a_skipped_missing_or_different_case(change):
         result["complete"] = False
     with pytest.raises(ValueError):
         runner.verify_case_result(result)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("GroupAdd", ["0"]),
+        ("OomKillDisable", True),
+        ("Sysctls", {"net.ipv4.ip_forward": "1"}),
+        ("DeviceCgroupRules", ["c *:* rwm"]),
+        ("CgroupParent", "foreign"),
+        ("Ulimits", [{"Name": "nofile", "Soft": 999999, "Hard": 999999}]),
+        ("Dns", ["8.8.8.8"]),
+        ("DnsSearch", ["foreign"]),
+        ("DnsOptions", ["use-vc"]),
+        ("CpuQuota", -1),
+        ("CpusetCpus", "0"),
+        ("MemoryReservation", 999999),
+        ("OomScoreAdj", -1000),
+        ("BlkioDeviceReadBps", [{"Path": "/dev/sda", "Rate": 1}]),
+    ],
+)
+def test_undeclared_group_oom_sysctl_device_cgroup_dns_and_resource_overrides_refuse(field, value):
+    record, image = configuration("consumer")
+    record["HostConfig"][field] = value
+    with pytest.raises(ValueError):
+        runtime.verify_container(
+            record, "a" * 64, "ours", image, "c" * 64, "sha256:" + "d" * 64, "consumer", "captured source"
+        )

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.machinery
+import importlib.metadata
 import ipaddress
 import json
 import os
@@ -20,6 +22,7 @@ WHEELS = Path("/run/acceptance-wheels")
 ENVIRONMENT = Path("/run/acceptance-env")
 LIMIT = 64 * 1024 * 1024
 JUNIT = DATA / "identity.xml"
+CAPTURED_VERIFIER = ""
 
 
 def receive(maximum):
@@ -90,29 +93,45 @@ def await_runtime(number):
     raise TimeoutError("published runtime readiness")
 
 
-def inventory(python, packet, environment):
-    captured = {
-        "wheel_base64": packet["wheels"][packet["wheel_name"]]["base64"],
-        "wheel_sha256": packet["wheel_sha256"],
-        "sdk_version": packet["sdk_version"],
-    }
-    output = run(
-        [
-            str(python),
-            "-I",
-            "-B",
-            str(DATA / "verify_activity_install.py"),
-        ],
-        environment,
-        input_data=json.dumps(captured) + "\n",
+def retained_verifier():
+    if not CAPTURED_VERIFIER:
+        raise ValueError("controller did not bind the Git-captured verifier")
+    namespace = {"__name__": "captured_sdk_inventory"}
+    exec(compile(CAPTURED_VERIFIER, "<captured SDK inventory>", "exec"), namespace)
+    return namespace["verify_sdk"]
+
+
+def inventory(verifier, python, packet):
+    # The base interpreter, captured verifier and installer template remain in
+    # bootstrap memory. SDK execution cannot replace the terminal checker file.
+    from pip._vendor.distlib.scripts import SCRIPT_TEMPLATE
+
+    site = (
+        ENVIRONMENT
+        / "lib"
+        / ("python" + str(sys.version_info.major) + "." + str(sys.version_info.minor))
+        / "site-packages"
     )
-    return json.loads(output)
+    spec = importlib.machinery.PathFinder.find_spec("durable_workflow", [str(site)])
+    if spec is None or spec.origin is None:
+        raise ValueError("installed SDK origin is unavailable")
+    wheel = base64.b64decode(packet["wheels"][packet["wheel_name"]]["base64"], validate=True)
+    result = verifier(site, spec.origin, wheel, packet["wheel_sha256"], python=python, script_template=SCRIPT_TEMPLATE)
+    versions = [
+        item.version
+        for item in importlib.metadata.distributions(path=[str(site)])
+        if item.metadata["Name"].lower().replace("_", "-") == "durable-workflow"
+    ]
+    if versions != [packet["sdk_version"]]:
+        raise ValueError("installed SDK version differs")
+    return result
 
 
 def main():
     packet = prepare_inputs()
+    verifier = retained_verifier()
     environment, python = prepare_environment()
-    before = inventory(python, packet, environment)
+    before = inventory(verifier, python, packet)
     ready = {
         "sdk_inventory": before,
         "python": sys.version,
@@ -134,7 +153,7 @@ def main():
     if set(admission) != {"runtime_ipv4", "token"}:
         raise ValueError("consumer admission shape differs")
     admission["server_url"] = await_runtime(admission["runtime_ipv4"])
-    output = execute_case(python, packet, before, environment, admission)
+    output = execute_case(verifier, python, packet, before, environment, admission)
     print("ACTIVITY_CONSUMER_RESULT=" + json.dumps(output, sort_keys=True), flush=True)
     # Remain attached while the controller rechecks the same two IDs and IP.
     if receive(8192) != {"release": True}:
@@ -198,7 +217,7 @@ def prepare_environment():
     return environment, python
 
 
-def execute_case(python, packet, before, environment, admission):
+def execute_case(verifier, python, packet, before, environment, admission):
     environment.update(
         {
             "DURABLE_WORKFLOW_SERVER_URL": admission["server_url"],
@@ -232,7 +251,7 @@ def execute_case(python, packet, before, environment, admission):
         text=True,
         timeout=90,
     )
-    after = inventory(python, packet, environment)
+    after = inventory(verifier, python, packet)
     if after != before:
         raise ValueError("installed SDK inventory changed")
     return {

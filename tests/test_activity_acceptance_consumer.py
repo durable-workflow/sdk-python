@@ -141,3 +141,15 @@ def test_closed_consumer_refuses_sdk_wheel_omission_or_substitution():
     packet["wheel_name"] = "absent.whl"
     with pytest.raises(ValueError, match="wheel is missing"):
         consumer.validate_setup(packet)
+
+
+def test_sdk_writable_verifier_replacement_cannot_change_the_retained_checker(monkeypatch, tmp_path):
+    original = "def verify_sdk(*args, **kwargs): return {'checker': 'Git-captured'}\n"
+    monkeypatch.setattr(consumer, "CAPTURED_VERIFIER", original)
+    checker = consumer.retained_verifier()
+    data = tmp_path / "verify_activity_install.py"
+    data.write_text("def verify_sdk(*args, **kwargs): return {'checker': 'substituted'}\n")
+    predecessor = {}
+    exec(compile(data.read_text(), str(data), "exec"), predecessor)
+    assert predecessor["verify_sdk"]() == {"checker": "substituted"}
+    assert checker() == {"checker": "Git-captured"}

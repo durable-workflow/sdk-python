@@ -128,6 +128,10 @@ def verify_host(host, role, network):
         "Tmpfs": TMPFS[role],
         "PublishAllPorts": False,
         "AutoRemove": False,
+        "OomKillDisable": False,
+        "MemorySwappiness": None,
+        "ShmSize": 67_108_864,
+        "Runtime": "runc",
         "IpcMode": "private",
         "CgroupnsMode": "private",
         "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0},
@@ -135,6 +139,22 @@ def verify_host(host, role, network):
     }
     if any(host.get(key) != value for key, value in expected.items()):
         raise ValueError("container resource/network/security configuration differs")
+    zero_fields = (
+        "CpuShares",
+        "CpuPeriod",
+        "CpuQuota",
+        "CpuRealtimePeriod",
+        "CpuRealtimeRuntime",
+        "OomScoreAdj",
+        "MemoryReservation",
+        "BlkioWeight",
+        "CpuCount",
+        "CpuPercent",
+        "KernelMemory",
+        "KernelMemoryTCP",
+    )
+    if any(host.get(key, 0) != 0 for key in zero_fields):
+        raise ValueError("container has an undeclared resource override")
     forbidden = (
         "Binds",
         "VolumesFrom",
@@ -147,6 +167,26 @@ def verify_host(host, role, network):
         "UTSMode",
         "UsernsMode",
         "Links",
+        "Mounts",
+        "VolumeDriver",
+        "Isolation",
+        "GroupAdd",
+        "Sysctls",
+        "DeviceCgroupRules",
+        "CgroupParent",
+        "Cgroup",
+        "CpusetCpus",
+        "CpusetMems",
+        "Ulimits",
+        "Dns",
+        "DnsOptions",
+        "DnsSearch",
+        "StorageOpt",
+        "BlkioWeightDevice",
+        "BlkioDeviceReadBps",
+        "BlkioDeviceWriteBps",
+        "BlkioDeviceReadIOps",
+        "BlkioDeviceWriteIOps",
     )
     if any(host.get(key) for key in forbidden):
         raise ValueError("container has an undeclared host resource")
@@ -218,6 +258,8 @@ def create_arguments(image, network, nonce, cidfile, role, bootstrap=""):
             "private",
             "--restart",
             "no",
+            "--runtime",
+            "runc",
             "--log-driver",
             "json-file",
             "--log-opt",

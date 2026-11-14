@@ -90,6 +90,16 @@ def packet_file(data):
     return {"base64": base64.b64encode(data).decode(), "sha256": hashlib.sha256(data).hexdigest()}
 
 
+def bind_bootstrap(captured):
+    source = captured["bootstrap.py"].decode()
+    placeholder = 'CAPTURED_VERIFIER = ""'
+    if source.count(placeholder) != 1:
+        raise ValueError("consumer verifier binding placeholder differs")
+    return source.replace(
+        placeholder, "CAPTURED_VERIFIER = " + repr(captured["verify_activity_install.py"].decode()), 1
+    )
+
+
 def capture_source(report):
     commit = call("git", "rev-parse", "HEAD", cwd=ROOT).stdout.strip()
     if re.fullmatch(r"[0-9a-f]{40}", commit) is None or os.environ.get("GITHUB_SHA", commit) != commit:
@@ -439,7 +449,9 @@ def main():
         report["wheel_sha256"] = packet["wheel_sha256"]
         report["wheel_set"] = {name: item["sha256"] for name, item in packet["wheels"].items()}
         images = {role: verify_published_image(selected, role, files) for role in ("runtime", "consumer")}
-        run_case(owned, selected, images, packet, captured["bootstrap.py"].decode(), report)
+        bootstrap = bind_bootstrap(captured)
+        report["consumer_bootstrap_sha256"] = hashlib.sha256(bootstrap.encode()).hexdigest()
+        run_case(owned, selected, images, packet, bootstrap, report)
         if engine() != report["engine"]:
             raise ValueError("Docker engine authority changed")
     except Exception as error:
