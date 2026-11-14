@@ -99,6 +99,7 @@ for the complete cross-SDK contract.
 - [Python SDK guide](https://durable-workflow.com/docs/2.0/polyglot/python/)
 - [Complete SDK reference](docs/sdk-reference.md)
 - [Runnable examples](examples/)
+- [Checkpointed batch source example](examples/CHECKPOINTED_BATCH.md) (unreleased accessor; synthetic provider)
 - [Separate workflow and activity worker processes](docs/guides/separate-workers.md)
 - [Symmetric SDK playground](https://github.com/durable-workflow/sample-app#symmetric-sdk-playground)
 
