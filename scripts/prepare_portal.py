@@ -84,10 +84,23 @@ def published_landing(root: Path, sdk: Path, project: dict[str, Any], tag: str) 
     return landing
 
 
-def published_reference(root: Path, sdk: Path) -> tuple[str, bytes]:
+def published_reference(root: Path, sdk: Path, selected: str = "") -> tuple[str, bytes]:
     published_revision = git(sdk, "rev-parse", "HEAD")
-    changed_api = git(root, "diff", "--name-only", published_revision, "HEAD", "--", "src/durable_workflow")
-    revision = published_revision if changed_api else git(root, "rev-parse", "HEAD")
+    current = git(root, "rev-parse", "HEAD")
+    revision = current
+    if selected:
+        if not re.fullmatch(r"[0-9a-f]{40}", selected):
+            raise ValueError("Reference guide requires an exact merged commit")
+        try:
+            git(root, "merge-base", "--is-ancestor", selected, current)
+        except subprocess.CalledProcessError as error:
+            raise ValueError("Reference guide commit is outside accepted documentation history") from error
+        revision = selected
+    changed_api = git(root, "diff", "--name-only", published_revision, revision, "--", "src/durable_workflow")
+    if changed_api:
+        if selected:
+            raise ValueError("Selected reference guide contains unpublished SDK source")
+        revision = published_revision
     reference = subprocess.check_output(["git", "-C", str(root), "show", f"{revision}:docs/sdk-reference.md"])
     published = (sdk / "docs/sdk-reference.md").read_bytes()
     if CODE_BLOCKS.findall(reference.decode()) != CODE_BLOCKS.findall(published.decode()):
@@ -97,6 +110,7 @@ def published_reference(root: Path, sdk: Path) -> tuple[str, bytes]:
 
 def stage_published_docs(
     root: Path, sdk: Path, config: dict[str, Any], project: dict[str, Any], tag: str,
+    reference_commit: str = "",
 ) -> dict[str, str]:
     stage = Path(tempfile.mkdtemp(prefix=".docs-stage-", dir=root))
     # Start from the published tag. The landing and presentation can advance
@@ -110,7 +124,7 @@ def stage_published_docs(
         shutil.copytree(root / "docs" / directory, stage / directory, dirs_exist_ok=True)
     landing = published_landing(root, sdk, project, tag)
     (stage / "index.md").write_text(landing)
-    reference_revision, reference = published_reference(root, sdk)
+    reference_revision, reference = published_reference(root, sdk, reference_commit)
     (stage / "sdk-reference.md").write_bytes(reference)
     config["docs_dir"] = str(stage)
     config["nav"] = yaml.safe_load((sdk / "mkdocs.yml").read_text())["nav"]
@@ -135,11 +149,14 @@ def prepare(root: Path, environment: dict[str, str]) -> dict[str, Any]:
     channel = "source-preview"
     reference_guide = None
     tag = environment.get("STABLE_TAG", "")
+    reference_commit = environment.get("DOCS_REFERENCE_GUIDE_COMMIT", "")
+    if reference_commit and not tag:
+        raise ValueError("Reference guide selection requires a published SDK tag")
     if tag:
         sdk = root / ".docs-sdk"
         revision, project = published_identity(root, sdk, tag, environment)
         version = project["version"]
-        reference_guide = stage_published_docs(root, sdk, config, project, tag)
+        reference_guide = stage_published_docs(root, sdk, config, project, tag, reference_commit)
         channel = "stable"
     else:
         revision = docs_revision
