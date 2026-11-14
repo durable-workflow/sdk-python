@@ -203,3 +203,51 @@ def test_source_build_stays_preview_with_current_api_and_no_package_claim(source
     assert audit["sdk_version"] == "2.15.0"
     assert audit["docs_source_revision"] == audit["sdk_source_revision"]
     assert audit["published_wheel_sha256"] is None
+
+
+def test_merged_published_source_guide_can_advance_prose_after_main_api_changes(sources: tuple) -> None:
+    root, env, _installed = sources
+    match_published_api(root, env)
+    guide_commit = env["GITHUB_SHA"]
+    guide = (root / "docs/sdk-reference.md").read_bytes()
+    (root / "src/durable_workflow/__init__.py").write_text('PUBLIC = "unreleased"\n')
+    (root / "docs/sdk-reference.md").write_text('```python\nprint("future API")\n```\n')
+    git(root, "add", ".")
+    git(root, "commit", "-m", "Continue development after the stable guide")
+    env["GITHUB_SHA"] = git(root, "rev-parse", "HEAD")
+    env["DOCS_REFERENCE_GUIDE_COMMIT"] = guide_commit
+    audit = portal.prepare(root, env)
+    config = yaml.safe_load((root / ".docs-build.yml").read_text())
+    assert (Path(config["docs_dir"]) / "sdk-reference.md").read_bytes() == guide
+    assert audit["reference_guide"]["source_revision"] == guide_commit
+    assert audit["sdk_source_revision"] == git(root, "rev-parse", "2.14.1")
+    assert audit["docs_source_revision"] == env["GITHUB_SHA"]
+
+
+@pytest.mark.parametrize("fault", ["symbolic", "unmerged", "source", "example", "preview"])
+def test_explicit_guide_selection_preserves_publication_and_history_boundaries(sources: tuple, fault: str) -> None:
+    root, env, _installed = sources
+    match_published_api(root, env)
+    selected = env["GITHUB_SHA"]
+    if fault == "symbolic":
+        selected = "HEAD"
+    elif fault == "unmerged":
+        git(root, "checkout", "-b", "unmerged-guide", "2.14.1")
+        (root / "docs/sdk-reference.md").write_text("Unmerged guide")
+        git(root, "add", ".")
+        git(root, "commit", "-m", "Unmerged guide")
+        selected = git(root, "rev-parse", "HEAD")
+        git(root, "checkout", "-")
+    elif fault in {"source", "example"}:
+        file = "src/durable_workflow/__init__.py" if fault == "source" else "docs/sdk-reference.md"
+        (root / file).write_text('```python\nprint("future API")\n```\n')
+        git(root, "add", ".")
+        git(root, "commit", "-m", "Unpublished source or example")
+        selected = git(root, "rev-parse", "HEAD")
+        env["GITHUB_SHA"] = selected
+    else:
+        env["STABLE_TAG"] = ""
+    env["DOCS_REFERENCE_GUIDE_COMMIT"] = selected
+    with pytest.raises(ValueError):
+        portal.prepare(root, env)
+    assert not (root / ".docs-provenance.json").exists()

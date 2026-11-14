@@ -1152,7 +1152,7 @@ activities, for example `OrderInput(order_id=UUID(data["order_id"]), ...)`.
 Adapter output is part of the durable history contract, so changing that shape
 is a workflow compatibility change.
 
-## Whole run histories and workflow lists (unreleased)
+## Whole run histories and workflow lists
 
 `Client.get_history(...)` and `Client.list_workflows(...)` each return one
 Server page. Use the lazy iterators to visit all pages without collecting
@@ -1180,9 +1180,11 @@ earlier items have been yielded. A changing namespace is refused before the
 next request. This traverses the Server's cursor results; it does not create a
 snapshot of a concurrently changing workflow list.
 
-These helpers are unreleased source tracked in
+These iterators are included in the published SDK. Their actual multi-page
+acceptance and cross-SDK guide delivery are tracked in
 [the shared paging issue](https://github.com/durable-workflow/.github/issues/247).
-Published-package and actual multi-page acceptance remain separate.
+History pages are event dictionaries, not replay-export bundles. Use
+`Client.export_history(...)` when a replay bundle is required.
 
 ## Typed activity values
 
