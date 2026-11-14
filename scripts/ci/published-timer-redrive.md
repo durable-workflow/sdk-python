@@ -35,9 +35,12 @@ successors must each count zero before and after their cold Worker. All emitted
 completion task IDs and activity callback task IDs must match the stored export
 inventory. Full timer payloads must match their predecessor modulo the explicitly
 authorized new pair ID, immediate predecessor and preserved clock fields.
-First reuse preserves the authoritative source start and TimerFired timestamp
-strings exactly. Later reuse preserves the immediate predecessor's inherited
-strings exactly as well as comparing their parsed UTC instants.
+The paged public history supplies the original TimerFired `timestamp`.
+First reuse compares the authoritative start and event clocks as full-precision
+UTC instants. Native fallback serialization may change the public API's `Z` to
+`+00:00` and omit insignificant fractional digits. Later reuse preserves the
+immediate predecessor's inherited strings exactly as well as comparing their
+parsed UTC instants.
 
 An absent matching registration must refuse redrive without changing the chain
 or source history. Admission then holds a matching source-cohort registration

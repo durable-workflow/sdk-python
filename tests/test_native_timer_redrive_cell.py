@@ -18,12 +18,16 @@ def prefix():
     previous, current = successor(), successor()
     source_time = cell.instant("2026-11-03T00:00:06.654321+00:00")
     source_start = cell.instant("2026-11-03T00:00:00+00:00")
+    for document in (previous, current):
+        for event in document["history"]:
+            event["timestamp"] = event.pop("recorded_at")
     for event in previous["history"]:
         if event["event_type"] in {"TimerScheduled", "TimerFired"}:
             event["payload"]["timer_id"] = "old-timer"
             event["payload"].pop("reused_recorded_at", None)
             event["payload"].pop("reused_from_run_id", None)
     cell.one(previous["history"], "WorkflowStarted")["payload"].pop("replayed_started_at", None)
+    cell.one(previous["history"], "TimerFired")["timestamp"] = "2026-11-03T00:00:06.654321Z"
     events = current["history"]
     cell.one(events, "WorkflowStarted")["payload"]["continued_from_run_id"] = "previous"
     fired = cell.one(events, "TimerFired")["payload"]
@@ -37,7 +41,7 @@ def prefix():
     return events, previous["history"], {
         "predecessor_id": "previous", "source_clock": source_time, "source_start": source_start,
         "used_timer_ids": {"old-timer"},
-        "source_clock_text": source_time.isoformat(), "source_start_text": source_start.isoformat(),
+        "source_clock_text": "2026-11-03T00:00:06.654321Z", "source_start_text": "2026-11-03T00:00:00.000000Z",
     }
 
 
@@ -72,18 +76,48 @@ def test_repeated_reuse_preserves_inherited_strings_as_well_as_instants(reformat
         cell.verify_reuse(events, previous, **arguments)
 
 
+@pytest.mark.parametrize("fraction,rendered", [
+    ("000000", ""), ("654000", ".654"), ("654321", ".654321"),
+])
+def test_first_reuse_accepts_native_offset_and_precision_rendering(fraction, rendered):
+    events, previous, arguments = prefix()
+    arguments["source_clock_text"] = f"2026-11-03T00:00:06.{fraction}Z"
+    arguments["source_clock"] = cell.instant(arguments["source_clock_text"])
+    arguments["source_start_text"] = f"2026-11-03T00:00:00.{fraction}Z"
+    arguments["source_start"] = cell.instant(arguments["source_start_text"])
+    cell.one(events, "TimerFired")["payload"]["reused_recorded_at"] = f"2026-11-03T00:00:06{rendered}+00:00"
+    cell.one(events, "WorkflowStarted")["payload"]["replayed_started_at"] = f"2026-11-03T00:00:00{rendered}+00:00"
+    cell.verify_reuse(events, previous, **arguments)
+
+
 @pytest.mark.parametrize("field", ["clock", "start"])
-def test_first_reuse_cannot_reformat_authoritative_source_strings(field):
+def test_first_reuse_refuses_changed_instant(field):
     events, previous, arguments = prefix()
     kind, name, source_name = (
         ("TimerFired", "reused_recorded_at", "source_clock") if field == "clock"
         else ("WorkflowStarted", "replayed_started_at", "source_start")
     )
     payload = cell.one(events, kind)["payload"]
-    payload[name] = payload[name].replace("+00:00", "Z")
-    assert cell.instant(payload[name]) == arguments[source_name]
+    payload[name] = arguments[source_name].replace(microsecond=1).isoformat()
     with pytest.raises(AssertionError):
         cell.verify_reuse(events, previous, **arguments)
+
+
+def test_source_boundary_uses_timestamp_only_public_history_shape():
+    events, previous, arguments = prefix()
+    assert all("timestamp" in event and "recorded_at" not in event for event in previous)
+    text, clock = cell.source_timer_boundary(previous)
+    assert (text, clock) == (arguments["source_clock_text"], arguments["source_clock"])
+    arguments.update(source_clock_text=text, source_clock=clock)
+    cell.verify_reuse(events, previous, **arguments)
+
+
+def test_export_recorded_at_cannot_replace_public_timestamp():
+    _, previous, _ = prefix()
+    fired = cell.one(previous, "TimerFired")
+    fired["recorded_at"] = fired.pop("timestamp")
+    with pytest.raises(KeyError, match="timestamp"):
+        cell.source_timer_boundary(previous)
 
 
 @pytest.mark.parametrize("fault", [
