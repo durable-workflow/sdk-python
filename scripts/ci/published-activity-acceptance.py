@@ -19,6 +19,7 @@ from xml.etree import ElementTree
 try:
     from scripts.ci import activity_acceptance_output as output_files
     from scripts.ci import activity_acceptance_runtime as runtime
+    from scripts.ci.activity_acceptance_buildx import BuildxState
     from scripts.ci.activity_acceptance_session import Session
 except ModuleNotFoundError as error:
     if error.name != "scripts":
@@ -26,6 +27,7 @@ except ModuleNotFoundError as error:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from scripts.ci import activity_acceptance_output as output_files
     from scripts.ci import activity_acceptance_runtime as runtime
+    from scripts.ci.activity_acceptance_buildx import BuildxState
     from scripts.ci.activity_acceptance_session import Session
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,6 +50,10 @@ DOCKER_ENVIRONMENT = {
 def call(*arguments, check=True, **kwargs):
     if arguments[0] == "docker":
         kwargs["env"] = DOCKER_ENVIRONMENT
+    if arguments[:2] == ("docker", "buildx"):
+        with BuildxState(DOCKER_ENVIRONMENT) as environment:
+            kwargs["env"] = environment
+            return subprocess.run(arguments, check=check, capture_output=True, text=True, timeout=180, **kwargs)
     return subprocess.run(arguments, check=check, capture_output=True, text=True, timeout=180, **kwargs)
 
 
@@ -69,6 +75,8 @@ def record_failure(files, report, error):
         "timeout_seconds": getattr(error, "timeout", None),
         "streams": {},
     }
+    if hasattr(error, "buildx_state_failure"):
+        report["command_failure"]["buildx_state_failure"] = error.buildx_state_failure
     for name, value in (("stdout", error.stdout), ("stderr", error.stderr)):
         data = value.encode() if isinstance(value, str) else value or b""
         retained = data[:DIAGNOSTIC_LIMIT]

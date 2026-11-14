@@ -606,3 +606,71 @@ def test_diagnostic_path_refusal_does_not_prevent_cleanup_or_the_held_failure_re
     assert result["diagnostic_retention_failures"] == {"stdout": "ValueError", "stderr": "ValueError"}
     assert list(output.iterdir()) == []
     assert len(cleaned) == 1
+
+
+def test_buildx_has_private_tool_state_without_changing_docker_credential_authority(monkeypatch, tmp_path):
+    original = runner.BuildxState
+    monkeypatch.setattr(runner, "BuildxState", lambda environment: original(environment, parent=tmp_path))
+    monkeypatch.setenv("DOCKER_CONFIG", "/foreign/credentials")
+    observed = []
+
+    def run(arguments, **kwargs):
+        environment = kwargs["env"]
+        state = Path(environment["BUILDX_CONFIG"])
+        assert environment["DOCKER_CONFIG"] == "/proc/self/fd"
+        assert environment["DOCKER_HOST"] == "unix:///var/run/docker.sock"
+        assert state.is_dir()
+        assert state.stat().st_mode & 0o777 == 0o700
+        assert list(state.iterdir()) == []
+        (state / "current").write_text("synthetic tool state")
+        observed.append(state)
+        return SimpleNamespace(stdout="manifest", returncode=0)
+
+    monkeypatch.setattr(runner.subprocess, "run", run)
+    result = runner.call("docker", "buildx", "imagetools", "inspect", "--raw", "public-image")
+    assert result.stdout == "manifest"
+    assert len(observed) == 1
+    assert not observed[0].exists()
+
+
+def test_regular_docker_and_cleanup_calls_do_not_inherit_buildx_state(monkeypatch):
+    observed = []
+    monkeypatch.setattr(runner, "BuildxState", lambda *_args: pytest.fail("unexpected Buildx state"))
+    monkeypatch.setattr(runner.subprocess, "run", lambda _arguments, **kwargs: observed.append(kwargs["env"]))
+    runner.call("docker", "image", "inspect", "selected-image")
+    runner.cleanup_call("docker", "ps", "-a")
+    assert observed == [runner.DOCKER_ENVIRONMENT, runner.DOCKER_ENVIRONMENT]
+    assert "BUILDX_CONFIG" not in runner.DOCKER_ENVIRONMENT
+
+
+def test_buildx_state_path_replacement_preserves_the_foreign_directory(tmp_path):
+    state = runner.BuildxState(runner.DOCKER_ENVIRONMENT, parent=tmp_path)
+    original = tmp_path / "original"
+    state.__enter__()
+    state.path.rename(original)
+    state.path.mkdir()
+    (state.path / "foreign").write_text("preserved")
+    with pytest.raises(ValueError, match="state directory changed"):
+        state.__exit__(None, None, None)
+    assert (state.path / "foreign").read_text() == "preserved"
+    assert original.is_dir()
+
+
+def test_buildx_state_refusal_preserves_the_command_error_and_its_stderr(tmp_path):
+    state = runner.BuildxState(runner.DOCKER_ENVIRONMENT, parent=tmp_path)
+    original = tmp_path / "original"
+    error = runner.subprocess.CalledProcessError(1, ["docker", "buildx"], stderr="original metadata failure")
+
+    def fail_with_replaced_state():
+        with state:
+            state.path.rename(original)
+            state.path.mkdir()
+            (state.path / "foreign").write_text("preserved")
+            raise error
+
+    with pytest.raises(runner.subprocess.CalledProcessError) as captured:
+        fail_with_replaced_state()
+    assert captured.value is error
+    assert captured.value.stderr == "original metadata failure"
+    assert captured.value.buildx_state_failure == "ValueError"
+    assert (state.path / "foreign").read_text() == "preserved"
