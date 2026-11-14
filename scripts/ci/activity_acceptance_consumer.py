@@ -1,4 +1,4 @@
-"""Install a closed wheel set, then await admission to the ordinary retry case."""
+"""Install a closed wheel set, then await admission to one fixed reviewed case."""
 
 from __future__ import annotations
 
@@ -23,6 +23,10 @@ ENVIRONMENT = Path("/run/acceptance-env")
 LIMIT = 64 * 1024 * 1024
 JUNIT = DATA / "identity.xml"
 CAPTURED_VERIFIER = ""
+CASE_FILES = {
+    "activity-identity": {"test_activity_identity.py"},
+    "timer-redrive": {"test_native_timer_redrive.py", "redrive_timer_clock_workflow.py"},
+}
 
 
 def receive(maximum):
@@ -53,9 +57,11 @@ def run(arguments, environment, input_data=None):
 
 
 def validate_setup(packet):
-    if set(packet) != {"files", "wheels", "wheel_name", "wheel_sha256", "sdk_version"}:
+    if set(packet) != {"files", "wheels", "wheel_name", "wheel_sha256", "sdk_version", "scenario"}:
         raise ValueError("consumer setup shape differs")
-    expected_files = {"requirements.txt", "verify_activity_install.py", "test_activity_identity.py", "conftest.py"}
+    if packet["scenario"] not in CASE_FILES:
+        raise ValueError("consumer scenario differs")
+    expected_files = {"requirements.txt", "verify_activity_install.py", "conftest.py"} | CASE_FILES[packet["scenario"]]
     if set(packet["files"]) != expected_files or not 1 <= len(packet["wheels"]) <= 30:
         raise ValueError("consumer setup membership differs")
     if packet["wheel_name"] not in packet["wheels"]:
@@ -218,6 +224,8 @@ def prepare_environment():
 
 
 def execute_case(verifier, python, packet, before, environment, admission):
+    redrive = packet["scenario"] == "timer-redrive"
+    test_name = "test_native_timer_redrive.py" if redrive else "test_activity_identity.py"
     environment.update(
         {
             "DURABLE_WORKFLOW_SERVER_URL": admission["server_url"],
@@ -226,6 +234,9 @@ def execute_case(verifier, python, packet, before, environment, admission):
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         }
     )
+    if redrive:
+        environment["DURABLE_WORKFLOW_REDRIVE_CELL"] = "1"
+        environment["DURABLE_WORKFLOW_REDRIVE_CASE_SHA256"] = packet["files"][test_name]["sha256"]
     result = subprocess.run(
         [
             str(python),
@@ -243,13 +254,13 @@ def execute_case(verifier, python, packet, before, environment, admission):
             "--import-mode=importlib",
             "-v",
             "--capture=tee-sys",
-            str(DATA / "test_activity_identity.py"),
+            str(DATA / test_name),
             "--junitxml=" + str(JUNIT),
         ],
         env=environment,
         capture_output=True,
         text=True,
-        timeout=90,
+        timeout=180 if redrive else 90,
     )
     after = inventory(verifier, python, packet)
     if after != before:
