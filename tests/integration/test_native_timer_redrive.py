@@ -118,11 +118,20 @@ async def cold_worker(packet: dict[str, Any]) -> None:
     callbacks: list[dict[str, Any]] = []
     completions: list[dict[str, Any]] = []
     registration: dict[str, Any] = {}
+    started: dict[str, Any] = {}
 
     class ObservedClient(Client):
         async def register_worker(self, **kwargs: Any) -> Any:
             acknowledgement = await super().register_worker(**kwargs)
             registration.update(deepcopy({key: value for key, value in kwargs.items() if key != "process_metrics"}))
+            # The source run must start after its Worker registers: the Server records the
+            # start's definition fingerprint only from the queue's registered cohort.
+            if packet.get("start") is not None and not started:
+                handle = await self.start_workflow(
+                    workflow_type=packet["start"]["workflow_type"], workflow_id=packet["workflow_id"],
+                    task_queue=packet["queue"], input=packet["start"]["input"],
+                )
+                started["run_id"] = handle.run_id
             return acknowledgement
 
         async def complete_workflow_task(self, **kwargs: Any) -> Any:
@@ -164,7 +173,7 @@ async def cold_worker(packet: dict[str, Any]) -> None:
             "pid": os.getpid(), "worker_id": worker.worker_id, "fingerprints": fingerprints,
             "definition_sha256": DEFINITION_SHA, "status": outcome.status,
             "callbacks": callbacks, "completions": completions, "registration": registration,
-            "registration_namespace": client.namespace,
+            "registration_namespace": client.namespace, "started_run_id": started.get("run_id"),
         }, sort_keys=True), flush=True)
 
 
@@ -345,20 +354,20 @@ async def test_cold_workers_preserve_fractional_timer_clock_across_repeated_redr
     admissions = []
     run_ids = []
     async with Client(server_url, token=server_token, namespace="default") as client:
-        handle = await client.start_workflow(
-            workflow_type=WORKFLOW_TYPE, workflow_id=queue, task_queue=queue, input=["Taylor", 1],
-        )
-        assert handle.run_id
-        run_ids.append(handle.run_id)
-        observations.append(await asyncio.to_thread(run_cold_worker, {**common, "fail_second": True}))
+        observations.append(await asyncio.to_thread(run_cold_worker, {
+            **common, "fail_second": True, "start": {"workflow_type": WORKFLOW_TYPE, "input": ["Taylor", 1]},
+        }))
+        source_run_id = observations[0]["started_run_id"]
+        assert source_run_id
+        run_ids.append(source_run_id)
         assert observations[0]["status"] == "failed"
-        histories.append([event async for event in client.iter_history(queue, handle.run_id)])
+        histories.append([event async for event in client.iter_history(queue, source_run_id)])
         frozen_source = deepcopy(histories[0])
-        original = await client.describe_workflow_run(queue, handle.run_id)
+        original = await client.describe_workflow_run(queue, source_run_id)
         source_start = instant(original.started_at)
         source_clock_text, source_clock = source_timer_boundary(histories[0])
-        exports.append(await client.export_history(queue, handle.run_id))
-        verify_export(exports[0], queue, handle.run_id, terminal=True, source=True)
+        exports.append(await client.export_history(queue, source_run_id))
+        verify_export(exports[0], queue, source_run_id, terminal=True, source=True)
         used_timer_ids = {one(histories[0], "TimerFired", step=2)["payload"]["timer_id"]}
         for repeat in (1, 2):
             receipt, admission = await admit_redrive(client, queue, run_ids[-1], observations[-1], histories[-1])
@@ -389,7 +398,7 @@ async def test_cold_workers_preserve_fractional_timer_clock_across_repeated_redr
             histories.append([event async for event in client.iter_history(queue, run_id)])
             exports.append({"before": admitted_export, "after": completed_export})
             assert histories[-1][:len(prefix)] == prefix
-            assert [event async for event in client.iter_history(queue, handle.run_id)] == frozen_source
+            assert [event async for event in client.iter_history(queue, source_run_id)] == frozen_source
         result = await client.get_workflow_handle(queue, run_id=run_ids[-1]).result(timeout=10)
     verify_worker(observations[0], redrive=False, clock=source_clock, queue=queue, exported=exports[0])
     assert len({item["pid"] for item in observations}) == len({item["worker_id"] for item in observations}) == 3
