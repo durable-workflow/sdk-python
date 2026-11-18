@@ -1,6 +1,6 @@
 {
   "schema": "sdk-python.published-activity-acceptance/v1",
-  "sdk_version": "2.19.0",
+  "sdk_version": "2.19.1",
   "server_image": "ghcr.io/durable-workflow/server@sha256:30ccaf2cea6810a92915a9eb389f1a63ea870818a74c9cc1a321379b07b2d25c",
   "server_source": "2d1244be4611e1bc4aa4f0d856c708bed17937b4",
   "server_amd64_manifest": "sha256:6cdcb909b1ca46d10410d7f659fcbd292dbf02be0c337d989b886153c0f3ee56",
