@@ -5123,6 +5123,21 @@ def _replay_state(
     search_attribute_sequences: set[int] = set()
     upsert_sequences: set[int] = set()
     delivery_ranges: list[range] = []
+    # Where the workflow's own durable work first appears, by sequence, and
+    # where it first closed the run. An absent-policy all-group uses these to
+    # tell whether the workflow moved on before every member settled.
+    first_command_index_by_sequence: dict[int, int] = {}
+    authored_close_index: int | None = None
+    for event_index, event in enumerate(events):
+        event_type = _history_event_type(event)
+        payload = event.get("payload") or {}
+        sequence = _workflow_sequence(payload) if isinstance(payload, Mapping) else None
+        if sequence is not None and event_type in _DURABLE_COMMAND_KINDS:
+            first_command_index_by_sequence.setdefault(sequence, event_index)
+        if authored_close_index is None and event_type in (
+            "WorkflowCompleted", "WorkflowFailed", "WorkflowContinuedAsNew",
+        ):
+            authored_close_index = event_index
 
     for event in events:
         event_type = _history_event_type(event)
@@ -7453,6 +7468,48 @@ def _replay_state(
         except StopIteration as stop:
             return _terminal_state(stop.value, include_pending=True)
 
+    def _group_is_open(commands: list[Any]) -> bool:
+        """Whether an earlier task already scheduled this group's members.
+
+        Server assigned their sequences then. Sending the batch again would ask
+        for a new group at the next free sequence, which Server refuses with
+        ``parallel_sequence_mismatch`` (sdk-python#338).
+        """
+        base = commands[0]._parallel_group_path[0]["parallel_group_base_sequence"]
+        return any(sequence in event_types_by_sequence for sequence in range(base, base + len(commands)))
+
+    def _absent_policy_group_fails_fast(commands: list[Any]) -> bool:
+        """Whether an absent-policy all-group raises its first recorded failure now.
+
+        Server wakes the workflow once, when the first member fails, and never
+        again for that group: a later successful member does not wake it,
+        because the group can no longer complete successfully. Workflow's
+        embedded engine raises that failure at once. So when a member has
+        failed and a sibling is still open, the failure is raised now instead
+        of waiting for a wake that never comes (sdk-python#338).
+
+        A history in which every member settled before the workflow did any
+        further durable work replays as it always has: the workflow waited for
+        the whole group and the failure is chosen by member position. Only
+        a workflow that moved on while a member was open was raised early,
+        and that was by its first recorded failure.
+        """
+        base = commands[0]._parallel_group_path[0]["parallel_group_base_sequence"]
+        end = base + len(commands)
+        slots = [index for index in range(result_cursor, len(recorded_steps))
+                 if base <= recorded_steps[index].workflow_sequence < end]
+        if not any(isinstance(resolved_results[index], ActivityFailed | ChildWorkflowFailed) for index in slots):
+            return False
+        if len({recorded_steps[index].workflow_sequence for index in slots}) != len(commands):
+            return True
+        settled = [recorded_steps[index].history_index for index in slots]
+        if any(index is None for index in settled):
+            return False
+        moved_on = [index for sequence, index in first_command_index_by_sequence.items() if sequence >= end]
+        if authored_close_index is not None:
+            moved_on.append(authored_close_index)
+        return bool(moved_on) and min(moved_on) < max(cast(list[int], settled))
+
     def _consume_propagating_group(
         commands: list[Any],
     ) -> tuple[list[Any], list[_RecordedStep], ActivityFailed | ChildWorkflowFailed | None] | None:
@@ -7778,15 +7835,18 @@ def _replay_state(
                 prepared_group = prepare_local_activities and _contains_local_activity(cmd)
                 cmd, result_shape = _annotate_parallel_commands(cmd, current_call_sequence if prepared_group else None)
                 needed = len(cmd)
-                if cmd and cmd[0]._parallel_group_path[0].get("parallel_group_policy") == "propagate":
-                    if prepared_group or any(isinstance(leaf, RecordLocalActivity) for leaf in cmd):
-                        raise LocalActivityExecutionAborted("parallel_group_policy requires qualified local admission")
+                local_group = prepared_group or any(isinstance(leaf, RecordLocalActivity) for leaf in cmd)
+                explicit_propagate = bool(cmd) and cmd[0]._parallel_group_path[0].get(
+                    "parallel_group_policy") == "propagate"
+                if explicit_propagate and local_group:
+                    raise LocalActivityExecutionAborted("parallel_group_policy requires qualified local admission")
+                if explicit_propagate or (cmd and not local_group and _absent_policy_group_fails_fast(cmd)):
                     consumed = _consume_propagating_group(cmd)
                     if consumed is None:
                         _set_replaying(False)
                         for offset, leaf in enumerate(cmd):
                             _assert_pending_step_matches(leaf, offset)
-                        return _state([*pending, *cmd])
+                        return _state(pending if _group_is_open(cmd) else [*pending, *cmd])
                     vals, consumed_steps, failed = consumed
                     if failed is not None:
                         failed_step = next(step for step, value in zip(consumed_steps, vals, strict=True)
@@ -7894,6 +7954,10 @@ def _replay_state(
                 _set_replaying(False)
                 for offset, child_command in enumerate(cmd):
                     _assert_pending_step_matches(child_command, offset)
+                if cmd and _group_is_open(cmd):
+                    # The members are already scheduled. Wait for them; a new
+                    # batch would be a second group (sdk-python#338).
+                    return _state(pending)
                 pending.extend(cmd)
                 return _state(pending)
             if isinstance(cmd, DurableOperationHandle):

@@ -604,18 +604,17 @@ def _all_failure_history(*, cancelled_at_close: bool) -> list[dict[str, Any]]:
 
 
 def test_cancellation_at_close_never_replaces_the_failure_the_workflow_handled() -> None:
-    """Core's all() vector. A Python list group resumes once every member is
-    terminal, so the close's cancellation of the still-open lower-index member
-    must leave the group exactly as the workflow saw it, never complete it with
-    that cancellation as the group's first positional failure."""
+    """Core's all() vector. The failure raises at once while the lower-index
+    member is open (sdk-python#338), as in Core, whose run returned
+    "caught: boom". The close's cancellation of that member must never replace
+    the failure as the group's first positional failure."""
     live = replay(AllFailureClosedWorkflow, _all_failure_history(cancelled_at_close=False), [])
     cold = replay(AllFailureClosedWorkflow, _all_failure_history(cancelled_at_close=True), [])
 
-    assert cold.commands == live.commands
-    assert not any(isinstance(command, CompleteWorkflow) for command in cold.commands)
+    assert cold.commands == live.commands == [CompleteWorkflow("caught: boom")]
     assert query_state(
         AllFailureClosedWorkflow, _all_failure_history(cancelled_at_close=True), [], "caught",
-    ) is None
+    ) == "boom"
 
 
 def test_ordinary_cancellation_is_still_an_activity_outcome() -> None:

@@ -357,8 +357,8 @@ def test_pending_and_unmarked_legacy_groups_do_not_receive_a_proved_clock() -> N
     rows.pop()
     pending = replay(ParallelProbe, rows, [], payload_codec="avro")
     try:
-        assert pending.commands
-        assert all(getattr(command, "activity_type", None) for command in pending.commands)
+        # The open group is already scheduled; nothing is sent again.
+        assert pending.commands == []
     finally:
         pending.close()
     rows = history()

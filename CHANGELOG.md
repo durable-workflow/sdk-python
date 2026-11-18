@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An `all()` group (`yield [...]`) whose member fails while other members are still running no longer blocks the run. Server wakes the workflow once, for the failure, and never again for that group. The worker used to send the group's whole scheduling batch again on that wake, and native Server refused the completion with `409 parallel_sequence_mismatch` (2.17.2 and 2.18.0 on native Server 3.12.0 and 3.13.0). The first recorded member failure is now raised at the yield as soon as it is recorded, as in Workflow's embedded engine. The other members keep running and their outcomes are ignored. A wake while a group is open, such as a signal, also no longer sends the group again. (#338)
+  - **Replay safety:** a history in which every member settled before the workflow did anything else replays as before, raising the failure with the lowest input position. Only a workflow that continued while a member was open raises the first recorded failure, which is the one it handled. Explicit cancel-remaining and settle policies remain tracked in #307.
+
 ## [2.18.0] - 2026-11-18
 
 ### Added
