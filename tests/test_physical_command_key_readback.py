@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -132,16 +131,14 @@ def test_physical_bundle_closes_seed_and_verifier_roles():
 
 
 def test_schema_authority_uses_native_marker_not_sqlite_user_version():
-    with sqlite3.connect(":memory:") as connection:
-        connection.execute("PRAGMA user_version=12")
-        connection.execute("CREATE TABLE dw_server_schema(engine,version)")
-        connection.execute("INSERT INTO dw_server_schema VALUES ('rust-development',13)")
-        controller.native_marker(connection, 13)
-        with pytest.raises(ValueError, match="marker differs"):
-            controller.native_marker(connection, 12)
-        connection.execute("INSERT INTO dw_server_schema VALUES ('rust-development',13)")
-        with pytest.raises(ValueError, match="marker differs"):
-            controller.native_marker(connection, 13)
+    marker = {"columns": ["engine", "version"], "rows": [[["text", "rust-development"], ["integer", 13]]]}
+    snapshot = {"user_version": 12, "tables": {"dw_server_schema": marker}}
+    controller.native_marker(snapshot, 13)
+    with pytest.raises(ValueError, match="marker differs"):
+        controller.native_marker(snapshot, 12)
+    marker["rows"].append(copy.deepcopy(marker["rows"][0]))
+    with pytest.raises(ValueError, match="marker shape differs"):
+        controller.native_marker(snapshot, 13)
 
 
 def upgrade_snapshots():

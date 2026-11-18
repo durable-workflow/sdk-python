@@ -48,6 +48,10 @@ from tests.test_golden_history_replay import (
     GoldenVersionMarkerWorkflow,
 )
 from tests.test_parallel_group_policy import ParallelFailurePolicyWorkflow
+from tests.test_parallel_member_failure_open_siblings import (
+    NativeCaughtMemberFailure,
+    NativeUncaughtMemberFailure,
+)
 from tests.test_patch_history import (
     MixedPatchHelpersWorkflow,
     PatchCancellationWorkflow,
@@ -468,6 +472,8 @@ WORKFLOWS = [
     SelectionMissingNestedOpeningWorkflow,
     SelectionLoserAtCloseWorkflow,
     AllFailureClosedWorkflow,
+    NativeCaughtMemberFailure,
+    NativeUncaughtMemberFailure,
     UpdateSignalConditionTimerWorkflow,
     WorkflowStreamAuthorWorkflow,
     WorkflowMemoAuthorWorkflow,
@@ -490,8 +496,35 @@ WORKFLOW_TYPES["tests.replay.entry-arguments-required"] = RequiredEntryArgumentW
 WORKFLOW_TYPES["tests.replay.parallel-failure-policy"] = ParallelFailurePolicyWorkflow
 
 
+# Immutable evidence whose recorded expectation was the sdk-python#338 defect:
+# replay sent an already-scheduled group again, which Server refuses. The files
+# stay unchanged. Each one's history replays under the named fixture instead,
+# which cannot use ``supersedes`` because the protocol version is the same.
+DEFECT_EVIDENCE = {
+    "legacy-parallel-failure-remains-pending": "absent-policy-failure-raises-with-open-sibling",
+    "run-closed-cancellation-not-a-group-outcome": "run-closed-all-failure-keeps-the-handled-failure",
+}
+
+
+def _fixture_documents() -> dict[Path, dict[str, Any]]:
+    return {path: json.loads(path.read_text(encoding="utf-8")) for path in sorted(FIXTURE_DIR.glob("*.json"))}
+
+
 def _fixture_paths() -> list[Path]:
-    return sorted(FIXTURE_DIR.glob("*.json"))
+    """The current fixtures. A superseded one stays as evidence but does not replay."""
+    documents = _fixture_documents()
+    retired = set(DEFECT_EVIDENCE)
+    for document in documents.values():
+        retired.update(document.get("supersedes", []))
+    return [path for path, document in documents.items() if document.get("id") not in retired]
+
+
+def test_retired_defect_evidence_replays_under_its_correction() -> None:
+    by_id = {document["id"]: document for document in _fixture_documents().values()}
+    for retired, correction in DEFECT_EVIDENCE.items():
+        assert by_id[retired]["protocol_version"] == by_id[correction]["protocol_version"]
+        assert by_id[retired]["history"] == by_id[correction]["history"]
+        assert by_id[retired]["workflow"] == by_id[correction]["workflow"]
 
 
 def _decode_envelopes(value: Any) -> Any:

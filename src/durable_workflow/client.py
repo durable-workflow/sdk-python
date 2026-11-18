@@ -66,6 +66,7 @@ from ._poll_transport import warn_early_cutoff as _warn_poll_cutoff
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
 from ._typed_values import decode_payload_value, to_payload_values, validate_annotation
 from .errors import (
+    REQUEST_ID_AMBIGUOUS,
     REQUEST_ID_CONFLICT,
     ExternalPayloadIntegrityMismatch,
     ExternalPayloadOversized,
@@ -276,7 +277,7 @@ def _command_request_id(request_id: str | None, command: str) -> str:
     """Return the caller command key for one logical signal or update call.
 
     The key is the body field ``request_id`` (1-255 opaque, case-sensitive
-    bytes). A caller-supplied key is sent verbatim; otherwise one
+    Unicode characters). A caller-supplied key is sent verbatim; otherwise one
     ``sdk-python-<command>-<uuid4 hex>`` key is generated per logical call so
     the transport retry policy resends the identical key.
     """
@@ -296,20 +297,26 @@ def _attach_request_id(exc: BaseException, request_id: str) -> None:
 def _command_request_failure(exc: Exception, *, command: str, request_id: str) -> Exception:
     """Return the exception a failed signal or update call should raise.
 
-    A ``request_id_conflict`` refusal that reached the caller as a generic
-    :class:`ServerError` becomes the command's typed failure. Every other
-    exception is returned unchanged, annotated with the key that was sent.
+    A ``request_id_conflict`` or ``request_id_ambiguous`` refusal that reached
+    the caller as a generic :class:`ServerError` becomes the command's typed
+    failure. Every other exception is returned unchanged, annotated with the
+    key that was sent.
     """
-    if isinstance(exc, ServerError) and exc.reason() == REQUEST_ID_CONFLICT:
+    reason = exc.reason() if isinstance(exc, ServerError) else None
+    if isinstance(exc, ServerError) and reason in (REQUEST_ID_CONFLICT, REQUEST_ID_AMBIGUOUS):
         message = exc.body.get("message") if isinstance(exc.body, dict) else None
         if not isinstance(message, str) or not message:
-            message = f"{command} request id already retained with a different intent"
+            message = (
+                f"{command} request id already retained with a different intent"
+                if reason == REQUEST_ID_CONFLICT
+                else f"{command} request id matches an ambiguous retained command identity"
+            )
         if command == "update" and isinstance(exc.body, dict):
             return UpdateFailed(
-                message, status=exc.status, body=exc.body, reason=REQUEST_ID_CONFLICT, request_id=request_id,
+                message, status=exc.status, body=exc.body, reason=reason, request_id=request_id,
             )
         return SignalFailed(
-            message, reason=REQUEST_ID_CONFLICT, status=exc.status, body=exc.body, request_id=request_id,
+            message, reason=reason, status=exc.status, body=exc.body, request_id=request_id,
         )
     _attach_request_id(exc, request_id)
     return exc
@@ -4892,7 +4899,7 @@ class Client:
         :class:`WorkflowHandle` forwards its run identity automatically.
 
         ``request_id`` is the caller command key (1-255 opaque, case-sensitive
-        bytes). When omitted the client
+        Unicode characters). When omitted the client
         generates ``sdk-python-signal-<uuid>`` once per call, so the transport
         retry policy resends the same key. Resending the same key with the same
         signal name, arguments and run target returns the original receipt
@@ -4907,7 +4914,12 @@ class Client:
         :class:`~durable_workflow.errors.SignalFailed` with
         ``reason == "request_id_conflict"`` when the key was already retained
         for a signal with a different intent; the retained command is described
-        in its ``details``. Every exception raised after the key was chosen,
+        in its ``details``. ``reason == "request_id_ambiguous"`` means the key
+        matches an ambiguous legacy retained identity: nothing was written and
+        no receipt was selected. A legacy receipt retained before the Server
+        recorded intent is returned with ``retained`` ``True`` and
+        ``intent_verified`` ``False``; it is the original admission, not proof
+        that this retry's intent matches. Every exception raised after the key was chosen,
         including transport errors, carries it as ``request_id``.
         """
         if run_id is not None and (not isinstance(run_id, str) or not run_id):
@@ -5132,7 +5144,7 @@ class Client:
         :meth:`update_outcome`, which never admits another update.
 
         ``request_id`` is the caller command key (1-255 opaque, case-sensitive
-        bytes) that makes a retry of this update safe. When omitted the client
+        Unicode characters) that makes a retry of this update safe. When omitted the client
         generates ``sdk-python-update-<uuid>`` once per call, so the transport
         retry policy resends the same key. Resending the same key with the same
         update name, arguments and run target returns the original receipt
@@ -5148,7 +5160,10 @@ class Client:
         with the failure message, Server response and durable identities; the
         same type with ``reason == "request_id_conflict"`` reports a key that
         was already retained for an update with a different intent, described
-        in its ``details``. Every exception raised after the key was chosen,
+        in its ``details``, and ``reason == "request_id_ambiguous"`` a key that
+        matches an ambiguous legacy retained identity (nothing written, no
+        receipt selected). A legacy receipt is returned with ``retained``
+        ``True`` and ``intent_verified`` ``False``. Every exception raised after the key was chosen,
         including transport errors, carries it as ``request_id``.
         """
         await self._require_update_wait_stage(wait_for or "accepted")

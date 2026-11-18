@@ -158,13 +158,11 @@ def test_nested_parallel_pending_history_restarts_without_rescheduling() -> None
         _parallel_event("TimerScheduled", 3, paths[2], timer_kind="durable_timer"),
     ]
 
+    # The group is already scheduled. A restarted worker waits for it and
+    # never sends the batch again (sdk-python#338).
     for _restart in range(2):
         outcome = replay(NestedParallelWorkflow, history, [])
-        assert [type(command) for command in outcome.commands] == [
-            ScheduleActivity,
-            StartChildWorkflow,
-            StartTimer,
-        ]
+        assert outcome.commands == []
 
 
 @workflow.defn(name="trip-saga-authoring")

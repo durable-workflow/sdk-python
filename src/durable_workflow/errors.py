@@ -586,6 +586,13 @@ class QueryFailed(DurableWorkflowError):
 REQUEST_ID_CONFLICT = "request_id_conflict"
 """Reason reported when a command key is reused with a different intent."""
 
+REQUEST_ID_AMBIGUOUS = "request_id_ambiguous"
+"""Reason reported when a command key matches an ambiguous legacy retained identity.
+
+Nothing was written and no retained receipt was selected. Inspect the original
+command before sending the input again under a new key.
+"""
+
 _REQUEST_ID_CONFLICT_FIELDS = (
     "request_id",
     "retained_command_id",
@@ -603,11 +610,22 @@ def _body_string(body: object, name: str) -> str | None:
     return None
 
 
+_REQUEST_ID_AMBIGUOUS_FIELDS = ("request_id", "outcome", "retained", "intent_verified", "retryable")
+
+
 def _request_id_conflict_details(body: object) -> dict[str, Any]:
-    """Return the retained-command fields of a ``request_id_conflict`` response body."""
-    if not isinstance(body, dict) or body.get("reason") != REQUEST_ID_CONFLICT:
+    """Return the retained-command fields of a command-key refusal body.
+
+    ``request_id_conflict`` carries the retained command; ``request_id_ambiguous``
+    carries only its refusal markers because no retained receipt was selected.
+    """
+    if not isinstance(body, dict):
         return {}
-    return {name: body[name] for name in _REQUEST_ID_CONFLICT_FIELDS if name in body}
+    if body.get("reason") == REQUEST_ID_CONFLICT:
+        return {name: body[name] for name in _REQUEST_ID_CONFLICT_FIELDS if name in body}
+    if body.get("reason") == REQUEST_ID_AMBIGUOUS:
+        return {name: body[name] for name in _REQUEST_ID_AMBIGUOUS_FIELDS if name in body}
+    return {}
 
 
 class SignalFailed(DurableWorkflowError):
@@ -620,7 +638,10 @@ class SignalFailed(DurableWorkflowError):
     already retained for a signal with a different intent, and
     :attr:`details` then carries ``retained_command_id``,
     ``retained_command_type``, ``retained_outcome`` and the mismatched
-    ``conflict`` parts.
+    ``conflict`` parts. ``request_id_ambiguous`` means the key matches an
+    ambiguous legacy retained identity; nothing was written, no receipt was
+    selected, and :attr:`details` carries ``retained`` and
+    ``intent_verified`` (``False``).
     """
 
     def __init__(
@@ -732,7 +753,9 @@ class UpdateFailed(InvalidArgument):
     means the key was already retained for an update with a different intent,
     and :attr:`details` then carries ``retained_command_id``,
     ``retained_command_type``, ``retained_outcome`` and the mismatched
-    ``conflict`` parts.
+    ``conflict`` parts. ``request_id_ambiguous`` means the key matches an
+    ambiguous legacy retained identity; nothing was written and no receipt
+    was selected.
     """
 
     def __init__(
@@ -1267,15 +1290,20 @@ def _raise_for_status(
             raise UpdateRejected(message or "update rejected", body=body)
         if reason in update_validation_failure_reasons:
             raise update_validation_failed("update validation failed")
-        if reason == REQUEST_ID_CONFLICT:
+        if reason in (REQUEST_ID_CONFLICT, REQUEST_ID_AMBIGUOUS):
             # The retained command type names the key scope; the Server also
             # labels the control-plane operation. Either selects the typed failure.
             command_type = _body_string(body, "retained_command_type") or operation
+            refusal = (
+                "already retained with a different intent"
+                if reason == REQUEST_ID_CONFLICT
+                else "matches an ambiguous retained command identity"
+            )
             if command_type == "signal":
-                raise signal_failed("signal request id already retained with a different intent")
+                raise signal_failed(f"signal request id {refusal}")
             if command_type == "update" and isinstance(body, dict):
                 raise UpdateFailed(
-                    message or "update request id already retained with a different intent",
+                    message or f"update request id {refusal}",
                     status=status,
                     body=body,
                 )
