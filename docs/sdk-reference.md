@@ -1083,6 +1083,21 @@ also fails, the worker logs it and stops: it resends neither completion and
 does not report a workflow-task failure, so the task is left to its lease.
 Other 413 responses keep the previous handling.
 
+The Server records a completion in one history transaction, bounded by its
+`history_transaction_size` (events), `history_transaction_bytes` and
+`history_transaction_rows` structural limits (see `structural_limits` in
+cluster info). A completion past one of them is refused with HTTP 409 and
+reason `history_transaction_limit_exceeded` or `completion_budget_exceeded`
+before anything is recorded. The SDK raises `WorkflowTaskHistoryLimitExceeded`,
+a subclass of `WorkflowTaskCompletionTooLarge`, for that response, and the
+worker handles it the same way: it fails the run once with a `fail_workflow`
+command whose message starts with `Structural limit exceeded:` and the limit
+kind, instead of reporting a workflow-task failure that blocks replay. When
+the Server names them, `limit_kind`, `limit` (the configured limit) and `size`
+(the Server's measured value) are set. Native Server releases after 3.12.0
+size their default history byte limit to four completion caps, so a
+completion under the aggregate wire limit is not refused by it.
+
 To stay under the aggregate, schedule a large fan-out in bounded batches
 across workflow tasks, move groups of work into child workflows, or
 continue-as-new. Enable external payload storage so large arguments travel as
