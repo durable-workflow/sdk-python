@@ -8,7 +8,7 @@ from pathlib import Path
 
 from scripts.ci.activity_acceptance_entry import captured_file
 
-VERSION = "2.18.0"
+VERSION = "2.19.0"
 WHEEL = f"durable_workflow-{VERSION}-py3-none-any.whl"
 SDIST = f"durable_workflow-{VERSION}.tar.gz"
 
