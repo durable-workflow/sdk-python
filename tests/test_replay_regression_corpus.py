@@ -612,12 +612,23 @@ class CompletionSizeFanOutWorkflow:
 
 
 def _execute_completion_size_limit(inputs: Any) -> list[dict[str, Any]]:
-    """Answer a fan-out completion with Server 3.6.0's typed 413 (.github#228) and report
+    """Answer a fan-out completion with Server 3.6.0's typed 413, or with the
+    Server's history-transaction budget refusal (409), (.github#228) and report
     every workflow-task request the real worker sends afterwards."""
     assert isinstance(inputs, list) and len(inputs) == 1 and isinstance(inputs[0], dict)
     scenario = inputs[0]
-    refusal = {"message": "Workflow task completion exceeds the maximum allowed size.", "reason": "payload_too_large",
-               "limit": scenario["limit"], "limit_kind": "workflow_task_completion_bytes"}
+    limit_kind = scenario.get("limit_kind", "workflow_task_completion_bytes")
+    if scenario.get("refusal") == "history_transaction_limit_exceeded":
+        # The Server's history-transaction budget refusal (409), as native
+        # Server names its limit (.github#228).
+        status = 409
+        refusal = {"reason": "history_transaction_limit_exceeded", "recorded": False, "outcome": "completed",
+                   "limit_kind": limit_kind, "current_value": scenario["limit"] + 1,
+                   "configured_limit": scenario["limit"]}
+    else:
+        status = 413
+        refusal = {"message": "Workflow task completion exceeds the maximum allowed size.",
+                   "reason": "payload_too_large", "limit": scenario["limit"], "limit_kind": limit_kind}
     requests: list[httpx.Request] = []
 
     def reply(request: httpx.Request) -> httpx.Response:
@@ -625,7 +636,7 @@ def _execute_completion_size_limit(inputs: Any) -> list[dict[str, Any]]:
             return httpx.Response(200, json={"worker_protocol": {"server_capabilities": {}}})
         requests.append(request)
         if len(requests) == 1:
-            return httpx.Response(413, json=refusal)
+            return httpx.Response(status, json=refusal)
         return httpx.Response(200, json={"outcome": "completed"})
 
     async def run() -> list[dict[str, Any]]:
@@ -650,7 +661,7 @@ def _execute_completion_size_limit(inputs: Any) -> list[dict[str, Any]]:
                 "command_types": [command["type"] for command in commands],
                 "non_retryable": [command.get("non_retryable", False) for command in commands],
                 "structural_limit": [
-                    command.get("message", "").startswith("Structural limit exceeded: workflow_task_completion_bytes:")
+                    command.get("message", "").startswith(f"Structural limit exceeded: {limit_kind}:")
                     for command in commands
                 ],
             })
