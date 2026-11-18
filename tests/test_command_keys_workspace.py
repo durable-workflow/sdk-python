@@ -178,3 +178,68 @@ def test_cleanup_configuration_is_an_immutable_empty_kernel_namespace():
     assert not path.exists()
     with pytest.raises(OSError):
         path.write_text("must not create")
+
+
+def test_real_database_fd_refuses_the_predecessor_swap_open_restore_race(tmp_path, monkeypatch):
+    root = tmp_path / "work"
+    real_connect = sqlite3.connect
+    with module.Workspace(root) as workspace:
+        directory = workspace.directory("database")
+        held = workspace.write("copied.sqlite", b"", parent=directory, immutable=False)
+        target = root / "database/copied.sqlite"
+        other = root / "database/substitute.sqlite"
+        saved = root / "database/retained-original.sqlite"
+        for path, text in ((target, "original"), (other, "substituted")):
+            with real_connect(path) as connection:
+                connection.execute("CREATE TABLE values_table(value TEXT)")
+                connection.execute("INSERT INTO values_table VALUES (?)", (text,))
+            path.chmod(0o600)
+
+        def swapping_connect(*args, **kwargs):
+            target.rename(saved)
+            other.rename(target)
+            try:
+                return real_connect(*args, **kwargs)
+            finally:
+                target.rename(other)
+                saved.rename(target)
+
+        monkeypatch.setattr(module.sqlite3, "connect", swapping_connect)
+        workspace.check()
+        # The321/322 predecessor retains a directory FD plus mutable basename.
+        with module.closing(
+            module.sqlite3.connect(Path(workspace.proc(directory, "copied.sqlite")).as_uri() + "?mode=ro", uri=True)
+        ) as connection:
+            assert connection.execute("SELECT value FROM values_table").fetchall() == [("substituted",)]
+        workspace.check()
+        assert workspace.read_database(held, lambda db: db.execute("SELECT value FROM values_table").fetchall()) == [
+            ("original",)
+        ]
+        workspace.check()
+
+
+def test_real_database_fd_reads_uncheckpointed_wal_from_another_connection(tmp_path):
+    root = tmp_path / "work"
+    with module.Workspace(root) as workspace:
+        directory = workspace.directory("database")
+        held = workspace.write("copied.sqlite", b"", parent=directory, immutable=False)
+        target = root / "database/copied.sqlite"
+        with module.closing(sqlite3.connect(target)) as initialize:
+            initialize.execute("CREATE TABLE values_table(value INTEGER)")
+            initialize.execute("INSERT INTO values_table VALUES (1)")
+            initialize.commit()
+        with module.closing(sqlite3.connect(target)) as writer:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("INSERT INTO values_table VALUES (2)")
+            writer.commit()
+            assert Path(str(target) + "-wal").stat().st_size > 0
+            # The positive proves the committed row is still WAL-only.
+            with module.closing(
+                sqlite3.connect("file:/proc/self/fd/" + str(held["fd"]) + "?immutable=1", uri=True)
+            ) as main_only:
+                assert main_only.execute("SELECT value FROM values_table ORDER BY value").fetchall() == [(1,)]
+            assert workspace.read_database(
+                held, lambda db: db.execute("SELECT value FROM values_table ORDER BY value").fetchall()
+            ) == [(1,), (2,)]
+        workspace.check()

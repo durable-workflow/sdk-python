@@ -3305,6 +3305,64 @@ class TestCommandRequestIds:
 
     @pytest.mark.parametrize("command", ["signal", "update"])
     @pytest.mark.asyncio
+    async def test_request_id_ambiguous_raises_typed_failure_sent_once(self, client: Client, command: str) -> None:
+        ambiguous = {
+            "workflow_id": "wf-1",
+            "reason": "request_id_ambiguous",
+            "outcome": "rejected_request_id_ambiguous",
+            "command_status": "rejected",
+            "rejection_reason": "request_id_ambiguous",
+            "retained": True,
+            "intent_verified": False,
+            "retryable": False,
+            "message": "The request_id matches an ambiguous retained command identity.",
+        }
+        expected = SignalFailed if command == "signal" else UpdateFailed
+        with (
+            patch.object(
+                client._http, "request", new_callable=AsyncMock, return_value=_mock_response(409, ambiguous),
+            ) as mock,
+            pytest.raises(expected) as excinfo,
+        ):
+            await self._send(client, command, request_id="legacy-key")
+
+        error = excinfo.value
+        assert mock.await_count == 1
+        assert error.reason == "request_id_ambiguous"
+        assert error.request_id == "legacy-key"
+        assert error.status == 409
+        assert error.body == ambiguous
+        assert error.details == {
+            "outcome": "rejected_request_id_ambiguous",
+            "retained": True,
+            "intent_verified": False,
+            "retryable": False,
+        }
+
+    @pytest.mark.parametrize("command", ["signal", "update"])
+    @pytest.mark.asyncio
+    async def test_legacy_unverified_receipt_is_returned_not_raised(self, client: Client, command: str) -> None:
+        legacy = {
+            "outcome": "received" if command == "signal" else "accepted",
+            "command_id": "cmd-legacy",
+            "run_id": "run-1",
+            "request_id": "legacy-key",
+            "retained": True,
+            "intent_verified": False,
+        }
+        if command == "update":
+            legacy.update({"update_status": "accepted", "update_id": "upd-legacy"})
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock, return_value=_mock_response(202, legacy),
+        ) as mock:
+            receipt = await self._send(client, command, request_id="legacy-key")
+
+        assert mock.await_count == 1
+        assert receipt == legacy
+        assert receipt["intent_verified"] is False
+
+    @pytest.mark.parametrize("command", ["signal", "update"])
+    @pytest.mark.asyncio
     async def test_transport_failure_carries_request_id(self, command: str) -> None:
         attempts: list[bytes] = []
 
