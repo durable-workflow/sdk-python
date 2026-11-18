@@ -102,7 +102,8 @@ def test_retained_identity_and_intent_are_required(change):
 def test_installed_file_substitution_and_source_overlay_refuse(tmp_path, monkeypatch):
     wheel = tmp_path / "synthetic.whl"
     root = tmp_path / "installed"
-    names = ["durable_workflow/__init__.py"] + [f"durable_workflow/file{i}.py" for i in range(adapter.SDK_RUNTIME_FILES - 1)]
+    names = ["durable_workflow/__init__.py"]
+    names += [f"durable_workflow/file{i}.py" for i in range(adapter.SDK_RUNTIME_FILES - 1)]
     with ZipFile(wheel, "w") as archive:
         for name in names:
             archive.writestr(name, b"# synthetic fixture\n")

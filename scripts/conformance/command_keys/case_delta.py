@@ -165,7 +165,7 @@ def validate(before, after, seed, proof):
         if (
             set(intent) != {"command_id", "namespace", "intent_digest"}
             or value(intent["namespace"]) != value(instance["namespace"])
-            or re.fullmatch(r"[0-9a-f]{64}", value(intent["intent_digest"])) is None
+            or re.fullmatch(r"v1:[0-9a-f]{64}", value(intent["intent_digest"])) is None
             or cell["same_intent_retained"] is not True
             or cell["changed_intent_conflict"] is not True
         ):
