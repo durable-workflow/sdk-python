@@ -27,6 +27,7 @@ from durable_workflow.workflow import (
     CompleteWorkflow,
     ContinueAsNew,
     FailWorkflow,
+    RecordSideEffect,
     SelectionResult,
     WorkflowContext,
     query_state,
@@ -611,7 +612,10 @@ def test_cancellation_at_close_never_replaces_the_failure_the_workflow_handled()
     live = replay(AllFailureClosedWorkflow, _all_failure_history(cancelled_at_close=False), [])
     cold = replay(AllFailureClosedWorkflow, _all_failure_history(cancelled_at_close=True), [])
 
-    assert cold.commands == live.commands == [CompleteWorkflow("caught: boom")]
+    # The live task records which member it raised. Core recorded no such
+    # decision; its closed run still replays the same failure.
+    assert [type(command) for command in live.commands] == [RecordSideEffect, CompleteWorkflow]
+    assert cold.commands == live.commands[1:] == [CompleteWorkflow("caught: boom")]
     assert query_state(
         AllFailureClosedWorkflow, _all_failure_history(cancelled_at_close=True), [], "caught",
     ) == "boom"

@@ -4008,6 +4008,10 @@ def _history_event_type(event: Mapping[str, Any]) -> str | None:
 # terminal event. The workflow had already moved past those operations, so the
 # cancellation is never an outcome replay can observe: the activity stays open.
 RUN_CLOSED_CANCELLATION_REASON = "run_closed"
+# The side-effect key under which a worker records which member of an
+# absent-policy all-group it raised while other members were open
+# (sdk-python#338). Replay raises exactly that member.
+PARALLEL_FAILURE_DECISION = "durable_workflow.parallel_failure_decision"
 
 
 def _settled_at_close(event: Any) -> bool:
@@ -7478,8 +7482,41 @@ def _replay_state(
         base = commands[0]._parallel_group_path[0]["parallel_group_base_sequence"]
         return any(sequence in event_types_by_sequence for sequence in range(base, base + len(commands)))
 
-    def _absent_policy_group_fails_fast(commands: list[Any]) -> bool:
-        """Whether an absent-policy all-group raises its first recorded failure now.
+    def _parallel_failure_marker(commands: list[Any]) -> int | None:
+        """The member sequence a recorded early-failure decision names, if any.
+
+        The decision is the first command after the group, so it has the
+        sequence right after the last member.
+        """
+        root = commands[0]._parallel_group_path[0]
+        base = root["parallel_group_base_sequence"]
+        end = base + len(commands)
+        for index in range(result_cursor, len(recorded_steps)):
+            step = recorded_steps[index]
+            value = resolved_results[index]
+            if (step.workflow_sequence != end or step.shape != "side effect"
+                    or not isinstance(value, Mapping) or PARALLEL_FAILURE_DECISION not in value):
+                continue
+            decision = value[PARALLEL_FAILURE_DECISION]
+            member = decision.get("member_sequence") if isinstance(decision, Mapping) else None
+            if (not isinstance(decision, Mapping)
+                    or decision.get("parallel_group_id") != root["parallel_group_id"]
+                    or decision.get("parallel_group_base_sequence") != base
+                    or decision.get("parallel_group_size") != len(commands)
+                    or type(member) is not int or not base <= member < end):
+                raise NonDeterministicReplayError(
+                    end, "parallel failure decision for this group", step.event_types,
+                    detail="recorded parallel failure decision does not match the replayed group",
+                )
+            return member
+        return None
+
+    def _absent_policy_failure_decision(commands: list[Any]) -> tuple[bool, int | None, bool]:
+        """How an absent-policy all-group handles a member failure.
+
+        Returns whether the failure is raised early, the member sequence a
+        recorded decision names, and whether this task must record the
+        decision.
 
         Server wakes the workflow once, when the first member fails, and never
         again for that group: a later successful member does not wake it,
@@ -7488,30 +7525,40 @@ def _replay_state(
         failed and a sibling is still open, the failure is raised now instead
         of waiting for a wake that never comes (sdk-python#338).
 
-        A history in which every member settled before the workflow did any
-        further durable work replays as it always has: the workflow waited for
-        the whole group and the failure is chosen by member position. Only
-        a workflow that moved on while a member was open was raised early,
-        and that was by its first recorded failure.
+        History has no workflow-task boundaries, so a later replay cannot tell
+        which member outcomes the deciding task saw: another member can fail
+        after the task read history but before its completion is written. The
+        task therefore records its decision as a side effect directly after the
+        group, and replay raises exactly the member it names.
+
+        A history without a decision replays as it always has when every
+        member settled before the workflow did any further durable work: the
+        workflow waited for the whole group and the failure is chosen by member
+        position. A history without a decision that moved on while a member was
+        open came from another runtime, such as Workflow's embedded engine, and
+        raises its first recorded failure.
         """
+        marked = _parallel_failure_marker(commands)
+        if marked is not None:
+            return True, marked, False
         base = commands[0]._parallel_group_path[0]["parallel_group_base_sequence"]
         end = base + len(commands)
         slots = [index for index in range(result_cursor, len(recorded_steps))
                  if base <= recorded_steps[index].workflow_sequence < end]
         if not any(isinstance(resolved_results[index], ActivityFailed | ChildWorkflowFailed) for index in slots):
-            return False
-        if len({recorded_steps[index].workflow_sequence for index in slots}) != len(commands):
-            return True
-        settled = [recorded_steps[index].history_index for index in slots]
-        if any(index is None for index in settled):
-            return False
+            return False, None, False
         moved_on = [index for sequence, index in first_command_index_by_sequence.items() if sequence >= end]
         if authored_close_index is not None:
             moved_on.append(authored_close_index)
-        return bool(moved_on) and min(moved_on) < max(cast(list[int], settled))
+        if len({recorded_steps[index].workflow_sequence for index in slots}) != len(commands):
+            return True, None, not moved_on
+        settled = [recorded_steps[index].history_index for index in slots]
+        if any(index is None for index in settled) or not moved_on:
+            return False, None, False
+        return min(moved_on) < max(cast(list[int], settled)), None, False
 
     def _consume_propagating_group(
-        commands: list[Any],
+        commands: list[Any], marked: int | None = None,
     ) -> tuple[list[Any], list[_RecordedStep], ActivityFailed | ChildWorkflowFailed | None] | None:
         base = commands[0]._parallel_group_path[0]["parallel_group_base_sequence"]
         slots = [index for index in range(result_cursor, len(recorded_steps))
@@ -7523,6 +7570,13 @@ def _replay_state(
         failures = [index for index in slots
                     if isinstance(resolved_results[index], ActivityFailed | ChildWorkflowFailed)]
         selected = min(failures, key=lambda index: cast(int, recorded_steps[index].history_index)) if failures else None
+        if marked is not None:
+            selected = next((index for index in failures if recorded_steps[index].workflow_sequence == marked), None)
+            if selected is None:
+                raise NonDeterministicReplayError(
+                    marked, "the failed member a parallel failure decision names", event_types_by_sequence.get(
+                        marked, []), detail="recorded parallel failure decision names a member that did not fail",
+                )
         if selected is None and len(slots) != len(commands):
             return None
         ordered = sorted(slots, key=lambda index: recorded_steps[index].workflow_sequence)
@@ -7840,8 +7894,12 @@ def _replay_state(
                     "parallel_group_policy") == "propagate"
                 if explicit_propagate and local_group:
                     raise LocalActivityExecutionAborted("parallel_group_policy requires qualified local admission")
-                if explicit_propagate or (cmd and not local_group and _absent_policy_group_fails_fast(cmd)):
-                    consumed = _consume_propagating_group(cmd)
+                fails_fast, marked, record_decision = (
+                    _absent_policy_failure_decision(cmd) if cmd and not local_group and not explicit_propagate
+                    else (False, None, False)
+                )
+                if explicit_propagate or fails_fast:
+                    consumed = _consume_propagating_group(cmd, marked)
                     if consumed is None:
                         _set_replaying(False)
                         for offset, leaf in enumerate(cmd):
@@ -7861,12 +7919,33 @@ def _replay_state(
                             )
                         else:
                             ctx._business_clock.unavailable()
+                        if marked is not None:
+                            # The recorded decision is the next durable step.
+                            decision_step = recorded_steps[result_cursor]
+                            if (decision_step.workflow_sequence
+                                    != cmd[0]._parallel_group_path[0]["parallel_group_base_sequence"] + needed):
+                                raise NonDeterministicReplayError(
+                                    decision_step.workflow_sequence, "parallel failure decision",
+                                    decision_step.event_types,
+                                    detail="parallel failure decision is not the step after its group",
+                                )
+                            result_cursor += 1
+                            authored_sequence = max(authored_sequence, decision_step.workflow_sequence + 1)
+                        elif record_decision:
+                            root = cmd[0]._parallel_group_path[0]
+                            pending.append(RecordSideEffect({PARALLEL_FAILURE_DECISION: {
+                                "parallel_group_id": root["parallel_group_id"],
+                                "parallel_group_base_sequence": root["parallel_group_base_sequence"],
+                                "parallel_group_size": needed,
+                                "member_sequence": failed_step.workflow_sequence,
+                            }}))
+                            authored_sequence += 1
                         try:
                             _refresh_replay_logging()
                             advanced_cmd = _resume_business(gen.throw, failed)
                             continue
                         except StopIteration as stop:
-                            return _terminal_state(stop.value, include_pending=False)
+                            return _terminal_state(stop.value, include_pending=record_decision)
                     _advance_cancellation_clock(step.history_index for step in consumed_steps)
                     try:
                         typed_values = [_typed_activity_result(leaf, value)

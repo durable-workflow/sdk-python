@@ -18,6 +18,7 @@ from durable_workflow.workflow import (
     CompleteWorkflow,
     FailUpdate,
     LocalActivityExecutionAborted,
+    RecordSideEffect,
     WorkflowContext,
     _read_parallel_group_policies,
     _replay_state,
@@ -55,9 +56,9 @@ def test_absent_policy_raises_the_first_failure_while_a_sibling_is_open() -> Non
     group. Waiting for the open sibling would block the run (sdk-python#338)."""
     history = json.loads(FIXTURE.read_text())["history"]
     outcome = replay(ParallelFailurePolicyWorkflow, history, [])
-    assert len(outcome.commands) == 1
-    assert isinstance(outcome.commands[0], CompleteWorkflow)
-    assert outcome.commands[0].result == "fast-second"
+    # The task records which member it raised, then completes.
+    assert [type(command) for command in outcome.commands] == [RecordSideEffect, CompleteWorkflow]
+    assert outcome.commands[1] == CompleteWorkflow("fast-second")
     assert query_state(ParallelFailurePolicyWorkflow, history, [], "caught") == "fast-second"
 
 

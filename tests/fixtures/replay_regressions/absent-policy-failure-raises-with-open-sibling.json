@@ -10,7 +10,7 @@
     "issues": [
       "durable-workflow/sdk-python#338"
     ],
-    "note": "The history of legacy-parallel-failure-remains-pending. That fixture expected the whole group to be sent again, which Server refuses. The failure now raises while the other member is open, as in Workflow's embedded engine."
+    "note": "The history of legacy-parallel-failure-remains-pending. That fixture expected the whole group to be sent again, which Server refuses. The failure now raises while the other member is open, as in Workflow's embedded engine, and the task records which member it raised before completing."
   },
   "workflow": {
     "type": "tests.replay.parallel-failure-policy",
@@ -101,7 +101,11 @@
   "expected": {
     "command_sequence": [
       {
-        "type": "complete_workflow"
+        "type": "record_side_effect"
+      },
+      {
+        "type": "complete_workflow",
+        "result": "fast-second"
       }
     ]
   }

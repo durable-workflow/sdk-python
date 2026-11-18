@@ -8,16 +8,18 @@ Server refused with ``409 parallel_sequence_mismatch``, and the run blocked.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from durable_workflow import serializer, workflow
-from durable_workflow.errors import ActivityFailed
+from durable_workflow.errors import ActivityFailed, NonDeterministicReplayError
 from durable_workflow.workflow import (
+    PARALLEL_FAILURE_DECISION,
     ActivityRetryPolicy,
     CompleteWorkflow,
     FailWorkflow,
+    RecordSideEffect,
     ScheduleActivity,
     WorkflowContext,
     commands_to_server_commands,
@@ -59,8 +61,18 @@ def _scheduled(size: int = SIZE) -> list[dict[str, Any]]:
             *(_member("ActivityScheduled", index, size=size) for index in range(size))]
 
 
-def _compensation(event_type: str, result: Any = None) -> dict[str, Any]:
-    payload: dict[str, Any] = {"sequence": SIZE + 1, "activity_execution_id": "compensation",
+def _decision(index: int) -> dict[str, Any]:
+    """The side effect a task records when it raises member ``index`` early."""
+    value = {PARALLEL_FAILURE_DECISION: {
+        "parallel_group_id": f"parallel-activities:1:{SIZE}", "parallel_group_base_sequence": 1,
+        "parallel_group_size": SIZE, "member_sequence": index + 1,
+    }}
+    return {"event_type": "SideEffectRecorded", "payload": {
+        "sequence": SIZE + 1, "result": serializer.envelope(value, codec=serializer.AVRO_CODEC)}}
+
+
+def _compensation(event_type: str, result: Any = None, *, sequence: int = SIZE + 2) -> dict[str, Any]:
+    payload: dict[str, Any] = {"sequence": sequence, "activity_execution_id": "compensation",
                                "activity_type": "compensate"}
     if event_type == "ActivityCompleted":
         payload["result"] = serializer.envelope(result, codec=serializer.AVRO_CODEC)
@@ -116,32 +128,57 @@ def test_a_new_group_is_still_scheduled_once() -> None:
     assert [command["parallel_group_index"] for command in commands] == list(range(SIZE))
 
 
-def test_the_failure_wake_raises_instead_of_resending_the_group() -> None:
+def test_the_failure_wake_raises_and_records_the_member_instead_of_resending_the_group() -> None:
     history = [*_scheduled(), _member("ActivityCompleted", 0), _member("ActivityFailed", 2)]
     commands = _wire(history)
-    assert len(commands) == 1
-    assert commands[0]["type"] == "schedule_activity"
-    assert commands[0]["activity_type"] == "compensate"
-    assert "parallel_group_id" not in commands[0]
+    assert [command["type"] for command in commands] == ["record_side_effect", "schedule_activity"]
+    outcome = replay(AllFailureOpenSiblings, history, [], payload_codec=serializer.AVRO_CODEC)
+    assert outcome.commands[0] == RecordSideEffect({PARALLEL_FAILURE_DECISION: {
+        "parallel_group_id": f"parallel-activities:1:{SIZE}", "parallel_group_base_sequence": 1,
+        "parallel_group_size": SIZE, "member_sequence": 3,
+    }})
+    assert commands[1]["activity_type"] == "compensate"
+    assert "parallel_group_id" not in commands[1]
     assert query_state(AllFailureOpenSiblings, history, [], "caught") == "member-2"
 
 
-def test_an_uncaught_failure_fails_the_run() -> None:
+def test_an_uncaught_failure_records_the_member_and_fails_the_run() -> None:
     history = [*_scheduled(), _member("ActivityFailed", 1)]
     outcome = replay(AllFailureUncaught, history, [], payload_codec=serializer.AVRO_CODEC)
-    assert len(outcome.commands) == 1
-    assert isinstance(outcome.commands[0], FailWorkflow)
-    assert outcome.commands[0].exception_type is not None or outcome.commands[0].message
+    assert [type(command) for command in outcome.commands] == [RecordSideEffect, FailWorkflow]
+    assert "member-1" in str(cast(FailWorkflow, outcome.commands[1]).message)
+
+
+def test_a_handler_that_returns_at_once_still_records_the_member() -> None:
+    @workflow.defn(name="tests.all-failure-open-siblings-return")
+    class ReturnAtOnce:
+        def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+            try:
+                yield [ctx.schedule_activity(f"member-{index}", []) for index in range(SIZE)]
+            except ActivityFailed as failure:
+                return failure.activity_type
+            return None
+
+    history = [*_scheduled(), _member("ActivityFailed", 3)]
+    outcome = replay(ReturnAtOnce, history, [], payload_codec=serializer.AVRO_CODEC)
+    assert [type(command) for command in outcome.commands] == [RecordSideEffect, CompleteWorkflow]
+    assert outcome.commands[1] == CompleteWorkflow("member-3")
+    closed = [*history, _decision(3), {"event_type": "WorkflowCompleted", "payload": {}},
+              _member("ActivityFailed", 0)]
+    assert replay(ReturnAtOnce, closed, [], payload_codec=serializer.AVRO_CODEC).commands == [
+        CompleteWorkflow("member-3"),
+    ]
 
 
 def _fail_fast_history() -> list[dict[str, Any]]:
-    """Member 2 fails first and the workflow moves on. Then member 0, which
-    has the lower position, fails too, and the others complete, some of them
-    after the compensation completed."""
+    """Member 2 fails first and the workflow moves on, recording that decision.
+    Then member 0, which has the lower position, fails too, and the others
+    complete, some of them after the compensation completed."""
     return [
         *_scheduled(),
         _member("ActivityCompleted", 1),
         _member("ActivityFailed", 2),
+        _decision(2),
         _compensation("ActivityScheduled"),
         _member("ActivityFailed", 0),
         _compensation("ActivityCompleted", "undone"),
@@ -153,10 +190,11 @@ def test_every_later_task_replays_the_failure_the_workflow_handled() -> None:
     history = _fail_fast_history()
     frontier = len(_scheduled()) + 2
     completed = history.index(_compensation("ActivityCompleted", "undone")) + 1
-    for end in range(frontier, len(history) + 1):
+    for end in [frontier, *range(frontier + 2, len(history) + 1)]:
         outcome = replay(AllFailureOpenSiblings, history[:end], [], payload_codec=serializer.AVRO_CODEC)
         if end == frontier:
-            assert outcome.commands == [ScheduleActivity("compensate", ["member-2"])]
+            assert [type(command) for command in outcome.commands] == [RecordSideEffect, ScheduleActivity]
+            assert outcome.commands[1] == ScheduleActivity("compensate", ["member-2"])
         elif end < completed:
             # The compensation is scheduled and still open.
             assert outcome.commands == [], end
@@ -167,9 +205,71 @@ def test_every_later_task_replays_the_failure_the_workflow_handled() -> None:
         assert query_state(AllFailureOpenSiblings, history[:end], [], "caught") == "member-2", end
 
 
+def test_the_race_replays_the_recorded_member_not_the_lowest_position() -> None:
+    """The woken task saw only member 2's failure and raised it. Before its
+    completion was written, member 0 failed and every other member completed.
+    Event order alone now shows a group that settled before the workflow moved
+    on; the recorded decision keeps replay on member 2."""
+    history = [
+        *_scheduled(),
+        _member("ActivityFailed", 2),
+        _member("ActivityFailed", 0),
+        _member("ActivityCompleted", 1),
+        _member("ActivityCompleted", 3),
+        _decision(2),
+        _compensation("ActivityScheduled"),
+        _compensation("ActivityCompleted", "undone"),
+    ]
+    outcome = replay(AllFailureOpenSiblings, history, [], payload_codec=serializer.AVRO_CODEC)
+    assert outcome.commands == [CompleteWorkflow({"caught": "member-2", "compensated": "undone"})]
+    assert query_state(AllFailureOpenSiblings, history, [], "caught") == "member-2"
+
+
+@pytest.mark.parametrize("decision", [
+    {"member_sequence": 2},
+    {"member_sequence": 9},
+    {"member_sequence": "3"},
+    {"parallel_group_size": SIZE + 1},
+    {"parallel_group_id": "parallel-activities:9:4"},
+])
+def test_a_decision_that_does_not_match_the_group_is_nondeterministic(decision: dict[str, Any]) -> None:
+    recorded = _decision(2)
+    value = serializer.decode_envelope(recorded["payload"]["result"])
+    value[PARALLEL_FAILURE_DECISION].update(decision)
+    recorded["payload"]["result"] = serializer.envelope(value, codec=serializer.AVRO_CODEC)
+    history = [*_scheduled(), _member("ActivityCompleted", 1), _member("ActivityFailed", 2), recorded,
+               _compensation("ActivityScheduled")]
+    with pytest.raises(NonDeterministicReplayError):
+        replay(AllFailureOpenSiblings, history, [], payload_codec=serializer.AVRO_CODEC)
+
+
+def test_an_ordinary_side_effect_after_a_settled_group_is_not_a_decision() -> None:
+    @workflow.defn(name="tests.all-failure-then-side-effect")
+    class SideEffectAfterGroup:
+        def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+            try:
+                yield [ctx.schedule_activity(f"member-{index}", []) for index in range(SIZE)]
+            except ActivityFailed as failure:
+                return [failure.activity_type, (yield ctx.side_effect(lambda: "noted"))]
+            return None
+
+    history = [
+        *_scheduled(),
+        _member("ActivityFailed", 2),
+        _member("ActivityFailed", 0),
+        _member("ActivityCompleted", 1),
+        _member("ActivityCompleted", 3),
+        {"event_type": "SideEffectRecorded", "payload": {
+            "sequence": SIZE + 1, "result": serializer.envelope("noted", codec=serializer.AVRO_CODEC)}},
+    ]
+    assert replay(SideEffectAfterGroup, history, [], payload_codec=serializer.AVRO_CODEC).commands == [
+        CompleteWorkflow(["member-0", "noted"]),
+    ]
+
+
 @pytest.mark.parametrize("late_first", [True, False])
 def test_a_late_sibling_never_takes_the_compensation_result(late_first: bool) -> None:
-    history = [*_scheduled(), _member("ActivityFailed", 0), _compensation("ActivityScheduled")]
+    history = [*_scheduled(), _member("ActivityFailed", 0), _decision(0), _compensation("ActivityScheduled")]
     late = [_member("ActivityCompleted", index) for index in range(1, SIZE)]
     done = _compensation("ActivityCompleted", "undone")
     history.extend([*late, done] if late_first else [done, *late])
@@ -179,7 +279,8 @@ def test_a_late_sibling_never_takes_the_compensation_result(late_first: bool) ->
 
 def test_a_group_that_settled_before_the_workflow_moved_on_keeps_positional_selection() -> None:
     """A history recorded while the worker waited for every member: the
-    lower-position failure is the one raised, as before."""
+    lower-position failure is the one raised, as before, and no decision is
+    recorded because the task saw every outcome."""
     history = [
         *_scheduled(),
         _member("ActivityFailed", 2),
@@ -194,7 +295,9 @@ def test_a_group_that_settled_before_the_workflow_moved_on_keeps_positional_sele
     assert query_state(AllFailureOpenSiblings, history, [], "caught") == "member-0"
 
 
-def test_a_closed_run_replays_the_failure_it_handled() -> None:
+def test_a_history_from_another_runtime_raises_its_first_recorded_failure() -> None:
+    """Workflow's embedded engine records no decision. A run it closed while a
+    member was open raised that run's first recorded failure."""
     history = [
         *_scheduled(),
         _member("ActivityFailed", 3),
@@ -226,10 +329,18 @@ class NativeUncaughtMemberFailure:
 
 @workflow.defn(name="py338.caught")
 class NativeCaughtMemberFailure:
+    def __init__(self) -> None:
+        self.caught: str | None = None
+
+    @workflow.query("caught")
+    def caught_member(self) -> str | None:
+        return self.caught
+
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
         try:
             yield _native_group(ctx)
         except ActivityFailed as failure:
+            self.caught = f"{failure.activity_type}#{failure.step_sequence}"
             return (yield ctx.schedule_activity("py338.compensate", [failure.activity_type],
                                                 start_to_close_timeout=60))
         return "no failure"
