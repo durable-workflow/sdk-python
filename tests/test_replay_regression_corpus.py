@@ -29,6 +29,7 @@ from durable_workflow.workflow import (
 )
 from tests.business_clock_workflows import (
     ChildBusinessClockWorkflow,
+    CyclicFinalizerBusinessClockWorkflow,
     NativeRedriveBusinessClockWorkflow,
     ParallelActivityBusinessClockWorkflow,
     ParallelFailureBusinessClockWorkflow,
@@ -418,6 +419,7 @@ class BlankFailureWorkflow:
 WORKFLOWS = [
     ScheduleOriginWindowWorkflow,
     ChildBusinessClockWorkflow,
+    CyclicFinalizerBusinessClockWorkflow,
     ParallelActivityBusinessClockWorkflow,
     ParallelFailureBusinessClockWorkflow,
     NativeRedriveBusinessClockWorkflow,

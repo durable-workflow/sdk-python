@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 from datetime import datetime
 from typing import Any
 
@@ -58,6 +59,26 @@ class ScalarBusinessClockWorkflow:
         thread = await asyncio.to_thread(clock_text, self.ctx)
         await asyncio.sleep(0)
         return before, child, thread, clock_text(self.ctx)
+
+
+@workflow.defn(name="tests.replay.business-clock-cyclic-finalizer")
+class CyclicFinalizerBusinessClockWorkflow:
+    """Code run by cyclic collection is disposal and cannot borrow time (#343)."""
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.schedule_activity("clock.first", [])
+        collected: list[str | None] = []
+
+        class Finalized:
+            def __init__(self) -> None:
+                self.cycle = self
+
+            def __del__(self) -> None:
+                collected.append(clock_text(ctx))
+
+        Finalized()
+        gc.collect()
+        return {"clock": clock_text(ctx), "collected": collected}
 
 
 @workflow.defn(name="tests.replay.business-clock-native-redrive")

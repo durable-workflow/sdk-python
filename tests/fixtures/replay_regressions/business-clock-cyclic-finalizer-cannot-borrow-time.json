@@ -1,0 +1,70 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "business-clock-cyclic-finalizer-cannot-borrow-time",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "business_clock_cyclic_finalizer": {
+    "issues": [
+      "durable-workflow/sdk-python#343"
+    ],
+    "note": "Code that Python's cyclic garbage collector runs during workflow code, such as a discarded replay's generator finally block or a __del__, is disposal. It reads replay_now() as unavailable in every finalizer order instead of borrowing the active workflow's consumed activity time."
+  },
+  "workflow": {
+    "type": "tests.replay.business-clock-cyclic-finalizer",
+    "input": [],
+    "payload_codec": "avro",
+    "workflow_id": "business-clock-instance",
+    "run_id": "business-clock-run"
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-01T00:00:00.123456Z",
+      "payload": {
+        "workflow_type": "tests.replay.business-clock-cyclic-finalizer",
+        "workflow_instance_id": "business-clock-instance",
+        "workflow_run_id": "business-clock-run"
+      },
+      "sequence": 1
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "clock-activity",
+        "activity_type": "clock.first"
+      },
+      "sequence": 2
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-11-01T00:00:03.123456Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "clock-activity",
+        "activity_type": "clock.first",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoKZmlyc3Q="
+        }
+      },
+      "sequence": 3
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "complete_workflow",
+        "result": {
+          "clock": "2026-11-01T00:00:03.123456+00:00",
+          "collected": [
+            null
+          ]
+        }
+      }
+    ]
+  }
+}
