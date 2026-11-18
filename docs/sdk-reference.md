@@ -203,6 +203,36 @@ and malformed, mismatched, cross-namespace, or stale tokens raise
 `ScheduleListError`, which retains `status`, `reason()`, `field`, `errors`,
 `last_safe_cursor`, and the complete server response in `body`.
 
+## Schedule origin
+
+A run started by a schedule can read the fire that started it from
+`ctx.schedule_origin`. It is a `ScheduleOrigin` with the `schedule_id`, the
+`occurrence_time` the scheduler evaluated and the `trigger_number`. A run that
+no schedule started reads `None`. The value comes from the run's
+`ScheduleTriggered` history event, so it is available on the first workflow
+task and identical on replay.
+
+Use `occurrence_time` to pick the window a scheduled workflow processes. For a
+tick it is the jittered fire time. For a backfill it is the enumerated past
+occurrence. It is not the run's start time or `ctx.now()`, so it does not
+drift with scheduler delay:
+
+```python
+@workflow.defn(name="reports.daily")
+class DailyReport:
+    def run(self, ctx: workflow.WorkflowContext):
+        origin = ctx.schedule_origin
+        if origin is None or origin.occurrence_time is None:
+            raise ValueError("start this workflow from a schedule")
+        end = origin.occurrence_time
+        start = end - timedelta(days=1)
+        return (yield ctx.schedule_activity("reports.build", [start.isoformat(), end.isoformat()]))
+```
+
+`occurrence_time` is `None` for a manual trigger, which records no occurrence.
+A continue-as-new successor keeps its predecessor's origin when the Server
+copies `ScheduleTriggered` into it (native Server 3.5.0 and later).
+
 ## Retry policy scopes
 
 Retry and timeout settings are scoped to the layer where you configure them:
