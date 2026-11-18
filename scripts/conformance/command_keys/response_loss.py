@@ -30,8 +30,8 @@ from durable_workflow.errors import SignalFailed, UpdateFailed
 from durable_workflow.retry_policy import TransportRetryPolicy
 
 WORKFLOW_TYPE = "sdk-python-command-response-loss"
-SDK_VERSION = "2.17.2"
-WHEEL_SHA256 = "7dc77d3882fa5cbddbeaee6a4cc63b05285e280523c8ea40dc31e03cc12a40bc"
+SDK_VERSION = "2.18.0"
+WHEEL_SHA256 = "bb5aeed3960823ec3d43ab7a7813b599dcae4a9889d60bd32f4f7191421f0841"
 PROXY_COMMIT = "117118c83093822469b3824ba9587ff4068ed29f"
 PROXY_SHA256 = "bd1e8ccbbf76f63fc2eafa278a023eb181d405b68d9c30016392e395a1eff725"
 PAYLOAD = {

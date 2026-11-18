@@ -5,8 +5,12 @@ This adapter exercises the published Python Client and actual Worker for
 It creates synthetic workflows and a disposable SQLite runtime. Its transport
 fault comes from the independently reviewed shared loopback fixture.
 
-The controller binds the qualified native image/source/platform from
-[Server's publication receipt](https://github.com/durable-workflow/server/pull/1209#issuecomment-6858140177).
+The controller binds the published native Server 3.13.0 image
+(`ghcr.io/durable-workflow/server` index
+`sha256:30ccaf2cea6810a92915a9eb389f1a63ea870818a74c9cc1a321379b07b2d25c`,
+linux/amd64 `sha256:6cdcb909b1ca46d10410d7f659fcbd292dbf02be0c337d989b886153c0f3ee56`,
+source `2d1244be4611e1bc4aa4f0d856c708bed17937b4`) from its
+[release](https://github.com/durable-workflow/server/releases/tag/3.13.0).
 Its interpreter is the published official Python image index
 `sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df`,
 amd64 child `sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4`.
@@ -58,7 +62,7 @@ qualification.
 /usr/bin/python3 -I -B -c "$BOOTSTRAP" "$REVIEWED_COMMIT" \
   scripts/conformance/command_keys/run_response_loss.py "$REVIEWED_SHA" \
   --runner-commit "$REVIEWED_COMMIT" \
-  --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
+  --wheel /path/to/downloaded/durable_workflow-2.18.0-py3-none-any.whl \
   --proxy /path/to/verified/committed_response_loss.py \
   --output /path/to/private-disk-scratch/new-run
 ```
@@ -133,7 +137,7 @@ is accepted.
 /usr/bin/python3 -I -B -c "$BOOTSTRAP" "$REVIEWED_COMMIT" \
   scripts/conformance/command_keys/run_physical_readback.py "$REVIEWED_SHA" \
   --runner-commit "$REVIEWED_COMMIT" \
-  --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
+  --wheel /path/to/downloaded/durable_workflow-2.18.0-py3-none-any.whl \
   --baseline /path/to/producer/stopped-backup.sqlite \
   --seed /path/to/producer/seed-receipts.json \
   --snapshot-helper /path/to/accepted/sqlite_legacy.py \
@@ -195,7 +199,7 @@ This setup is separate from the producer-owned physical historical seed.
   scripts/conformance/command_keys/run_synthetic_legacy.py "$REVIEWED_SHA" \
   --runner-commit "$REVIEWED_COMMIT" \
   --state open --scenario readback \
-  --wheel /path/to/downloaded/durable_workflow-2.17.2-py3-none-any.whl \
+  --wheel /path/to/downloaded/durable_workflow-2.18.0-py3-none-any.whl \
   --snapshot-helper /path/to/accepted/sqlite_legacy.py \
   --manifest /path/to/accepted/command-key-legacy-v1-vectors.json \
   --output /path/to/private-disk-scratch/new-synthetic-run

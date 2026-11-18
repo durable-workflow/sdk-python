@@ -86,7 +86,7 @@ class SnapshotReader:
             self.call(
                 "create",
                 "--name",
-                "sdk-python-216-" + role + "-" + self.nonce[:12],
+                "general-g216-py-" + role + "-" + self.nonce[:12],
                 "--label",
                 self.controls.OWNER_LABEL + "=sdk-python",
                 "--label",

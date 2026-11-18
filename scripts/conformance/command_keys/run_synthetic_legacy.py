@@ -136,7 +136,7 @@ def run_bound(args, inputs, controls, workspace):
                 call(
                     "create",
                     "--name",
-                    "sdk-python-216-synthetic-" + role + "-" + nonce[:12],
+                    "general-g216-py-synthetic-" + role + "-" + nonce[:12],
                     "--label",
                     controls.OWNER_LABEL + "=sdk-python",
                     "--label",
@@ -230,7 +230,7 @@ def run_bound(args, inputs, controls, workspace):
             },
         }
         identity = bind_id(
-            phase, controls.create_consumer(call, "sdk-python-216-synthetic-" + phase + "-" + nonce[:12], nonce, inputs)
+            phase, controls.create_consumer(call, "general-g216-py-synth-" + phase + "-" + nonce[:12], nonce, inputs)
         )
         result = subprocess.run(
             docker + ["start", "-a", "-i", identity],

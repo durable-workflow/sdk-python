@@ -197,7 +197,7 @@ def run_bound(args, inputs, controls, workspace):
     ]
 
     def create(role, *arguments):
-        name = "sdk-python-216-physical-" + role + "-" + nonce[:12]
+        name = "general-g216-py-physical-" + role + "-" + nonce[:12]
         identity = controls.created_id(call("create", "--name", name, *common, *arguments).stdout)
         if identity in [entry["id"] for entry in report["owned_containers"].values()]:
             raise ValueError("duplicate creation ID")
@@ -293,7 +293,7 @@ def run_bound(args, inputs, controls, workspace):
         }
         for value in inputs.values():
             value.recheck()
-        consumer_id = controls.create_consumer(call, "sdk-python-216-physical-consumer-" + nonce[:12], nonce, inputs)
+        consumer_id = controls.create_consumer(call, "general-g216-py-physical-consumer-" + nonce[:12], nonce, inputs)
         if consumer_id in [entry["id"] for entry in report["owned_containers"].values()]:
             raise ValueError("duplicate consumer ID")
         report["owned_containers"]["consumer"] = {"id": consumer_id}

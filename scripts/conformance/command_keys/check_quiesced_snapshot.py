@@ -143,7 +143,7 @@ def main(args):
 
         def create(role, *arguments):
             identity = controls.created_id(
-                call("create", "--name", "sdk-python-snapshot-" + role + "-" + nonce[:12], *common, *arguments).stdout
+                call("create", "--name", "general-g216-py-snap-" + role + "-" + nonce[:12], *common, *arguments).stdout
             )
             report["owned"][role] = identity
             report["owned_containers"][role] = {"id": identity}

@@ -19,16 +19,16 @@ from types import ModuleType
 from uuid import uuid4
 
 EXPECTED_SERVER = {
-    "version": "3.9.2",
-    "source": "5614274d2629d03f92932a07dfee0fb10349ddd9",
-    "index": "sha256:8ffcdb2a36af3129a1987849aafe8715fe0d3bf9a9648467f0b5cb8eeef43ba9",
-    "linux_amd64": "sha256:813c9337c44be7d497efd29e1b463546519e488aa796b5ecf9dfc6f4f10d2128",
-    "qualification": "https://github.com/durable-workflow/server/pull/1209#issuecomment-6858140177",
+    "version": "3.13.0",
+    "source": "2d1244be4611e1bc4aa4f0d856c708bed17937b4",
+    "index": "sha256:30ccaf2cea6810a92915a9eb389f1a63ea870818a74c9cc1a321379b07b2d25c",
+    "linux_amd64": "sha256:6cdcb909b1ca46d10410d7f659fcbd292dbf02be0c337d989b886153c0f3ee56",
+    "qualification": "https://github.com/durable-workflow/server/releases/tag/3.13.0",
 }
 PYTHON_INDEX = "sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df"
 PYTHON_AMD64 = "sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4"
 PYTHON_VERSION = "3.12.16"
-WHEEL_SHA256 = "7dc77d3882fa5cbddbeaee6a4cc63b05285e280523c8ea40dc31e03cc12a40bc"
+WHEEL_SHA256 = "bb5aeed3960823ec3d43ab7a7813b599dcae4a9889d60bd32f4f7191421f0841"
 PROXY_SHA256 = "bd1e8ccbbf76f63fc2eafa278a023eb181d405b68d9c30016392e395a1eff725"
 RESULT_PREFIX = "SDK_PYTHON_CONSUMER_RESULT="
 OWNER_LABEL = "dev.durable-workflow.fixture-owner"
@@ -267,7 +267,7 @@ def run_bound(args, inputs, workspace):
     interpreter = interpreter_identity(json.loads(call("image", "inspect", python_image).stdout))
     nonce = uuid4().hex
     suffix = nonce[:12]
-    names = ["sdk-python-216-response-loss-" + suffix, "sdk-python-216-consumer-" + suffix]
+    names = ["general-g216-py-response-loss-" + suffix, "general-g216-py-consumer-" + suffix]
     token = secrets.token_hex(24)
     credential = workspace.write(
         "fixture.env", "DW_AUTH_TOKEN=" + token + "\nDW_RUNTIME_CREDENTIALS_ENABLED=false\nDB_CONNECTION=sqlite\n"
