@@ -2226,6 +2226,48 @@ class _OpenCancellationScope:
     shield_parent: bool
 
 
+@dataclass(frozen=True)
+class ScheduleOrigin:
+    """The schedule fire that started a run, read from its ``ScheduleTriggered`` event.
+
+    ``occurrence_time`` is the time the scheduler evaluated: the jittered fire
+    time for a tick, or the enumerated time for a backfill. It is not the run's
+    actual start time. It is ``None`` for a fire recorded without an occurrence,
+    such as a manual trigger.
+    """
+
+    schedule_id: str
+    occurrence_time: datetime | None
+    trigger_number: int | None
+
+
+def _schedule_origin(events: Iterable[Mapping[str, Any]]) -> ScheduleOrigin | None:
+    """The run's own schedule origin from recorded history, or ``None``."""
+    for event in events:
+        if _history_event_type(event) != "ScheduleTriggered":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            return None
+        schedule_id = payload.get("schedule_id")
+        if not isinstance(schedule_id, str) or schedule_id == "":
+            return None
+        occurrence: datetime | None = None
+        recorded = payload.get("occurrence_time")
+        if isinstance(recorded, str):
+            with contextlib.suppress(ValueError):
+                parsed = datetime.fromisoformat(recorded.replace("Z", "+00:00"))
+                if parsed.utcoffset() is not None:
+                    occurrence = parsed
+        trigger = payload.get("trigger_number")
+        return ScheduleOrigin(
+            schedule_id=schedule_id,
+            occurrence_time=occurrence,
+            trigger_number=trigger if type(trigger) is int and trigger > 0 else None,
+        )
+    return None
+
+
 class WorkflowContext:
     """Replay-safe helper surface passed to workflow ``run`` methods."""
 
@@ -2273,6 +2315,7 @@ class WorkflowContext:
         self._external_storage = external_storage
         self._external_storage_cache = external_storage_cache
         self._workflow_stream_command_counter = 0
+        self._schedule_origin: ScheduleOrigin | None = None
         self.logger = _ReplayLogger(_REPLAY_LOGGER)
 
     @property
@@ -2284,6 +2327,15 @@ class WorkflowContext:
     def run_id(self) -> str:
         """Current run identity, stable on replay and new after continue-as-new."""
         return self._run_id
+
+    @property
+    def schedule_origin(self) -> ScheduleOrigin | None:
+        """The schedule fire that started this run, or ``None`` if no schedule did.
+
+        It comes from the run's recorded ``ScheduleTriggered`` history event, so
+        it is available on the first workflow task and identical on replay.
+        """
+        return self._schedule_origin
 
     def cancellation_scope(
         self, body: Callable[[], Any], *, shield_parent: bool = False,
@@ -5331,6 +5383,7 @@ def _replay_state(
         _allow_wall_clock=not events,
     )
     ctx._replay_clock_error = replay_clock_error if workflow_start_time is None else None
+    ctx._schedule_origin = _schedule_origin(events)
     ctx._business_clock = replay_clock.BusinessReplayClock(
         events, workflow_id or "", run_id, sequence_claim=_workflow_sequence,
     )

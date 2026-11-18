@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `WorkflowContext.schedule_origin` returns the schedule fire that started the run as a `ScheduleOrigin` (`schedule_id`, `occurrence_time`, `trigger_number`), or `None` for a run no schedule started (durable-workflow/.github#243). It reads the run's `ScheduleTriggered` history event, so it is available on the first workflow task and identical on replay. `occurrence_time` is the time the scheduler evaluated (the jittered fire time for a tick, the enumerated time for a backfill), not the run's start time, and is `None` for a manual trigger. Histories without the event read `None`, so existing runs replay unchanged.
 - A 409 `request_id_ambiguous` refusal from native Server 3.9.2 and later now raises the typed `SignalFailed` or `UpdateFailed` with `reason == "request_id_ambiguous"` and the sent `request_id`, like `request_id_conflict` (durable-workflow/.github#216). It means the command key matches an ambiguous legacy retained identity (a raw legacy key and a hashed key, or keys differing only by case on a case-insensitive database). Nothing was written and no receipt was selected; it is never resent automatically. The new `errors.REQUEST_ID_AMBIGUOUS` names the reason. A legacy receipt retained before the Server recorded command intent is still returned as a receipt with `retained: True` and `intent_verified: False`. Signal and update docstrings now describe command keys as 1-255 Unicode characters, matching the Server limit.
 
 ### Fixed

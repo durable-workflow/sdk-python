@@ -394,6 +394,21 @@ class NexusCooperativeDeliveryWorkflow:
             return error.request_id
 
 
+@workflow.defn(name="tests.replay.schedule-origin-window")
+class ScheduleOriginWindowWorkflow:
+    """Picks its processing window from the schedule occurrence (.github#243)."""
+
+    def run(self, ctx: WorkflowContext) -> Any:
+        origin = ctx.schedule_origin
+        if origin is None:
+            return None
+        return {
+            "schedule_id": origin.schedule_id,
+            "window_end": None if origin.occurrence_time is None else origin.occurrence_time.isoformat(),
+            "trigger_number": origin.trigger_number,
+        }
+
+
 @workflow.defn(name="tests.replay.blank-failure")
 class BlankFailureWorkflow:
     def run(self, ctx: WorkflowContext, message: str) -> None:
@@ -401,6 +416,7 @@ class BlankFailureWorkflow:
 
 
 WORKFLOWS = [
+    ScheduleOriginWindowWorkflow,
     ChildBusinessClockWorkflow,
     ParallelActivityBusinessClockWorkflow,
     ParallelFailureBusinessClockWorkflow,
