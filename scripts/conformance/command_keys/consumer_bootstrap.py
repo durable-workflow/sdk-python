@@ -37,7 +37,11 @@ def approved_environment_link(relative, target):
 
 def decode_inputs(bundle):
     scenario = bundle.get("scenario", "response_loss")
-    roles = ROLES if scenario == "response_loss" else PHYSICAL_ROLES if scenario == "physical_readback" else None
+    roles = (
+        ROLES if scenario == "response_loss"
+        else PHYSICAL_ROLES if scenario in {"physical_readback", "synthetic_legacy"}
+        else None
+    )
     if roles is None or set(bundle["sources"]) != roles:
         raise ValueError("captured source roles differ")
     result = {}
