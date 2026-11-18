@@ -119,10 +119,7 @@ def test_changed_policies_fail_cold_replay_and_cancellation_delivery(mode: str, 
         assert replay(workflow(mode, policies), history, [], run_id="run-1").commands == [CompleteWorkflow("request-1")]
     else:
         cold = replay(workflow(mode, policies), history, [])
-        if mode in ("sequential", "selection"):
-            assert cold.commands == []
-        else:
-            assert scheduled(cold.commands) == history
+        assert cold.commands == []
     policies[field] = "abandon"
     with pytest.raises(NonDeterministicReplayError, match="child_workflow_policy_changed") as captured:
         replay(workflow(mode, policies), history, [], run_id="run-1")

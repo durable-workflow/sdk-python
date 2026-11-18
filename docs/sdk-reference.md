@@ -491,9 +491,16 @@ results = yield [
 profile, (shipping, _) = results
 ```
 
-One failed activity or child is thrown at the list-yield point by durable input
-position. Already recorded sibling completions remain replayable; late and
-exact duplicate terminal deliveries do not change the selected result.
+A failed activity or child is thrown at the list-yield point as soon as it is
+recorded. The other members keep running; their later outcomes do not change
+the thrown failure or reach the workflow's next operations. If every member
+had already settled when the workflow resumed, the failure with the lowest
+durable input position is thrown. A group whose members are already scheduled
+is never scheduled again on a later wake, such as a signal. When a failure is
+raised while other members are open, the worker records which member it
+raised as a side effect directly after the group, so every later replay raises
+the same one. Code after such a group therefore starts one workflow sequence
+later.
 
 ## Saga compensation
 

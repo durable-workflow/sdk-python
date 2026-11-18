@@ -18,6 +18,7 @@ from durable_workflow.workflow import (
     CompleteWorkflow,
     FailUpdate,
     LocalActivityExecutionAborted,
+    RecordSideEffect,
     WorkflowContext,
     _read_parallel_group_policies,
     _replay_state,
@@ -50,11 +51,15 @@ class ParallelFailurePolicyWorkflow:
         return self.caught
 
 
-def test_absent_policy_keeps_the_failure_handler_suspended_until_all_members_settle() -> None:
+def test_absent_policy_raises_the_first_failure_while_a_sibling_is_open() -> None:
+    """Server wakes the workflow once, for the failure, and never again for this
+    group. Waiting for the open sibling would block the run (sdk-python#338)."""
     history = json.loads(FIXTURE.read_text())["history"]
     outcome = replay(ParallelFailurePolicyWorkflow, history, [])
-    assert not any(isinstance(command, CompleteWorkflow) for command in outcome.commands)
-    assert query_state(ParallelFailurePolicyWorkflow, history, [], "caught") is None
+    # The task records which member it raised, then completes.
+    assert [type(command) for command in outcome.commands] == [RecordSideEffect, CompleteWorkflow]
+    assert outcome.commands[1] == CompleteWorkflow("fast-second")
+    assert query_state(ParallelFailurePolicyWorkflow, history, [], "caught") == "fast-second"
 
 
 def test_absent_policy_preserves_positional_failure_after_a_later_sibling_settles() -> None:
@@ -101,7 +106,7 @@ def test_explicit_propagate_raises_while_the_other_member_is_open() -> None:
 
 def test_enabling_draft_support_does_not_change_absent_policy_history() -> None:
     history = json.loads(FIXTURE.read_text())["history"]
-    assert not any(isinstance(command, CompleteWorkflow) for command in draft_replay(history).commands)
+    assert draft_replay(history).commands == replay(ParallelFailurePolicyWorkflow, history, []).commands
 
 
 def test_enabling_draft_support_keeps_the_legacy_failure_clock_gap() -> None:

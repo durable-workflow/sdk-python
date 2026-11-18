@@ -2342,9 +2342,9 @@ class TestFanOut:
 
         outcome = replay(FanOutActivityTimerWorkflow, history, [])
 
-        assert len(outcome.commands) == 2
-        assert isinstance(outcome.commands[0], ScheduleActivity)
-        assert isinstance(outcome.commands[1], StartTimer)
+        # Both members are already scheduled, so the workflow waits for them
+        # instead of sending the batch again (sdk-python#338).
+        assert outcome.commands == []
 
     def test_fan_out_then_sequential(self) -> None:
         history = [

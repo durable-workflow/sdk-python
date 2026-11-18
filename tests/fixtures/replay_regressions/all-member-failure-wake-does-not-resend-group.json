@@ -1,0 +1,883 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "all-member-failure-wake-does-not-resend-group",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "all_member_failure_open_siblings": {
+    "issues": [
+      "durable-workflow/sdk-python#338"
+    ],
+    "note": "Native Server 3.13.0 history at the failure wake: seven members scheduled, the second failed while the others were open. Server wakes the workflow once for the failure and never again for this group. Python 2.17.2 and 2.18.0 sent the seven schedule_activity commands again, which Server refused with 409 parallel_sequence_mismatch, and the run blocked. The failure now raises at the group, and the task records which member it raised before failing the run."
+  },
+  "workflow": {
+    "type": "py338.uncaught",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "timestamp": "2026-11-18T14:53:34.434000Z",
+      "principal": {
+        "type": "auth:token",
+        "id": "legacy-token",
+        "label": "Admin"
+      },
+      "payload": {
+        "workflow_instance_id": "py338-uncaught-1795013614",
+        "workflow_run_id": "01M7QJC6V1EP4HRY2ERKSJWCBP",
+        "workflow_type": "py338.uncaught",
+        "workflow_class": "py338.uncaught",
+        "workflow_command_id": "01M7QJC6V1EP4HRY2ERKSJWCBQ",
+        "memo": null,
+        "business_key": null,
+        "visibility_labels": null,
+        "search_attributes": null,
+        "outcome": "started_new",
+        "command": {
+          "id": "01M7QJC6V1EP4HRY2ERKSJWCBQ",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01M7QJC6V1EP4HRY2ERKSJWCBP",
+          "payload_codec": "avro",
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          },
+          "source": "control_plane",
+          "context": {
+            "principal": {
+              "type": "auth:token",
+              "id": "legacy-token",
+              "label": "Admin"
+            }
+          },
+          "caller_label": "Standalone Server",
+          "principal_type": "auth:token",
+          "principal_id": "legacy-token",
+          "principal_label": "Admin",
+          "auth_status": "authorized",
+          "auth_method": "token",
+          "request_method": "POST",
+          "request_path": "/api/workflows",
+          "request_fingerprint": "sha256:0f3d51533aa22b8d309d2ec96692da5fcecfb3c7d109db63815c702671ead0ea",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-11-18T14:53:34.433000Z",
+          "applied_at": "2026-11-18T14:53:34.433000Z"
+        }
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "timestamp": "2026-11-18T14:53:34.437000Z",
+      "principal": {
+        "type": "auth:token",
+        "id": "legacy-token",
+        "label": "Admin"
+      },
+      "payload": {
+        "workflow_instance_id": "py338-uncaught-1795013614",
+        "workflow_run_id": "01M7QJC6V1EP4HRY2ERKSJWCBP",
+        "workflow_type": "py338.uncaught",
+        "workflow_class": "py338.uncaught",
+        "workflow_command_id": "01M7QJC6V1EP4HRY2ERKSJWCBQ",
+        "execution_timeout_seconds": 3600,
+        "run_timeout_seconds": 600,
+        "execution_deadline_at": "2026-11-18T15:53:34.433Z",
+        "run_deadline_at": "2026-11-18T15:03:34.433Z",
+        "workflow_definition_fingerprint": "sha256:de24161a8719e113906f97bc7f267fa64e700a142939309e96e2b7c840273bab",
+        "workflow_definition_fingerprint_source": "worker",
+        "declared_signals": [],
+        "declared_signal_contracts": [],
+        "declared_queries": [],
+        "declared_query_contracts": [],
+        "declared_updates": [],
+        "declared_update_contracts": [],
+        "declared_update_validators": [],
+        "declared_entry_method": "handle",
+        "declared_entry_mode": "canonical",
+        "declared_entry_declaring_class": "external:py338.uncaught",
+        "command": {
+          "id": "01M7QJC6V1EP4HRY2ERKSJWCBQ",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01M7QJC6V1EP4HRY2ERKSJWCBP",
+          "payload_codec": "avro",
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          },
+          "source": "control_plane",
+          "context": {
+            "principal": {
+              "type": "auth:token",
+              "id": "legacy-token",
+              "label": "Admin"
+            }
+          },
+          "caller_label": "Standalone Server",
+          "principal_type": "auth:token",
+          "principal_id": "legacy-token",
+          "principal_label": "Admin",
+          "auth_status": "authorized",
+          "auth_method": "token",
+          "request_method": "POST",
+          "request_path": "/api/workflows",
+          "request_fingerprint": "sha256:0f3d51533aa22b8d309d2ec96692da5fcecfb3c7d109db63815c702671ead0ea",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-11-18T14:53:34.433000Z",
+          "applied_at": "2026-11-18T14:53:34.433000Z"
+        }
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityScheduled",
+      "timestamp": "2026-11-18T14:53:34.543000Z",
+      "principal": null,
+      "payload": {
+        "activity_execution_id": "01M7QJC6YEH5N76ZECA5H1K4M6",
+        "activity_type": "py338.slow",
+        "activity_class": "py338.slow",
+        "sequence": 1,
+        "activity": {
+          "id": "01M7QJC6YEH5N76ZECA5H1K4M6",
+          "idempotency_key": "01M7QJC6YEH5N76ZECA5H1K4M6",
+          "sequence": 1,
+          "type": "py338.slow",
+          "class": "py338.slow",
+          "local_activity": false,
+          "activity_type": "py338.slow",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAQA"
+          },
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "non_retryable_error_types": [],
+            "start_to_close_timeout": 60,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null
+          },
+          "status": "pending",
+          "attempt_count": 0,
+          "closed_at": null,
+          "attempt_id": null,
+          "exception": null,
+          "payload_codec": "avro",
+          "queue": "py338-uncaught"
+        },
+        "parallel_group_id": "parallel-activities:1:7",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 7,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:7",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 7,
+            "parallel_group_index": 0
+          }
+        ],
+        "task": {
+          "id": "01M7QJC6V5GEHZEC9Q4Q73Y7HX",
+          "type": "workflow",
+          "status": "leased",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "queue": "py338-uncaught",
+          "connection": "sqlite",
+          "available_at": "2026-11-18T14:53:34.437000Z",
+          "leased_at": "2026-11-18T14:53:34.471000Z",
+          "lease_expires_at": "2026-11-18T14:54:34.471000Z",
+          "last_dispatch_attempt_at": "2026-11-18T14:53:34.437000Z",
+          "last_dispatched_at": "2026-11-18T14:53:34.437000Z",
+          "lease_owner": "py-worker-fcdd0a88"
+        }
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "ActivityScheduled",
+      "timestamp": "2026-11-18T14:53:34.544000Z",
+      "principal": null,
+      "payload": {
+        "activity_execution_id": "01M7QJC6YG2TPZJJZ7N4K1ZG29",
+        "activity_type": "py338.boom",
+        "activity_class": "py338.boom",
+        "sequence": 2,
+        "activity": {
+          "id": "01M7QJC6YG2TPZJJZ7N4K1ZG29",
+          "idempotency_key": "01M7QJC6YG2TPZJJZ7N4K1ZG29",
+          "sequence": 2,
+          "type": "py338.boom",
+          "class": "py338.boom",
+          "local_activity": false,
+          "activity_type": "py338.boom",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAAA"
+          },
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "non_retryable_error_types": [],
+            "start_to_close_timeout": 60,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null
+          },
+          "status": "pending",
+          "attempt_count": 0,
+          "closed_at": null,
+          "attempt_id": null,
+          "exception": null,
+          "payload_codec": "avro",
+          "queue": "py338-uncaught"
+        },
+        "parallel_group_id": "parallel-activities:1:7",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 7,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:7",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 7,
+            "parallel_group_index": 1
+          }
+        ],
+        "task": {
+          "id": "01M7QJC6V5GEHZEC9Q4Q73Y7HX",
+          "type": "workflow",
+          "status": "leased",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "queue": "py338-uncaught",
+          "connection": "sqlite",
+          "available_at": "2026-11-18T14:53:34.437000Z",
+          "leased_at": "2026-11-18T14:53:34.471000Z",
+          "lease_expires_at": "2026-11-18T14:54:34.471000Z",
+          "last_dispatch_attempt_at": "2026-11-18T14:53:34.437000Z",
+          "last_dispatched_at": "2026-11-18T14:53:34.437000Z",
+          "lease_owner": "py-worker-fcdd0a88"
+        }
+      }
+    },
+    {
+      "sequence": 5,
+      "event_type": "ActivityScheduled",
+      "timestamp": "2026-11-18T14:53:34.544000Z",
+      "principal": null,
+      "payload": {
+        "activity_execution_id": "01M7QJC6YG2TPZJJZ7N4K1ZG2C",
+        "activity_type": "py338.slow",
+        "activity_class": "py338.slow",
+        "sequence": 3,
+        "activity": {
+          "id": "01M7QJC6YG2TPZJJZ7N4K1ZG2C",
+          "idempotency_key": "01M7QJC6YG2TPZJJZ7N4K1ZG2C",
+          "sequence": 3,
+          "type": "py338.slow",
+          "class": "py338.slow",
+          "local_activity": false,
+          "activity_type": "py338.slow",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAQA"
+          },
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "non_retryable_error_types": [],
+            "start_to_close_timeout": 60,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null
+          },
+          "status": "pending",
+          "attempt_count": 0,
+          "closed_at": null,
+          "attempt_id": null,
+          "exception": null,
+          "payload_codec": "avro",
+          "queue": "py338-uncaught"
+        },
+        "parallel_group_id": "parallel-activities:1:7",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 7,
+        "parallel_group_index": 2,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:7",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 7,
+            "parallel_group_index": 2
+          }
+        ],
+        "task": {
+          "id": "01M7QJC6V5GEHZEC9Q4Q73Y7HX",
+          "type": "workflow",
+          "status": "leased",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "queue": "py338-uncaught",
+          "connection": "sqlite",
+          "available_at": "2026-11-18T14:53:34.437000Z",
+          "leased_at": "2026-11-18T14:53:34.471000Z",
+          "lease_expires_at": "2026-11-18T14:54:34.471000Z",
+          "last_dispatch_attempt_at": "2026-11-18T14:53:34.437000Z",
+          "last_dispatched_at": "2026-11-18T14:53:34.437000Z",
+          "lease_owner": "py-worker-fcdd0a88"
+        }
+      }
+    },
+    {
+      "sequence": 6,
+      "event_type": "ActivityScheduled",
+      "timestamp": "2026-11-18T14:53:34.545000Z",
+      "principal": null,
+      "payload": {
+        "activity_execution_id": "01M7QJC6YHC8CZ0PGK8M9A5M6A",
+        "activity_type": "py338.slow",
+        "activity_class": "py338.slow",
+        "sequence": 4,
+        "activity": {
+          "id": "01M7QJC6YHC8CZ0PGK8M9A5M6A",
+          "idempotency_key": "01M7QJC6YHC8CZ0PGK8M9A5M6A",
+          "sequence": 4,
+          "type": "py338.slow",
+          "class": "py338.slow",
+          "local_activity": false,
+          "activity_type": "py338.slow",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAQA"
+          },
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "non_retryable_error_types": [],
+            "start_to_close_timeout": 60,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null
+          },
+          "status": "pending",
+          "attempt_count": 0,
+          "closed_at": null,
+          "attempt_id": null,
+          "exception": null,
+          "payload_codec": "avro",
+          "queue": "py338-uncaught"
+        },
+        "parallel_group_id": "parallel-activities:1:7",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 7,
+        "parallel_group_index": 3,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:7",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 7,
+            "parallel_group_index": 3
+          }
+        ],
+        "task": {
+          "id": "01M7QJC6V5GEHZEC9Q4Q73Y7HX",
+          "type": "workflow",
+          "status": "leased",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "queue": "py338-uncaught",
+          "connection": "sqlite",
+          "available_at": "2026-11-18T14:53:34.437000Z",
+          "leased_at": "2026-11-18T14:53:34.471000Z",
+          "lease_expires_at": "2026-11-18T14:54:34.471000Z",
+          "last_dispatch_attempt_at": "2026-11-18T14:53:34.437000Z",
+          "last_dispatched_at": "2026-11-18T14:53:34.437000Z",
+          "lease_owner": "py-worker-fcdd0a88"
+        }
+      }
+    },
+    {
+      "sequence": 7,
+      "event_type": "ActivityScheduled",
+      "timestamp": "2026-11-18T14:53:34.545000Z",
+      "principal": null,
+      "payload": {
+        "activity_execution_id": "01M7QJC6YHC8CZ0PGK8M9A5M6D",
+        "activity_type": "py338.slow",
+        "activity_class": "py338.slow",
+        "sequence": 5,
+        "activity": {
+          "id": "01M7QJC6YHC8CZ0PGK8M9A5M6D",
+          "idempotency_key": "01M7QJC6YHC8CZ0PGK8M9A5M6D",
+          "sequence": 5,
+          "type": "py338.slow",
+          "class": "py338.slow",
+          "local_activity": false,
+          "activity_type": "py338.slow",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAQA"
+          },
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "non_retryable_error_types": [],
+            "start_to_close_timeout": 60,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null
+          },
+          "status": "pending",
+          "attempt_count": 0,
+          "closed_at": null,
+          "attempt_id": null,
+          "exception": null,
+          "payload_codec": "avro",
+          "queue": "py338-uncaught"
+        },
+        "parallel_group_id": "parallel-activities:1:7",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 7,
+        "parallel_group_index": 4,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:7",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 7,
+            "parallel_group_index": 4
+          }
+        ],
+        "task": {
+          "id": "01M7QJC6V5GEHZEC9Q4Q73Y7HX",
+          "type": "workflow",
+          "status": "leased",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "queue": "py338-uncaught",
+          "connection": "sqlite",
+          "available_at": "2026-11-18T14:53:34.437000Z",
+          "leased_at": "2026-11-18T14:53:34.471000Z",
+          "lease_expires_at": "2026-11-18T14:54:34.471000Z",
+          "last_dispatch_attempt_at": "2026-11-18T14:53:34.437000Z",
+          "last_dispatched_at": "2026-11-18T14:53:34.437000Z",
+          "lease_owner": "py-worker-fcdd0a88"
+        }
+      }
+    },
+    {
+      "sequence": 8,
+      "event_type": "ActivityScheduled",
+      "timestamp": "2026-11-18T14:53:34.546000Z",
+      "principal": null,
+      "payload": {
+        "activity_execution_id": "01M7QJC6YHC8CZ0PGK8M9A5M6G",
+        "activity_type": "py338.slow",
+        "activity_class": "py338.slow",
+        "sequence": 6,
+        "activity": {
+          "id": "01M7QJC6YHC8CZ0PGK8M9A5M6G",
+          "idempotency_key": "01M7QJC6YHC8CZ0PGK8M9A5M6G",
+          "sequence": 6,
+          "type": "py338.slow",
+          "class": "py338.slow",
+          "local_activity": false,
+          "activity_type": "py338.slow",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAQA"
+          },
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "non_retryable_error_types": [],
+            "start_to_close_timeout": 60,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null
+          },
+          "status": "pending",
+          "attempt_count": 0,
+          "closed_at": null,
+          "attempt_id": null,
+          "exception": null,
+          "payload_codec": "avro",
+          "queue": "py338-uncaught"
+        },
+        "parallel_group_id": "parallel-activities:1:7",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 7,
+        "parallel_group_index": 5,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:7",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 7,
+            "parallel_group_index": 5
+          }
+        ],
+        "task": {
+          "id": "01M7QJC6V5GEHZEC9Q4Q73Y7HX",
+          "type": "workflow",
+          "status": "leased",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "queue": "py338-uncaught",
+          "connection": "sqlite",
+          "available_at": "2026-11-18T14:53:34.437000Z",
+          "leased_at": "2026-11-18T14:53:34.471000Z",
+          "lease_expires_at": "2026-11-18T14:54:34.471000Z",
+          "last_dispatch_attempt_at": "2026-11-18T14:53:34.437000Z",
+          "last_dispatched_at": "2026-11-18T14:53:34.437000Z",
+          "lease_owner": "py-worker-fcdd0a88"
+        }
+      }
+    },
+    {
+      "sequence": 9,
+      "event_type": "ActivityScheduled",
+      "timestamp": "2026-11-18T14:53:34.546000Z",
+      "principal": null,
+      "payload": {
+        "activity_execution_id": "01M7QJC6YJGZGTFT25SG9X14F8",
+        "activity_type": "py338.slow",
+        "activity_class": "py338.slow",
+        "sequence": 7,
+        "activity": {
+          "id": "01M7QJC6YJGZGTFT25SG9X14F8",
+          "idempotency_key": "01M7QJC6YJGZGTFT25SG9X14F8",
+          "sequence": 7,
+          "type": "py338.slow",
+          "class": "py338.slow",
+          "local_activity": false,
+          "activity_type": "py338.slow",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAQA"
+          },
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "non_retryable_error_types": [],
+            "start_to_close_timeout": 60,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null
+          },
+          "status": "pending",
+          "attempt_count": 0,
+          "closed_at": null,
+          "attempt_id": null,
+          "exception": null,
+          "payload_codec": "avro",
+          "queue": "py338-uncaught"
+        },
+        "parallel_group_id": "parallel-activities:1:7",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 7,
+        "parallel_group_index": 6,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:7",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 7,
+            "parallel_group_index": 6
+          }
+        ],
+        "task": {
+          "id": "01M7QJC6V5GEHZEC9Q4Q73Y7HX",
+          "type": "workflow",
+          "status": "leased",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "queue": "py338-uncaught",
+          "connection": "sqlite",
+          "available_at": "2026-11-18T14:53:34.437000Z",
+          "leased_at": "2026-11-18T14:53:34.471000Z",
+          "lease_expires_at": "2026-11-18T14:54:34.471000Z",
+          "last_dispatch_attempt_at": "2026-11-18T14:53:34.437000Z",
+          "last_dispatched_at": "2026-11-18T14:53:34.437000Z",
+          "lease_owner": "py-worker-fcdd0a88"
+        }
+      }
+    },
+    {
+      "sequence": 10,
+      "event_type": "ActivityStarted",
+      "timestamp": "2026-11-18T14:53:34.601000Z",
+      "principal": null,
+      "payload": {
+        "activity_execution_id": "01M7QJC6YEH5N76ZECA5H1K4M6",
+        "activity_type": "py338.slow",
+        "activity_class": "py338.slow",
+        "sequence": 1,
+        "activity": {
+          "id": "01M7QJC6YEH5N76ZECA5H1K4M6",
+          "idempotency_key": "01M7QJC6YEH5N76ZECA5H1K4M6",
+          "sequence": 1,
+          "type": "py338.slow",
+          "class": "py338.slow",
+          "local_activity": false,
+          "activity_type": "py338.slow",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAQA"
+          },
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "non_retryable_error_types": [],
+            "start_to_close_timeout": 60,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null
+          },
+          "status": "running",
+          "attempt_count": 1,
+          "closed_at": null,
+          "attempt_id": "01M7QJC709MNWMFHKQPDETXFD0",
+          "exception": null,
+          "payload_codec": "avro",
+          "queue": "py338-uncaught",
+          "started_at": "2026-11-18T14:53:34.601Z"
+        },
+        "parallel_group_id": "parallel-activities:1:7",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 7,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:7",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 7,
+            "parallel_group_index": 0
+          }
+        ],
+        "activity_attempt_id": "01M7QJC709MNWMFHKQPDETXFD0",
+        "attempt_number": 1,
+        "task": {
+          "id": "01M7QJC6YF8SAXEZ7S9EKTP6F7",
+          "type": "activity",
+          "status": "leased",
+          "repair_count": 0,
+          "available_at": "2026-11-18T14:53:34.543Z",
+          "leased_at": "2026-11-18T14:53:34.601Z",
+          "lease_owner": "py-worker-fcdd0a88",
+          "lease_expires_at": "2026-11-18T14:58:34.601Z",
+          "attempt_count": 1,
+          "queue": "py338-uncaught",
+          "connection": "sqlite"
+        }
+      }
+    },
+    {
+      "sequence": 11,
+      "event_type": "ActivityStarted",
+      "timestamp": "2026-11-18T14:53:34.698000Z",
+      "principal": null,
+      "payload": {
+        "activity_execution_id": "01M7QJC6YG2TPZJJZ7N4K1ZG29",
+        "activity_type": "py338.boom",
+        "activity_class": "py338.boom",
+        "sequence": 2,
+        "activity": {
+          "id": "01M7QJC6YG2TPZJJZ7N4K1ZG29",
+          "idempotency_key": "01M7QJC6YG2TPZJJZ7N4K1ZG29",
+          "sequence": 2,
+          "type": "py338.boom",
+          "class": "py338.boom",
+          "local_activity": false,
+          "activity_type": "py338.boom",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAAA"
+          },
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "non_retryable_error_types": [],
+            "start_to_close_timeout": 60,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null
+          },
+          "status": "running",
+          "attempt_count": 1,
+          "closed_at": null,
+          "attempt_id": "01M7QJC73AJJYCP3C114R95HTN",
+          "exception": null,
+          "payload_codec": "avro",
+          "queue": "py338-uncaught",
+          "started_at": "2026-11-18T14:53:34.698Z"
+        },
+        "parallel_group_id": "parallel-activities:1:7",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 7,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:7",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 7,
+            "parallel_group_index": 1
+          }
+        ],
+        "activity_attempt_id": "01M7QJC73AJJYCP3C114R95HTN",
+        "attempt_number": 1,
+        "task": {
+          "id": "01M7QJC6YG2TPZJJZ7N4K1ZG2B",
+          "type": "activity",
+          "status": "leased",
+          "repair_count": 0,
+          "available_at": "2026-11-18T14:53:34.544Z",
+          "leased_at": "2026-11-18T14:53:34.698Z",
+          "lease_owner": "py-worker-fcdd0a88",
+          "lease_expires_at": "2026-11-18T14:58:34.698Z",
+          "attempt_count": 1,
+          "queue": "py338-uncaught",
+          "connection": "sqlite"
+        }
+      }
+    },
+    {
+      "sequence": 12,
+      "event_type": "ActivityFailed",
+      "timestamp": "2026-11-18T14:53:34.759000Z",
+      "principal": null,
+      "payload": {
+        "activity_execution_id": "01M7QJC6YG2TPZJJZ7N4K1ZG29",
+        "activity_type": "py338.boom",
+        "activity_class": "py338.boom",
+        "sequence": 2,
+        "activity": {
+          "id": "01M7QJC6YG2TPZJJZ7N4K1ZG29",
+          "idempotency_key": "01M7QJC6YG2TPZJJZ7N4K1ZG29",
+          "sequence": 2,
+          "type": "py338.boom",
+          "class": "py338.boom",
+          "local_activity": false,
+          "activity_type": "py338.boom",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAAA"
+          },
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "non_retryable_error_types": [],
+            "start_to_close_timeout": 60,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null
+          },
+          "status": "failed",
+          "attempt_count": 1,
+          "closed_at": "2026-11-18T14:53:34.759Z",
+          "attempt_id": "01M7QJC73AJJYCP3C114R95HTN",
+          "exception": {
+            "code": 0,
+            "type": "RuntimeError",
+            "message": "boom"
+          },
+          "payload_codec": "avro",
+          "queue": "py338-uncaught",
+          "started_at": "2026-11-18T14:53:34.698Z"
+        },
+        "parallel_group_id": "parallel-activities:1:7",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 7,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:7",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 7,
+            "parallel_group_index": 1
+          }
+        ],
+        "activity_attempt_id": "01M7QJC73AJJYCP3C114R95HTN",
+        "attempt_number": 1,
+        "failure_id": "01M7QJC7578R1P6HN9085J68BP",
+        "failure_category": "activity",
+        "non_retryable": false,
+        "exception_type": "RuntimeError",
+        "exception_class": "builtins.RuntimeError",
+        "message": "boom",
+        "code": 0,
+        "exception": {
+          "type": "RuntimeError",
+          "message": "boom",
+          "code": 0
+        },
+        "task": {
+          "id": "01M7QJC6YG2TPZJJZ7N4K1ZG2B",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-18T14:53:34.544Z",
+          "leased_at": "2026-11-18T14:53:34.698Z",
+          "lease_owner": "py-worker-fcdd0a88",
+          "lease_expires_at": "2026-11-18T14:58:34.733Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "queue": "py338-uncaught",
+          "connection": "sqlite"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "record_side_effect"
+      },
+      {
+        "type": "fail_workflow",
+        "message": "boom"
+      }
+    ]
+  }
+}
