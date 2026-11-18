@@ -1405,12 +1405,12 @@ supervision. The SDK cannot forcibly stop a running native thread or undo its
 external effects. Keep side effects idempotent and heartbeat at useful progress
 boundaries.
 
-### Acknowledged heartbeat checkpoints (unreleased)
+### Acknowledged heartbeat checkpoints
 
-The source API adds `activity.context().last_heartbeat_checkpoint()`,
+SDK 2.18.0 adds `activity.context().last_heartbeat_checkpoint()`,
 `last_heartbeat_details(result_type=...)`, `last_heartbeat_at()` and
-`heartbeat_resume_version()`. Package publication and installed cold-replacement
-qualification are pending under [shared #218](https://github.com/durable-workflow/.github/issues/218).
+`heartbeat_resume_version()`. Installed cold-replacement qualification is
+tracked under [shared #218](https://github.com/durable-workflow/.github/issues/218).
 
 A participating claim must advertise `activity_heartbeat_resume` version 1 and
 carry both checkpoint fields for its original execution, attempt, run and

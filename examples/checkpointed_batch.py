@@ -1,4 +1,4 @@
-"""Bounded source example using the unreleased checkpoint API. See CHECKPOINTED_BATCH.md."""
+"""Bounded source example using the SDK 2.18.0 checkpoint API. See CHECKPOINTED_BATCH.md."""
 from __future__ import annotations
 
 import argparse

@@ -6,19 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.18.0] - 2026-11-18
+
 ### Added
 
-- Read-only acknowledged heartbeat checkpoint accessors distinguish unsupported claims from an explicitly empty checkpoint. Received details, contract version and acknowledgement time remain immutable across heartbeat outcomes. This source addition still requires package publication and installed replacement qualification. (durable-workflow/.github#218)
+- `ActivityRetryPolicy.exponential(...)` creates generated activity retry schedules with a finite 60-second default maximum interval (durable-workflow/.github#219). Omitting `maximum_interval_seconds` caps every generated delay at 60 seconds, so nine total attempts wait `1, 2, 4, 8, 16, 32, 60, 60` seconds. An explicit finite, non-negative `maximum_interval_seconds` selects a different cap; `None`, infinities and NaN are refused. `max_attempts` still counts the first attempt, and the command keeps the existing `backoff_seconds` wire shape and whole-second rounding, so the same policy works for Server-scheduled activities and, through `.to_dict()`, local activities.
+  - **Who is affected:** only code that calls the new factory. Nothing changes for existing code. The legacy `ActivityRetryPolicy(...)` constructor keeps its original behavior: omitting `maximum_interval_seconds`, or passing `None`, still applies no cap (with 20 attempts the last generated delay is about three days). Keep using the constructor where an uncapped schedule is intended; the factory has no uncapped mode.
+  - **Replay safety:** retry delays are generated when the command is first scheduled and are recorded in history as an explicit `backoff_seconds` list. Histories recorded under 2.17.2 and earlier, including uncapped schedules, replay with their recorded delays unchanged, and explicit backoff lists are never rewritten. Adopt the factory in new workflow definitions or new versions; do not change the policy of a command that an existing run must replay.
+- Read-only acknowledged heartbeat checkpoint accessors: `activity.context().last_heartbeat_checkpoint()`, `last_heartbeat_details(result_type=...)`, `last_heartbeat_at()` and `heartbeat_resume_version()`, with the immutable `ActivityHeartbeatCheckpoint` and `ActivityHeartbeatResumeUnavailable`. Activity workers now advertise `activity_heartbeat_resume`. Only a claim that delivers the v1 contract for its own execution, attempt, workflow, run and namespace supplies a snapshot; claims from older or nonparticipating Servers, inline local activities and Server-free tests raise `ActivityHeartbeatResumeUnavailable` instead of inventing an empty checkpoint, and a supported claim with no checkpoint returns `None`. Received details, contract version and acknowledgement time stay immutable across heartbeat outcomes. Installed cold-replacement qualification remains tracked separately. (durable-workflow/.github#218, #333)
 
 ### Fixed
 
-- A workflow-task completion the Server refuses over its history-transaction budget (`409` with reason `history_transaction_limit_exceeded` or `completion_budget_exceeded`) now raises `WorkflowTaskHistoryLimitExceeded`, a subclass of `WorkflowTaskCompletionTooLarge`. The worker fails the run once with a non-retryable `fail_workflow` command whose message starts with `Structural limit exceeded:` and names the limit kind, measured value and configured limit when the Server reports them. Previously it reported a workflow-task failure, so a fan-out of about 1,000 × 22 KB arguments (a 30 MB completion, under the 32 MiB wire limit) left the run pending with a failed task and no recorded progress on native Server 3.12.0. (durable-workflow/.github#228)
-
-## [2.18.0] - 2026-11-14
-
-### Added
-
-- `ActivityRetryPolicy.exponential(...)` creates generated activity retry schedules with a finite 60-second default maximum. It rejects `None` or nonfinite maxima and retains the existing wire shape and interval rounding. The legacy constructor, explicit backoff lists and policies already recorded in history keep their original values. (durable-workflow/.github#219)
+- A workflow-task completion the Server refuses over its history-transaction budget (`409` with reason `history_transaction_limit_exceeded` or `completion_budget_exceeded`) now raises `WorkflowTaskHistoryLimitExceeded`, a subclass of `WorkflowTaskCompletionTooLarge`. The worker fails the run once with a non-retryable `fail_workflow` command whose message starts with `Structural limit exceeded:` and names the limit kind, measured value and configured limit when the Server reports them. Previously it reported a workflow-task failure, so a fan-out of about 1,000 × 22 KB arguments (a 30 MB completion, under the 32 MiB wire limit) left the run pending with a failed task and no recorded progress on native Server 3.12.0. This SDK change makes the refusal a typed structural-limit run failure instead of a replay block; it does not make such a fan-out fit. The full fix for documented-size fan-outs, raising native Server's default history-transaction budget above the 32 MiB completion cap, needs native Server 3.13.0 (durable-workflow/server#1231). (durable-workflow/.github#228, #337)
 
 ## [2.17.2] - 2026-11-13
 
