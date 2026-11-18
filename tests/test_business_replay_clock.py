@@ -364,6 +364,47 @@ def test_discard_keeps_generator_context_tokens_and_cannot_borrow_parent_time(co
     assert _ACTIVE_WORKFLOW_REPLAY.get() is None
 
 
+def test_discarded_generator_cannot_borrow_parent_time_in_any_cyclic_finalizer_order() -> None:
+    # CPython does not order finalizers within one cyclic collection. When an
+    # automatic collection runs during the discarded replay, the generator can
+    # be finalized before the lifetime that closes it as a discard (#343).
+    # Start the next automatic collection at every point across one threshold.
+    thresholds = gc.get_threshold()
+    gc.set_threshold(700, 10, 10)
+    try:
+        for padding_size in range(0, 700, 16):
+            gc.collect()
+            padding = [[] for _ in range(padding_size)]
+            test_discard_keeps_generator_context_tokens_and_cannot_borrow_parent_time(True)
+            del padding
+    finally:
+        gc.set_threshold(*thresholds)
+
+
+def test_code_run_by_cyclic_collection_cannot_borrow_active_time() -> None:
+    observations: list[Any] = []
+
+    class Finalized:
+        def __init__(self, ctx: WorkflowContext) -> None:
+            self.ctx = ctx
+            self.cycle = self
+
+        def __del__(self) -> None:
+            observations.append(clock_text(self.ctx))
+
+    class Parent:
+        def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+            yield ctx.schedule_activity("clock.first", [])
+            before = ctx.replay_now()
+            Finalized(ctx)
+            gc.collect()
+            assert observations == [None]
+            assert ctx.replay_now() == before
+            return clock_text(ctx)
+
+    assert result(history()[:3], Parent) == "2026-11-01T00:00:03.123456+00:00"
+
+
 def _native_fixture() -> dict[str, Any]:
     from tests.native_redrive_fixture import check_native_redrive_successor
     from tests.test_replay_clock import redrive_fixture

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import gc
 import re
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -87,9 +88,22 @@ def discarded(function: Callable[_P, _T]) -> Callable[_P, _T]:
     return invoke
 
 
+def _collection(phase: str, info: Mapping[str, int]) -> None:
+    # Cyclic GC finalizes unreachable objects in an unspecified order, so a
+    # discarded workflow generator can be closed by its own finalizer before
+    # the replay lifetime that would close it inside ``discarded``. Code that
+    # the collector runs is disposal on the collecting thread, never workflow
+    # progress, and must not borrow whichever clock happens to be active.
+    _DISCARD.collecting = phase == "start"
+
+
+gc.callbacks.append(_collection)
+
+
 def read(owner: object) -> datetime:
     frame = _ACTIVE.get()
-    if (getattr(_DISCARD, "active", False) or frame is None or frame.owner is not owner or frame.time is None
+    if (getattr(_DISCARD, "active", False) or getattr(_DISCARD, "collecting", False)
+        or frame is None or frame.owner is not owner or frame.time is None
         or frame.thread != threading.get_ident() or frame.task is not _task()):
         raise ReplayClockUnavailable()
     return frame.time
