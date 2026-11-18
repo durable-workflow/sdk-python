@@ -527,7 +527,8 @@ def _assert_matches(expected: Any, actual: Any, context: str) -> None:
 
 def _execute_local_activity_backoff(inputs: Any) -> dict[str, Any]:
     """Run the real local-activity executor with an always-failing callback and
-    report the delays it waited between attempts (.github#219)."""
+    report the delays it waited between attempts (.github#219), plus the longest
+    wait without a workflow-task lease renewal."""
     from durable_workflow import worker as worker_module
     from durable_workflow.workflow import RecordLocalActivity
 
@@ -540,16 +541,22 @@ def _execute_local_activity_backoff(inputs: Any) -> dict[str, Any]:
 
     async def run() -> dict[str, Any]:
         slept: list[float] = []
+        unrenewed = [0.0, 0.0]  # current, longest
         original_sleep = worker_module.asyncio.sleep
 
         async def record_sleep(seconds: float) -> None:
             slept.append(seconds)
+            unrenewed[0] += seconds
+            unrenewed[1] = max(unrenewed)
+
+        async def renew(_task: dict[str, Any]) -> None:
+            unrenewed[0] = 0.0
 
         worker_module.asyncio.sleep = record_sleep  # type: ignore[assignment]
         try:
             async with Client("http://regression-corpus", worker_token="worker") as client:
                 worker = Worker(client, task_queue="queue", activities=[always_fails])
-                worker._renew_local_workflow_lease = AsyncMock()  # type: ignore[method-assign]
+                worker._renew_local_workflow_lease = AsyncMock(side_effect=renew)  # type: ignore[method-assign]
                 command = RecordLocalActivity("tests.replay.local-always-fails", [], retry_policy=policy)
                 await worker._execute_local_activity(
                     {"task_id": "task", "workflow_task_attempt": 1}, command, payload_codec="avro",
@@ -561,6 +568,7 @@ def _execute_local_activity_backoff(inputs: Any) -> dict[str, Any]:
             "type": "local_activity_backoff",
             "slept_seconds": slept,
             "attempt_backoff_seconds": [attempt.get("backoff_seconds") for attempt in command.outcome["attempts"]],
+            "longest_unrenewed_wait_seconds": unrenewed[1],
         }
 
     return asyncio.run(run())
@@ -612,12 +620,23 @@ class CompletionSizeFanOutWorkflow:
 
 
 def _execute_completion_size_limit(inputs: Any) -> list[dict[str, Any]]:
-    """Answer a fan-out completion with Server 3.6.0's typed 413 (.github#228) and report
+    """Answer a fan-out completion with Server 3.6.0's typed 413, or with the
+    Server's history-transaction budget refusal (409), (.github#228) and report
     every workflow-task request the real worker sends afterwards."""
     assert isinstance(inputs, list) and len(inputs) == 1 and isinstance(inputs[0], dict)
     scenario = inputs[0]
-    refusal = {"message": "Workflow task completion exceeds the maximum allowed size.", "reason": "payload_too_large",
-               "limit": scenario["limit"], "limit_kind": "workflow_task_completion_bytes"}
+    limit_kind = scenario.get("limit_kind", "workflow_task_completion_bytes")
+    if scenario.get("refusal") == "history_transaction_limit_exceeded":
+        # The Server's history-transaction budget refusal (409), as native
+        # Server names its limit (.github#228).
+        status = 409
+        refusal = {"reason": "history_transaction_limit_exceeded", "recorded": False, "outcome": "completed",
+                   "limit_kind": limit_kind, "current_value": scenario["limit"] + 1,
+                   "configured_limit": scenario["limit"]}
+    else:
+        status = 413
+        refusal = {"message": "Workflow task completion exceeds the maximum allowed size.",
+                   "reason": "payload_too_large", "limit": scenario["limit"], "limit_kind": limit_kind}
     requests: list[httpx.Request] = []
 
     def reply(request: httpx.Request) -> httpx.Response:
@@ -625,7 +644,7 @@ def _execute_completion_size_limit(inputs: Any) -> list[dict[str, Any]]:
             return httpx.Response(200, json={"worker_protocol": {"server_capabilities": {}}})
         requests.append(request)
         if len(requests) == 1:
-            return httpx.Response(413, json=refusal)
+            return httpx.Response(status, json=refusal)
         return httpx.Response(200, json={"outcome": "completed"})
 
     async def run() -> list[dict[str, Any]]:
@@ -650,7 +669,7 @@ def _execute_completion_size_limit(inputs: Any) -> list[dict[str, Any]]:
                 "command_types": [command["type"] for command in commands],
                 "non_retryable": [command.get("non_retryable", False) for command in commands],
                 "structural_limit": [
-                    command.get("message", "").startswith("Structural limit exceeded: workflow_task_completion_bytes:")
+                    command.get("message", "").startswith(f"Structural limit exceeded: {limit_kind}:")
                     for command in commands
                 ],
             })

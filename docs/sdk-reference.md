@@ -235,7 +235,7 @@ from durable_workflow import ActivityRetryPolicy
 result = yield ctx.schedule_activity(
     "charge-card",
     [order],
-    retry_policy=ActivityRetryPolicy(
+    retry_policy=ActivityRetryPolicy.exponential(
         max_attempts=4,
         initial_interval_seconds=1,
         backoff_coefficient=2,
@@ -247,6 +247,20 @@ result = yield ctx.schedule_activity(
     heartbeat_timeout=15,
 )
 ```
+
+Use `ActivityRetryPolicy.exponential(...)` for new generated retry schedules.
+Its maximum defaults to 60 seconds. For nine total attempts, the default
+intervals are `1, 2, 4, 8, 16, 32, 60, 60` seconds. `max_attempts` includes
+the first attempt; retries still share the activity's schedule-to-close
+deadline. An explicit `maximum_interval_seconds` selects a different finite,
+non-negative cap. Fractional intervals are capped before rounding up to whole
+command seconds. `None`, infinities and NaN are refused by the factory.
+
+The legacy `ActivityRetryPolicy(...)` constructor keeps its existing behavior:
+omitting `maximum_interval_seconds`, or supplying `None`, applies no cap.
+Existing explicit backoff lists and policies already recorded in history keep
+their original values. Adopt the factory in new workflow definitions without
+changing commands that an existing run must replay.
 
 Child workflow starts use the same retry policy shape and workflow-level
 execution/run timeout names:
@@ -268,7 +282,7 @@ receipt = yield ctx.start_child_workflow(
 )
 ```
 
-## Activity execution identity (unreleased)
+## Activity execution identity
 
 Inside an activity, `activity.context().info.activity_execution_id` exposes the
 logical execution ID received from Server. `workflow_id` and `run_id` identify
@@ -310,9 +324,8 @@ validated admission receipt's execution ID. Inline local activities have no
 admitted execution ID and expose `None`, while retaining their parent workflow
 and run IDs. Server-free mocks do not create Server activity identity.
 
-This source addition is unreleased and is outside the current typed-value
-release candidate. Published-package retry identity and execution-guarantees
-guide acceptance remain tracked in
+This accessor is available in Python SDK 2.15.0 and later. Published-Server retry
+identity and execution-guarantees guide acceptance remain tracked in
 [the shared identity issue](https://github.com/durable-workflow/.github/issues/211).
 
 ## Local activities
@@ -380,6 +393,15 @@ may run again on a replacement worker. Make side effects idempotent and keep
 local attempts short; use `ctx.schedule_activity(...)` for separately queued
 work. Local activities are yielded one at a time; they are not members of a
 parallel workflow group.
+
+For local activities, `max_attempts` counts all attempts, including the first.
+When a nonempty `backoff_seconds` list runs out, later retries repeat its final
+entry. For example, five attempts with `[1, 2]` wait `1, 2, 2, 2` seconds before
+attempts two through five. An empty list adds no retry wait. A committed local
+result replays its recorded attempts without rerunning the handler, including
+older records made with a zero-delay tail.
+For a generated local policy, pass `ActivityRetryPolicy.exponential(...).to_dict()`
+as `retry_policy` to select the same finite cap and total-attempt rule.
 
 ## Worker sessions
 
@@ -1061,6 +1083,21 @@ also fails, the worker logs it and stops: it resends neither completion and
 does not report a workflow-task failure, so the task is left to its lease.
 Other 413 responses keep the previous handling.
 
+The Server records a completion in one history transaction, bounded by its
+`history_transaction_size` (events), `history_transaction_bytes` and
+`history_transaction_rows` structural limits (see `structural_limits` in
+cluster info). A completion past one of them is refused with HTTP 409 and
+reason `history_transaction_limit_exceeded` or `completion_budget_exceeded`
+before anything is recorded. The SDK raises `WorkflowTaskHistoryLimitExceeded`,
+a subclass of `WorkflowTaskCompletionTooLarge`, for that response, and the
+worker handles it the same way: it fails the run once with a `fail_workflow`
+command whose message starts with `Structural limit exceeded:` and the limit
+kind, instead of reporting a workflow-task failure that blocks replay. When
+the Server names them, `limit_kind`, `limit` (the configured limit) and `size`
+(the Server's measured value) are set. Native Server releases after 3.12.0
+size their default history byte limit to four completion caps, so a
+completion under the aggregate wire limit is not refused by it.
+
 To stay under the aggregate, schedule a large fan-out in bounded batches
 across workflow tasks, move groups of work into child workflows, or
 continue-as-new. Enable external payload storage so large arguments travel as
@@ -1130,7 +1167,7 @@ activities, for example `OrderInput(order_id=UUID(data["order_id"]), ...)`.
 Adapter output is part of the durable history contract, so changing that shape
 is a workflow compatibility change.
 
-## Whole run histories and workflow lists (unreleased)
+## Whole run histories and workflow lists
 
 `Client.get_history(...)` and `Client.list_workflows(...)` each return one
 Server page. Use the lazy iterators to visit all pages without collecting
@@ -1158,9 +1195,11 @@ earlier items have been yielded. A changing namespace is refused before the
 next request. This traverses the Server's cursor results; it does not create a
 snapshot of a concurrently changing workflow list.
 
-These helpers are unreleased source tracked in
+These iterators are included in the published SDK. Their actual multi-page
+acceptance and cross-SDK guide delivery are tracked in
 [the shared paging issue](https://github.com/durable-workflow/.github/issues/247).
-Published-package and actual multi-page acceptance remain separate.
+History pages are event dictionaries, not replay-export bundles. Use
+`Client.export_history(...)` when a replay bundle is required.
 
 ## Typed activity values
 
@@ -1365,6 +1404,32 @@ until it returns, subject to separately negotiated lease/cancellation
 supervision. The SDK cannot forcibly stop a running native thread or undo its
 external effects. Keep side effects idempotent and heartbeat at useful progress
 boundaries.
+
+### Acknowledged heartbeat checkpoints
+
+SDK 2.18.0 adds `activity.context().last_heartbeat_checkpoint()`,
+`last_heartbeat_details(result_type=...)`, `last_heartbeat_at()` and
+`heartbeat_resume_version()`. Installed cold-replacement qualification is
+tracked under [shared #218](https://github.com/durable-workflow/.github/issues/218).
+
+A participating claim must advertise `activity_heartbeat_resume` version 1 and
+carry both checkpoint fields for its original execution, attempt, run and
+namespace. `None` means this supported claim explicitly has no checkpoint.
+Older or nonparticipating claims, inline local activities and Server-free tests
+raise `ActivityHeartbeatResumeUnavailable`; they do not invent empty state.
+
+The checkpoint preserves received details and the original RFC3339
+acknowledgement timestamp. Details are returned as independent copies, with
+optional decoding to the SDK's supported annotated types. Its immutable
+`contract_version` is the negotiated format version, not a write counter.
+Server v1 supplies no per-checkpoint sequence number.
+
+This is the snapshot received at claim time. A successful, rejected or uncertain
+heartbeat cannot change it. After a lost response, a later replacement claim
+may contain the committed checkpoint even though the earlier caller could not
+confirm acknowledgement. A checkpoint does not atomically commit an external
+business effect. Keep stable idempotency keys, provider reconciliation and
+external fencing where the effect requires them.
 
 ## Metrics
 

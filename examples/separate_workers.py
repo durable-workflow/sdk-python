@@ -37,7 +37,7 @@ class Greeter:
             ACTIVITY_TYPE,
             [name, retry_once],
             queue=activity_queue,
-            retry_policy=ActivityRetryPolicy(max_attempts=2, initial_interval_seconds=1),
+            retry_policy=ActivityRetryPolicy.exponential(max_attempts=2, initial_interval_seconds=1),
             start_to_close_timeout=5,
             schedule_to_close_timeout=20,
         ))

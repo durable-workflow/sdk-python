@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from durable_workflow import Client, Worker, WorkflowTaskCompletionTooLarge, serializer, workflow
-from durable_workflow.errors import InvalidArgument, ServerError, _raise_for_status
+from durable_workflow.errors import DurableWorkflowError, InvalidArgument, ServerError, _raise_for_status
 from durable_workflow.retry_policy import TransportRetryPolicy
 from durable_workflow.worker import _should_fail_workflow_task_after_completion_error
 
@@ -199,3 +199,88 @@ async def test_5xx_completion_errors_still_retry_the_same_completion() -> None:
     assert result is not None
     assert [request.url.path for request in requests] == ["/api/worker/workflow-tasks/task-413/complete"] * 2
     assert requests[0].content == requests[1].content
+
+
+# A history-transaction budget refusal (409) is as deterministic as the
+# typed 413: the same commands replay into the same refusal (.github#228).
+TYPED_409 = {
+    "task_id": "task-413",
+    "workflow_task_attempt": 3,
+    "outcome": "completed",
+    "recorded": False,
+    "run_id": None,
+    "run_status": None,
+    "created_task_ids": [],
+    "reason": "history_transaction_limit_exceeded",
+    "limit_kind": "history_transaction_bytes",
+    "current_value": 16_777_300,
+    "configured_limit": 16_777_216,
+    "message": "Structural limit exceeded: history_transaction_bytes: this workflow task completion would write "
+    "16777300 history bytes in one transaction (limit 16777216).",
+    "protocol_version": "1.20",
+    "server_capabilities": {},
+}
+
+
+def test_typed_409_maps_to_a_history_limit_error_with_the_server_measure() -> None:
+    from durable_workflow import WorkflowTaskHistoryLimitExceeded
+
+    with pytest.raises(WorkflowTaskHistoryLimitExceeded) as caught:
+        _raise_for_status(409, TYPED_409, context="task_completion", request_bytes=9000)
+    error = caught.value
+    assert isinstance(error, WorkflowTaskCompletionTooLarge) and isinstance(error, ServerError)
+    assert (error.status, error.reason()) == (409, "history_transaction_limit_exceeded")
+    assert error.limit_kind == "history_transaction_bytes"
+    assert (error.limit, error.size) == (16_777_216, 16_777_300)
+    assert error.non_retryable is True
+    message = str(error)
+    assert message.startswith("Structural limit exceeded: history_transaction_bytes:")
+    assert "16777300 history bytes" in message and "limit of 16777216 history bytes" in message
+    assert _should_fail_workflow_task_after_completion_error(error) is False
+
+
+def test_an_untyped_409_budget_refusal_names_its_reason() -> None:
+    from durable_workflow import WorkflowTaskHistoryLimitExceeded
+
+    for reason in ("history_transaction_limit_exceeded", "completion_budget_exceeded"):
+        with pytest.raises(WorkflowTaskHistoryLimitExceeded) as caught:
+            _raise_for_status(409, {"reason": reason, "recorded": False}, context="task_completion")
+        assert caught.value.limit_kind == reason
+        assert (caught.value.limit, caught.value.size) == (None, None)
+        assert str(caught.value).startswith(f"Structural limit exceeded: {reason}:")
+
+
+@pytest.mark.parametrize("status, payload, context", [
+    (409, TYPED_409, ""),
+    (409, {"reason": "invalid_commands"}, "task_completion"),
+    (409, {**TYPED_409, "recorded": True}, "task_completion"),
+    (422, TYPED_409, "task_completion"),
+])
+def test_other_responses_are_not_history_limit_errors(status: int, payload: Any, context: str) -> None:
+    from durable_workflow import WorkflowTaskHistoryLimitExceeded
+
+    with pytest.raises(DurableWorkflowError) as caught:
+        _raise_for_status(status, payload, context=context)
+    assert not isinstance(caught.value, WorkflowTaskHistoryLimitExceeded)
+
+
+@pytest.mark.asyncio
+async def test_typed_409_fails_the_run_once_without_resending_or_failing_the_task() -> None:
+    requests: list[httpx.Request] = []
+    client, worker = worker_for([(409, TYPED_409)], requests)
+    async with client:
+        result = await worker._run_workflow_task(task())
+
+    assert result is None
+    assert [request.url.path for request in requests] == [
+        "/api/worker/workflow-tasks/task-413/complete",
+        "/api/worker/workflow-tasks/task-413/complete",
+    ]
+    refused, failure = (body(request) for request in requests)
+    assert [command["type"] for command in refused["commands"]] == ["schedule_activity"] * 4
+    assert (failure["lease_owner"], failure["workflow_task_attempt"]) == ("worker-413", 3)
+    command = failure["commands"][0]
+    assert (command["type"], command["non_retryable"]) == ("fail_workflow", True)
+    assert command["exception_type"] == "WorkflowTaskHistoryLimitExceeded"
+    assert command["message"].startswith("Structural limit exceeded: history_transaction_bytes:")
+    assert "16777300 history bytes" in command["message"]

@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import InitVar, dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ._activity_checkpoint import ActivityHeartbeatCheckpoint, _HeartbeatResume, claim_resume
 from ._activity_lease import current_activity_authority
 from .errors import ActivityCancelled, ActivityLeaseAuthorityLost
 
@@ -79,14 +80,20 @@ class ActivityInfo:
     task_queue: str
     worker_id: str
     task_metadata: InitVar[Mapping[str, Any] | None] = None
+    task_namespace: InitVar[str | None] = None
     retry_info: ActivityRetryInfo = field(init=False)
+    _heartbeat_resume: _HeartbeatResume = field(init=False, repr=False)
     workflow_id: str | None = field(init=False)
     run_id: str | None = field(init=False)
     activity_execution_id: str | None = field(init=False)
 
-    def __post_init__(self, task_metadata: Mapping[str, Any] | None) -> None:
+    def __post_init__(self, task_metadata: Mapping[str, Any] | None, task_namespace: str | None) -> None:
         task = task_metadata if task_metadata is not None else {}
         object.__setattr__(self, "retry_info", ActivityRetryInfo.from_task(self.attempt_number, task))
+        object.__setattr__(self, "_heartbeat_resume", claim_resume(
+            task, task_namespace, self.task_id, self.activity_attempt_id, self.attempt_number, self.worker_id,
+            self.activity_type, self.task_queue,
+        ))
         for name in ("workflow_id", "run_id"):
             value = task.get(name)
             object.__setattr__(self, name, value if isinstance(value, str) and value else None)
@@ -124,6 +131,29 @@ class ActivityContext:
     def is_cancelled(self) -> bool:
         """``True`` once the server has signalled that the owning workflow cancelled this activity."""
         return self._cancel_requested
+
+    def heartbeat_resume_version(self) -> int | None:
+        """The received contract version, or ``None`` when unavailable."""
+        return 1 if self._info._heartbeat_resume.available else None
+
+    def last_heartbeat_checkpoint(self) -> ActivityHeartbeatCheckpoint | None:
+        """Return the received snapshot, or ``None`` for supported empty state.
+
+        Raises ActivityHeartbeatResumeUnavailable for older or nonparticipating
+        claims, inline local activities and Server-free tests. Heartbeat writes
+        never change this snapshot, including rejected or uncertain writes.
+        """
+        return self._info._heartbeat_resume.get()
+
+    def last_heartbeat_details(self, *, result_type: Any = None) -> Any:
+        """Read acknowledged details, optionally decoded to an application type."""
+        checkpoint = self.last_heartbeat_checkpoint()
+        return checkpoint.details(result_type=result_type) if checkpoint is not None else None
+
+    def last_heartbeat_at(self) -> str | None:
+        """The original RFC3339 acknowledgement time without losing precision."""
+        checkpoint = self.last_heartbeat_checkpoint()
+        return checkpoint.acknowledged_at if checkpoint is not None else None
 
     def heartbeat_sync(self, details: dict[str, Any] | None = None) -> None:
         """Heartbeat from a synchronous activity thread and check attempt authority.

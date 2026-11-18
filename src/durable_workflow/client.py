@@ -41,6 +41,7 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 import httpx
 
 from . import serializer
+from ._activity_checkpoint import capture_poll as _capture_activity_checkpoint
 from ._activity_lease import ActivityLeaseAuthority, current_activity_authority
 from ._cancellation_scope import CancellationScopeOpenReceipt, scope_identity
 from ._cancellation_scope_history import (
@@ -6135,7 +6136,8 @@ class Client:
         if sticky_cache is not None:
             body["sticky_cache"] = sticky_cache
         return await self._request(
-            "POST", f"/worker/workflow-tasks/{task_id}/complete", worker=True, json=body
+            "POST", f"/worker/workflow-tasks/{task_id}/complete", worker=True, json=body,
+            context="task_completion",
         )
 
     async def fail_workflow_task(
@@ -6782,7 +6784,7 @@ class Client:
             except httpx.TimeoutException:
                 continue
 
-            return (data or {}).get("task")
+            return _capture_activity_checkpoint(data or {}, self.namespace, worker_id, task_queue)
 
         return None
 

@@ -21,6 +21,10 @@ on:
         description: 'Published stable SDK tag to deploy, or empty for current main'
         type: string
         required: false
+      reference_guide_commit:
+        description: 'Optional exact merged guide commit with source identical to the selected stable SDK'
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -174,6 +178,7 @@ jobs:
           CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
           STABLE_TAG: ${{ inputs.stable_tag }}
           DOCS_WHEEL_SHA256: ${{ steps.release-channel.outputs.wheel_sha256 }}
+          DOCS_REFERENCE_GUIDE_COMMIT: ${{ inputs.reference_guide_commit }}
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
           if ! printf '%s' "$CLOUDFLARE_WEB_ANALYTICS_TOKEN" | grep -Eq '^[a-f0-9]{32}$'; then

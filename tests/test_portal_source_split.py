@@ -42,6 +42,7 @@ def sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict
         "src/durable_workflow/__init__.py": 'PUBLIC = "published"\n',
         "docs/index.md": '# Published\n```python\nprint("complete example")\n```\n',
         "docs/reference/metrics.md": "Published metric contract\n",
+        "docs/sdk-reference.md": '# Reference\nPublished explanation\n```python\nprint("published API")\n```\n',
         "docs/assets/logo.svg": "published-logo",
         "docs/stylesheets/layout.css": "published-style",
         "docs/javascripts/identity.js": "published-script",
@@ -63,6 +64,9 @@ def sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict
     (root / "pyproject.toml").write_text('[project]\nversion = "2.15.0"\n')
     (root / "src/durable_workflow/__init__.py").write_text('PUBLIC = "unreleased"\n')
     (root / "docs/reference/metrics.md").write_text("Unreleased metric contract\n")
+    (root / "docs/sdk-reference.md").write_text(
+        '# Reference\nCorrected explanation\n```python\nprint("published API")\n```\n',
+    )
     (root / "docs/index.md").write_text(
         '# Redesigned\nPython SDK · 2.14.1 published\n<span>Python 3.10+</span>\n'
         '```python\nprint("complete example")\n```\n',
@@ -89,6 +93,7 @@ def test_stable_build_combines_current_presentation_and_published_content(source
     config = yaml.safe_load((root / ".docs-build.yml").read_text())
     stage = Path(config["docs_dir"])
     assert (stage / "reference/metrics.md").read_text() == "Published metric contract\n"
+    assert (stage / "sdk-reference.md").read_text() == (root / ".docs-sdk/docs/sdk-reference.md").read_text()
     assert (stage / "stylesheets/layout.css").read_text() == "redesigned-style"
     assert (stage / "index.md").read_text().startswith("# Redesigned")
     assert config["nav"] == [{"Published metrics": "reference/metrics.md"}]
@@ -99,6 +104,67 @@ def test_stable_build_combines_current_presentation_and_published_content(source
     inventory = json.loads((root / ".docs-api-inventory.json").read_text())
     assert [row["path"] for row in inventory] == ["durable_workflow/__init__.py"]
     assert str(root) not in (root / ".docs-provenance.json").read_text()
+
+
+def match_published_api(root: Path, env: dict[str, str]) -> None:
+    source = root / "src/durable_workflow/__init__.py"
+    source.write_bytes((root / ".docs-sdk/src/durable_workflow/__init__.py").read_bytes())
+    git(root, "add", ".")
+    git(root, "commit", "-m", "Same published API with corrected reference prose")
+    env["GITHUB_SHA"] = git(root, "rev-parse", "HEAD")
+
+
+def test_same_published_api_can_deploy_corrected_reference_prose(sources: tuple) -> None:
+    root, env, _installed = sources
+    match_published_api(root, env)
+    audit = portal.prepare(root, env)
+    config = yaml.safe_load((root / ".docs-build.yml").read_text())
+    stage = Path(config["docs_dir"])
+    assert (stage / "sdk-reference.md").read_bytes() == (root / "docs/sdk-reference.md").read_bytes()
+    assert (stage / "reference/metrics.md").read_text() == "Published metric contract\n"
+    assert audit["reference_guide"]["source_revision"] == env["GITHUB_SHA"]
+    assert config["plugins"][1]["mkdocstrings"]["handlers"]["python"]["paths"] == [str(root / ".docs-sdk/src")]
+
+
+@pytest.mark.parametrize("change", ["changed-source", "added-source"])
+def test_unreleased_api_keeps_reference_at_published_tag(sources: tuple, change: str) -> None:
+    root, env, _installed = sources
+    match_published_api(root, env)
+    source = root / "src/durable_workflow" / ("__init__.py" if change == "changed-source" else "future.py")
+    source.write_text('PUBLIC = "unreleased"\n')
+    git(root, "add", ".")
+    git(root, "commit", "-m", "Unreleased API")
+    env["GITHUB_SHA"] = git(root, "rev-parse", "HEAD")
+    audit = portal.prepare(root, env)
+    config = yaml.safe_load((root / ".docs-build.yml").read_text())
+    assert (Path(config["docs_dir"]) / "sdk-reference.md").read_bytes() == (
+        root / ".docs-sdk/docs/sdk-reference.md"
+    ).read_bytes()
+    assert audit["reference_guide"]["source_revision"] == audit["sdk_source_revision"]
+
+
+def test_changed_reference_example_refuses_same_api_overlay(sources: tuple) -> None:
+    root, env, _installed = sources
+    match_published_api(root, env)
+    portal.prepare(root, env)
+    (root / "docs/sdk-reference.md").write_text('```python\nprint("future API")\n```\n')
+    git(root, "add", ".")
+    git(root, "commit", "-m", "Changed reference example")
+    env["GITHUB_SHA"] = git(root, "rev-parse", "HEAD")
+    with pytest.raises(ValueError, match="Reference examples differ"):
+        portal.prepare(root, env)
+    assert not (root / ".docs-provenance.json").exists()
+
+
+def test_uncommitted_reference_edit_cannot_change_recorded_guide(sources: tuple) -> None:
+    root, env, _installed = sources
+    match_published_api(root, env)
+    committed = (root / "docs/sdk-reference.md").read_bytes()
+    (root / "docs/sdk-reference.md").write_text("Uncommitted explanation")
+    audit = portal.prepare(root, env)
+    config = yaml.safe_load((root / ".docs-build.yml").read_text())
+    assert (Path(config["docs_dir"]) / "sdk-reference.md").read_bytes() == committed
+    assert audit["reference_guide"]["source_revision"] == env["GITHUB_SHA"]
 
 
 @pytest.mark.parametrize("fault", [
@@ -137,3 +203,51 @@ def test_source_build_stays_preview_with_current_api_and_no_package_claim(source
     assert audit["sdk_version"] == "2.15.0"
     assert audit["docs_source_revision"] == audit["sdk_source_revision"]
     assert audit["published_wheel_sha256"] is None
+
+
+def test_merged_published_source_guide_can_advance_prose_after_main_api_changes(sources: tuple) -> None:
+    root, env, _installed = sources
+    match_published_api(root, env)
+    guide_commit = env["GITHUB_SHA"]
+    guide = (root / "docs/sdk-reference.md").read_bytes()
+    (root / "src/durable_workflow/__init__.py").write_text('PUBLIC = "unreleased"\n')
+    (root / "docs/sdk-reference.md").write_text('```python\nprint("future API")\n```\n')
+    git(root, "add", ".")
+    git(root, "commit", "-m", "Continue development after the stable guide")
+    env["GITHUB_SHA"] = git(root, "rev-parse", "HEAD")
+    env["DOCS_REFERENCE_GUIDE_COMMIT"] = guide_commit
+    audit = portal.prepare(root, env)
+    config = yaml.safe_load((root / ".docs-build.yml").read_text())
+    assert (Path(config["docs_dir"]) / "sdk-reference.md").read_bytes() == guide
+    assert audit["reference_guide"]["source_revision"] == guide_commit
+    assert audit["sdk_source_revision"] == git(root, "rev-parse", "2.14.1")
+    assert audit["docs_source_revision"] == env["GITHUB_SHA"]
+
+
+@pytest.mark.parametrize("fault", ["symbolic", "unmerged", "source", "example", "preview"])
+def test_explicit_guide_selection_preserves_publication_and_history_boundaries(sources: tuple, fault: str) -> None:
+    root, env, _installed = sources
+    match_published_api(root, env)
+    selected = env["GITHUB_SHA"]
+    if fault == "symbolic":
+        selected = "HEAD"
+    elif fault == "unmerged":
+        git(root, "checkout", "-b", "unmerged-guide", "2.14.1")
+        (root / "docs/sdk-reference.md").write_text("Unmerged guide")
+        git(root, "add", ".")
+        git(root, "commit", "-m", "Unmerged guide")
+        selected = git(root, "rev-parse", "HEAD")
+        git(root, "checkout", "-")
+    elif fault in {"source", "example"}:
+        file = "src/durable_workflow/__init__.py" if fault == "source" else "docs/sdk-reference.md"
+        (root / file).write_text('```python\nprint("future API")\n```\n')
+        git(root, "add", ".")
+        git(root, "commit", "-m", "Unpublished source or example")
+        selected = git(root, "rev-parse", "HEAD")
+        env["GITHUB_SHA"] = selected
+    else:
+        env["STABLE_TAG"] = ""
+    env["DOCS_REFERENCE_GUIDE_COMMIT"] = selected
+    with pytest.raises(ValueError):
+        portal.prepare(root, env)
+    assert not (root / ".docs-provenance.json").exists()

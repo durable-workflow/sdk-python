@@ -1,0 +1,11 @@
+{
+  "schema": "sdk-python.published-activity-acceptance/v1",
+  "sdk_version": "2.17.2",
+  "server_image": "ghcr.io/durable-workflow/server@sha256:8ffcdb2a36af3129a1987849aafe8715fe0d3bf9a9648467f0b5cb8eeef43ba9",
+  "server_source": "5614274d2629d03f92932a07dfee0fb10349ddd9",
+  "server_amd64_manifest": "sha256:813c9337c44be7d497efd29e1b463546519e488aa796b5ecf9dfc6f4f10d2128",
+  "server_qualification": "https://github.com/durable-workflow/server/pull/1209#issuecomment-6858753154",
+  "python_image": "docker.io/library/python@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df",
+  "python_amd64_manifest": "sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4",
+  "python_version": "3.12.16"
+}

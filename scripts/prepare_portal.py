@@ -84,11 +84,38 @@ def published_landing(root: Path, sdk: Path, project: dict[str, Any], tag: str) 
     return landing
 
 
-def stage_published_docs(root: Path, sdk: Path, config: dict[str, Any], project: dict[str, Any], tag: str) -> None:
+def published_reference(root: Path, sdk: Path, selected: str = "") -> tuple[str, bytes]:
+    published_revision = git(sdk, "rev-parse", "HEAD")
+    current = git(root, "rev-parse", "HEAD")
+    revision = current
+    if selected:
+        if not re.fullmatch(r"[0-9a-f]{40}", selected):
+            raise ValueError("Reference guide requires an exact merged commit")
+        try:
+            git(root, "merge-base", "--is-ancestor", selected, current)
+        except subprocess.CalledProcessError as error:
+            raise ValueError("Reference guide commit is outside accepted documentation history") from error
+        revision = selected
+    changed_api = git(root, "diff", "--name-only", published_revision, revision, "--", "src/durable_workflow")
+    if changed_api:
+        if selected:
+            raise ValueError("Selected reference guide contains unpublished SDK source")
+        revision = published_revision
+    reference = subprocess.check_output(["git", "-C", str(root), "show", f"{revision}:docs/sdk-reference.md"])
+    published = (sdk / "docs/sdk-reference.md").read_bytes()
+    if CODE_BLOCKS.findall(reference.decode()) != CODE_BLOCKS.findall(published.decode()):
+        raise ValueError("Reference examples differ from the selected published SDK documentation")
+    return revision, reference
+
+
+def stage_published_docs(
+    root: Path, sdk: Path, config: dict[str, Any], project: dict[str, Any], tag: str,
+    reference_commit: str = "",
+) -> dict[str, str]:
     stage = Path(tempfile.mkdtemp(prefix=".docs-stage-", dir=root))
-    # The complete SDK documentation content comes from tracked tag files.
-    # Only this closed set of presentation assets and the reviewed landing
-    # page come from the current documentation revision.
+    # Start from the published tag. The landing and presentation can advance
+    # independently. Reference prose can advance only for identical SDK source
+    # and unchanged examples; API pages and all other guides remain tag-bound.
     for source in source_files(sdk, "docs"):
         target = stage / source.relative_to(sdk / "docs")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -97,12 +124,18 @@ def stage_published_docs(root: Path, sdk: Path, config: dict[str, Any], project:
         shutil.copytree(root / "docs" / directory, stage / directory, dirs_exist_ok=True)
     landing = published_landing(root, sdk, project, tag)
     (stage / "index.md").write_text(landing)
+    reference_revision, reference = published_reference(root, sdk, reference_commit)
+    (stage / "sdk-reference.md").write_bytes(reference)
     config["docs_dir"] = str(stage)
     config["nav"] = yaml.safe_load((sdk / "mkdocs.yml").read_text())["nav"]
     documentation = next(plugin["mkdocstrings"] for plugin in config["plugins"]
                          if isinstance(plugin, dict) and "mkdocstrings" in plugin)
     documentation["handlers"]["python"]["paths"] = [str(sdk / "src")]
     config["extra"]["published_sdk_version"] = tag
+    return {
+        "path": "sdk-reference.md", "source_revision": reference_revision,
+        "sha256": hashlib.sha256(reference).hexdigest(),
+    }
 
 
 def prepare(root: Path, environment: dict[str, str]) -> dict[str, Any]:
@@ -114,12 +147,16 @@ def prepare(root: Path, environment: dict[str, str]) -> dict[str, Any]:
         raise ValueError("Documentation checkout differs from the selected workflow revision")
     sdk = root
     channel = "source-preview"
+    reference_guide = None
     tag = environment.get("STABLE_TAG", "")
+    reference_commit = environment.get("DOCS_REFERENCE_GUIDE_COMMIT", "")
+    if reference_commit and not tag:
+        raise ValueError("Reference guide selection requires a published SDK tag")
     if tag:
         sdk = root / ".docs-sdk"
         revision, project = published_identity(root, sdk, tag, environment)
         version = project["version"]
-        stage_published_docs(root, sdk, config, project, tag)
+        reference_guide = stage_published_docs(root, sdk, config, project, tag, reference_commit)
         channel = "stable"
     else:
         revision = docs_revision
@@ -137,6 +174,7 @@ def prepare(root: Path, environment: dict[str, str]) -> dict[str, Any]:
         "sdk_version": version,
         "sdk_source_inventory_sha256": hashlib.sha256(inventory_bytes).hexdigest(),
         "published_wheel_sha256": environment.get("DOCS_WHEEL_SHA256") if tag else None,
+        "reference_guide": reference_guide,
     }
     (root / ".docs-provenance.json").write_text(json.dumps(audit, sort_keys=True) + "\n")
     return audit

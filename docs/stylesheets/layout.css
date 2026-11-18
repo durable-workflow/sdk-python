@@ -373,10 +373,14 @@ a:focus-visible, button:focus-visible, summary:focus-visible, input:focus-visibl
 
 .dw-sdk-switcher summary {
   cursor: pointer;
-  gap: 6px;
-  font-weight: 600;
-  color: var(--dw-ink);
+  font-weight: 400;
   list-style: none;
+}
+
+.dw-sdk-indicator {
+  font-size: .8em;
+  line-height: 1;
+  vertical-align: middle;
 }
 
 .dw-sdk-switcher summary::-webkit-details-marker {
