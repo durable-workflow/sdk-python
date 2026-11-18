@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Read-only acknowledged heartbeat checkpoint accessors distinguish unsupported claims from an explicitly empty checkpoint. Received details, contract version and acknowledgement time remain immutable across heartbeat outcomes. This source addition still requires package publication and installed replacement qualification. (durable-workflow/.github#218)
 
+### Fixed
+
+- A workflow-task completion the Server refuses over its history-transaction budget (`409` with reason `history_transaction_limit_exceeded` or `completion_budget_exceeded`) now raises `WorkflowTaskHistoryLimitExceeded`, a subclass of `WorkflowTaskCompletionTooLarge`. The worker fails the run once with a non-retryable `fail_workflow` command whose message starts with `Structural limit exceeded:` and names the limit kind, measured value and configured limit when the Server reports them. Previously it reported a workflow-task failure, so a fan-out of about 1,000 × 22 KB arguments (a 30 MB completion, under the 32 MiB wire limit) left the run pending with a failed task and no recorded progress on native Server 3.12.0. (durable-workflow/.github#228)
+
 ## [2.18.0] - 2026-11-14
 
 ### Added

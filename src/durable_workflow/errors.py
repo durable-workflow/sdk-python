@@ -362,6 +362,71 @@ class WorkflowTaskCompletionTooLarge(ServerError):
         )
 
 
+HISTORY_TRANSACTION_REFUSALS = frozenset({"history_transaction_limit_exceeded", "completion_budget_exceeded"})
+_HISTORY_TRANSACTION_UNITS = {
+    "history_transaction_size": "history events",
+    "history_transaction_bytes": "history bytes",
+    "history_transaction_rows": "rows",
+}
+
+
+class WorkflowTaskHistoryLimitExceeded(WorkflowTaskCompletionTooLarge):
+    """The Server refused a completion over its history-transaction budget.
+
+    A workflow-task completion is recorded in one history transaction, bounded
+    by the Server's ``history_transaction_size`` (events),
+    ``history_transaction_bytes`` and ``history_transaction_rows`` structural
+    limits. A completion past one of them is refused with ``409`` and reason
+    ``history_transaction_limit_exceeded`` (or ``completion_budget_exceeded``
+    from the early local-activity count) before anything is recorded. Native
+    Server releases after 3.12.0 also name ``limit_kind``, the measured
+    ``current_value`` and the ``configured_limit`` (.github#228).
+
+    Replaying the task produces the same commands, so like
+    :class:`WorkflowTaskCompletionTooLarge` this is not retryable: the worker
+    fails the run once with a ``structural_limit`` failure instead of
+    reporting a workflow-task failure, which would block replay.
+
+    :attr:`limit_kind` is the Server's limit kind, or the refusal reason when
+    the Server named none. :attr:`limit` is the configured limit and
+    :attr:`size` the Server's measured value, in that limit's unit, when
+    reported.
+    """
+
+    def __init__(self, status: int, body: object, *, size: int | None = None) -> None:
+        ServerError.__init__(self, status, body)
+        fields = body if isinstance(body, dict) else {}
+        kind = fields.get("limit_kind")
+        limit = fields.get("configured_limit")
+        current = fields.get("current_value")
+        message = fields.get("message")
+        self.limit_kind = kind if isinstance(kind, str) and kind else str(self.reason() or "history_transaction_limit")
+        self.limit = limit if type(limit) is int else None
+        self.size = current if type(current) is int else None
+        self.server_message = message if isinstance(message, str) and message else None
+        self.args = (self.structural_limit_message(),)
+
+    @staticmethod
+    def matches(status: int, body: object) -> bool:
+        """Whether a response is a history-transaction budget refusal."""
+        return (
+            status == 409
+            and isinstance(body, dict)
+            and body.get("reason") in HISTORY_TRANSACTION_REFUSALS
+            and body.get("recorded") is not True
+        )
+
+    def structural_limit_message(self) -> str:
+        unit = _HISTORY_TRANSACTION_UNITS.get(self.limit_kind, "units")
+        size = f"{self.size} {unit}" if self.size is not None else "more than the limit allows"
+        limit = f"the server limit of {self.limit} {unit}" if self.limit is not None else "the server limit"
+        return (
+            f"Structural limit exceeded: {self.limit_kind}: the workflow task completion would write {size} "
+            f"in one history transaction, over {limit}. Split the fan-out into smaller batches, move work into "
+            "child workflows, or continue-as-new; offload large payloads with external payload storage."
+        )
+
+
 class NexusOperationFailed(DurableWorkflowError):
     """A Nexus service operation completed with a typed service failure."""
 
@@ -1080,6 +1145,8 @@ def _raise_for_status(
 
     if WorkflowTaskCompletionTooLarge.matches(status, body):
         raise WorkflowTaskCompletionTooLarge(status, body, size=request_bytes)
+    if context == "task_completion" and WorkflowTaskHistoryLimitExceeded.matches(status, body):
+        raise WorkflowTaskHistoryLimitExceeded(status, body)
 
     reason = body.get("reason") if isinstance(body, dict) else None
     message = body.get("message", "") if isinstance(body, dict) else str(body)

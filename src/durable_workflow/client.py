@@ -6136,7 +6136,8 @@ class Client:
         if sticky_cache is not None:
             body["sticky_cache"] = sticky_cache
         return await self._request(
-            "POST", f"/worker/workflow-tasks/{task_id}/complete", worker=True, json=body
+            "POST", f"/worker/workflow-tasks/{task_id}/complete", worker=True, json=body,
+            context="task_completion",
         )
 
     async def fail_workflow_task(

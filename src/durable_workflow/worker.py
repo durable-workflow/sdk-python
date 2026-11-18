@@ -3119,12 +3119,13 @@ class Worker:
         the typed error is raised again with the follow-up's error as its
         cause, so the caller never reports a workflow-task failure (``/fail``)
         on this path: the Server would retry the task into the same 413 or
-        block replay.
+        block replay. A history-transaction budget refusal
+        (:class:`WorkflowTaskHistoryLimitExceeded`, a 409) takes this path too.
         """
         message = error.structural_limit_message()
         log.error(
-            "workflow task %s completion refused by the server: %s (limit_kind=%s, size=%s bytes, "
-            "limit=%s bytes); failing the run instead of resending it",
+            "workflow task %s completion refused by the server: %s (limit_kind=%s, measured=%s, "
+            "limit=%s); failing the run instead of resending it",
             task_id,
             message,
             error.limit_kind,
