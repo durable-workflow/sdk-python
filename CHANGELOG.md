@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Code run by Python's cyclic garbage collector can no longer read the business replay clock. When a discarded replay (for example an outcome that was never closed and is only reachable from a reference cycle) is collected, CPython finalizes the objects in that cycle in no specified order. If the discarded workflow generator was finalized before the replay lifetime that owns it, its `finally` block ran outside discard handling and `ctx.replay_now()` on a still-active parent workflow returned the parent's time instead of raising `ReplayClockUnavailable`. Whether this happened depended on when an automatic collection had last run, so it showed up as an intermittent test failure on Python 3.10 (#343). `replay_now()` now raises `ReplayClockUnavailable` for every read made while a collection runs on the reading thread.
+  - **Replay safety:** no command, history field or recorded value changes. Only reads made from finalizers or weakref callbacks during a collection are affected, and those never ran at a deterministic point in workflow code.
+
 ## [2.19.0] - 2026-11-18
 
 ### Added
