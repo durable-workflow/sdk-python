@@ -2411,6 +2411,23 @@ class Worker:
         reference = store_external_payload(storage, data, codec=envelope["codec"])
         return {"codec": envelope["codec"], "external_storage": reference.to_dict()}
 
+    async def _wait_local_retry_backoff(self, task: dict[str, Any], seconds: float) -> None:
+        """Wait a local retry backoff while keeping the workflow task leased.
+
+        A backoff, such as the generated 60-second default cap, can be as long
+        as the Server's workflow-task lease (60 seconds by default on native
+        Server). Renew at the cooperative lease observer's cadence so the
+        Server never reclaims the claim and reruns the local activity from its
+        first attempt (.github#219). The full backoff is never shortened.
+        """
+        remaining = float(seconds)
+        while remaining > 0:
+            step = min(remaining, 5.0, self._heartbeat_interval)
+            await asyncio.sleep(step)
+            remaining -= step
+            if remaining > 0:
+                await self._renew_local_workflow_lease(task)
+
     async def _execute_cooperative_local_callable(
         self, task: dict[str, Any], command: RecordLocalActivity, handler: Callable[..., Any],
         attempt_state: dict[str, Any],
@@ -2701,7 +2718,7 @@ class Worker:
                 attempts.append(attempt_report)
                 if retry:
                     if backoff_seconds:
-                        await asyncio.sleep(backoff_seconds)
+                        await self._wait_local_retry_backoff(task, backoff_seconds)
                     continue
                 return terminal_failure(
                     status, message, exception_type,

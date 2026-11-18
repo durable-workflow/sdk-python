@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "python-local-activity-backoff-keeps-workflow-task-lease",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "sdk.local-activity-backoff",
+    "input": [{"retry_policy": {"max_attempts": 2, "backoff_seconds": [60]}}]
+  },
+  "command_sequence": [
+    {
+      "type": "local_activity_backoff",
+      "slept_seconds": [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
+      "attempt_backoff_seconds": [60, null],
+      "longest_unrenewed_wait_seconds": 5
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "local_activity_backoff",
+        "slept_seconds": [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
+        "attempt_backoff_seconds": [60, null],
+        "longest_unrenewed_wait_seconds": 5
+      }
+    ]
+  }
+}

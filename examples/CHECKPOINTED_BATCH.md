@@ -1,6 +1,6 @@
 # Resume a bounded batch
 
-This source example uses the unreleased acknowledged-checkpoint API from
+This source example uses the acknowledged-checkpoint API added in SDK 2.18.0 by
 [SDK333](https://github.com/durable-workflow/sdk-python/pull/333). It requires a
 Server advertising `activity_heartbeat_resume` v1. Its source tests do not prove
 published-package compatibility, real process loss or Server persistence.
