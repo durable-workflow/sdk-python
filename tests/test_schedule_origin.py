@@ -110,7 +110,7 @@ def test_scheduled_run_reads_its_occurrence_on_the_first_task_and_on_cold_replay
 
 
 def test_occurrence_is_timezone_aware_and_not_the_start_or_wall_time() -> None:
-    events = [started(), triggered(trigger_number=3, occurrence_time="2026-11-18T00:00:03.5Z")]
+    events = [started(), triggered(trigger_number=3, occurrence_time="2026-11-18T00:00:03.500000Z")]
     seen: list[ScheduleOrigin | None] = []
 
     @workflow.defn(name="tests.schedule-origin.capture")
