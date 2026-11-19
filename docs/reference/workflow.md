@@ -68,6 +68,13 @@ then replay returns `NexusOperationResult` or raises `NexusOperationFailed`
 at the yield point. Use `ctx.start_nexus_operation(...)` to return after
 acceptance. Older recorded Nexus side-effect results still replay.
 
+Use `ctx.signal_external_workflow(workflow_id, signal_name, args)` to signal
+another workflow durably. The yield resumes with an `ExternalSignalResult`
+whose `outcome` is `delivered`, `target_not_found`, `target_closed` or
+`rejected`. Undelivered signals are returned values, not exceptions. The
+signal is recorded once in history and replay never sends it again. It needs
+a Server that advertises `signal_external_workflow`.
+
 Yield a list for deterministic parallel composition. Lists may nest and may
 mix activity, child-workflow, and timer commands; the resolved value has the
 same nested shape and input order. Every leaf emits the shared

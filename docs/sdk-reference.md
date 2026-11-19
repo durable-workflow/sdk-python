@@ -799,6 +799,48 @@ dispatch-rate limits, so automation can detect whether local worker slots,
 queue caps, namespace caps, or downstream dispatch budget groups are
 constraining throughput.
 
+## Signal another workflow
+
+Workflow code can signal another workflow in its namespace with
+`ctx.signal_external_workflow(workflow_id, signal_name, args=None, *, run_id=None)`.
+Yield the command; the workflow resumes with an `ExternalSignalResult`:
+
+```python
+@workflow.defn(name="orders.approver")
+class Approver:
+    def run(self, ctx: workflow.WorkflowContext, order_id: str):
+        result = yield ctx.signal_external_workflow(order_id, "approve", ["ada"])
+        if not result.delivered:
+            # target_not_found, target_closed or rejected, with a reason
+            return {"skipped": result.outcome, "reason": result.reason}
+        return {"delivered_to": result.target_run_id}
+```
+
+Without `run_id` the signal goes to the target's current run. `args` are the
+signal handler's arguments and travel as an inline Avro payload, like child
+workflow arguments (they are never offloaded to external storage).
+
+The signal is recorded once in the sender's history (`ExternalSignalRequested`
+followed by `ExternalSignalDelivered` or `ExternalSignalFailed`) and delivered
+in the same Server transaction. Replay returns the recorded outcome and never
+sends the signal again. Changing the target, run, signal name or arguments at
+that point in the workflow is a `NonDeterministicReplayError`.
+
+An undelivered signal is a value, not an exception. `result.outcome` is
+`delivered`, `target_not_found` (`reason` `instance_not_found` or
+`run_not_found`), `target_closed` (`run_not_active` or `historical_run`) or
+`rejected` (for example `unknown_signal`, `invalid_signal_arguments` or
+`self_target`). `target_command_id` names the signal command the target
+recorded, when it recorded one. Raise from workflow code if your workflow
+needs delivery.
+
+Yield the command on its own: it cannot be a member of a parallel group or a
+durable selection. The connected Server must advertise
+`signal_external_workflow` (native Server, server#1134). Against a Server that
+does not, the Worker fails the workflow task with
+`signal_external_workflow_unavailable` before submitting anything, so the
+signal is never sent outside history and the workflow is not failed.
+
 ## Evolve workflow code with patches
 
 Use a stable change ID when adding a branch to a workflow that already has

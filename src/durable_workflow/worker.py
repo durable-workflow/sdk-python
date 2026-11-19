@@ -127,6 +127,7 @@ from .workflow import (
     RecordLocalActivity,
     ReplayOutcome,
     ScheduleActivity,
+    SignalExternalWorkflow,
     StartChildWorkflow,
     UpsertMemo,
     _prepare_query_state,
@@ -1107,6 +1108,20 @@ def _server_supports_workflow_memo_updates(info: dict[str, Any]) -> bool:
     )
 
 
+def _server_supports_signal_external_workflow(info: dict[str, Any]) -> bool:
+    """Whether the Server advertises the signal_external_workflow command (server#1134)."""
+    worker_protocol = info.get("worker_protocol")
+    if not isinstance(worker_protocol, dict):
+        return False
+    capabilities = worker_protocol.get("server_capabilities")
+    if not isinstance(capabilities, dict) or capabilities.get("signal_external_workflow") is not True:
+        return False
+    supported_commands = capabilities.get("supported_workflow_task_commands")
+    return supported_commands is None or (
+        isinstance(supported_commands, list) and "signal_external_workflow" in supported_commands
+    )
+
+
 def _server_supports_update_validation_tasks(info: dict[str, Any]) -> bool:
     worker_protocol = info.get("worker_protocol")
     if not isinstance(worker_protocol, dict):
@@ -1272,6 +1287,7 @@ class Worker:
         self._shutdown_task: asyncio.Task[None] | None = None
         self._query_tasks_supported = False
         self._workflow_memo_updates_supported = False
+        self._signal_external_workflow_supported = False
         self._update_validation_tasks_supported = False
         self._query_thread_stop = threading.Event()
         self._query_thread: threading.Thread | None = None
@@ -1505,6 +1521,7 @@ class Worker:
             raise RuntimeError("query_task_authority_unavailable: require worker protocol 1.20 and "
                                "Server query_task_authority=true before registration")
         self._workflow_memo_updates_supported = _server_supports_workflow_memo_updates(info)
+        self._signal_external_workflow_supported = _server_supports_signal_external_workflow(info)
         has_update_validators = any(
             contract["update_validators"] for contract in self.workflow_command_contracts.values()
         )
@@ -3000,6 +3017,28 @@ class Worker:
                 )
             except Exception as failure_error:
                 log.warning("failed to report workflow memo capability failure: %s", failure_error)
+            return None
+
+        if (
+            any(isinstance(command, SignalExternalWorkflow) for command in workflow_commands)
+            and not self._signal_external_workflow_supported
+        ):
+            # Refuse before submitting: a Server without the command fails the
+            # task anyway, and the signal must never be sent outside history.
+            message = (
+                "signal_external_workflow_unavailable: the connected runtime did not advertise "
+                "signal_external_workflow support; run this workflow against a Server that does"
+            )
+            try:
+                await self.client.fail_workflow_task(
+                    task_id=task_id,
+                    lease_owner=self.worker_id,
+                    workflow_task_attempt=attempt,
+                    message=message,
+                    failure_type="RuntimeCapabilityUnsupported",
+                )
+            except Exception as failure_error:
+                log.warning("failed to report signal_external_workflow capability failure: %s", failure_error)
             return None
 
         if not self._cooperative_cancellation_supported and any(

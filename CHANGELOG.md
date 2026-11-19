@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Workflow code can signal another workflow durably with `ctx.signal_external_workflow(workflow_id, signal_name, args=None, *, run_id=None)` (durable-workflow/.github#223, durable-workflow/server#1134). Yielding it sends the `signal_external_workflow` command and resumes with an `ExternalSignalResult` (`outcome`, `reason`, `target_run_id`, `target_command_id`, `target_signal_id`, `retained`, `delivered`). A missing, closed or refusing target is a returned outcome (`target_not_found`, `target_closed` or `rejected` with the Server's reason), not an exception, because the Server records it as a result and workflow code decides what to do. Arguments travel as an inline Avro payload envelope, like child workflow arguments. The command is yielded on its own; a parallel group or selection member is refused.
+  - **Replay safety:** replay matches `ExternalSignalRequested` at the command's sequence and returns the outcome from the following `ExternalSignalDelivered` or `ExternalSignalFailed`. A recorded signal is never sent again, including on a cold replacement worker and while its outcome is not yet recorded. A different target, run, signal name or arguments at that sequence raises `NonDeterministicReplayError`. Existing histories are unchanged.
+  - **Server requirement:** the Worker submits the command only when the Server advertises `signal_external_workflow` in `worker_protocol.server_capabilities` (and lists it in `supported_workflow_task_commands` when that list is present). Otherwise it fails the workflow task with `signal_external_workflow_unavailable` before submitting, so the signal is never sent outside history.
+
 ## [2.19.1] - 2026-11-18
 
 ### Fixed
