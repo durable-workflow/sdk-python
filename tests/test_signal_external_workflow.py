@@ -163,6 +163,7 @@ class TestCommand:
             ({"workflow_id": "x" * 192, "signal_name": "approve"}, "191"),
             ({"workflow_id": "order-42", "signal_name": " "}, "signal_name"),
             ({"workflow_id": "order-42", "signal_name": "é" * 128}, "255 bytes"),
+            ({"workflow_id": "order-42", "signal_name": "s" * 192}, "191 characters"),
             ({"workflow_id": "order-42", "signal_name": "approve", "run_id": ""}, "run_id"),
         ],
     )
