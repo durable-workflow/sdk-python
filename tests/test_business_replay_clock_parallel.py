@@ -13,7 +13,13 @@ import pytest
 from durable_workflow import serializer, workflow
 from durable_workflow.errors import ActivityFailed, NonDeterministicReplayError, TypedValueError
 from durable_workflow.replay_clock_math import canonical_milliseconds, from_canonical_milliseconds
-from durable_workflow.workflow import WorkflowContext, query_state, replay
+from durable_workflow.workflow import (
+    CompleteWorkflow,
+    RecordSideEffect,
+    WorkflowContext,
+    query_state,
+    replay,
+)
 from tests.business_clock_workflows import clock_text
 from tests.test_business_replay_clock import result
 
@@ -74,12 +80,37 @@ def test_canonical_v1_authored_comparison_and_selected_failure_vectors(case: dic
     value = result(history(case["times"], order=(1, 0)), ParallelProbe)
     expected = datetime.fromisoformat(case["times"][case["success_member"]].replace("Z", "+00:00"))
     assert value["clock"] == expected.isoformat(timespec="microseconds")
-    failure = result(history(case["times"], failures={0, 1}, order=(1, 0)), ParallelProbe)
+    rows = history(case["times"], failures={0, 1}, order=(1, 0))
+    failure = result(closed(rows), ParallelProbe)
     assert failure["failure"] == ("group.0", "failure-0")
     time = case["failure_time"]
     assert failure["clock"] == (datetime.fromisoformat(time.replace("Z", "+00:00")).isoformat(
         timespec="microseconds",
     ) if time is not None else None)
+    now = frontier_result(rows)
+    assert now["failure"] == ("group.1", "failure-1")
+    assert now["clock"] == canonical_text(case["times"][1])
+
+
+def closed(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The history as a released worker left it: the run closed after the group."""
+    return [*rows, {"event_type": "WorkflowCompleted", "recorded_at": "2099-01-01T00:00:00Z", "payload": {}}]
+
+
+def frontier_result(rows: list[dict[str, Any]]) -> Any:
+    """A task reaching a settled group whose first recorded failure is not the
+    lowest position raises that failure and records it (sdk-python#307)."""
+    outcome = replay(ParallelProbe, rows, [], payload_codec="avro")
+    try:
+        assert [type(command) for command in outcome.commands] == [RecordSideEffect, CompleteWorkflow]
+        return outcome.commands[1].result
+    finally:
+        outcome.close()
+
+
+def canonical_text(time: str) -> str | None:
+    instant = from_canonical_milliseconds(canonical_milliseconds(datetime.fromisoformat(time.replace("Z", "+00:00"))))
+    return instant.isoformat(timespec="microseconds") if instant is not None else None
 
 
 def test_reconstruction_overflow_refuses_time_without_changing_the_selected_failure() -> None:
@@ -195,9 +226,13 @@ def test_caught_failure_ignores_successful_sibling_time_and_reconstructs_canonic
 def test_multiple_failures_preserve_legacy_winner_and_refuse_a_different_canonical_winner(
     times: list[str], expected: str | None,
 ) -> None:
-    value = result(history(times, failures={0, 1}, order=(1, 0)), ParallelProbe)
+    rows = history(times, failures={0, 1}, order=(1, 0))
+    value = result(closed(rows), ParallelProbe)
     assert value["failure"] == ("group.0", "failure-0")
     assert value["clock"] == expected
+    now = frontier_result(rows)
+    assert now["failure"] == ("group.1", "failure-1")
+    assert now["clock"] == canonical_text(times[1])
 
 
 @pytest.mark.parametrize("order", list(permutations(range(3))))

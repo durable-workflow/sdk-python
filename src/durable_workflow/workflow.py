@@ -7820,12 +7820,22 @@ def _replay_state(
         task therefore records its decision as a side effect directly after the
         group, and replay raises exactly the member it names.
 
+        When every member has already settled by the time a task first reaches
+        the group, that task also raises the first recorded failure, as
+        Workflow's embedded engine does (sdk-python#307). It records the
+        decision only when that failure is not also the lowest-position one,
+        the member released workers chose; otherwise both rules raise the same
+        member and the task's commands are unchanged.
+
         A history without a decision replays as it always has when every
         member settled before the workflow did any further durable work: the
         workflow waited for the whole group and the failure is chosen by member
-        position. A history without a decision that moved on while a member was
-        open came from another runtime, such as Workflow's embedded engine, and
-        raises its first recorded failure.
+        position. Released workers wrote no decision for a settled group, and a
+        task that raises a failure always either closes the run or records
+        durable work after the group before it can stop, so such a history
+        always shows that it moved on. A history without a decision that moved
+        on while a member was open came from another runtime, such as
+        Workflow's embedded engine, and raises its first recorded failure.
         """
         marked = _parallel_failure_marker(commands)
         if marked is not None:
@@ -7842,7 +7852,19 @@ def _replay_state(
         if len({recorded_steps[index].workflow_sequence for index in slots}) != len(commands):
             return True, None, not moved_on
         settled = [recorded_steps[index].history_index for index in slots]
-        if any(index is None for index in settled) or not moved_on:
+        if any(index is None for index in settled):
+            return False, None, False
+        if not moved_on and len(slots) == len(commands):
+            # This task is the first to act on the settled group. Raise the
+            # first recorded failure; record it only where the legacy
+            # position rule would choose another member (sdk-python#307).
+            failures = [index for index in slots
+                        if isinstance(resolved_results[index], ActivityFailed | ChildWorkflowFailed)]
+            first_recorded = min(failures, key=lambda index: cast(int, recorded_steps[index].history_index))
+            lowest_position = min(failures, key=lambda index: recorded_steps[index].workflow_sequence)
+            differs = first_recorded != lowest_position
+            return differs, None, differs
+        if not moved_on:
             return False, None, False
         return min(moved_on) < max(cast(list[int], settled)), None, False
 

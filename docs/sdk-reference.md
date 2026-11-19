@@ -522,15 +522,22 @@ profile, (shipping, _) = results
 ```
 
 A failed activity or child is thrown at the list-yield point as soon as it is
-recorded. The other members keep running; their later outcomes do not change
-the thrown failure or reach the workflow's next operations. If every member
-had already settled when the workflow resumed, the failure with the lowest
-durable input position is thrown. A group whose members are already scheduled
-is never scheduled again on a later wake, such as a signal. When a failure is
-raised while other members are open, the worker records which member it
-raised as a side effect directly after the group, so every later replay raises
-the same one. Code after such a group therefore starts one workflow sequence
-later.
+recorded. The other members keep running and are not cancelled; their later
+outcomes do not change the thrown failure or reach the workflow's next
+operations. When several members have failed by the time the workflow
+resumes, the one whose failure was recorded first in history is thrown, even
+if every member has already settled, as in Workflow's embedded engine. A
+group whose members are already scheduled is never scheduled again on a later
+wake, such as a signal. When a failure is raised while other members are open,
+or when a settled group's first recorded failure is not the one with the
+lowest input position, the worker records which member it raised as a side
+effect directly after the group, so every later replay raises the same one.
+Code after such a group therefore starts one workflow sequence later.
+
+Workers up to 2.19.1 threw the failure with the lowest input position once
+every member had settled. Histories they recorded keep that choice on replay:
+a settled group with no recorded decision, after which the run closed or did
+further durable work, still throws the lowest-position failure.
 
 ## Saga compensation
 

@@ -66,6 +66,23 @@ def _completed_result(workflow_type: type, history: list[dict[str, Any]]) -> Any
     return command.result
 
 
+def _failure_results(workflow_type: type, history: list[dict[str, Any]]) -> tuple[Any, Any]:
+    """The result a released worker recorded, and the one a task picks now.
+
+    A history whose run already closed replays the failure released workers
+    raised: the lowest workflow position. A task reaching the settled group
+    for the first time raises the first recorded failure, as Workflow's
+    embedded engine does (sdk-python#307), recording the member it raised
+    when the two rules differ.
+    """
+    closed = [*history, {"event_type": "WorkflowCompleted", "payload": {}}]
+    legacy = _completed_result(workflow_type, closed)
+    outcome = replay(workflow_type, history, [], payload_codec=serializer.AVRO_CODEC)
+    assert isinstance(outcome.commands[-1], CompleteWorkflow)
+    assert len(outcome.commands) in (1, 2)
+    return legacy, outcome.commands[-1].result
+
+
 @workflow.defn(name="parallel-completion-order-activities")
 class ParallelCompletionOrderActivities:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -357,13 +374,18 @@ def test_activity_failure_selection_follows_workflow_position(completion_order: 
         ),
     ]
 
-    assert _completed_result(
+    legacy, now = _failure_results(
         ParallelCompletionOrderActivityFailures,
         _history_in_completion_order(events, completion_order),
-    ) == {
+    )
+    assert legacy == {
         "activity_type": "activity-fails-first",
         "message": "first positional activity failure",
     }
+    first = 1 if completion_order.index(1) < completion_order.index(2) else 2
+    assert now == ({"activity_type": "activity-fails-first", "message": "first positional activity failure"}
+                   if first == 1 else
+                   {"activity_type": "activity-fails-second", "message": "second positional activity failure"})
 
 
 @pytest.mark.parametrize("completion_order", THREE_SIBLING_ORDERS)
@@ -395,13 +417,18 @@ def test_child_failure_selection_follows_workflow_position(completion_order: tup
         ),
     ]
 
-    assert _completed_result(
+    legacy, now = _failure_results(
         ParallelCompletionOrderChildFailures,
         _history_in_completion_order(events, completion_order),
-    ) == {
+    )
+    assert legacy == {
         "child_workflow_type": "child-fails-first",
         "message": "first positional child failure",
     }
+    first = 1 if completion_order.index(1) < completion_order.index(2) else 2
+    assert now == ({"child_workflow_type": "child-fails-first", "message": "first positional child failure"}
+                   if first == 1 else
+                   {"child_workflow_type": "child-fails-second", "message": "second positional child failure"})
 
 
 @pytest.mark.parametrize("completion_order", THREE_SIBLING_ORDERS)
@@ -426,13 +453,18 @@ def test_mixed_failure_selection_follows_workflow_position(completion_order: tup
         _terminal_event("TimerFired", "mixed", 3, 2, timer_kind="sleep"),
     ]
 
-    assert _completed_result(
+    legacy, now = _failure_results(
         ParallelCompletionOrderMixedFailures,
         _history_in_completion_order(events, completion_order),
-    ) == {
+    )
+    assert legacy == {
         "failure_type": "ChildWorkflowFailed",
         "message": "first positional mixed failure",
     }
+    first = 0 if completion_order.index(0) < completion_order.index(1) else 1
+    assert now == ({"failure_type": "ChildWorkflowFailed", "message": "first positional mixed failure"}
+                   if first == 0 else
+                   {"failure_type": "ActivityFailed", "message": "second positional mixed failure"})
 
 
 @pytest.mark.parametrize("completion_order", [(0, 1), (1, 0)])
@@ -451,10 +483,9 @@ def test_repeated_identical_failures_stay_bound_to_yielded_positions(
         for index in range(2)
     ]
 
-    assert (
-        _completed_result(
-            ParallelCompletionOrderRepeatedFailures,
-            _history_in_completion_order(events, completion_order),
-        )
-        == "position-0-failed"
+    legacy, now = _failure_results(
+        ParallelCompletionOrderRepeatedFailures,
+        _history_in_completion_order(events, completion_order),
     )
+    assert legacy == "position-0-failed"
+    assert now == f"position-{completion_order[0]}-failed"

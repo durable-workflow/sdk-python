@@ -52,6 +52,7 @@ from tests.test_golden_history_replay import (
 from tests.test_parallel_group_policy import ParallelFailurePolicyWorkflow
 from tests.test_parallel_member_failure_open_siblings import (
     NativeCaughtMemberFailure,
+    NativeSettledGroupCaught,
     NativeUncaughtMemberFailure,
 )
 from tests.test_patch_history import (
@@ -479,6 +480,7 @@ WORKFLOWS = [
     SelectionLoserAtCloseWorkflow,
     AllFailureClosedWorkflow,
     NativeCaughtMemberFailure,
+    NativeSettledGroupCaught,
     NativeUncaughtMemberFailure,
     UpdateSignalConditionTimerWorkflow,
     WorkflowStreamAuthorWorkflow,
@@ -502,13 +504,17 @@ WORKFLOW_TYPES["tests.replay.entry-arguments-required"] = RequiredEntryArgumentW
 WORKFLOW_TYPES["tests.replay.parallel-failure-policy"] = ParallelFailurePolicyWorkflow
 
 
-# Immutable evidence whose recorded expectation was the sdk-python#338 defect:
-# replay sent an already-scheduled group again, which Server refuses. The files
-# stay unchanged. Each one's history replays under the named fixture instead,
-# which cannot use ``supersedes`` because the protocol version is the same.
+# Immutable evidence whose recorded expectation no longer holds. The files stay
+# unchanged. Each one's history replays under the named fixture instead, which
+# cannot use ``supersedes`` because the protocol version is the same.
+# - sdk-python#338: replay sent an already-scheduled group again, which Server
+#   refuses.
+# - sdk-python#307: a task reaching a settled group raised the lowest-position
+#   failure instead of the first recorded one.
 DEFECT_EVIDENCE = {
     "legacy-parallel-failure-remains-pending": "absent-policy-failure-raises-with-open-sibling",
     "run-closed-cancellation-not-a-group-outcome": "run-closed-all-failure-keeps-the-handled-failure",
+    "business-clock-parallel-failure-selection-gap": "settled-group-raises-first-recorded-failure",
 }
 
 
