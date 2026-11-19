@@ -73,7 +73,7 @@ another workflow durably. The yield resumes with an `ExternalSignalResult`
 whose `outcome` is `delivered`, `target_not_found`, `target_closed` or
 `rejected`. Undelivered signals are returned values, not exceptions. The
 signal is recorded once in history and replay never sends it again. It needs
-a Server that advertises `signal_external_workflow`.
+native Server 3.15.0 or later, which advertises `signal_external_workflow`.
 
 Yield a list for deterministic parallel composition. Lists may nest and may
 mix activity, child-workflow, and timer commands; the resolved value has the
