@@ -12,6 +12,7 @@ from durable_workflow.client import Client
 from durable_workflow.errors import NonDeterministicReplayError
 from durable_workflow.worker import Worker
 from durable_workflow.workflow import LocalActivityExecutionAborted
+from tests.failure_order import is_failure_order_marker
 from tests.test_cooperative_cancellation import request
 
 
@@ -147,10 +148,12 @@ def test_parallel_copy_keeps_scope_membership_and_original_sequence_after_openin
             return (yield from ctx.cancellation_scope(body))
 
     outcome = run(Probe, [started(), opening()])
-    wire = workflow.commands_to_server_commands(outcome.commands, "queue", size_warning=None)
+    marker, *wire = workflow.commands_to_server_commands(outcome.commands, "queue", size_warning=None)
+    # The run's failure-order marker takes sequence 2, before its first all-group.
+    assert is_failure_order_marker(marker)
     assert len(wire) == 2
     assert [command["cancellation_scope_id"] for command in wire] == ["scope-one", "scope-one"]
-    assert [command["parallel_group_base_sequence"] for command in wire] == [2, 2]
+    assert [command["parallel_group_base_sequence"] for command in wire] == [3, 3]
     assert [command["parallel_group_index"] for command in wire] == [0, 1]
 
 

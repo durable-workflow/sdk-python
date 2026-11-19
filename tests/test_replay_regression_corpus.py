@@ -49,6 +49,7 @@ from tests.test_golden_history_replay import (
     GoldenTimeoutWaitWorkflow,
     GoldenVersionMarkerWorkflow,
 )
+from tests.test_parallel_failure_order import ReviewPlain, ReviewSelectCancel, ReviewZeroCommandCatch
 from tests.test_parallel_group_policy import ParallelFailurePolicyWorkflow
 from tests.test_parallel_member_failure_open_siblings import (
     NativeCaughtMemberFailure,
@@ -482,6 +483,9 @@ WORKFLOWS = [
     NativeCaughtMemberFailure,
     NativeSettledGroupCaught,
     NativeUncaughtMemberFailure,
+    ReviewPlain,
+    ReviewSelectCancel,
+    ReviewZeroCommandCatch,
     UpdateSignalConditionTimerWorkflow,
     WorkflowStreamAuthorWorkflow,
     WorkflowMemoAuthorWorkflow,
@@ -504,17 +508,26 @@ WORKFLOW_TYPES["tests.replay.entry-arguments-required"] = RequiredEntryArgumentW
 WORKFLOW_TYPES["tests.replay.parallel-failure-policy"] = ParallelFailurePolicyWorkflow
 
 
-# Immutable evidence whose recorded expectation no longer holds. The files stay
-# unchanged. Each one's history replays under the named fixture instead, which
-# cannot use ``supersedes`` because the protocol version is the same.
-# - sdk-python#338: replay sent an already-scheduled group again, which Server
-#   refuses.
-# - sdk-python#307: a task reaching a settled group raised the lowest-position
-#   failure instead of the first recorded one.
+# Immutable evidence whose recorded expectation was the sdk-python#338 defect:
+# replay sent an already-scheduled group again, which Server refuses. The files
+# stay unchanged. Each one's history replays under the named fixture instead,
+# which cannot use ``supersedes`` because the protocol version is the same.
 DEFECT_EVIDENCE = {
     "legacy-parallel-failure-remains-pending": "absent-policy-failure-raises-with-open-sibling",
     "run-closed-cancellation-not-a-group-outcome": "run-closed-all-failure-keeps-the-handled-failure",
-    "business-clock-parallel-failure-selection-gap": "settled-group-raises-first-recorded-failure",
+}
+
+# Immutable evidence of the commands a released worker sent for a new run's
+# first all-group. New runs now record the parallel failure-order version
+# marker before that group (sdk-python#307), so the same input replays under
+# the named fixture, at the same protocol version. No recorded history changes
+# meaning: a history without the marker keeps its sequences and its failure
+# selection.
+SUPERSEDED_NEW_RUN_EMISSION = {
+    "python-completion-size-limit-fails-run-once":
+        "python-completion-size-limit-fails-run-once-after-failure-order-marker",
+    "python-completion-history-limit-fails-run-once":
+        "python-completion-history-limit-fails-run-once-after-failure-order-marker",
 }
 
 
@@ -525,7 +538,7 @@ def _fixture_documents() -> dict[Path, dict[str, Any]]:
 def _fixture_paths() -> list[Path]:
     """The current fixtures. A superseded one stays as evidence but does not replay."""
     documents = _fixture_documents()
-    retired = set(DEFECT_EVIDENCE)
+    retired = set(DEFECT_EVIDENCE) | set(SUPERSEDED_NEW_RUN_EMISSION)
     for document in documents.values():
         retired.update(document.get("supersedes", []))
     return [path for path, document in documents.items() if document.get("id") not in retired]
@@ -533,9 +546,9 @@ def _fixture_paths() -> list[Path]:
 
 def test_retired_defect_evidence_replays_under_its_correction() -> None:
     by_id = {document["id"]: document for document in _fixture_documents().values()}
-    for retired, correction in DEFECT_EVIDENCE.items():
+    for retired, correction in {**DEFECT_EVIDENCE, **SUPERSEDED_NEW_RUN_EMISSION}.items():
         assert by_id[retired]["protocol_version"] == by_id[correction]["protocol_version"]
-        assert by_id[retired]["history"] == by_id[correction]["history"]
+        assert by_id[retired].get("history") == by_id[correction].get("history")
         assert by_id[retired]["workflow"] == by_id[correction]["workflow"]
 
 

@@ -123,7 +123,9 @@ def test_an_open_group_is_never_scheduled_again() -> None:
 
 
 def test_a_new_group_is_still_scheduled_once() -> None:
-    commands = _wire([{"event_type": "WorkflowStarted", "payload": {}}])
+    marker, *commands = _wire([{"event_type": "WorkflowStarted", "payload": {}}])
+    # A new run records its failure-order marker before its first all-group (#307).
+    assert marker["type"] == "record_version_marker"
     assert [command["type"] for command in commands] == ["schedule_activity"] * SIZE
     assert [command["parallel_group_index"] for command in commands] == list(range(SIZE))
 
@@ -277,87 +279,22 @@ def test_a_late_sibling_never_takes_the_compensation_result(late_first: bool) ->
     assert outcome.commands == [CompleteWorkflow({"caught": "member-0", "compensated": "undone"})]
 
 
-def _settled_out_of_order() -> list[dict[str, Any]]:
-    """Every member settled before a task reached the group. Member 2 failed
-    first; member 0, the lower position, failed later."""
-    return [
+def test_a_group_that_settled_before_the_workflow_moved_on_keeps_positional_selection() -> None:
+    """A history recorded while the worker waited for every member: the
+    lower-position failure is the one raised, as before, and no decision is
+    recorded because the task saw every outcome."""
+    history = [
         *_scheduled(),
         _member("ActivityFailed", 2),
         _member("ActivityCompleted", 1),
         _member("ActivityFailed", 0),
         _member("ActivityCompleted", 3),
     ]
-
-
-def test_a_settled_group_raises_its_first_recorded_failure_and_records_it() -> None:
-    """sdk-python#307: Workflow's embedded engine raises the earliest recorded
-    failure, not the lowest position. Released workers raised member 0 here
-    and wrote no decision, so this task records the member it raised."""
-    history = _settled_out_of_order()
-    outcome = replay(AllFailureOpenSiblings, history, [], payload_codec=serializer.AVRO_CODEC)
-    assert outcome.commands == [
-        RecordSideEffect({PARALLEL_FAILURE_DECISION: {
-            "parallel_group_id": f"parallel-activities:1:{SIZE}", "parallel_group_base_sequence": 1,
-            "parallel_group_size": SIZE, "member_sequence": 3,
-        }}),
-        ScheduleActivity("compensate", ["member-2"]),
+    commands = _wire(history)
+    assert [(command["type"], command.get("activity_type")) for command in commands] == [
+        ("schedule_activity", "compensate"),
     ]
-    assert query_state(AllFailureOpenSiblings, history, [], "caught") == "member-2"
-    uncaught = replay(AllFailureUncaught, history, [], payload_codec=serializer.AVRO_CODEC)
-    assert [type(command) for command in uncaught.commands] == [RecordSideEffect, FailWorkflow]
-    assert "member-2" in str(cast(FailWorkflow, uncaught.commands[1]).message)
-
-
-def test_a_settled_group_replays_the_recorded_first_failure_at_every_later_task() -> None:
-    history = [
-        *_settled_out_of_order(),
-        _decision(2),
-        _compensation("ActivityScheduled"),
-        _compensation("ActivityCompleted", "undone"),
-    ]
-    for end in range(len(history) - 1, len(history) + 1):
-        expected = [] if end < len(history) else [
-            CompleteWorkflow({"caught": "member-2", "compensated": "undone"}),
-        ]
-        outcome = replay(AllFailureOpenSiblings, history[:end], [], payload_codec=serializer.AVRO_CODEC)
-        assert outcome.commands == expected, end
-        assert query_state(AllFailureOpenSiblings, history[:end], [], "caught") == "member-2", end
-
-
-@pytest.mark.parametrize("order", [(0, 2), (2,), (1, 3)])
-def test_a_settled_group_whose_first_failure_has_the_lowest_position_records_nothing(
-    order: tuple[int, ...],
-) -> None:
-    """Both rules raise the same member, so the commands are exactly what
-    released workers sent."""
-    history = [*_scheduled(), *(_member("ActivityFailed", index) for index in order),
-               *(_member("ActivityCompleted", index) for index in range(SIZE) if index not in order)]
-    first = order[0]
-    assert _wire(history) == _wire_scheduled_compensation(f"member-{first}")
-    assert query_state(AllFailureOpenSiblings, history, [], "caught") == f"member-{first}"
-
-
-def _wire_scheduled_compensation(caught: str) -> list[dict[str, Any]]:
-    return commands_to_server_commands(
-        [ScheduleActivity("compensate", [caught])], "queue", payload_codec=serializer.AVRO_CODEC,
-    )
-
-
-def test_a_released_worker_history_of_a_settled_group_keeps_positional_selection() -> None:
-    """Recorded by 2.19.1 and earlier: the task saw every member settled,
-    raised member 0 by position and moved on with no decision. It replays
-    exactly as recorded."""
-    history = [*_settled_out_of_order(), _compensation("ActivityScheduled", sequence=SIZE + 1)]
-    assert replay(AllFailureOpenSiblings, history, [], payload_codec=serializer.AVRO_CODEC).commands == []
     assert query_state(AllFailureOpenSiblings, history, [], "caught") == "member-0"
-    history.append(_compensation("ActivityCompleted", "undone", sequence=SIZE + 1))
-    assert replay(AllFailureOpenSiblings, history, [], payload_codec=serializer.AVRO_CODEC).commands == [
-        CompleteWorkflow({"caught": "member-0", "compensated": "undone"}),
-    ]
-    closed = [*_settled_out_of_order(), {"event_type": "WorkflowFailed", "payload": {"message": "member-0 failed"}}]
-    outcome = replay(AllFailureUncaught, closed, [], payload_codec=serializer.AVRO_CODEC)
-    assert [type(command) for command in outcome.commands] == [FailWorkflow]
-    assert "member-0" in str(cast(FailWorkflow, outcome.commands[0]).message)
 
 
 def test_a_history_from_another_runtime_raises_its_first_recorded_failure() -> None:

@@ -524,20 +524,30 @@ profile, (shipping, _) = results
 A failed activity or child is thrown at the list-yield point as soon as it is
 recorded. The other members keep running and are not cancelled; their later
 outcomes do not change the thrown failure or reach the workflow's next
-operations. When several members have failed by the time the workflow
-resumes, the one whose failure was recorded first in history is thrown, even
-if every member has already settled, as in Workflow's embedded engine. A
-group whose members are already scheduled is never scheduled again on a later
-wake, such as a signal. When a failure is raised while other members are open,
-or when a settled group's first recorded failure is not the one with the
-lowest input position, the worker records which member it raised as a side
-effect directly after the group, so every later replay raises the same one.
-Code after such a group therefore starts one workflow sequence later.
+operations. A group whose members are already scheduled is never scheduled
+again on a later wake, such as a signal.
 
-Workers up to 2.19.1 threw the failure with the lowest input position once
-every member had settled. Histories they recorded keep that choice on replay:
-a settled group with no recorded decision, after which the run closed or did
-further durable work, still throws the lowest-position failure.
+When several members have failed, a run started on this version throws the
+failure recorded first in history, in durable event order, even if every
+member had already settled when the workflow resumed. The run records this
+choice once, as the version marker `durable_workflow.parallel_failure_order`
+directly before its first group that contains an activity or child workflow,
+so code after that point starts one workflow sequence later. Workflow's
+embedded engine also throws the earliest failure, but compares millisecond
+timestamps and then member index, so two failures recorded in the same
+millisecond can be chosen differently
+([durable-workflow/.github#415](https://github.com/durable-workflow/.github/issues/415)).
+
+A run whose first such group was recorded without the marker, by an earlier
+worker, keeps that worker's rule for its whole life, on every task, query and
+update: if every member had settled when the workflow resumed, the failure
+with the lowest input position is thrown. When such a run raises a failure
+while other members are open, the worker records which member it raised as a
+side effect directly after the group, so every later replay raises the same
+one. A run that has a cancellation request when it reaches its first group
+also keeps this rule. Workers up to 2.19.1 cannot replay a run that recorded
+the marker; they fail its workflow task as nondeterministic, so finish
+upgrading every worker on a task queue before relying on the new rule.
 
 ## Saga compensation
 

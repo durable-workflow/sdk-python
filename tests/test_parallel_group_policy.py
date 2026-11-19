@@ -62,19 +62,15 @@ def test_absent_policy_raises_the_first_failure_while_a_sibling_is_open() -> Non
     assert query_state(ParallelFailurePolicyWorkflow, history, [], "caught") == "fast-second"
 
 
-def test_absent_policy_selection_after_a_later_sibling_settles() -> None:
-    """Released workers raised the lower position once both members settled.
-    A closed history keeps that; a task reaching the settled group now raises
-    the first recorded failure and records it (sdk-python#307)."""
+def test_absent_policy_preserves_positional_failure_after_a_later_sibling_settles() -> None:
     history = json.loads(FIXTURE.read_text())["history"]
     first = dict(history[1]["payload"])
     first["message"] = "lower position failed later"
     history.append({"event_type": "ActivityFailed", "recorded_at": "2026-01-01T00:00:03Z", "payload": first})
-    closed = replay(ParallelFailurePolicyWorkflow, [*history, {"event_type": "WorkflowCompleted", "payload": {}}], [])
-    assert closed.commands == [CompleteWorkflow("slow-first")]
     outcome = replay(ParallelFailurePolicyWorkflow, history, [])
-    assert [type(command) for command in outcome.commands] == [RecordSideEffect, CompleteWorkflow]
-    assert outcome.commands[1] == CompleteWorkflow("fast-second")
+    assert len(outcome.commands) == 1
+    assert isinstance(outcome.commands[0], CompleteWorkflow)
+    assert outcome.commands[0].result == "slow-first"
 
 
 def explicit_history(policy: str = "propagate") -> list[dict]:
@@ -115,8 +111,7 @@ def test_enabling_draft_support_does_not_change_absent_policy_history() -> None:
 
 def test_enabling_draft_support_keeps_the_legacy_failure_clock_gap() -> None:
     fixture = json.loads(FIXTURE.with_name("business-clock-parallel-failure-selection-gap.json").read_text())
-    closed = [*fixture["history"], {"event_type": "WorkflowCompleted", "payload": {}}]
-    outcome = draft_replay(closed, ParallelFailureBusinessClockWorkflow)
+    outcome = draft_replay(fixture["history"], ParallelFailureBusinessClockWorkflow)
     assert outcome.commands[0].result == fixture["expected"]["command_sequence"][0]["result"]
 
 

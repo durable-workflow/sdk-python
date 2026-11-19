@@ -4265,6 +4265,11 @@ RUN_CLOSED_CANCELLATION_REASON = "run_closed"
 # absent-policy all-group it raised while other members were open
 # (sdk-python#338). Replay raises exactly that member.
 PARALLEL_FAILURE_DECISION = "durable_workflow.parallel_failure_decision"
+# The version marker a run records, directly before its first all-group, when
+# that group is first scheduled by a worker that raises the first recorded
+# member failure (sdk-python#307). A run without it keeps the failure
+# selection of the workers that ran it before, for its whole life.
+PARALLEL_FAILURE_ORDER_MARKER = "durable_workflow.parallel_failure_order"
 
 
 def _settled_at_close(event: Any) -> bool:
@@ -6709,6 +6714,11 @@ def _replay_state(
     # Its terminal position proves whether a different-process duplicate belongs.
     terminal_condition_chain_current: Mapping[str, Any] | None = None
     version_decisions: dict[str, int] = {}
+    # Whether this run raises an all-group's first recorded member failure
+    # (sdk-python#307). Decided once, at the run's first ordinary all-group:
+    # True when the group is preceded by PARALLEL_FAILURE_ORDER_MARKER or is
+    # scheduled now, False when it was recorded without the marker.
+    recorded_failure_order: bool | None = None
 
     def _version_error(detail: str, step: _RecordedStep | None = None) -> NonDeterministicReplayError:
         return NonDeterministicReplayError(
@@ -6794,6 +6804,64 @@ def _replay_state(
             )
         version_decisions.setdefault(change_id, version)
         return _version_marker_result(command, version)
+
+    def _ordinary_all_group(command: Any) -> bool:
+        """A remote all-group whose failure selection the run's marker decides."""
+        if not isinstance(command, list) or "propagate" in parallel_group_policies:
+            return False
+        try:
+            leaves = _parallel_leaves(command)
+        except (TypeError, ValueError):
+            return False
+        if any(isinstance(leaf, WaitCondition | RecordLocalActivity) for leaf in leaves) or (
+            prepare_local_activities and _contains_local_activity(command)
+        ):
+            return False
+        # A group of timers alone cannot fail, so it does not decide the rule.
+        return any(isinstance(leaf, ScheduleActivity | StartChildWorkflow) for leaf in leaves)
+
+    def _resolve_failure_order() -> bool:
+        """Read or record the run's failure-order marker at its first all-group.
+
+        A run whose first all-group was recorded without the marker was
+        scheduled by an earlier worker, and keeps that worker's failure
+        selection for its whole life, on every later task, query and update.
+        A run reaching its first all-group now records the marker directly
+        before scheduling it. No all-group of the run has produced an outcome
+        before that point, so no earlier task can have chosen a failure under
+        the other rule. A run with a cancellation request that may replace the
+        group records no marker and keeps the earlier rule.
+        """
+        nonlocal result_cursor, authored_sequence
+        marker = RecordVersionMarker(
+            change_id=PARALLEL_FAILURE_ORDER_MARKER, version=1, min_supported=1, max_supported=1,
+        )
+        # The marker is the next authored step; an open select() loser or
+        # condition wait recorded earlier can still be unconsumed.
+        step = recorded_steps[result_cursor] if result_cursor < len(recorded_steps) else None
+        if (step is not None and step.shape == "version marker"
+                and step.details.get("change_id") == PARALLEL_FAILURE_ORDER_MARKER):
+            _assert_step_matches(marker, step)
+            if _recorded_version(step) != 1:
+                raise _version_error("Unsupported parallel failure order marker version.", step)
+            result_cursor += 1
+            authored_sequence = max(authored_sequence, step.workflow_sequence + 1)
+            return True
+        step = _next_unconsumed_recorded_step()
+        closed = any(_history_event_type(event) in {
+            "WorkflowCompleted", "WorkflowFailed", "WorkflowCancelled", "WorkflowTerminated",
+            "WorkflowContinuedAsNew", "WorkflowTimedOut",
+        } for event in events)
+        interrupting = cancellation.request is not None or any(
+            sequence not in consumed_scope_deliveries for sequence in committed_scopes.deliveries
+        )
+        if step is None and not closed and not interrupting:
+            pending.append(marker)
+            authored_sequence += 1
+            return True
+        # Scheduled now without the marker, under a cancellation request that
+        # may replace it, or recorded without it: the earlier rule.
+        return False
 
     def _parallel_leaf_kind(command: Any) -> str:
         if isinstance(command, ScheduleActivity | RecordLocalActivity):
@@ -7820,22 +7888,12 @@ def _replay_state(
         task therefore records its decision as a side effect directly after the
         group, and replay raises exactly the member it names.
 
-        When every member has already settled by the time a task first reaches
-        the group, that task also raises the first recorded failure, as
-        Workflow's embedded engine does (sdk-python#307). It records the
-        decision only when that failure is not also the lowest-position one,
-        the member released workers chose; otherwise both rules raise the same
-        member and the task's commands are unchanged.
-
         A history without a decision replays as it always has when every
         member settled before the workflow did any further durable work: the
         workflow waited for the whole group and the failure is chosen by member
-        position. Released workers wrote no decision for a settled group, and a
-        task that raises a failure always either closes the run or records
-        durable work after the group before it can stop, so such a history
-        always shows that it moved on. A history without a decision that moved
-        on while a member was open came from another runtime, such as
-        Workflow's embedded engine, and raises its first recorded failure.
+        position. A history without a decision that moved on while a member was
+        open came from another runtime, such as Workflow's embedded engine, and
+        raises its first recorded failure.
         """
         marked = _parallel_failure_marker(commands)
         if marked is not None:
@@ -7846,25 +7904,18 @@ def _replay_state(
                  if base <= recorded_steps[index].workflow_sequence < end]
         if not any(isinstance(resolved_results[index], ActivityFailed | ChildWorkflowFailed) for index in slots):
             return False, None, False
+        if recorded_failure_order:
+            # History is append-only, so the first recorded failure a task
+            # sees is the first one every later replay sees: no decision is
+            # needed, whether or not the other members have settled.
+            return True, None, False
         moved_on = [index for sequence, index in first_command_index_by_sequence.items() if sequence >= end]
         if authored_close_index is not None:
             moved_on.append(authored_close_index)
         if len({recorded_steps[index].workflow_sequence for index in slots}) != len(commands):
             return True, None, not moved_on
         settled = [recorded_steps[index].history_index for index in slots]
-        if any(index is None for index in settled):
-            return False, None, False
-        if not moved_on and len(slots) == len(commands):
-            # This task is the first to act on the settled group. Raise the
-            # first recorded failure; record it only where the legacy
-            # position rule would choose another member (sdk-python#307).
-            failures = [index for index in slots
-                        if isinstance(resolved_results[index], ActivityFailed | ChildWorkflowFailed)]
-            first_recorded = min(failures, key=lambda index: cast(int, recorded_steps[index].history_index))
-            lowest_position = min(failures, key=lambda index: recorded_steps[index].workflow_sequence)
-            differs = first_recorded != lowest_position
-            return differs, None, differs
-        if not moved_on:
+        if any(index is None for index in settled) or not moved_on:
             return False, None, False
         return min(moved_on) < max(cast(list[int], settled)), None, False
 
@@ -7947,6 +7998,8 @@ def _replay_state(
                 first = False
             _apply_due_receivers()
             _validate_local_activity_policies(cmd)
+            if recorded_failure_order is None and _ordinary_all_group(cmd):
+                recorded_failure_order = _resolve_failure_order()
             if isinstance(cmd, RecordVersionMarker):
                 next_value = _resolve_version(cmd)
                 continue

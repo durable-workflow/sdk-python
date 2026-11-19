@@ -623,13 +623,9 @@ def test_cancellation_at_close_never_replaces_the_failure_the_workflow_handled()
 
 def test_ordinary_cancellation_is_still_an_activity_outcome() -> None:
     """Only ``cancellation_reason: run_closed`` is skipped."""
-    history = _all_failure_history(cancelled_at_close=True)
-    del history[-2]["payload"]["cancellation_reason"]
-    history[-1]["payload"]["output"] = serializer.envelope("caught: activity failed")["blob"]
+    history = _all_failure_history(cancelled_at_close=True)[:-1]
+    del history[-1]["payload"]["cancellation_reason"]
 
-    # The run closed after both members settled, as a released worker that
-    # chose the lower position left it. A skipped cancellation would leave
-    # member 1 open and make replay raise "boom" instead.
     outcome = replay(AllFailureClosedWorkflow, history, [])
 
     assert len(outcome.commands) == 1

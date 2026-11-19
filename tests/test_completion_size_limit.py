@@ -119,7 +119,10 @@ async def test_typed_413_fails_the_run_once_without_resending_the_completion() -
         "/api/worker/workflow-tasks/task-413/complete",
     ]
     oversized, failure = (body(request) for request in requests)
-    assert [command["type"] for command in oversized["commands"]] == ["schedule_activity"] * 4
+    # A new run records its failure-order marker before its first all-group (#307).
+    assert [command["type"] for command in oversized["commands"]] == [
+        "record_version_marker", *["schedule_activity"] * 4,
+    ]
     assert (failure["lease_owner"], failure["workflow_task_attempt"]) == ("worker-413", 3)
     assert len(failure["commands"]) == 1
     command = failure["commands"][0]
@@ -277,7 +280,7 @@ async def test_typed_409_fails_the_run_once_without_resending_or_failing_the_tas
         "/api/worker/workflow-tasks/task-413/complete",
     ]
     refused, failure = (body(request) for request in requests)
-    assert [command["type"] for command in refused["commands"]] == ["schedule_activity"] * 4
+    assert [command["type"] for command in refused["commands"]] == ["record_version_marker", *["schedule_activity"] * 4]
     assert (failure["lease_owner"], failure["workflow_task_attempt"]) == ("worker-413", 3)
     command = failure["commands"][0]
     assert (command["type"], command["non_retryable"]) == ("fail_workflow", True)

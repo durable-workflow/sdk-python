@@ -1,0 +1,1523 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "failure-order-released-update-between-tasks-query",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "parallel_failure_order": {
+    "issues": [
+      "durable-workflow/sdk-python#307"
+    ],
+    "note": "Recorded on a Server built from durable-workflow/server main 52e3ec00 (docker-compose.test.yml). Published 2.19.1 ran the zero-command catch of fail-m0 and answered an update with {compensating: fail-m0}; a worker of this version ran the remaining tasks and compensated fail-m0. This is the history of its last task."
+  },
+  "workflow": {
+    "type": "rv348_handle",
+    "input": [],
+    "payload_codec": "avro",
+    "run_id": "01m7tfjvyq564n3r52xph03nz8",
+    "workflow_id": "rv307-rv348_handle-6e9a63",
+    "query": {
+      "name": "caught",
+      "arguments": []
+    }
+  },
+  "history": [
+    {
+      "id": "01m7tfjvyxhjfb1jnt7f0d1c66",
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "namespace": "default",
+      "payload": {
+        "memo": null,
+        "command": {
+          "id": "01m7tfjvyt8zwh2ccm9n5zbdhd",
+          "type": "start",
+          "source": "control_plane",
+          "status": "accepted",
+          "context": {
+            "principal": {
+              "id": "legacy-token",
+              "type": "auth:token",
+              "label": "Admin"
+            }
+          },
+          "outcome": "started_new",
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          },
+          "sequence": 1,
+          "applied_at": "2026-11-19T18:02:30.232740Z",
+          "accepted_at": "2026-11-19T18:02:30.232736Z",
+          "auth_method": "token",
+          "auth_status": "authorized",
+          "caller_label": "Standalone Server",
+          "principal_id": "legacy-token",
+          "request_path": "/api/workflows",
+          "target_scope": "instance",
+          "payload_codec": "avro",
+          "principal_type": "auth:token",
+          "request_method": "POST",
+          "principal_label": "Admin",
+          "resolved_run_id": "01m7tfjvyq564n3r52xph03nz8",
+          "request_route_name": "generated::FqJuJMl97iiXlIDz",
+          "request_fingerprint": "sha256:e5e68285751d4aa76a22d2ea737bb10e6ee57ea6e5e339b1a62d530d40a99ba1"
+        },
+        "outcome": "started_new",
+        "business_key": null,
+        "workflow_type": "rv348_handle",
+        "workflow_class": "rv348_handle",
+        "workflow_run_id": "01m7tfjvyq564n3r52xph03nz8",
+        "search_attributes": null,
+        "visibility_labels": null,
+        "workflow_command_id": "01m7tfjvyt8zwh2ccm9n5zbdhd",
+        "workflow_instance_id": "rv307-rv348_handle-6e9a63"
+      },
+      "workflow_task_id": null,
+      "workflow_command_id": "01m7tfjvyt8zwh2ccm9n5zbdhd",
+      "recorded_at": "2026-11-19T18:02:30.236558Z"
+    },
+    {
+      "id": "01m7tfjvz0jbm2e2xh8ma9k6ev",
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "namespace": "default",
+      "payload": {
+        "command": {
+          "id": "01m7tfjvyt8zwh2ccm9n5zbdhd",
+          "type": "start",
+          "source": "control_plane",
+          "status": "accepted",
+          "context": {
+            "principal": {
+              "id": "legacy-token",
+              "type": "auth:token",
+              "label": "Admin"
+            }
+          },
+          "outcome": "started_new",
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          },
+          "sequence": 1,
+          "applied_at": "2026-11-19T18:02:30.232740Z",
+          "accepted_at": "2026-11-19T18:02:30.232736Z",
+          "auth_method": "token",
+          "auth_status": "authorized",
+          "caller_label": "Standalone Server",
+          "principal_id": "legacy-token",
+          "request_path": "/api/workflows",
+          "target_scope": "instance",
+          "payload_codec": "avro",
+          "principal_type": "auth:token",
+          "request_method": "POST",
+          "principal_label": "Admin",
+          "resolved_run_id": "01m7tfjvyq564n3r52xph03nz8",
+          "request_route_name": "generated::FqJuJMl97iiXlIDz",
+          "request_fingerprint": "sha256:e5e68285751d4aa76a22d2ea737bb10e6ee57ea6e5e339b1a62d530d40a99ba1"
+        },
+        "workflow_type": "rv348_handle",
+        "workflow_class": "rv348_handle",
+        "run_deadline_at": "2026-11-19T18:12:30+00:00",
+        "workflow_run_id": "01m7tfjvyq564n3r52xph03nz8",
+        "declared_queries": [
+          "caught"
+        ],
+        "declared_signals": [],
+        "declared_updates": [
+          "report"
+        ],
+        "declared_entry_mode": "canonical",
+        "run_timeout_seconds": 600,
+        "workflow_command_id": "01m7tfjvyt8zwh2ccm9n5zbdhd",
+        "workflow_instance_id": "rv307-rv348_handle-6e9a63",
+        "declared_entry_method": "handle",
+        "execution_deadline_at": "2026-11-19T19:02:30+00:00",
+        "declared_query_contracts": [
+          {
+            "name": "caught",
+            "parameters": []
+          }
+        ],
+        "declared_signal_contracts": [],
+        "declared_update_contracts": [
+          {
+            "name": "report",
+            "parameters": [
+              {
+                "name": "_",
+                "type": null,
+                "default": null,
+                "position": 0,
+                "required": false,
+                "variadic": true,
+                "allows_null": true,
+                "default_available": false
+              }
+            ]
+          }
+        ],
+        "execution_timeout_seconds": 3600,
+        "declared_update_validators": [],
+        "declared_entry_declaring_class": "external:rv348_handle",
+        "workflow_definition_fingerprint": "sha256:69ed762d44804878ebb703a2ad385119f6f776d0dae561c15f8f84e1707a704a",
+        "workflow_definition_fingerprint_source": "worker"
+      },
+      "workflow_task_id": null,
+      "workflow_command_id": "01m7tfjvyt8zwh2ccm9n5zbdhd",
+      "recorded_at": "2026-11-19T18:02:30.239683Z"
+    },
+    {
+      "id": "01m7tfjwf3kqkct8sgg13v901w",
+      "sequence": 3,
+      "event_type": "TimerScheduled",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfjvz1964m1nbs2m582070",
+          "type": "workflow",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:30.306973Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:30.241603Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:02:40.306911Z",
+          "last_dispatched_at": "2026-11-19T18:02:30.243567Z",
+          "last_dispatch_attempt_at": "2026-11-19T18:02:30.243567Z"
+        },
+        "fire_at": "2026-11-19T18:02:31.753185Z",
+        "sequence": 1,
+        "timer_id": "01m7tfjwf131zf70c1pthg1gtz",
+        "delay_seconds": 1,
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "selection_member_key": "t",
+            "selection_member_kind": "timer",
+            "selection_member_size": 1,
+            "selection_member_index": 0,
+            "parallel_group_base_sequence": 1,
+            "selection_member_base_sequence": 1
+          }
+        ],
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "selection_member_key": "t",
+        "selection_member_kind": "timer",
+        "selection_member_size": 1,
+        "selection_member_index": 0,
+        "parallel_group_base_sequence": 1,
+        "selection_member_base_sequence": 1
+      },
+      "workflow_task_id": "01m7tfjvz1964m1nbs2m582070",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:30.754427Z"
+    },
+    {
+      "id": "01m7tfjwf9mw3nf0m06jag0rpp",
+      "sequence": 4,
+      "event_type": "ActivityScheduled",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfjvz1964m1nbs2m582070",
+          "type": "workflow",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:30.306973Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:30.241603Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:02:40.306911Z",
+          "last_dispatched_at": "2026-11-19T18:02:30.243567Z",
+          "last_dispatch_attempt_at": "2026-11-19T18:02:30.243567Z"
+        },
+        "activity": {
+          "id": "01m7tfjwf7yh5ffwcwgdyt5cck",
+          "type": "slow",
+          "class": "slow",
+          "queue": "rv307-4704a8",
+          "status": "pending",
+          "sequence": 2,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          },
+          "created_at": "2026-11-19T18:02:30.759721Z",
+          "retry_policy": {
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "snapshot_version": 1,
+            "heartbeat_timeout": null,
+            "start_to_close_timeout": null,
+            "non_retryable_error_types": [],
+            "schedule_to_close_timeout": null,
+            "schedule_to_start_timeout": null
+          },
+          "attempt_count": 0,
+          "payload_codec": "avro",
+          "local_activity": false,
+          "idempotency_key": "01m7tfjwf7yh5ffwcwgdyt5cck"
+        },
+        "sequence": 2,
+        "activity_type": "slow",
+        "activity_class": "slow",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "selection_member_key": "slow",
+            "selection_member_kind": "activity",
+            "selection_member_size": 1,
+            "selection_member_index": 1,
+            "parallel_group_base_sequence": 1,
+            "selection_member_base_sequence": 2
+          }
+        ],
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "selection_member_key": "slow",
+        "activity_execution_id": "01m7tfjwf7yh5ffwcwgdyt5cck",
+        "selection_member_kind": "activity",
+        "selection_member_size": 1,
+        "selection_member_index": 1,
+        "parallel_group_base_sequence": 1,
+        "selection_member_base_sequence": 2
+      },
+      "workflow_task_id": "01m7tfjvz1964m1nbs2m582070",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:30.760884Z"
+    },
+    {
+      "id": "01m7tfjy636brag78mp7f2etay",
+      "sequence": 5,
+      "event_type": "TimerFired",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfjwf6tfreseph1kvnbawh",
+          "type": "timer",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:32.497518Z",
+          "connection": "mysql",
+          "lease_owner": "01m7tfjwf6tfreseph1kvnbawh",
+          "available_at": "2026-11-19T18:02:31.753185Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:02:42.497522Z"
+        },
+        "fire_at": "2026-11-19T18:02:31.753185Z",
+        "fired_at": "2026-11-19T18:02:32.513880Z",
+        "sequence": 1,
+        "timer_id": "01m7tfjwf131zf70c1pthg1gtz",
+        "delay_seconds": 1,
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "selection_member_key": "t",
+            "selection_member_kind": "timer",
+            "selection_member_size": 1,
+            "selection_member_index": 0,
+            "parallel_group_base_sequence": 1,
+            "selection_member_base_sequence": 1
+          }
+        ],
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "selection_member_key": "t",
+        "selection_member_kind": "timer",
+        "selection_member_size": 1,
+        "selection_member_index": 0,
+        "parallel_group_base_sequence": 1,
+        "selection_member_base_sequence": 1
+      },
+      "workflow_task_id": "01m7tfjwf6tfreseph1kvnbawh",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:32.514927Z"
+    },
+    {
+      "id": "01m7tfjy66g1ev3wsexrdec2mh",
+      "sequence": 6,
+      "event_type": "SelectionResolved",
+      "namespace": "default",
+      "payload": {
+        "outcome": "completed",
+        "member_key": "t",
+        "member_size": 1,
+        "member_index": 0,
+        "operation_kind": "timer",
+        "operation_identity": "01m7tfjwf131zf70c1pthg1gtz",
+        "selection_group_id": "select-calls:1:2",
+        "resolution_event_id": "01m7tfjy636brag78mp7f2etay",
+        "member_base_sequence": 1,
+        "selection_group_size": 2,
+        "resolution_event_type": "TimerFired",
+        "selection_group_base_sequence": 1
+      },
+      "workflow_task_id": null,
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:32.518142Z"
+    },
+    {
+      "id": "01m7tfjzf9vnczgmw2m5ryv8xk",
+      "sequence": 7,
+      "event_type": "TimerScheduled",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfjy680jgfhnpdzb5aj7p6",
+          "type": "workflow",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:33.402266Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:32.520491Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:02:43.402145Z",
+          "last_dispatched_at": "2026-11-19T18:02:32.538006Z",
+          "last_dispatch_attempt_at": "2026-11-19T18:02:32.538006Z"
+        },
+        "fire_at": "2026-11-19T18:02:34.830949Z",
+        "sequence": 3,
+        "timer_id": "01m7tfjzf7q72xkgzbp7w34va7",
+        "delay_seconds": 1
+      },
+      "workflow_task_id": "01m7tfjy680jgfhnpdzb5aj7p6",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:33.832578Z"
+    },
+    {
+      "id": "01m7tfk17chkh6pa62r3g749we",
+      "sequence": 8,
+      "event_type": "TimerFired",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfjzfctvmyh9rz4vq2512w",
+          "type": "timer",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:35.602330Z",
+          "connection": "mysql",
+          "lease_owner": "01m7tfjzfctvmyh9rz4vq2512w",
+          "available_at": "2026-11-19T18:02:34.830949Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:02:45.602335Z"
+        },
+        "fire_at": "2026-11-19T18:02:34.830949Z",
+        "fired_at": "2026-11-19T18:02:35.626529Z",
+        "sequence": 3,
+        "timer_id": "01m7tfjzf7q72xkgzbp7w34va7",
+        "delay_seconds": 1
+      },
+      "workflow_task_id": "01m7tfjzfctvmyh9rz4vq2512w",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:35.627926Z"
+    },
+    {
+      "id": "01m7tfk2dtqaqa7ph7s6ka0kr0",
+      "sequence": 9,
+      "event_type": "ActivityScheduled",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfk17f668ma8m55583xw3h",
+          "type": "workflow",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:36.417139Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:35.630901Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:02:46.417107Z",
+          "last_dispatched_at": "2026-11-19T18:02:35.654654Z",
+          "last_dispatch_attempt_at": "2026-11-19T18:02:35.654654Z"
+        },
+        "activity": {
+          "id": "01m7tfk2dpe7zwym36as2r13pc",
+          "type": "m0",
+          "class": "m0",
+          "queue": "rv307-4704a8",
+          "status": "pending",
+          "sequence": 4,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAAA"
+          },
+          "created_at": "2026-11-19T18:02:36.854843Z",
+          "retry_policy": {
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "snapshot_version": 1,
+            "heartbeat_timeout": null,
+            "start_to_close_timeout": null,
+            "non_retryable_error_types": [],
+            "schedule_to_close_timeout": null,
+            "schedule_to_start_timeout": null
+          },
+          "attempt_count": 0,
+          "payload_codec": "avro",
+          "local_activity": false,
+          "idempotency_key": "01m7tfk2dpe7zwym36as2r13pc"
+        },
+        "sequence": 4,
+        "activity_type": "m0",
+        "activity_class": "m0",
+        "parallel_group_id": "parallel-activities:4:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:4:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_base_sequence": 4
+          }
+        ],
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "activity_execution_id": "01m7tfk2dpe7zwym36as2r13pc",
+        "parallel_group_base_sequence": 4
+      },
+      "workflow_task_id": "01m7tfk17f668ma8m55583xw3h",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:36.857406Z"
+    },
+    {
+      "id": "01m7tfk2e2mqvmgge6y3mjbrwc",
+      "sequence": 10,
+      "event_type": "ActivityScheduled",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfk17f668ma8m55583xw3h",
+          "type": "workflow",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:36.417139Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:35.630901Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:02:46.417107Z",
+          "last_dispatched_at": "2026-11-19T18:02:35.654654Z",
+          "last_dispatch_attempt_at": "2026-11-19T18:02:35.654654Z"
+        },
+        "activity": {
+          "id": "01m7tfk2e1rd6x1h4rks9q8h1m",
+          "type": "m1",
+          "class": "m1",
+          "queue": "rv307-4704a8",
+          "status": "pending",
+          "sequence": 5,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAIA"
+          },
+          "created_at": "2026-11-19T18:02:36.865400Z",
+          "retry_policy": {
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "snapshot_version": 1,
+            "heartbeat_timeout": null,
+            "start_to_close_timeout": null,
+            "non_retryable_error_types": [],
+            "schedule_to_close_timeout": null,
+            "schedule_to_start_timeout": null
+          },
+          "attempt_count": 0,
+          "payload_codec": "avro",
+          "local_activity": false,
+          "idempotency_key": "01m7tfk2e1rd6x1h4rks9q8h1m"
+        },
+        "sequence": 5,
+        "activity_type": "m1",
+        "activity_class": "m1",
+        "parallel_group_id": "parallel-activities:4:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:4:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_base_sequence": 4
+          }
+        ],
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "activity_execution_id": "01m7tfk2e1rd6x1h4rks9q8h1m",
+        "parallel_group_base_sequence": 4
+      },
+      "workflow_task_id": "01m7tfk17f668ma8m55583xw3h",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:36.866397Z"
+    },
+    {
+      "id": "01m7tfk2g72rnm9xta2wvhevvd",
+      "sequence": 11,
+      "event_type": "ActivityStarted",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfjwfa9v2ws6xfbyt09jjz",
+          "type": "activity",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:36.930722Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:30.762733Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:07:36.930804Z"
+        },
+        "activity": {
+          "id": "01m7tfjwf7yh5ffwcwgdyt5cck",
+          "type": "slow",
+          "class": "slow",
+          "queue": "rv307-4704a8",
+          "status": "running",
+          "sequence": 2,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          },
+          "attempt_id": "01M7TFK2G2RTR8F0FA5JWDT4DR",
+          "created_at": "2026-11-19T18:02:30.759721Z",
+          "started_at": "2026-11-19T18:02:36.930722Z",
+          "retry_policy": {
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "snapshot_version": 1,
+            "heartbeat_timeout": null,
+            "start_to_close_timeout": null,
+            "non_retryable_error_types": [],
+            "schedule_to_close_timeout": null,
+            "schedule_to_start_timeout": null
+          },
+          "attempt_count": 1,
+          "payload_codec": "avro",
+          "local_activity": false,
+          "idempotency_key": "01m7tfjwf7yh5ffwcwgdyt5cck"
+        },
+        "sequence": 2,
+        "activity_type": "slow",
+        "activity_class": "slow",
+        "attempt_number": 1,
+        "parallel_group_id": "select-calls:1:2",
+        "activity_attempt_id": "01M7TFK2G2RTR8F0FA5JWDT4DR",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "selection_member_key": "slow",
+            "selection_member_kind": "activity",
+            "selection_member_size": 1,
+            "selection_member_index": 1,
+            "parallel_group_base_sequence": 1,
+            "selection_member_base_sequence": 2
+          }
+        ],
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "selection_member_key": "slow",
+        "activity_execution_id": "01m7tfjwf7yh5ffwcwgdyt5cck",
+        "selection_member_kind": "activity",
+        "selection_member_size": 1,
+        "selection_member_index": 1,
+        "parallel_group_base_sequence": 1,
+        "selection_member_base_sequence": 2
+      },
+      "workflow_task_id": "01m7tfjwfa9v2ws6xfbyt09jjz",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:36.934760Z"
+    },
+    {
+      "id": "01m7tfk2k0rxrn8v326f3ja5j7",
+      "sequence": 12,
+      "event_type": "ActivityStarted",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfk2dybkwr9dc5arwgd3d6",
+          "type": "activity",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:37.020000Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:36.862214Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:07:37.020089Z"
+        },
+        "activity": {
+          "id": "01m7tfk2dpe7zwym36as2r13pc",
+          "type": "m0",
+          "class": "m0",
+          "queue": "rv307-4704a8",
+          "status": "running",
+          "sequence": 4,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAAA"
+          },
+          "attempt_id": "01M7TFK2JW051RRZ877NTRK82W",
+          "created_at": "2026-11-19T18:02:36.854843Z",
+          "started_at": "2026-11-19T18:02:37.020000Z",
+          "retry_policy": {
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "snapshot_version": 1,
+            "heartbeat_timeout": null,
+            "start_to_close_timeout": null,
+            "non_retryable_error_types": [],
+            "schedule_to_close_timeout": null,
+            "schedule_to_start_timeout": null
+          },
+          "attempt_count": 1,
+          "payload_codec": "avro",
+          "local_activity": false,
+          "idempotency_key": "01m7tfk2dpe7zwym36as2r13pc"
+        },
+        "sequence": 4,
+        "activity_type": "m0",
+        "activity_class": "m0",
+        "attempt_number": 1,
+        "parallel_group_id": "parallel-activities:4:2",
+        "activity_attempt_id": "01M7TFK2JW051RRZ877NTRK82W",
+        "parallel_group_kind": "activity",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:4:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_base_sequence": 4
+          }
+        ],
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "activity_execution_id": "01m7tfk2dpe7zwym36as2r13pc",
+        "parallel_group_base_sequence": 4
+      },
+      "workflow_task_id": "01m7tfk2dybkwr9dc5arwgd3d6",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:37.024253Z"
+    },
+    {
+      "id": "01m7tfk2nszsxkbxmyd1r8w0ap",
+      "sequence": 13,
+      "event_type": "ActivityStarted",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfk2e41fj1b5599zer5akp",
+          "type": "activity",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:37.108870Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:36.868284Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:07:37.108961Z"
+        },
+        "activity": {
+          "id": "01m7tfk2e1rd6x1h4rks9q8h1m",
+          "type": "m1",
+          "class": "m1",
+          "queue": "rv307-4704a8",
+          "status": "running",
+          "sequence": 5,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAIA"
+          },
+          "attempt_id": "01M7TFK2NMPZ2GTRSERF2DVTVS",
+          "created_at": "2026-11-19T18:02:36.865400Z",
+          "started_at": "2026-11-19T18:02:37.108870Z",
+          "retry_policy": {
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "snapshot_version": 1,
+            "heartbeat_timeout": null,
+            "start_to_close_timeout": null,
+            "non_retryable_error_types": [],
+            "schedule_to_close_timeout": null,
+            "schedule_to_start_timeout": null
+          },
+          "attempt_count": 1,
+          "payload_codec": "avro",
+          "local_activity": false,
+          "idempotency_key": "01m7tfk2e1rd6x1h4rks9q8h1m"
+        },
+        "sequence": 5,
+        "activity_type": "m1",
+        "activity_class": "m1",
+        "attempt_number": 1,
+        "parallel_group_id": "parallel-activities:4:2",
+        "activity_attempt_id": "01M7TFK2NMPZ2GTRSERF2DVTVS",
+        "parallel_group_kind": "activity",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:4:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_base_sequence": 4
+          }
+        ],
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "activity_execution_id": "01m7tfk2e1rd6x1h4rks9q8h1m",
+        "parallel_group_base_sequence": 4
+      },
+      "workflow_task_id": "01m7tfk2e41fj1b5599zer5akp",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:37.113029Z"
+    },
+    {
+      "id": "01m7tfk2reth2f7dsebq0yyx68",
+      "sequence": 14,
+      "event_type": "ActivityFailed",
+      "namespace": "default",
+      "payload": {
+        "code": 0,
+        "task": {
+          "id": "01m7tfk2e41fj1b5599zer5akp",
+          "type": "activity",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:37.108870Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:36.868284Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:07:37.168218Z"
+        },
+        "message": "fail-m1",
+        "activity": {
+          "id": "01m7tfk2e1rd6x1h4rks9q8h1m",
+          "type": "m1",
+          "class": "m1",
+          "queue": "rv307-4704a8",
+          "status": "failed",
+          "sequence": 5,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAIA"
+          },
+          "closed_at": "2026-11-19T18:02:37.196150Z",
+          "exception": {
+            "code": 0,
+            "type": null,
+            "message": "fail-m1",
+            "non_retryable": true
+          },
+          "attempt_id": "01M7TFK2NMPZ2GTRSERF2DVTVS",
+          "created_at": "2026-11-19T18:02:36.865400Z",
+          "started_at": "2026-11-19T18:02:37.108870Z",
+          "retry_policy": {
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "snapshot_version": 1,
+            "heartbeat_timeout": null,
+            "start_to_close_timeout": null,
+            "non_retryable_error_types": [],
+            "schedule_to_close_timeout": null,
+            "schedule_to_start_timeout": null
+          },
+          "attempt_count": 1,
+          "payload_codec": "avro",
+          "local_activity": false,
+          "idempotency_key": "01m7tfk2e1rd6x1h4rks9q8h1m"
+        },
+        "sequence": 5,
+        "exception": {
+          "type": null,
+          "message": "fail-m1",
+          "code": 0,
+          "non_retryable": true
+        },
+        "failure_id": "01m7tfk2rbn2a6gxmwfn6jgjcb",
+        "activity_type": "m1",
+        "non_retryable": true,
+        "activity_class": "m1",
+        "attempt_number": 1,
+        "exception_type": null,
+        "exception_class": "RuntimeException",
+        "failure_category": "activity",
+        "parallel_group_id": "parallel-activities:4:2",
+        "activity_attempt_id": "01M7TFK2NMPZ2GTRSERF2DVTVS",
+        "parallel_group_kind": "activity",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:4:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_base_sequence": 4
+          }
+        ],
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "activity_execution_id": "01m7tfk2e1rd6x1h4rks9q8h1m",
+        "parallel_group_base_sequence": 4
+      },
+      "workflow_task_id": "01m7tfk2e41fj1b5599zer5akp",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:37.197735Z"
+    },
+    {
+      "id": "01m7tfk4100ync6haw3sqj9x0r",
+      "sequence": 15,
+      "event_type": "ActivityFailed",
+      "namespace": "default",
+      "payload": {
+        "code": 0,
+        "task": {
+          "id": "01m7tfk2dybkwr9dc5arwgd3d6",
+          "type": "activity",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:37.020000Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:36.862214Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:07:37.077232Z"
+        },
+        "message": "fail-m0",
+        "activity": {
+          "id": "01m7tfk2dpe7zwym36as2r13pc",
+          "type": "m0",
+          "class": "m0",
+          "queue": "rv307-4704a8",
+          "status": "failed",
+          "sequence": 4,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAAA"
+          },
+          "closed_at": "2026-11-19T18:02:38.495173Z",
+          "exception": {
+            "code": 0,
+            "type": null,
+            "message": "fail-m0",
+            "non_retryable": true
+          },
+          "attempt_id": "01M7TFK2JW051RRZ877NTRK82W",
+          "created_at": "2026-11-19T18:02:36.854843Z",
+          "started_at": "2026-11-19T18:02:37.020000Z",
+          "retry_policy": {
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "snapshot_version": 1,
+            "heartbeat_timeout": null,
+            "start_to_close_timeout": null,
+            "non_retryable_error_types": [],
+            "schedule_to_close_timeout": null,
+            "schedule_to_start_timeout": null
+          },
+          "attempt_count": 1,
+          "payload_codec": "avro",
+          "local_activity": false,
+          "idempotency_key": "01m7tfk2dpe7zwym36as2r13pc"
+        },
+        "sequence": 4,
+        "exception": {
+          "type": null,
+          "message": "fail-m0",
+          "code": 0,
+          "non_retryable": true
+        },
+        "failure_id": "01m7tfk40y2ey7crwkn9s30zw7",
+        "activity_type": "m0",
+        "non_retryable": true,
+        "activity_class": "m0",
+        "attempt_number": 1,
+        "exception_type": null,
+        "exception_class": "RuntimeException",
+        "failure_category": "activity",
+        "parallel_group_id": "parallel-activities:4:2",
+        "activity_attempt_id": "01M7TFK2JW051RRZ877NTRK82W",
+        "parallel_group_kind": "activity",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:4:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_base_sequence": 4
+          }
+        ],
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "activity_execution_id": "01m7tfk2dpe7zwym36as2r13pc",
+        "parallel_group_base_sequence": 4
+      },
+      "workflow_task_id": "01m7tfk2dybkwr9dc5arwgd3d6",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:38.496393Z"
+    },
+    {
+      "id": "01m7tfk51n35yy5njf0xrbc2bc",
+      "sequence": 16,
+      "event_type": "UpdateAccepted",
+      "namespace": "default",
+      "payload": {
+        "command": {
+          "id": "01m7tfk51j6kch8zagwdree11k",
+          "type": "update",
+          "source": "control_plane",
+          "status": "accepted",
+          "context": {
+            "principal": {
+              "id": "legacy-token",
+              "type": "auth:token",
+              "label": "Admin"
+            }
+          },
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNw4GCG5hbWUKDHJlcG9ydBJhcmd1bWVudHMMACJ2YWxpZGF0aW9uX2Vycm9ycwwAAA=="
+          },
+          "sequence": 2,
+          "request_id": "sdk-python-update-f775b3ab26ba4f3eb8b97e22a29e9f40",
+          "accepted_at": "2026-11-19T18:02:39.535895Z",
+          "auth_method": "token",
+          "auth_status": "authorized",
+          "target_name": "report",
+          "caller_label": "Standalone Server",
+          "principal_id": "legacy-token",
+          "request_path": "/api/workflows/rv307-rv348_handle-6e9a63/update/report",
+          "target_scope": "instance",
+          "payload_codec": "avro",
+          "principal_type": "auth:token",
+          "request_method": "POST",
+          "principal_label": "Admin",
+          "resolved_run_id": "01m7tfjvyq564n3r52xph03nz8",
+          "message_sequence": 1,
+          "request_route_name": "generated::YF2YckSNfLzTOm1b",
+          "request_fingerprint": "sha256:3039b4cfc66100d1c91e62db99f08b97f22a369ebfd6e1b08249c4e7f66b2788"
+        },
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwA"
+        },
+        "update_id": "01m7tfk51kksbqv2gxkekpx2vf",
+        "request_id": "sdk-python-update-f775b3ab26ba4f3eb8b97e22a29e9f40",
+        "update_name": "report",
+        "ordering_state": "ready",
+        "workflow_run_id": "01m7tfjvyq564n3r52xph03nz8",
+        "workflow_command_id": "01m7tfk51j6kch8zagwdree11k",
+        "workflow_instance_id": "rv307-rv348_handle-6e9a63",
+        "queued_behind_command_id": null,
+        "queued_behind_command_type": null,
+        "queued_behind_command_sequence": null
+      },
+      "workflow_task_id": null,
+      "workflow_command_id": "01m7tfk51j6kch8zagwdree11k",
+      "recorded_at": "2026-11-19T18:02:39.540869Z"
+    },
+    {
+      "id": "01m7tfk5b424hdethtx4r8w5nq",
+      "sequence": 17,
+      "event_type": "UpdateApplied",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfk416bbxfd6b7vfb9vxbk",
+          "type": "workflow",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:39.609742Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:38.502057Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:02:49.609701Z",
+          "last_dispatched_at": "2026-11-19T18:02:38.531227Z",
+          "last_dispatch_attempt_at": "2026-11-19T18:02:38.531227Z"
+        },
+        "command": {
+          "id": "01m7tfk51j6kch8zagwdree11k",
+          "type": "update",
+          "source": "control_plane",
+          "status": "accepted",
+          "context": {
+            "principal": {
+              "id": "legacy-token",
+              "type": "auth:token",
+              "label": "Admin"
+            }
+          },
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNw4GCG5hbWUKDHJlcG9ydBJhcmd1bWVudHMMACJ2YWxpZGF0aW9uX2Vycm9ycwwAAA=="
+          },
+          "sequence": 2,
+          "request_id": "sdk-python-update-f775b3ab26ba4f3eb8b97e22a29e9f40",
+          "accepted_at": "2026-11-19T18:02:39.535895Z",
+          "auth_method": "token",
+          "auth_status": "authorized",
+          "target_name": "report",
+          "caller_label": "Standalone Server",
+          "principal_id": "legacy-token",
+          "request_path": "/api/workflows/rv307-rv348_handle-6e9a63/update/report",
+          "target_scope": "instance",
+          "payload_codec": "avro",
+          "principal_type": "auth:token",
+          "request_method": "POST",
+          "principal_label": "Admin",
+          "resolved_run_id": "01m7tfjvyq564n3r52xph03nz8",
+          "message_sequence": 1,
+          "request_route_name": "generated::YF2YckSNfLzTOm1b",
+          "request_fingerprint": "sha256:3039b4cfc66100d1c91e62db99f08b97f22a369ebfd6e1b08249c4e7f66b2788"
+        },
+        "sequence": 6,
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwA"
+        },
+        "update_id": "01m7tfk51kksbqv2gxkekpx2vf",
+        "update_name": "report",
+        "workflow_run_id": "01m7tfjvyq564n3r52xph03nz8",
+        "workflow_command_id": "01m7tfk51j6kch8zagwdree11k",
+        "workflow_instance_id": "rv307-rv348_handle-6e9a63"
+      },
+      "workflow_task_id": "01m7tfk416bbxfd6b7vfb9vxbk",
+      "workflow_command_id": "01m7tfk51j6kch8zagwdree11k",
+      "recorded_at": "2026-11-19T18:02:39.843848Z"
+    },
+    {
+      "id": "01m7tfk5b87vyq710mf7he3ab6",
+      "sequence": 18,
+      "event_type": "UpdateCompleted",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfk416bbxfd6b7vfb9vxbk",
+          "type": "workflow",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:39.609742Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:38.502057Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:02:49.609701Z",
+          "last_dispatched_at": "2026-11-19T18:02:38.531227Z",
+          "last_dispatch_attempt_at": "2026-11-19T18:02:38.531227Z"
+        },
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4CGGNvbXBlbnNhdGluZwoOZmFpbC1tMAA="
+        },
+        "command": {
+          "id": "01m7tfk51j6kch8zagwdree11k",
+          "type": "update",
+          "source": "control_plane",
+          "status": "accepted",
+          "context": {
+            "principal": {
+              "id": "legacy-token",
+              "type": "auth:token",
+              "label": "Admin"
+            }
+          },
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNw4GCG5hbWUKDHJlcG9ydBJhcmd1bWVudHMMACJ2YWxpZGF0aW9uX2Vycm9ycwwAAA=="
+          },
+          "sequence": 2,
+          "request_id": "sdk-python-update-f775b3ab26ba4f3eb8b97e22a29e9f40",
+          "accepted_at": "2026-11-19T18:02:39.535895Z",
+          "auth_method": "token",
+          "auth_status": "authorized",
+          "target_name": "report",
+          "caller_label": "Standalone Server",
+          "principal_id": "legacy-token",
+          "request_path": "/api/workflows/rv307-rv348_handle-6e9a63/update/report",
+          "target_scope": "instance",
+          "payload_codec": "avro",
+          "principal_type": "auth:token",
+          "request_method": "POST",
+          "principal_label": "Admin",
+          "resolved_run_id": "01m7tfjvyq564n3r52xph03nz8",
+          "message_sequence": 1,
+          "request_route_name": "generated::YF2YckSNfLzTOm1b",
+          "request_fingerprint": "sha256:3039b4cfc66100d1c91e62db99f08b97f22a369ebfd6e1b08249c4e7f66b2788"
+        },
+        "sequence": 6,
+        "update_id": "01m7tfk51kksbqv2gxkekpx2vf",
+        "update_name": "report",
+        "workflow_run_id": "01m7tfjvyq564n3r52xph03nz8",
+        "workflow_command_id": "01m7tfk51j6kch8zagwdree11k",
+        "workflow_instance_id": "rv307-rv348_handle-6e9a63"
+      },
+      "workflow_task_id": "01m7tfk416bbxfd6b7vfb9vxbk",
+      "workflow_command_id": "01m7tfk51j6kch8zagwdree11k",
+      "recorded_at": "2026-11-19T18:02:39.847400Z"
+    },
+    {
+      "id": "01m7tfk5bce4sv8faxrmgpg9ep",
+      "sequence": 19,
+      "event_type": "MessageCursorAdvanced",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfk416bbxfd6b7vfb9vxbk",
+          "type": "workflow",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:39.609742Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:38.502057Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:02:49.609701Z",
+          "last_dispatched_at": "2026-11-19T18:02:38.531227Z",
+          "last_dispatch_attempt_at": "2026-11-19T18:02:38.531227Z"
+        },
+        "stream_key": "instance:rv307-rv348_handle-6e9a63",
+        "new_position": 1,
+        "previous_position": 0
+      },
+      "workflow_task_id": "01m7tfk416bbxfd6b7vfb9vxbk",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:39.852473Z"
+    },
+    {
+      "id": "01m7tfk5dkjfgf1hp8x67zrxe6",
+      "sequence": 20,
+      "event_type": "ActivityCompleted",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfjwfa9v2ws6xfbyt09jjz",
+          "type": "activity",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:36.930722Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:30.762733Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:07:36.987464Z"
+        },
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoEb2s="
+        },
+        "activity": {
+          "id": "01m7tfjwf7yh5ffwcwgdyt5cck",
+          "type": "slow",
+          "class": "slow",
+          "queue": "rv307-4704a8",
+          "result": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwoEb2s="
+          },
+          "status": "completed",
+          "sequence": 2,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          },
+          "closed_at": "2026-11-19T18:02:39.921390Z",
+          "attempt_id": "01M7TFK2G2RTR8F0FA5JWDT4DR",
+          "created_at": "2026-11-19T18:02:30.759721Z",
+          "started_at": "2026-11-19T18:02:36.930722Z",
+          "retry_policy": {
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "snapshot_version": 1,
+            "heartbeat_timeout": null,
+            "start_to_close_timeout": null,
+            "non_retryable_error_types": [],
+            "schedule_to_close_timeout": null,
+            "schedule_to_start_timeout": null
+          },
+          "attempt_count": 1,
+          "payload_codec": "avro",
+          "local_activity": false,
+          "idempotency_key": "01m7tfjwf7yh5ffwcwgdyt5cck"
+        },
+        "sequence": 2,
+        "activity_type": "slow",
+        "payload_codec": "avro",
+        "activity_class": "slow",
+        "attempt_number": 1,
+        "parallel_group_id": "select-calls:1:2",
+        "activity_attempt_id": "01M7TFK2G2RTR8F0FA5JWDT4DR",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "selection_member_key": "slow",
+            "selection_member_kind": "activity",
+            "selection_member_size": 1,
+            "selection_member_index": 1,
+            "parallel_group_base_sequence": 1,
+            "selection_member_base_sequence": 2
+          }
+        ],
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "selection_member_key": "slow",
+        "activity_execution_id": "01m7tfjwf7yh5ffwcwgdyt5cck",
+        "selection_member_kind": "activity",
+        "selection_member_size": 1,
+        "selection_member_index": 1,
+        "parallel_group_base_sequence": 1,
+        "selection_member_base_sequence": 2
+      },
+      "workflow_task_id": "01m7tfjwfa9v2ws6xfbyt09jjz",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:39.922670Z"
+    },
+    {
+      "id": "01m7tfk5ytsew7e48smxq9hk25",
+      "sequence": 21,
+      "event_type": "ActivityScheduled",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfk5dw6aambstd8xh4f80y",
+          "type": "workflow",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:40.043577Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:39.932103Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:02:50.043539Z",
+          "last_dispatched_at": "2026-11-19T18:02:39.967089Z",
+          "last_dispatch_attempt_at": "2026-11-19T18:02:39.967089Z"
+        },
+        "activity": {
+          "id": "01m7tfk5yqw3fad0k3xrmde3xk",
+          "type": "compensate",
+          "class": "compensate",
+          "queue": "rv307-4704a8",
+          "status": "pending",
+          "sequence": 6,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCCg5mYWlsLW0wAA=="
+          },
+          "created_at": "2026-11-19T18:02:40.471729Z",
+          "retry_policy": {
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "snapshot_version": 1,
+            "heartbeat_timeout": null,
+            "start_to_close_timeout": null,
+            "non_retryable_error_types": [],
+            "schedule_to_close_timeout": null,
+            "schedule_to_start_timeout": null
+          },
+          "attempt_count": 0,
+          "payload_codec": "avro",
+          "local_activity": false,
+          "idempotency_key": "01m7tfk5yqw3fad0k3xrmde3xk"
+        },
+        "sequence": 6,
+        "activity_type": "compensate",
+        "activity_class": "compensate",
+        "activity_execution_id": "01m7tfk5yqw3fad0k3xrmde3xk"
+      },
+      "workflow_task_id": "01m7tfk5dw6aambstd8xh4f80y",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:40.473999Z"
+    },
+    {
+      "id": "01m7tfk8236zpnwkdsx107a1jk",
+      "sequence": 22,
+      "event_type": "ActivityStarted",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfk5yycyhefsryjf9bzkef",
+          "type": "activity",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:42.622979Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:40.477877Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:07:42.623086Z"
+        },
+        "activity": {
+          "id": "01m7tfk5yqw3fad0k3xrmde3xk",
+          "type": "compensate",
+          "class": "compensate",
+          "queue": "rv307-4704a8",
+          "status": "running",
+          "sequence": 6,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCCg5mYWlsLW0wAA=="
+          },
+          "attempt_id": "01M7TFK81Z3XBMH87JTNQT6V3D",
+          "created_at": "2026-11-19T18:02:40.471729Z",
+          "started_at": "2026-11-19T18:02:42.622979Z",
+          "retry_policy": {
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "snapshot_version": 1,
+            "heartbeat_timeout": null,
+            "start_to_close_timeout": null,
+            "non_retryable_error_types": [],
+            "schedule_to_close_timeout": null,
+            "schedule_to_start_timeout": null
+          },
+          "attempt_count": 1,
+          "payload_codec": "avro",
+          "local_activity": false,
+          "idempotency_key": "01m7tfk5yqw3fad0k3xrmde3xk"
+        },
+        "sequence": 6,
+        "activity_type": "compensate",
+        "activity_class": "compensate",
+        "attempt_number": 1,
+        "activity_attempt_id": "01M7TFK81Z3XBMH87JTNQT6V3D",
+        "activity_execution_id": "01m7tfk5yqw3fad0k3xrmde3xk"
+      },
+      "workflow_task_id": "01m7tfk5yycyhefsryjf9bzkef",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:42.627350Z"
+    },
+    {
+      "id": "01m7tfk854gdv5mqjn3smp8yp0",
+      "sequence": 23,
+      "event_type": "ActivityCompleted",
+      "namespace": "default",
+      "payload": {
+        "task": {
+          "id": "01m7tfk5yycyhefsryjf9bzkef",
+          "type": "activity",
+          "queue": "rv307-4704a8",
+          "status": "leased",
+          "leased_at": "2026-11-19T18:02:42.622979Z",
+          "connection": "mysql",
+          "lease_owner": "rv307-w-32445d",
+          "available_at": "2026-11-19T18:02:40.477877Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-19T18:07:42.694941Z"
+        },
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoMdW5kb25l"
+        },
+        "activity": {
+          "id": "01m7tfk5yqw3fad0k3xrmde3xk",
+          "type": "compensate",
+          "class": "compensate",
+          "queue": "rv307-4704a8",
+          "result": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwoMdW5kb25l"
+          },
+          "status": "completed",
+          "sequence": 6,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCCg5mYWlsLW0wAA=="
+          },
+          "closed_at": "2026-11-19T18:02:42.722563Z",
+          "attempt_id": "01M7TFK81Z3XBMH87JTNQT6V3D",
+          "created_at": "2026-11-19T18:02:40.471729Z",
+          "started_at": "2026-11-19T18:02:42.622979Z",
+          "retry_policy": {
+            "max_attempts": 1,
+            "backoff_seconds": [],
+            "snapshot_version": 1,
+            "heartbeat_timeout": null,
+            "start_to_close_timeout": null,
+            "non_retryable_error_types": [],
+            "schedule_to_close_timeout": null,
+            "schedule_to_start_timeout": null
+          },
+          "attempt_count": 1,
+          "payload_codec": "avro",
+          "local_activity": false,
+          "idempotency_key": "01m7tfk5yqw3fad0k3xrmde3xk"
+        },
+        "sequence": 6,
+        "activity_type": "compensate",
+        "payload_codec": "avro",
+        "activity_class": "compensate",
+        "attempt_number": 1,
+        "activity_attempt_id": "01M7TFK81Z3XBMH87JTNQT6V3D",
+        "activity_execution_id": "01m7tfk5yqw3fad0k3xrmde3xk"
+      },
+      "workflow_task_id": "01m7tfk5yycyhefsryjf9bzkef",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-19T18:02:42.724023Z"
+    }
+  ],
+  "expected": {
+    "query_result": "fail-m0"
+  }
+}

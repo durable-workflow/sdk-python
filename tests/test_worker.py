@@ -1903,7 +1903,8 @@ class TestWorkflowTaskExecution:
 
         await worker._run_workflow_task(task)
 
-        commands = mock_client.complete_workflow_task.call_args.kwargs["commands"]
+        marker, *commands = mock_client.complete_workflow_task.call_args.kwargs["commands"]
+        assert marker["type"] == "record_version_marker"
         assert [command["activity_type"] for command in commands] == ["first", "second"]
         assert calls == [[["a"], ["b"]]]
 
