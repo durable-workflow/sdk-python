@@ -49,9 +49,11 @@ from tests.test_golden_history_replay import (
     GoldenTimeoutWaitWorkflow,
     GoldenVersionMarkerWorkflow,
 )
+from tests.test_parallel_failure_order import ReviewPlain, ReviewSelectCancel, ReviewZeroCommandCatch
 from tests.test_parallel_group_policy import ParallelFailurePolicyWorkflow
 from tests.test_parallel_member_failure_open_siblings import (
     NativeCaughtMemberFailure,
+    NativeSettledGroupCaught,
     NativeUncaughtMemberFailure,
 )
 from tests.test_patch_history import (
@@ -479,7 +481,11 @@ WORKFLOWS = [
     SelectionLoserAtCloseWorkflow,
     AllFailureClosedWorkflow,
     NativeCaughtMemberFailure,
+    NativeSettledGroupCaught,
     NativeUncaughtMemberFailure,
+    ReviewPlain,
+    ReviewSelectCancel,
+    ReviewZeroCommandCatch,
     UpdateSignalConditionTimerWorkflow,
     WorkflowStreamAuthorWorkflow,
     WorkflowMemoAuthorWorkflow,
@@ -862,6 +868,7 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
             workflow_id=workflow.get("workflow_id"),
             run_id=workflow.get("run_id", ""),
             payload_codec=("json" if payload_codec is None else payload_codec),
+            record_parallel_failure_order=workflow.get("record_parallel_failure_order") is True,
         )
         commands = _command_documents(outcome.commands)
         message_stream_cursors = outcome.message_stream_cursors

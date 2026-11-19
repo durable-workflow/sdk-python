@@ -344,3 +344,44 @@ class NativeCaughtMemberFailure:
             return (yield ctx.schedule_activity("py338.compensate", [failure.activity_type],
                                                 start_to_close_timeout=60))
         return "no failure"
+
+
+# Reproducer for the native Server histories in
+# tests/fixtures/replay_regressions/settled-group-*.json (sdk-python#307).
+# Member 1 fails at once and member 0 fails later; the others complete. The
+# workflow worker was stopped while they ran, so the woken task saw the whole
+# group settled. Published 2.19.1 raised member 0 by position; a run that
+# recorded the failure-order marker raises member 1, whose failure was recorded
+# first.
+PY307_ACTIVITIES = "py307-activities"
+
+
+def _py307_group(ctx: WorkflowContext) -> list[Any]:
+    once = ActivityRetryPolicy(max_attempts=1)
+    return [
+        ctx.schedule_activity("py307.fail", [1.5], queue=PY307_ACTIVITIES, start_to_close_timeout=60,
+                              retry_policy=once),
+        ctx.schedule_activity("py307.fail", [0], queue=PY307_ACTIVITIES, start_to_close_timeout=60,
+                              retry_policy=once),
+        ctx.schedule_activity("py307.ok", [0], queue=PY307_ACTIVITIES, start_to_close_timeout=60),
+        ctx.schedule_activity("py307.ok", [0.5], queue=PY307_ACTIVITIES, start_to_close_timeout=60),
+    ]
+
+
+@workflow.defn(name="py307.caught")
+class NativeSettledGroupCaught:
+    def __init__(self) -> None:
+        self.caught: str | None = None
+
+    @workflow.query("caught")
+    def caught_member(self) -> str | None:
+        return self.caught
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield _py307_group(ctx)
+        except ActivityFailed as failure:
+            self.caught = f"{failure.activity_type}#{failure.step_sequence}"
+            return (yield ctx.schedule_activity("py307.compensate", [self.caught], queue=PY307_ACTIVITIES,
+                                                start_to_close_timeout=60))
+        return "no failure"

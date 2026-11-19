@@ -1,0 +1,91 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "parallel-failure-order-opt-in-new-run-emission",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "parallel_failure_order": {
+    "issues": [
+      "durable-workflow/sdk-python#307"
+    ],
+    "note": "The new run of parallel-group-metadata-emission with failure-order recording enabled (record_parallel_failure_order). The run records the parallel failure-order version marker at sequence 1, directly before its first all-group, whose metadata then starts at sequence 2. With recording off (the default in this release), parallel-group-metadata-emission still holds unchanged."
+  },
+  "workflow": {
+    "type": "tests.replay.parallel-metadata-producer",
+    "input": [],
+    "payload_codec": "avro",
+    "record_parallel_failure_order": true
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_type": "tests.replay.parallel-metadata-producer"
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "record_version_marker",
+        "change_id": "durable_workflow.parallel_failure_order",
+        "version": 1,
+        "min_supported": 1,
+        "max_supported": 1
+      },
+      {
+        "type": "schedule_activity",
+        "parallel_group_id": "parallel-calls:2:3",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 2,
+        "parallel_group_size": 3,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:2:3",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 2,
+            "parallel_group_size": 3,
+            "parallel_group_index": 0
+          }
+        ]
+      },
+      {
+        "type": "start_child_workflow",
+        "parallel_group_id": "parallel-calls:2:3",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 2,
+        "parallel_group_size": 3,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:2:3",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 2,
+            "parallel_group_size": 3,
+            "parallel_group_index": 1
+          }
+        ]
+      },
+      {
+        "type": "start_timer",
+        "parallel_group_id": "parallel-calls:2:3",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 2,
+        "parallel_group_size": 3,
+        "parallel_group_index": 2,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:2:3",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 2,
+            "parallel_group_size": 3,
+            "parallel_group_index": 2
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -522,15 +522,41 @@ profile, (shipping, _) = results
 ```
 
 A failed activity or child is thrown at the list-yield point as soon as it is
-recorded. The other members keep running; their later outcomes do not change
-the thrown failure or reach the workflow's next operations. If every member
-had already settled when the workflow resumed, the failure with the lowest
-durable input position is thrown. A group whose members are already scheduled
-is never scheduled again on a later wake, such as a signal. When a failure is
-raised while other members are open, the worker records which member it
-raised as a side effect directly after the group, so every later replay raises
-the same one. Code after such a group therefore starts one workflow sequence
-later.
+recorded. The other members keep running and are not cancelled; their later
+outcomes do not change the thrown failure or reach the workflow's next
+operations. A group whose members are already scheduled is never scheduled
+again on a later wake, such as a signal.
+
+When several members have failed, a run that recorded the failure-order marker
+throws the failure recorded first in history, in durable event order, even if
+every member had already settled when the workflow resumed. The marker is the
+version marker `durable_workflow.parallel_failure_order`, recorded once, directly
+before the run's first group that contains an activity or child workflow; code
+after it starts one workflow sequence later. Workflow's embedded engine also
+throws the earliest failure, but compares millisecond timestamps and then member
+index, so two failures recorded in the same millisecond can be chosen
+differently
+([durable-workflow/.github#415](https://github.com/durable-workflow/.github/issues/415)).
+
+Recording the marker is opt-in in this release: pass
+`Worker(..., record_parallel_failure_order=True)` or set
+`DURABLE_WORKFLOW_RECORD_PARALLEL_FAILURE_ORDER=true`. Turn it on only after
+every worker that polls the task queue runs this release or later. Workers up
+to 2.20.0 cannot replay a marked run: the Server marks its workflow task
+replay-blocked, and the run waits until it is repaired, which can hand it to an
+old worker again. Every worker of this release follows a marker a run already
+recorded, whether or not recording is on, so turning recording off again is
+safe. Rolling back below this release needs marked runs drained first. A later
+minor release turns recording on by default
+([#351](https://github.com/durable-workflow/sdk-python/issues/351)).
+
+A run without the marker keeps the earlier rule for its whole life, on every
+task, query and update: if every member had settled when the workflow resumed,
+the failure with the lowest input position is thrown. When such a run raises a
+failure while other members are open, the worker records which member it raised
+as a side effect directly after the group, so every later replay raises the
+same one. A run that has a cancellation request when it reaches its first group
+records no marker.
 
 ## Saga compensation
 
