@@ -3765,7 +3765,7 @@ def replay(
     ``record_parallel_failure_order`` lets a run that reaches its first
     all-group now record ``PARALLEL_FAILURE_ORDER_MARKER`` and raise its first
     recorded member failure (sdk-python#307). It is off by default, so new runs
-    send the same commands as 2.19.1. A history that already contains the
+    send the same commands as 2.20.0. A history that already contains the
     marker follows it whether or not this is set.
     """
     return _replay_state(
@@ -6844,7 +6844,7 @@ def _replay_state(
         before scheduling it. No all-group of the run has produced an outcome
         before that point, so no earlier task can have chosen a failure under
         the other rule. Recording is opt-in (``record_parallel_failure_order``)
-        because workers up to 2.19.1 cannot replay a marked run. A run with a
+        because workers up to 2.20.0 cannot replay a marked run. A run with a
         cancellation request that may replace the group records no marker and
         keeps the earlier rule.
         """

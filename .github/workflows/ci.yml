@@ -97,7 +97,7 @@ jobs:
         id: retry-candidate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/promote_release.py resolve --version 2.19.1
+        run: python .github/scripts/promote_release.py resolve --version 2.20.0
       - name: Download the approved candidate handoff
         if: inputs.retry_cap_artifact_source == 'candidate'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
@@ -110,7 +110,7 @@ jobs:
           archive: false
       - name: Verify candidate archive and distribution bytes
         if: inputs.retry_cap_artifact_source == 'candidate'
-        run: python .github/scripts/promote_release.py extract --version 2.19.1
+        run: python .github/scripts/promote_release.py extract --version 2.20.0
       - name: Bootstrap patched pip trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
