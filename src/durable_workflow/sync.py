@@ -575,6 +575,27 @@ class Client:
         )
         return result
 
+    def signal_with_start(
+        self,
+        workflow_id: str,
+        signal_name: str,
+        *,
+        workflow_type: str,
+        task_queue: str,
+        **options: Any,
+    ) -> dict[str, Any]:
+        """Start or reuse the workflow's run and signal it atomically.
+
+        Takes the same keyword options as the async
+        :meth:`durable_workflow.client.Client.signal_with_start`.
+        """
+        result: dict[str, Any] = self._runner.run(
+            self._async.signal_with_start(
+                workflow_id, signal_name, workflow_type=workflow_type, task_queue=task_queue, **options,
+            )
+        )
+        return result
+
     def query_workflow(self, workflow_id: str, query_name: str, *, args: list[Any] | None = None) -> Any:
         return self._runner.run(self._async.query_workflow(workflow_id, query_name, args=args))
 

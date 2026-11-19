@@ -671,6 +671,23 @@ class SignalFailed(DurableWorkflowError):
         return None
 
 
+class SignalWithStartFailed(SignalFailed):
+    """A signal-with-start intake was refused; nothing was started or signalled.
+
+    Raised by :meth:`Client.signal_with_start` for every refusal the Server
+    reports for the atomic intake (native Server
+    ``capabilities.signal_with_start``). The refusal is atomic: no run was
+    started, no signal was recorded and no command key was reserved, so the
+    same call can be sent again once the cause is resolved. :attr:`reason`
+    names the cause, for example ``run_not_active`` (the current run is closed
+    and ``closed_run_policy`` was ``"reject"``), ``instance_already_started``
+    (an open run under ``duplicate_policy="fail"``), ``workflow_type_conflict``,
+    ``task_queue_conflict``, ``workflow_id_reserved_in_namespace``,
+    ``unknown_signal``, ``invalid_signal_arguments`` or ``request_id_conflict``.
+    It is a :class:`SignalFailed`, so existing signal handlers also catch it.
+    """
+
+
 class WorkflowPayloadDecodeError(DurableWorkflowError):
     """A committed workflow history payload could not be decoded during replay."""
 
@@ -1255,6 +1272,20 @@ def _raise_for_status(
         "update_validation_worker_failed",
         "stale_update_validation_completion",
     }
+
+    if (
+        operation == "signal_with_start"
+        and status in (404, 409, 422)
+        and isinstance(reason, str)
+        and reason not in ("", "validation_failed")
+    ):
+        # Every intake refusal is atomic; malformed requests stay InvalidArgument.
+        raise SignalWithStartFailed(
+            message or f"signal-with-start rejected: {reason}",
+            reason=reason,
+            status=status,
+            body=body,
+        )
 
     if status == 404:
         if reason == "unknown_signal":
