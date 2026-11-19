@@ -228,4 +228,4 @@ def test_the_sync_client_forwards_every_option() -> None:
     assert (kwargs["signal_args"], kwargs["request_id"], kwargs["duplicate_policy"], kwargs["closed_run_policy"]) == (
         [2], "sync-key", "fail", "reject",
     )
-    assert (kwargs["execution_timeout_seconds"], kwargs["run_timeout_seconds"]) == (3600, 600)
+    assert (kwargs["workflow_type"], kwargs["task_queue"]) == ("orders.entity", "orders")
