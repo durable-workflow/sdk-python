@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from durable_workflow import ExternalSignalResult, SignalExternalWorkflow, Worker, serializer, workflow
-from durable_workflow.errors import NonDeterministicReplayError
+from durable_workflow.errors import InvalidSignalName, NonDeterministicReplayError
 from durable_workflow.workflow import (
     CompleteWorkflow,
     FailWorkflow,
@@ -59,6 +59,18 @@ class SignalThenTimerWorkflow:
 class ParallelSignalWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
         return (yield [ctx.signal_external_workflow("order-42", "approve")])
+
+
+@workflow.defn(name="tests.signal-external.bad-name")
+class BadNameWorkflow:
+    def run(self, ctx: WorkflowContext, signal_name: str, catch: bool = True):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.signal_external_workflow("order-42", signal_name)
+        except InvalidSignalName as error:
+            if not catch:
+                raise
+            return error.reason
+        return "sent"
 
 
 def _started() -> dict[str, Any]:
@@ -161,15 +173,49 @@ class TestCommand:
             ({"workflow_id": "", "signal_name": "approve"}, "workflow_id"),
             ({"workflow_id": "  ", "signal_name": "approve"}, "workflow_id"),
             ({"workflow_id": "x" * 192, "signal_name": "approve"}, "191"),
-            ({"workflow_id": "order-42", "signal_name": " "}, "signal_name"),
-            ({"workflow_id": "order-42", "signal_name": "é" * 128}, "255 bytes"),
-            ({"workflow_id": "order-42", "signal_name": "s" * 192}, "191 characters"),
             ({"workflow_id": "order-42", "signal_name": "approve", "run_id": ""}, "run_id"),
         ],
     )
     def test_refuses_invalid_targets_before_submission(self, kwargs: dict[str, Any], message: str) -> None:
         with pytest.raises(ValueError, match=message):
             SignalExternalWorkflow(**kwargs)
+
+    @pytest.mark.parametrize(
+        ("signal_name", "reason"),
+        [
+            ("", "blank"),
+            (" \t", "blank"),
+            ("approve\n", "control_character"),
+            ("app\x00rove", "control_character"),
+            ("approve\x1f", "control_character"),
+            ("approve\x7f", "control_character"),
+            ("s" * 192, "too_many_characters"),
+            ("é" * 128, "too_many_bytes"),
+            ("€" * 86, "too_many_bytes"),
+        ],
+    )
+    def test_refuses_signal_names_the_server_refuses(self, signal_name: str, reason: str) -> None:
+        with pytest.raises(InvalidSignalName) as captured:
+            WorkflowContext().signal_external_workflow("order-42", signal_name)
+        assert captured.value.reason == reason
+        assert captured.value.signal_name == signal_name
+        assert isinstance(captured.value, ValueError)
+
+    @pytest.mark.parametrize("signal_name", ["s" * 191, "é" * 127, "€" * 85, "approve\x80", "ok-name"])
+    def test_accepts_signal_names_at_the_limits(self, signal_name: str) -> None:
+        command = WorkflowContext().signal_external_workflow("order-42", signal_name)
+        assert command.to_server_command("orders")["signal_name"] == signal_name
+
+    def test_bad_name_raises_in_workflow_code_before_any_command(self) -> None:
+        outcome = replay(BadNameWorkflow, [], ["approve\n"], run_id=SENDER_RUN)
+        assert outcome.commands == [CompleteWorkflow(result="control_character")]
+
+    def test_uncaught_bad_name_fails_the_workflow_without_a_signal(self) -> None:
+        outcome = replay(BadNameWorkflow, [], ["s" * 192, False], run_id=SENDER_RUN)
+        [command] = outcome.commands
+        assert isinstance(command, FailWorkflow)
+        assert command.exception_type == "InvalidSignalName"
+        assert "too_many_characters" in command.message
 
 
 class TestReplay:

@@ -75,6 +75,7 @@ from .errors import (
     WorkflowEntryArgumentsMismatchError,
     WorkflowPayloadDecodeError,
     _cancellation_requested,
+    validate_signal_name,
 )
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .nexus import NexusOperationResult, stable_nexus_idempotency_key
@@ -1506,10 +1507,8 @@ class SignalExternalWorkflow:
             raise ValueError("signal_external_workflow workflow_id must be at most 191 characters")
         if self.run_id is not None and (not isinstance(self.run_id, str) or not self.run_id.strip()):
             raise ValueError("signal_external_workflow run_id must be None or a non-blank string")
-        if not isinstance(self.signal_name, str) or not self.signal_name.strip():
-            raise ValueError("signal_external_workflow requires a non-blank signal_name")
-        if len(self.signal_name) > 191 or len(self.signal_name.encode("utf-8")) > 255:
-            raise ValueError("signal_external_workflow signal_name must be at most 191 characters and 255 bytes")
+        # Refused here, in workflow code, rather than as a 422 that fails the task.
+        validate_signal_name(self.signal_name)
         # Dataclass and Enum arguments travel as their neutral values.
         self.arguments = to_payload_values(list(self.arguments))
 

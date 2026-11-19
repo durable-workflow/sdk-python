@@ -816,8 +816,12 @@ class Approver:
         return {"delivered_to": result.target_run_id}
 ```
 
-The target workflow ID and signal name are limited to 191 characters (the
-signal name also to 255 bytes) and checked when the command is created.
+The target workflow ID is limited to 191 characters. The signal name must be
+non-blank, at most 191 characters and 255 UTF-8 bytes, and free of control
+characters (below U+0020, and U+007F), as the Server requires. A name that breaks
+these rules raises `InvalidSignalName` (a `ValueError`, with `reason`) in
+workflow code when the command is created, so nothing is sent and the
+workflow task does not fail with a 422.
 Without `run_id` the signal goes to the target's current run. `args` are the
 signal handler's arguments and travel as an inline Avro payload, like child
 workflow arguments (they are never offloaded to external storage).
