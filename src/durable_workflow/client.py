@@ -129,6 +129,8 @@ CONTROL_PLANE_REQUEST_CONTRACT_VERSION = 1
 _QUERY_TASKS_DISCOVERY_PATH = "worker_protocol.server_capabilities.query_tasks"
 _COOPERATIVE_CANCELLATION_DISCOVERY_PATH = "worker_protocol.server_capabilities.cooperative_cancellation"
 _UPDATE_OUTCOME_READS_DISCOVERY_PATH = "capabilities.update_outcome_reads"
+_SIGNAL_WITH_START_DISCOVERY_PATH = "capabilities.signal_with_start"
+_CLOSED_RUN_POLICIES = ("reject", "start_new_run")
 _UPDATE_OUTCOME_WAIT_STAGES = ("accepted", "completed")
 # Client-side headroom beyond a requested completion wait, so the HTTP timeout
 # never cuts off a Server that is still legitimately waiting.
@@ -3247,6 +3249,27 @@ class Client:
                 ),
             )
 
+    async def _require_signal_with_start(self) -> None:
+        operation = "Client.signal_with_start"
+        info = await self._runtime_discovery(
+            operation=operation,
+            required_path=_SIGNAL_WITH_START_DISCOVERY_PATH,
+        )
+        capabilities = info.get("capabilities")
+        supported = capabilities.get("signal_with_start") if isinstance(capabilities, dict) else None
+        if supported is not True:
+            raise RuntimeCapabilityUnsupported(
+                operation,
+                _SIGNAL_WITH_START_DISCOVERY_PATH,
+                (
+                    f"{operation} is unsupported by this runtime because GET /api/cluster/info "
+                    f"does not advertise {_SIGNAL_WITH_START_DISCOVERY_PATH}=true. Separate "
+                    "start_workflow(duplicate_policy='use-existing') and signal_workflow() calls "
+                    "are not atomic: the run can close between them and the signal is then refused. "
+                    "Upgrade to a native Server that serves signal-with-start."
+                ),
+            )
+
     def get_workflow_handle(
         self, workflow_id: str, *, run_id: str | None = None, workflow_type: str = ""
     ) -> WorkflowHandle:
@@ -4946,6 +4969,132 @@ class Client:
             )
         except Exception as exc:
             failure = _command_request_failure(exc, command="signal", request_id=key)
+            if failure is exc:
+                raise
+            raise failure from exc
+        receipt: dict[str, Any] = data if isinstance(data, dict) else {}
+        receipt.setdefault("request_id", key)
+        return receipt
+
+    async def signal_with_start(
+        self,
+        workflow_id: str,
+        signal_name: str,
+        *,
+        workflow_type: str,
+        task_queue: str,
+        input: list[Any] | None = None,
+        signal_args: list[Any] | None = None,
+        request_id: str | None = None,
+        duplicate_policy: str | None = None,
+        closed_run_policy: str | None = None,
+        execution_timeout_seconds: int = 3600,
+        run_timeout_seconds: int = 600,
+        memo: dict[str, Any] | None = None,
+        search_attributes: dict[str, Any] | None = None,
+        business_key: str | None = None,
+        priority: int | None = None,
+        fairness_key: str | None = None,
+        fairness_weight: int | None = None,
+    ) -> dict[str, Any]:
+        """Start the workflow or reuse its open run, and signal it, atomically.
+
+        One Server transaction either starts ``workflow_id`` (when it has no
+        run) or reuses its open run, and records one ``signal_name`` signal on
+        that run (native Server ``capabilities.signal_with_start``; the client
+        checks discovery first and raises
+        :class:`~durable_workflow.errors.RuntimeCapabilityUnsupported`
+        otherwise). Unlike ``start_workflow(duplicate_policy="use-existing")``
+        followed by ``signal_workflow()``, the run cannot close in between.
+
+        - No run: a new run starts with ``input`` and the start options, and
+          the receipt has ``start_outcome == "started_new"``.
+        - An open run (including the newest run after continue-as-new): the
+          signal joins it and ``start_outcome == "returned_existing_active"``.
+          Its input, deadlines and history are unchanged; ``input`` and the
+          timeouts are not applied. ``duplicate_policy`` defaults to
+          ``"use-existing"``; ``"fail"`` refuses an open run with
+          ``reason == "instance_already_started"``.
+        - A closed run: refused with ``reason == "run_not_active"`` unless
+          ``closed_run_policy="start_new_run"``, which starts a fresh run
+          after it with this call's input and timeouts (the receipt names the
+          closed run in ``closed_run_id``). The closed run keeps its outcome.
+
+        ``workflow_type`` must be the instance's type and ``task_queue`` the
+        open run's queue. ``signal_args`` are the signal's arguments, encoded
+        like :meth:`signal_workflow`'s ``args``.
+
+        ``request_id`` is the signal's command key (1-255 opaque,
+        case-sensitive characters). When omitted the client generates
+        ``sdk-python-signal-with-start-<uuid>`` once per call, so a transport
+        retry resends it. A retry with the same key, signal name, arguments
+        and workflow type returns the original receipt with ``retained``
+        ``True``, even after the run closed or continued, and starts nothing.
+
+        Returns the Server's receipt: the signal's ``command_id``,
+        ``command_sequence``, ``run_id`` and ``outcome``, the start's
+        ``start_command_id``, ``start_outcome`` and ``start_command_status``,
+        ``intake_group_id`` and ``request_id``. Every refusal raises
+        :class:`~durable_workflow.errors.SignalWithStartFailed` (a
+        :class:`~durable_workflow.errors.SignalFailed`) with the Server's
+        ``reason`` and nothing written; a malformed request raises
+        :class:`~durable_workflow.errors.InvalidArgument`. An admitted signal
+        is admitted once; effects it triggers still need their own
+        idempotency.
+        """
+        if closed_run_policy is not None and closed_run_policy not in _CLOSED_RUN_POLICIES:
+            raise ValueError("closed_run_policy must be 'reject' or 'start_new_run'")
+        await self._require_signal_with_start()
+        key = _command_request_id(request_id, "signal-with-start")
+        body: dict[str, Any] = {
+            "workflow_type": workflow_type,
+            "task_queue": task_queue,
+            "input": self._payload_envelope(
+                input if input is not None else [],
+                kind="workflow_input",
+                workflow_id=workflow_id,
+                task_queue=task_queue,
+            ),
+            "execution_timeout_seconds": execution_timeout_seconds,
+            "run_timeout_seconds": run_timeout_seconds,
+            "request_id": key,
+        }
+        if signal_args:
+            body["signal_input"] = self._payload_envelope(
+                signal_args,
+                kind="signal",
+                workflow_id=workflow_id,
+                signal_name=signal_name,
+            )
+        optional: dict[str, Any] = {
+            "duplicate_policy": duplicate_policy,
+            "closed_run_policy": closed_run_policy,
+            "memo": memo,
+            "business_key": business_key,
+            "priority": priority,
+            "fairness_key": fairness_key,
+            "fairness_weight": fairness_weight,
+        }
+        body.update({field: value for field, value in optional.items() if value is not None})
+        if search_attributes is not None:
+            self._warn_json_payload_size(
+                search_attributes,
+                kind="search_attributes",
+                workflow_id=workflow_id,
+                task_queue=task_queue,
+            )
+            body["search_attributes"] = search_attributes
+        path = (
+            f"/workflows/{quote(workflow_id, safe='')}"
+            f"/signal-with-start/{quote(signal_name, safe='')}"
+        )
+        try:
+            data = await self._request(
+                "POST", path,
+                json=self._with_observability_context(body), context=workflow_id,
+            )
+        except Exception as exc:
+            failure = _command_request_failure(exc, command="signal-with-start", request_id=key)
             if failure is exc:
                 raise
             raise failure from exc

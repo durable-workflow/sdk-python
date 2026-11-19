@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Client.signal_with_start()` (and the sync client's) starts a workflow or reuses its open run and records one signal on it in a single Server transaction, so the run cannot close between a separate start and signal (durable-workflow/.github#222, server#1133). It needs a Server that advertises `capabilities.signal_with_start` (native Server) and raises `RuntimeCapabilityUnsupported` before sending otherwise. An open run, including the newest run after continue-as-new, is reused with its input and deadlines unchanged (`start_outcome == "returned_existing_active"`); `duplicate_policy="fail"` refuses it. A closed run is refused with `run_not_active` unless `closed_run_policy="start_new_run"`, which starts a fresh run after it. `request_id` is the signal's command key (generated as `sdk-python-signal-with-start-<uuid>` when omitted): a retry returns the original receipt, even after the run closed. Every refusal raises the new `SignalWithStartFailed` (a `SignalFailed`) with the Server's `reason`, and nothing was written.
+
 ## [2.19.1] - 2026-11-18
 
 ### Fixed

@@ -575,6 +575,50 @@ class Client:
         )
         return result
 
+    def signal_with_start(
+        self,
+        workflow_id: str,
+        signal_name: str,
+        *,
+        workflow_type: str,
+        task_queue: str,
+        input: list[Any] | None = None,
+        signal_args: list[Any] | None = None,
+        request_id: str | None = None,
+        duplicate_policy: str | None = None,
+        closed_run_policy: str | None = None,
+        execution_timeout_seconds: int = 3600,
+        run_timeout_seconds: int = 600,
+        memo: dict[str, Any] | None = None,
+        search_attributes: dict[str, Any] | None = None,
+        business_key: str | None = None,
+        priority: int | None = None,
+        fairness_key: str | None = None,
+        fairness_weight: int | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = self._runner.run(
+            self._async.signal_with_start(
+                workflow_id,
+                signal_name,
+                workflow_type=workflow_type,
+                task_queue=task_queue,
+                input=input,
+                signal_args=signal_args,
+                request_id=request_id,
+                duplicate_policy=duplicate_policy,
+                closed_run_policy=closed_run_policy,
+                execution_timeout_seconds=execution_timeout_seconds,
+                run_timeout_seconds=run_timeout_seconds,
+                memo=memo,
+                search_attributes=search_attributes,
+                business_key=business_key,
+                priority=priority,
+                fairness_key=fairness_key,
+                fairness_weight=fairness_weight,
+            )
+        )
+        return result
+
     def query_workflow(self, workflow_id: str, query_name: str, *, args: list[Any] | None = None) -> Any:
         return self._runner.run(self._async.query_workflow(workflow_id, query_name, args=args))
 
