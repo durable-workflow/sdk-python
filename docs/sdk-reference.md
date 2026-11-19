@@ -527,27 +527,36 @@ outcomes do not change the thrown failure or reach the workflow's next
 operations. A group whose members are already scheduled is never scheduled
 again on a later wake, such as a signal.
 
-When several members have failed, a run started on this version throws the
-failure recorded first in history, in durable event order, even if every
-member had already settled when the workflow resumed. The run records this
-choice once, as the version marker `durable_workflow.parallel_failure_order`
-directly before its first group that contains an activity or child workflow,
-so code after that point starts one workflow sequence later. Workflow's
-embedded engine also throws the earliest failure, but compares millisecond
-timestamps and then member index, so two failures recorded in the same
-millisecond can be chosen differently
+When several members have failed, a run that recorded the failure-order marker
+throws the failure recorded first in history, in durable event order, even if
+every member had already settled when the workflow resumed. The marker is the
+version marker `durable_workflow.parallel_failure_order`, recorded once, directly
+before the run's first group that contains an activity or child workflow; code
+after it starts one workflow sequence later. Workflow's embedded engine also
+throws the earliest failure, but compares millisecond timestamps and then member
+index, so two failures recorded in the same millisecond can be chosen
+differently
 ([durable-workflow/.github#415](https://github.com/durable-workflow/.github/issues/415)).
 
-A run whose first such group was recorded without the marker, by an earlier
-worker, keeps that worker's rule for its whole life, on every task, query and
-update: if every member had settled when the workflow resumed, the failure
-with the lowest input position is thrown. When such a run raises a failure
-while other members are open, the worker records which member it raised as a
-side effect directly after the group, so every later replay raises the same
-one. A run that has a cancellation request when it reaches its first group
-also keeps this rule. Workers up to 2.19.1 cannot replay a run that recorded
-the marker; they fail its workflow task as nondeterministic, so finish
-upgrading every worker on a task queue before relying on the new rule.
+Recording the marker is opt-in in this release: pass
+`Worker(..., record_parallel_failure_order=True)` or set
+`DURABLE_WORKFLOW_RECORD_PARALLEL_FAILURE_ORDER=true`. Turn it on only after
+every worker that polls the task queue runs this release or later. Workers up
+to 2.19.1 cannot replay a marked run: the Server marks its workflow task
+replay-blocked, and the run waits until it is repaired, which can hand it to an
+old worker again. Every worker of this release follows a marker a run already
+recorded, whether or not recording is on, so turning recording off again is
+safe. Rolling back below this release needs marked runs drained first. A later
+minor release turns recording on by default
+([#351](https://github.com/durable-workflow/sdk-python/issues/351)).
+
+A run without the marker keeps the earlier rule for its whole life, on every
+task, query and update: if every member had settled when the workflow resumed,
+the failure with the lowest input position is thrown. When such a run raises a
+failure while other members are open, the worker records which member it raised
+as a side effect directly after the group, so every later replay raises the
+same one. A run that has a cancellation request when it reaches its first group
+records no marker.
 
 ## Saga compensation
 

@@ -3363,6 +3363,7 @@ class Replayer:
         external_storage: ExternalStorageDriver | None = None,
         external_storage_cache: ExternalPayloadCache | None = None,
         cancel_requested: bool = False,
+        record_parallel_failure_order: bool = False,
     ) -> ReplayOutcome:
         events = _history_events_from_export(history)
         selected_workflow_type = workflow_type or _workflow_type_from_history(events)
@@ -3387,6 +3388,7 @@ class Replayer:
             external_storage=external_storage,
             external_storage_cache=external_storage_cache,
             cancel_requested=cancel_requested,
+            record_parallel_failure_order=record_parallel_failure_order,
         )
 
     def _workflow_cls(self, workflow_type: str | None) -> type:
@@ -3756,7 +3758,16 @@ def replay(
     local_activity_cancellation_policies: tuple[str, ...] = (),
     allow_cancellation_scope_authoring: bool = False,
     allow_cancellation_scope_delivery: bool = False,
+    record_parallel_failure_order: bool = False,
 ) -> ReplayOutcome:
+    """Replay ``history_events`` and return the next commands.
+
+    ``record_parallel_failure_order`` lets a run that reaches its first
+    all-group now record ``PARALLEL_FAILURE_ORDER_MARKER`` and raise its first
+    recorded member failure (sdk-python#307). It is off by default, so new runs
+    send the same commands as 2.19.1. A history that already contains the
+    marker follows it whether or not this is set.
+    """
     return _replay_state(
         workflow_cls,
         history_events,
@@ -3775,6 +3786,7 @@ def replay(
         local_activity_cancellation_policies=local_activity_cancellation_policies,
         allow_cancellation_scope_authoring=allow_cancellation_scope_authoring,
         allow_cancellation_scope_delivery=allow_cancellation_scope_delivery,
+        record_parallel_failure_order=record_parallel_failure_order,
     ).outcome
 
 
@@ -4266,9 +4278,10 @@ RUN_CLOSED_CANCELLATION_REASON = "run_closed"
 # (sdk-python#338). Replay raises exactly that member.
 PARALLEL_FAILURE_DECISION = "durable_workflow.parallel_failure_decision"
 # The version marker a run records, directly before its first all-group, when
-# that group is first scheduled by a worker that raises the first recorded
-# member failure (sdk-python#307). A run without it keeps the failure
-# selection of the workers that ran it before, for its whole life.
+# that group is first scheduled by a worker with recording enabled
+# (sdk-python#307). A marked run raises the first recorded member failure. A run
+# without it keeps the failure selection of the workers that ran it before, for
+# its whole life. Every worker reads it; writing it is opt-in in this release.
 PARALLEL_FAILURE_ORDER_MARKER = "durable_workflow.parallel_failure_order"
 
 
@@ -5277,6 +5290,7 @@ def _replay_state(
     allow_cancellation_scope_authoring: bool = False,
     allow_cancellation_scope_delivery: bool = False,
     parallel_group_policies: tuple[str, ...] = (),
+    record_parallel_failure_order: bool = False,
 ) -> _ReplayState:
     _validate_workflow_entrypoint(workflow_cls)
     _workflow_handler_registries(workflow_cls)
@@ -6829,8 +6843,10 @@ def _replay_state(
         A run reaching its first all-group now records the marker directly
         before scheduling it. No all-group of the run has produced an outcome
         before that point, so no earlier task can have chosen a failure under
-        the other rule. A run with a cancellation request that may replace the
-        group records no marker and keeps the earlier rule.
+        the other rule. Recording is opt-in (``record_parallel_failure_order``)
+        because workers up to 2.19.1 cannot replay a marked run. A run with a
+        cancellation request that may replace the group records no marker and
+        keeps the earlier rule.
         """
         nonlocal result_cursor, authored_sequence
         marker = RecordVersionMarker(
@@ -6855,12 +6871,13 @@ def _replay_state(
         interrupting = cancellation.request is not None or any(
             sequence not in consumed_scope_deliveries for sequence in committed_scopes.deliveries
         )
-        if step is None and not closed and not interrupting:
+        if record_parallel_failure_order and step is None and not closed and not interrupting:
             pending.append(marker)
             authored_sequence += 1
             return True
-        # Scheduled now without the marker, under a cancellation request that
-        # may replace it, or recorded without it: the earlier rule.
+        # Recorded without the marker, scheduled now with recording off (the
+        # default until every worker reads the marker), or scheduled under a
+        # cancellation request that may replace it: the earlier rule.
         return False
 
     def _parallel_leaf_kind(command: Any) -> str:

@@ -15,7 +15,6 @@ from durable_workflow.workflow import (
     commands_to_server_commands,
     replay,
 )
-from tests.failure_order import failure_order_marker_event, without_failure_order_marker
 from tests.test_cooperative_cancellation import marker, request
 from tests.test_cooperative_cancellation_worker import ClaimServer, claimed_task
 
@@ -79,13 +78,9 @@ def test_omitted_policy_preserves_wire_and_historical_try_default() -> None:
 def test_changed_policy_fails_group_matching_and_cancellation_delivery(mode: str, delivered: bool) -> None:
     options = {"cancellation_policy": CancellationPolicy.WAIT_CANCELLATION_COMPLETED}
     commands = commands_to_server_commands(replay(workflow(options, mode), [], []).commands, "queue")
-    # A new run records its failure-order marker before its first all-group.
-    first = 2 if mode == "parallel" else 1
-    history = [failure_order_marker_event()] if mode == "parallel" else []
-    history += [{"event_type": "ActivityScheduled", "payload": {"sequence": first, **command}}
-                for command in without_failure_order_marker(commands)]
+    history = [{"event_type": "ActivityScheduled", "payload": {"sequence": 1, **command}} for command in commands]
     if delivered:
-        history += [request(), marker(first, "activity" if mode == "sequential" else "parallel", sequence_span=1)]
+        history += [request(), marker(1, "activity" if mode == "sequential" else "parallel", sequence_span=1)]
         assert replay(workflow(options, mode), history, [], run_id="run-1").commands == [CompleteWorkflow("request-1")]
     with pytest.raises(NonDeterministicReplayError, match="activity_cancellation_policy_changed"):
         replay(workflow({"cancellation_policy": CancellationPolicy.TRY_CANCEL}, mode), history, [], run_id="run-1")

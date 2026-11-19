@@ -15,7 +15,6 @@ from durable_workflow.workflow import (
     commands_to_server_commands,
     replay,
 )
-from tests.failure_order import failure_order_marker_event, is_failure_order_marker
 from tests.test_cooperative_cancellation import marker, request
 from tests.test_cooperative_cancellation_worker import ClaimServer, claimed_task
 
@@ -47,10 +46,7 @@ def workflow(mode: str, policies: dict[str, Any]) -> type:
 
 
 def scheduled(commands: list[Any]) -> list[dict[str, Any]]:
-    """History for these commands. A new run's failure-order marker, recorded
-    before its first all-group, keeps its own sequence (sdk-python#307)."""
     return [
-        failure_order_marker_event(index + 1) if is_failure_order_marker(command) else
         {"event_type": "ChildWorkflowScheduled", "payload": {
             "sequence": index + 1, "child_workflow_type": command["workflow_type"],
             "child_workflow_run_id": f"child-run-{index + 1}", **command,
@@ -118,10 +114,8 @@ def test_existing_positional_constructor_and_omitted_wire_fields_are_preserved()
 def test_changed_policies_fail_cold_replay_and_cancellation_delivery(mode: str, field: str, delivered: bool) -> None:
     policies = options()
     history = scheduled(replay(workflow(mode, policies), [], []).commands)
-    first = 2 if mode == "parallel" else 1
     if delivered:
-        history += [request(), marker(first, "child" if mode == "sequential" else "parallel",
-                                      sequence_span=len(history) - first + 1)]
+        history += [request(), marker(1, "child" if mode == "sequential" else "parallel", sequence_span=len(history))]
         assert replay(workflow(mode, policies), history, [], run_id="run-1").commands == [CompleteWorkflow("request-1")]
     else:
         cold = replay(workflow(mode, policies), history, [])
@@ -129,7 +123,7 @@ def test_changed_policies_fail_cold_replay_and_cancellation_delivery(mode: str, 
     policies[field] = "abandon"
     with pytest.raises(NonDeterministicReplayError, match="child_workflow_policy_changed") as captured:
         replay(workflow(mode, policies), history, [], run_id="run-1")
-    assert captured.value.workflow_sequence == first
+    assert captured.value.workflow_sequence == 1
 
 
 @pytest.mark.parametrize("mode", ["sequential", "parallel", "selection"])

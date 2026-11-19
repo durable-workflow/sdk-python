@@ -123,9 +123,7 @@ def test_an_open_group_is_never_scheduled_again() -> None:
 
 
 def test_a_new_group_is_still_scheduled_once() -> None:
-    marker, *commands = _wire([{"event_type": "WorkflowStarted", "payload": {}}])
-    # A new run records its failure-order marker before its first all-group (#307).
-    assert marker["type"] == "record_version_marker"
+    commands = _wire([{"event_type": "WorkflowStarted", "payload": {}}])
     assert [command["type"] for command in commands] == ["schedule_activity"] * SIZE
     assert [command["parallel_group_index"] for command in commands] == list(range(SIZE))
 
@@ -352,8 +350,9 @@ class NativeCaughtMemberFailure:
 # tests/fixtures/replay_regressions/settled-group-*.json (sdk-python#307).
 # Member 1 fails at once and member 0 fails later; the others complete. The
 # workflow worker was stopped while they ran, so the woken task saw the whole
-# group settled. Published 2.19.1 raised member 0 by position; this version
-# raises member 1, whose failure was recorded first.
+# group settled. Published 2.19.1 raised member 0 by position; a run that
+# recorded the failure-order marker raises member 1, whose failure was recorded
+# first.
 PY307_ACTIVITIES = "py307-activities"
 
 

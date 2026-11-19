@@ -1,24 +1,22 @@
 {
   "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
   "fixture_schema": "durable-workflow.replay-regression/v1",
-  "id": "parallel-group-metadata-emission-after-failure-order-marker",
+  "id": "parallel-failure-order-opt-in-new-run-emission",
   "protocol_version": "1.20",
   "bindings": [
     "python"
-  ],
-  "supersedes": [
-    "parallel-group-metadata-emission"
   ],
   "parallel_failure_order": {
     "issues": [
       "durable-workflow/sdk-python#307"
     ],
-    "note": "The new run of parallel-group-metadata-emission. A run now records the parallel failure-order version marker directly before its first all-group that can fail, so the group's metadata starts at sequence 2. Histories recorded without the marker keep their sequences and their failure selection."
+    "note": "The new run of parallel-group-metadata-emission with failure-order recording enabled (record_parallel_failure_order). The run records the parallel failure-order version marker at sequence 1, directly before its first all-group, whose metadata then starts at sequence 2. With recording off (the default in this release), parallel-group-metadata-emission still holds unchanged."
   },
   "workflow": {
     "type": "tests.replay.parallel-metadata-producer",
     "input": [],
-    "payload_codec": "avro"
+    "payload_codec": "avro",
+    "record_parallel_failure_order": true
   },
   "history": [
     {

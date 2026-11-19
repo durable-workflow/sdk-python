@@ -23,6 +23,7 @@ import inspect
 import json
 import logging
 import math
+import os
 import pickle
 import random
 import sys
@@ -1156,6 +1157,24 @@ def _contract_version_matches(value: Any, expected: int) -> bool:
     return False
 
 
+RECORD_PARALLEL_FAILURE_ORDER_ENV = "DURABLE_WORKFLOW_RECORD_PARALLEL_FAILURE_ORDER"
+
+
+def _record_parallel_failure_order(value: bool | None) -> bool:
+    """The worker's failure-order recording setting, refused when malformed."""
+    if value is None:
+        raw = os.environ.get(RECORD_PARALLEL_FAILURE_ORDER_ENV, "")
+        setting = raw.strip().lower()
+        if setting in ("", "false", "0"):
+            return False
+        if setting in ("true", "1"):
+            return True
+        raise ValueError(f"{RECORD_PARALLEL_FAILURE_ORDER_ENV} must be true or false")
+    if type(value) is not bool:
+        raise ValueError("record_parallel_failure_order must be a bool or None")
+    return value
+
+
 class Worker:
     """Polls workflow and activity tasks and dispatches them to Python callables."""
 
@@ -1184,8 +1203,20 @@ class Worker:
         external_storage_threshold_bytes: int | None = None,
         external_storage_cache: ExternalPayloadCache | None = None,
         require_query_task_authority: bool = False,
+        record_parallel_failure_order: bool | None = None,
     ) -> None:
+        """Create a worker.
+
+        ``record_parallel_failure_order`` lets new runs record the parallel
+        failure-order marker before their first all-group, so their groups
+        raise the first recorded member failure (sdk-python#307). ``None``
+        reads ``DURABLE_WORKFLOW_RECORD_PARALLEL_FAILURE_ORDER`` (``true`` or
+        ``false``, default ``false``). Enable it only after every worker on the
+        task queue runs this release or later: older workers cannot replay a
+        marked run. Every worker follows a marker that a run already recorded.
+        """
         self.client = client
+        self.record_parallel_failure_order = _record_parallel_failure_order(record_parallel_failure_order)
         self.require_query_task_authority = require_query_task_authority
         self._query_authority_supported = False
         self.task_queue = task_queue
@@ -1960,6 +1991,7 @@ class Worker:
                     local_activity_cancellation_policies=self._local_activity_cancellation_policies,
                     allow_cancellation_scope_authoring=self._allow_cancellation_scope_authoring,
                     allow_cancellation_scope_delivery=self._allow_cancellation_scope_delivery,
+                    record_parallel_failure_order=self.record_parallel_failure_order,
                 )
                 if outcome.cancellation_scope_delivery is not None:
                     if outcome.commands:

@@ -14,7 +14,6 @@ from durable_workflow.workflow import (
     commands_to_server_commands,
     replay,
 )
-from tests.failure_order import FAILURE_ORDER_MARKER
 
 
 def _entry(kind: str, base: int, size: int, index: int) -> dict[str, Any]:
@@ -33,12 +32,12 @@ def _entry(kind: str, base: int, size: int, index: int) -> dict[str, Any]:
     }
 
 
-def _paths(base: int = 1) -> list[list[dict[str, Any]]]:
-    outer = [_entry("mixed", base, 3, index) for index in range(3)]
+def _paths() -> list[list[dict[str, Any]]]:
+    outer = [_entry("mixed", 1, 3, index) for index in range(3)]
     return [
         [outer[0]],
-        [outer[1], _entry("mixed", base + 1, 2, 0)],
-        [outer[2], _entry("mixed", base + 1, 2, 1)],
+        [outer[1], _entry("mixed", 2, 2, 0)],
+        [outer[2], _entry("mixed", 2, 2, 1)],
     ]
 
 
@@ -93,17 +92,14 @@ class NestedParallelFailureWorkflow:
 
 def test_nested_parallel_emits_flat_commands_with_stable_full_paths() -> None:
     outcome = replay(NestedParallelWorkflow, [], [])
-    # A new run records its failure-order marker at sequence 1, before its
-    # first all-group (sdk-python#307).
-    assert outcome.commands[0] == FAILURE_ORDER_MARKER
-    assert [type(command) for command in outcome.commands[1:]] == [
+    assert [type(command) for command in outcome.commands] == [
         ScheduleActivity,
         StartChildWorkflow,
         StartTimer,
     ]
 
-    commands = commands_to_server_commands(outcome.commands[1:], "parallel-workers")
-    for command, path in zip(commands, _paths(2), strict=True):
+    commands = commands_to_server_commands(outcome.commands, "parallel-workers")
+    for command, path in zip(commands, _paths(), strict=True):
         assert command["parallel_group_path"] == path
         assert command["parallel_group_id"] == path[-1]["parallel_group_id"]
 

@@ -517,19 +517,6 @@ DEFECT_EVIDENCE = {
     "run-closed-cancellation-not-a-group-outcome": "run-closed-all-failure-keeps-the-handled-failure",
 }
 
-# Immutable evidence of the commands a released worker sent for a new run's
-# first all-group. New runs now record the parallel failure-order version
-# marker before that group (sdk-python#307), so the same input replays under
-# the named fixture, at the same protocol version. No recorded history changes
-# meaning: a history without the marker keeps its sequences and its failure
-# selection.
-SUPERSEDED_NEW_RUN_EMISSION = {
-    "python-completion-size-limit-fails-run-once":
-        "python-completion-size-limit-fails-run-once-after-failure-order-marker",
-    "python-completion-history-limit-fails-run-once":
-        "python-completion-history-limit-fails-run-once-after-failure-order-marker",
-}
-
 
 def _fixture_documents() -> dict[Path, dict[str, Any]]:
     return {path: json.loads(path.read_text(encoding="utf-8")) for path in sorted(FIXTURE_DIR.glob("*.json"))}
@@ -538,7 +525,7 @@ def _fixture_documents() -> dict[Path, dict[str, Any]]:
 def _fixture_paths() -> list[Path]:
     """The current fixtures. A superseded one stays as evidence but does not replay."""
     documents = _fixture_documents()
-    retired = set(DEFECT_EVIDENCE) | set(SUPERSEDED_NEW_RUN_EMISSION)
+    retired = set(DEFECT_EVIDENCE)
     for document in documents.values():
         retired.update(document.get("supersedes", []))
     return [path for path, document in documents.items() if document.get("id") not in retired]
@@ -546,9 +533,9 @@ def _fixture_paths() -> list[Path]:
 
 def test_retired_defect_evidence_replays_under_its_correction() -> None:
     by_id = {document["id"]: document for document in _fixture_documents().values()}
-    for retired, correction in {**DEFECT_EVIDENCE, **SUPERSEDED_NEW_RUN_EMISSION}.items():
+    for retired, correction in DEFECT_EVIDENCE.items():
         assert by_id[retired]["protocol_version"] == by_id[correction]["protocol_version"]
-        assert by_id[retired].get("history") == by_id[correction].get("history")
+        assert by_id[retired]["history"] == by_id[correction]["history"]
         assert by_id[retired]["workflow"] == by_id[correction]["workflow"]
 
 
@@ -881,6 +868,7 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
             workflow_id=workflow.get("workflow_id"),
             run_id=workflow.get("run_id", ""),
             payload_codec=("json" if payload_codec is None else payload_codec),
+            record_parallel_failure_order=workflow.get("record_parallel_failure_order") is True,
         )
         commands = _command_documents(outcome.commands)
         message_stream_cursors = outcome.message_stream_cursors

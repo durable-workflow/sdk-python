@@ -35,7 +35,6 @@ from durable_workflow.workflow import (
     commands_to_server_commands,
     replay,
 )
-from tests.failure_order import FAILURE_ORDER_MARKER
 from tests.integration.polyglot_fixtures import (
     PHP_HISTORY_EVENT_EXPECTED_KEYS,
     PHP_HISTORY_EVENT_FIXTURES,
@@ -2261,19 +2260,15 @@ class FanOutActivityFailWorkflow:
 class TestFanOut:
     def test_no_history_emits_batch(self) -> None:
         outcome = replay(FanOutWorkflow, [], [])
-        # A new run records its failure-order marker before its first
-        # all-group (sdk-python#307).
-        assert len(outcome.commands) == 3
-        assert outcome.commands[0] == FAILURE_ORDER_MARKER
+        assert len(outcome.commands) == 2
+        assert isinstance(outcome.commands[0], ScheduleActivity)
+        assert outcome.commands[0].activity_type == "fetch-a"
         assert isinstance(outcome.commands[1], ScheduleActivity)
-        assert outcome.commands[1].activity_type == "fetch-a"
-        assert isinstance(outcome.commands[2], ScheduleActivity)
-        assert outcome.commands[2].activity_type == "fetch-b"
+        assert outcome.commands[1].activity_type == "fetch-b"
 
     def test_mixed_batch_emits_language_neutral_parallel_metadata(self) -> None:
         outcome = replay(ParallelMetadataProducerWorkflow, [], [])
-        assert outcome.commands[0] == FAILURE_ORDER_MARKER
-        commands = commands_to_server_commands(outcome.commands[1:], "parallel-workers")
+        commands = commands_to_server_commands(outcome.commands, "parallel-workers")
 
         assert [command["type"] for command in commands] == [
             "schedule_activity",
@@ -2282,9 +2277,9 @@ class TestFanOut:
         ]
         for index, command in enumerate(commands):
             entry = {
-                "parallel_group_id": "parallel-calls:2:3",
+                "parallel_group_id": "parallel-calls:1:3",
                 "parallel_group_kind": "mixed",
-                "parallel_group_base_sequence": 2,
+                "parallel_group_base_sequence": 1,
                 "parallel_group_size": 3,
                 "parallel_group_index": index,
             }
@@ -2293,15 +2288,14 @@ class TestFanOut:
 
     def test_repeated_deferred_command_keeps_occurrence_specific_metadata(self) -> None:
         outcome = replay(RepeatedCommandFanOutWorkflow, [], [])
-        assert outcome.commands[0] == FAILURE_ORDER_MARKER
-        commands = commands_to_server_commands(outcome.commands[1:], "parallel-workers")
+        commands = commands_to_server_commands(outcome.commands, "parallel-workers")
 
-        assert outcome.commands[1] is not outcome.commands[2]
+        assert outcome.commands[0] is not outcome.commands[1]
         for index, command in enumerate(commands):
             entry = {
-                "parallel_group_id": "parallel-activities:2:2",
+                "parallel_group_id": "parallel-activities:1:2",
                 "parallel_group_kind": "activity",
-                "parallel_group_base_sequence": 2,
+                "parallel_group_base_sequence": 1,
                 "parallel_group_size": 2,
                 "parallel_group_index": index,
             }
@@ -2520,9 +2514,8 @@ class NontrivialWorkflow:
 class TestNontrivialWorkflow:
     def test_first_replay_fans_out(self) -> None:
         outcome = replay(NontrivialWorkflow, [], [])
-        assert outcome.commands[0] == FAILURE_ORDER_MARKER
-        assert len(outcome.commands) == 3
-        assert all(isinstance(c, ScheduleActivity) for c in outcome.commands[1:])
+        assert len(outcome.commands) == 2
+        assert all(isinstance(c, ScheduleActivity) for c in outcome.commands)
 
     def test_after_fan_out_starts_timer(self) -> None:
         history = [

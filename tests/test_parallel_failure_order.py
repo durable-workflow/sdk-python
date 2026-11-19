@@ -1,22 +1,26 @@
 """sdk-python#307: which member failure an all() group raises.
 
-A run records ``PARALLEL_FAILURE_ORDER_MARKER`` directly before the first
-all-group that can fail, when a worker with this rule first schedules it. Such
-a run raises the first member failure recorded in history, as soon as it is
-recorded, whether or not the other members have settled. A run whose first
-all-group was recorded without the marker keeps the rule of the workers that
-started it for its whole life: on every later task, query and update, a
-settled group raises its lowest-position failure.
+With recording enabled (``record_parallel_failure_order``, off by default in
+this release), a run records ``PARALLEL_FAILURE_ORDER_MARKER`` directly before
+the first all-group that can fail, when that group is first scheduled. A marked
+run raises the first member failure recorded in history, as soon as it is
+recorded, whether or not the other members have settled. Every worker follows a
+recorded marker, with recording on or off. A run whose first all-group was
+recorded without the marker keeps the rule of the workers that started it for
+its whole life: on every later task, query and update, a settled group raises
+its lowest-position failure.
 """
 
 from __future__ import annotations
 
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
-from durable_workflow import serializer, workflow
+from durable_workflow import Client, serializer, workflow
 from durable_workflow.errors import ActivityFailed, NonDeterministicReplayError
+from durable_workflow.worker import RECORD_PARALLEL_FAILURE_ORDER_ENV, Worker
 from durable_workflow.workflow import (
     PARALLEL_FAILURE_DECISION,
     CompleteUpdate,
@@ -115,8 +119,22 @@ class FailureOrderUncaught:
         return (yield [ctx.schedule_activity(f"member-{index}", []) for index in range(SIZE)])
 
 
-def _commands(history: list[dict[str, Any]], definition: type = FailureOrder) -> list[Any]:
-    return replay(definition, history, [], payload_codec=serializer.AVRO_CODEC).commands
+def _commands(history: list[dict[str, Any]], definition: type = FailureOrder, *, record: bool = True) -> list[Any]:
+    return replay(definition, history, [], payload_codec=serializer.AVRO_CODEC,
+                  record_parallel_failure_order=record).commands
+
+
+def test_recording_is_off_by_default_and_new_runs_send_the_released_commands() -> None:
+    started = [{"event_type": "WorkflowStarted", "payload": {}}]
+    commands = replay(FailureOrder, started, [], payload_codec=serializer.AVRO_CODEC).commands
+    assert FAILURE_ORDER_MARKER not in commands
+    wire = commands_to_server_commands(commands, "queue", payload_codec=serializer.AVRO_CODEC)
+    assert [command["parallel_group_base_sequence"] for command in wire] == [1] * SIZE
+    # The group was recorded without the marker, so the run keeps the
+    # released rule even for a worker with recording enabled.
+    history, base = _run(marked=False)
+    history += _settled_out_of_order(base)
+    assert _commands(history, record=True) == [ScheduleActivity("compensate", ["member-0"])]
 
 
 def _caught(history: list[dict[str, Any]]) -> Any:
@@ -153,7 +171,8 @@ def test_the_marker_is_recorded_once_per_run() -> None:
         history.append({"event_type": "ActivityScheduled", "payload": dict(payload)})
         history.append({"event_type": "ActivityCompleted", "payload": {
             **payload, "result": serializer.envelope(name, codec=serializer.AVRO_CODEC)}})
-    commands = replay(TwoGroups, history, [], payload_codec=serializer.AVRO_CODEC).commands
+    commands = replay(TwoGroups, history, [], payload_codec=serializer.AVRO_CODEC,
+                      record_parallel_failure_order=True).commands
     assert [type(command) for command in commands] == [ScheduleActivity, ScheduleActivity]
     wire = commands_to_server_commands(commands, "queue", payload_codec=serializer.AVRO_CODEC)
     assert [command["parallel_group_base_sequence"] for command in wire] == [4, 4]
@@ -167,10 +186,10 @@ def test_a_timer_group_does_not_decide_the_rule() -> None:
             yield [ctx.schedule_activity("work", []), ctx.schedule_activity("more", [])]
             return "done"
 
-    commands = replay(TimersFirst, [], []).commands
+    commands = replay(TimersFirst, [], [], record_parallel_failure_order=True).commands
     assert [type(command) for command in commands] == [StartTimer, StartTimer]
     fired = [{"event_type": "TimerFired", "payload": {"sequence": sequence}} for sequence in (1, 2)]
-    commands = replay(TimersFirst, fired, []).commands
+    commands = replay(TimersFirst, fired, [], record_parallel_failure_order=True).commands
     assert commands[0] == FAILURE_ORDER_MARKER
     assert [type(command) for command in commands[1:]] == [ScheduleActivity, ScheduleActivity]
 
@@ -186,7 +205,8 @@ def test_a_run_started_by_an_earlier_worker_records_the_marker_at_its_first_grou
 
     history = [{"event_type": "WorkflowStarted", "payload": {}}, _activity("ActivityScheduled", 1, "prepare"),
                _activity("ActivityCompleted", 1, "prepare", "ready")]
-    commands = replay(LateGroup, history, [], payload_codec=serializer.AVRO_CODEC).commands
+    commands = replay(LateGroup, history, [], payload_codec=serializer.AVRO_CODEC,
+                      record_parallel_failure_order=True).commands
     assert commands[0] == FAILURE_ORDER_MARKER
     wire = commands_to_server_commands(commands[1:], "queue", payload_codec=serializer.AVRO_CODEC)
     assert [command["parallel_group_base_sequence"] for command in wire] == [3, 3]
@@ -195,27 +215,30 @@ def test_a_run_started_by_an_earlier_worker_records_the_marker_at_its_first_grou
 def test_a_cancellation_request_keeps_the_earlier_rule() -> None:
     """A request may replace the group with its cancellation, so the run
     records no marker and its group is recorded under the earlier rule."""
-    outcome = replay(FailureOrder, [request()], [], run_id="run-1", payload_codec=serializer.AVRO_CODEC)
+    outcome = replay(FailureOrder, [request()], [], run_id="run-1", payload_codec=serializer.AVRO_CODEC,
+                     record_parallel_failure_order=True)
     assert FAILURE_ORDER_MARKER not in outcome.commands
     assert outcome.cancellation_delivery is not None
 
 
-def test_a_marked_run_raises_the_first_recorded_failure_of_a_settled_group() -> None:
+@pytest.mark.parametrize("record", [False, True])
+def test_a_marked_run_raises_the_first_recorded_failure_of_a_settled_group(record: bool) -> None:
     history, base = _run(marked=True)
     history += _settled_out_of_order(base)
-    assert _commands(history) == [ScheduleActivity("compensate", ["member-2"])]
+    assert _commands(history, record=record) == [ScheduleActivity("compensate", ["member-2"])]
     assert _caught(history) == "member-2"
-    uncaught = _commands(history, FailureOrderUncaught)
+    uncaught = _commands(history, FailureOrderUncaught, record=record)
     assert [type(command) for command in uncaught] == [FailWorkflow]
     assert "member-2" in str(cast(FailWorkflow, uncaught[0]).message)
 
 
-def test_a_marked_run_raises_at_once_without_recording_a_decision() -> None:
+@pytest.mark.parametrize("record", [False, True])
+def test_a_marked_run_raises_at_once_without_recording_a_decision(record: bool) -> None:
     """History is append-only: the first failure this task sees is the first
     failure every later replay sees, so nothing more needs recording."""
     history, base = _run(marked=True)
     history += [_member("ActivityCompleted", 0, base), _member("ActivityFailed", 2, base)]
-    assert _commands(history) == [ScheduleActivity("compensate", ["member-2"])]
+    assert _commands(history, record=record) == [ScheduleActivity("compensate", ["member-2"])]
     # Member 3 fails and member 1 completes after the compensation was
     # scheduled; replay still raises member 2.
     later = [*history, _activity("ActivityScheduled", base + SIZE, "compensate"),
@@ -223,11 +246,12 @@ def test_a_marked_run_raises_at_once_without_recording_a_decision() -> None:
              _activity("ActivityCompleted", base + SIZE, "compensate", "undone")]
     for end in range(len(history) + 1, len(later) + 1):
         expected = [CompleteWorkflow("undone")] if end == len(later) else []
-        assert _commands(later[:end]) == expected, end
+        assert _commands(later[:end], record=record) == expected, end
         assert _caught(later[:end]) == "member-2", end
 
 
-def test_a_marked_run_keeps_its_choice_when_a_lower_position_fails_before_the_completion() -> None:
+@pytest.mark.parametrize("record", [False, True])
+def test_a_marked_run_keeps_its_choice_when_a_lower_position_fails_before_the_completion(record: bool) -> None:
     """The deciding task saw only member 2's failure. Member 0 failed and the
     others completed before its completion was written."""
     history, base = _run(marked=True)
@@ -237,23 +261,25 @@ def test_a_marked_run_keeps_its_choice_when_a_lower_position_fails_before_the_co
         _activity("ActivityScheduled", base + SIZE, "compensate"),
         _activity("ActivityCompleted", base + SIZE, "compensate", "undone"),
     ]
-    assert _commands(history) == [CompleteWorkflow("undone")]
+    assert _commands(history, record=record) == [CompleteWorkflow("undone")]
     assert _caught(history) == "member-2"
 
 
-def test_an_unmarked_run_keeps_the_position_rule_at_every_task() -> None:
+@pytest.mark.parametrize("record", [False, True])
+def test_an_unmarked_run_keeps_the_position_rule_at_every_task(record: bool) -> None:
     """The group was scheduled without the marker, by a released worker."""
     history, base = _run(marked=False)
     history += _settled_out_of_order(base)
-    assert _commands(history) == [ScheduleActivity("compensate", ["member-0"])]
+    assert _commands(history, record=record) == [ScheduleActivity("compensate", ["member-0"])]
     assert _caught(history) == "member-0"
     moved_on = [*history, _activity("ActivityScheduled", base + SIZE, "compensate"),
                 _activity("ActivityCompleted", base + SIZE, "compensate", "undone")]
-    assert _commands(moved_on) == [CompleteWorkflow("undone")]
+    assert _commands(moved_on, record=record) == [CompleteWorkflow("undone")]
     assert _caught(moved_on) == "member-0"
 
 
-def test_an_unmarked_run_whose_task_recorded_nothing_after_the_group_keeps_the_position_rule() -> None:
+@pytest.mark.parametrize("record", [False, True])
+def test_an_unmarked_run_whose_task_recorded_nothing_after_the_group_keeps_the_position_rule(record: bool) -> None:
     """A released worker caught member 0 and then waited without recording a
     command (for example on a select() handle it already held). A later task
     must not take that for a new decision."""
@@ -261,7 +287,7 @@ def test_an_unmarked_run_whose_task_recorded_nothing_after_the_group_keeps_the_p
     history += _settled_out_of_order(base)
     history.append({"event_type": "SignalReceived", "payload": {"signal_name": "nudge", "arguments": None}})
     assert _caught(history) == "member-0"
-    commands = _commands(history)
+    commands = _commands(history, record=record)
     assert not any(isinstance(command, RecordSideEffect) for command in commands)
     assert commands == [ScheduleActivity("compensate", ["member-0"])]
 
@@ -280,7 +306,8 @@ def test_an_update_in_an_unmarked_run_reports_the_position_rule() -> None:
     assert update == CompleteUpdate("update-1", {"compensating": "member-2"})
 
 
-def test_an_unmarked_run_still_honours_a_recorded_decision() -> None:
+@pytest.mark.parametrize("record", [False, True])
+def test_an_unmarked_run_still_honours_a_recorded_decision(record: bool) -> None:
     """2.19 records which member it raised while siblings were open (#338)."""
     history, base = _run(marked=False)
     decision = {PARALLEL_FAILURE_DECISION: {
@@ -293,7 +320,7 @@ def test_an_unmarked_run_still_honours_a_recorded_decision() -> None:
         {"event_type": "SideEffectRecorded", "payload": {
             "sequence": base + SIZE, "result": serializer.envelope(decision, codec=serializer.AVRO_CODEC)}},
     ]
-    assert _commands(history) == [ScheduleActivity("compensate", ["member-2"])]
+    assert _commands(history, record=record) == [ScheduleActivity("compensate", ["member-2"])]
 
 
 def test_an_unknown_marker_version_is_nondeterministic() -> None:
@@ -394,3 +421,44 @@ class ReviewPlain:
             self.caught = str(e)
         yield ctx.schedule_activity("compensate", [self.caught], retry_policy=_ONCE)
         return self.caught
+
+
+@pytest.mark.parametrize("raw,expected", [(None, False), ("", False), ("false", False), ("0", False),
+                                          ("true", True), ("1", True), (" TRUE ", True)])
+def test_the_worker_setting_reads_its_environment_variable(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: bool,
+) -> None:
+    if raw is None:
+        monkeypatch.delenv(RECORD_PARALLEL_FAILURE_ORDER_ENV, raising=False)
+    else:
+        monkeypatch.setenv(RECORD_PARALLEL_FAILURE_ORDER_ENV, raw)
+    worker = Worker(AsyncMock(spec=Client), task_queue="q", workflows=[FailureOrder])
+    assert worker.record_parallel_failure_order is expected
+    assert Worker(AsyncMock(spec=Client), task_queue="q", workflows=[FailureOrder],
+                  record_parallel_failure_order=not expected).record_parallel_failure_order is (not expected)
+
+
+@pytest.mark.parametrize("raw", ["yes", "on", "2", "v2"])
+def test_a_malformed_worker_setting_is_refused(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv(RECORD_PARALLEL_FAILURE_ORDER_ENV, raw)
+    with pytest.raises(ValueError, match=RECORD_PARALLEL_FAILURE_ORDER_ENV):
+        Worker(AsyncMock(spec=Client), task_queue="q", workflows=[FailureOrder])
+    monkeypatch.delenv(RECORD_PARALLEL_FAILURE_ORDER_ENV)
+    with pytest.raises(ValueError, match="record_parallel_failure_order"):
+        Worker(AsyncMock(spec=Client), task_queue="q", workflows=[FailureOrder],
+               record_parallel_failure_order="true")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("record", [False, True])
+@pytest.mark.asyncio
+async def test_the_worker_writes_the_marker_only_when_enabled(record: bool) -> None:
+    client = AsyncMock(spec=Client)
+    worker = Worker(client, task_queue="q", workflows=[FailureOrder], record_parallel_failure_order=record)
+    await worker._run_workflow_task({
+        "task_id": "t-307", "workflow_type": "tests.parallel-failure-order", "workflow_task_attempt": 1,
+        "history_events": [{"event_type": "WorkflowStarted", "payload": {}}],
+        "arguments": serializer.encode([], codec="avro"), "payload_codec": "avro",
+    })
+    commands = client.complete_workflow_task.call_args.kwargs["commands"]
+    types = [command["type"] for command in commands]
+    assert types == (["record_version_marker"] if record else []) + ["schedule_activity"] * SIZE
