@@ -1,4 +1,4 @@
-The retry-cap case qualifies the exact reviewed 2.19.1 wheel on the published
+The retry-cap case qualifies the exact reviewed 2.20.0 wheel on the published
 Server/Python tuple in `tests/fixtures/published-retry-cap.json`. It uses the
 existing internal two-container profile, complete hash lock, captured no-site
 entry, before/after installed inventory and independent ID/label cleanup.

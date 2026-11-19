@@ -799,6 +799,18 @@ dispatch-rate limits, so automation can detect whether local worker slots,
 queue caps, namespace caps, or downstream dispatch budget groups are
 constraining throughput.
 
+## Signal-with-start
+
+`Client.signal_with_start(workflow_id, signal_name, *, workflow_type=...,
+task_queue=..., input=..., signal_args=...)` (and the sync client's) starts the workflow or reuses its open run and records one
+signal on that run in a single Server transaction, so the run cannot close
+between a separate start and signal. It needs native Server 3.15.0 or later,
+which advertises `capabilities.signal_with_start`; against an older Server it
+raises `RuntimeCapabilityUnsupported` before sending anything. Refusals raise
+`SignalWithStartFailed` (a `SignalFailed`) with the Server's `reason`, and
+nothing is written. See the method docstring for `duplicate_policy`,
+`closed_run_policy` and `request_id` retries.
+
 ## Signal another workflow
 
 Workflow code can signal another workflow in its namespace with
@@ -842,7 +854,7 @@ needs delivery.
 
 Yield the command on its own: it cannot be a member of a parallel group or a
 durable selection. The connected Server must advertise
-`signal_external_workflow` (native Server, server#1134). Against a Server that
+`signal_external_workflow` (native Server 3.15.0 or later, server#1134). Against a Server that
 does not, the Worker fails the workflow task with
 `signal_external_workflow_unavailable` before submitting anything, so the
 signal is never sent outside history and the workflow is not failed.
@@ -1612,6 +1624,15 @@ from `GET /api/cluster/info`:
 The top-level server `version` is build identity only. The worker checks these
 protocol manifests at startup and fails closed when compatibility is missing,
 unknown, or undiscoverable.
+
+Some features need a newer Server than the SDK's supported baseline. They are
+discovered from the Server's capabilities and refused before anything is sent
+when the Server does not advertise them, so the rest of the SDK keeps working:
+
+| Feature | Needs |
+| --- | --- |
+| `Client.signal_with_start()` | native Server 3.15.0 or later (`capabilities.signal_with_start`) |
+| `ctx.signal_external_workflow()` | native Server 3.15.0 or later (`signal_external_workflow` worker command) |
 
 Carriers and support tooling can validate `auth_composition_contract` with
 `parse_auth_composition_contract()` before resolving connection, namespace,
