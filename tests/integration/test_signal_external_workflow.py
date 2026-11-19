@@ -67,7 +67,35 @@ class IntegrationSenderWorkflow:
         }
 
 
-WORKFLOWS = [ReceiverWorkflow, ClosedTargetWorkflow, IntegrationSenderWorkflow]
+@workflow.defn(name="tests.signal-external.counting-receiver")
+class CountingReceiverWorkflow:
+    def __init__(self) -> None:
+        self.received: list[list[Any]] = []
+
+    @workflow.signal("approve")
+    def approve(self, approver: str, count: int) -> None:
+        self.received.append([approver, count])
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.wait_condition(lambda: len(self.received) >= 2, key="approved-twice", timeout=120)
+        return self.received
+
+
+@workflow.defn(name="tests.signal-external.twice-then-timer")
+class SignalTwiceThenTimerWorkflow:
+    """Each signal resolves on its own turn; the timer takes the next sequence."""
+
+    def run(self, ctx: WorkflowContext, target: str):  # type: ignore[no-untyped-def]
+        first = yield ctx.signal_external_workflow(target, "approve", ["ada", 1])
+        second = yield ctx.signal_external_workflow(target, "approve", ["ada", 2])
+        yield ctx.start_timer(1)
+        return [first.outcome, second.outcome]
+
+
+WORKFLOWS = [
+    ReceiverWorkflow, ClosedTargetWorkflow, IntegrationSenderWorkflow,
+    CountingReceiverWorkflow, SignalTwiceThenTimerWorkflow,
+]
 
 
 async def _advertised(client: Client) -> bool:
@@ -176,6 +204,51 @@ async def test_signal_is_delivered_once_and_cold_replay_never_resends(server_url
                          workflow_id=sender_id, run_id=sender.run_id)
         assert not any(isinstance(command, SignalExternalWorkflow) for command in outcome.commands)
         assert outcome.commands == [CompleteWorkflow(result=result)]
+
+
+async def test_later_commands_take_the_sequences_after_each_signal(server_url: str, server_token: str) -> None:
+    queue = f"signal-external-twice-{uuid.uuid4().hex[:10]}"
+    async with Client(server_url, token=server_token, namespace="default") as client:
+        if not await _advertised(client):
+            pytest.skip("Server does not advertise signal_external_workflow")
+        receiver = await client.start_workflow(
+            workflow_type="tests.signal-external.counting-receiver", task_queue=queue,
+            workflow_id=f"{queue}-receiver", input=[],
+        )
+        sender_id = f"{queue}-sender"
+        sender = await client.start_workflow(
+            workflow_type="tests.signal-external.twice-then-timer", task_queue=queue,
+            workflow_id=sender_id, input=[receiver.workflow_id],
+        )
+        assert sender.run_id is not None and receiver.run_id is not None
+        worker = Worker(client, task_queue=queue, workflows=WORKFLOWS, worker_id=f"{queue}-worker",
+                        poll_timeout=1.0, shutdown_timeout=5.0)
+        runner = asyncio.create_task(worker.run())
+        try:
+            assert await sender.result(timeout=60.0, poll_interval=0.1) == ["delivered", "delivered"]
+            assert await receiver.result(timeout=30.0, poll_interval=0.1) == [["ada", 1], ["ada", 2]]
+        finally:
+            await stop_and_drain([worker], [runner])
+
+        events = await _events(client, sender_id, sender.run_id)
+        requested = _of_type(events, "ExternalSignalRequested")
+        delivered = _of_type(events, "ExternalSignalDelivered")
+        assert [event["payload"]["sequence"] for event in requested] == [1, 2]
+        assert [event["payload"]["sequence"] for event in delivered] == [1, 2]
+        assert [event["payload"]["request_id"] for event in requested] == [
+            f"workflow-signal:{sender.run_id}:1", f"workflow-signal:{sender.run_id}:2",
+        ]
+        assert {event["payload"]["sequence"] for event in _of_type(events, "TimerScheduled")} == {3}
+        assert {event["payload"]["sequence"] for event in _of_type(events, "TimerFired")} == {3}
+        assert len([
+            event for event in _of_type(await _events(client, receiver.workflow_id, receiver.run_id), "SignalReceived")
+            if event["payload"].get("signal_name") == "approve"
+        ]) == 2
+
+        # Offline cold replay of the whole sender history sends nothing new.
+        outcome = replay(SignalTwiceThenTimerWorkflow, events, [receiver.workflow_id],
+                         workflow_id=sender_id, run_id=sender.run_id)
+        assert outcome.commands == [CompleteWorkflow(result=["delivered", "delivered"])]
 
 
 async def test_missing_target_is_a_recorded_outcome(server_url: str, server_token: str) -> None:
