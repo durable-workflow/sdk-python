@@ -1,0 +1,87 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "external-signal-target-not-found-cold-replay",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.signal-external.sender",
+    "input": [
+      "order-42"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "recorded_at": "2026-11-19T10:00:00.000000Z",
+      "payload": {
+        "workflow_type": "tests.signal-external.sender",
+        "outcome": "started_new"
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-19T10:00:00.000000Z",
+      "payload": {
+        "workflow_type": "tests.signal-external.sender",
+        "workflow_run_id": "01JSENDERRUN0000000000000A"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ExternalSignalRequested",
+      "recorded_at": "2026-11-19T10:00:00.100000Z",
+      "payload": {
+        "sequence": 1,
+        "target_workflow_instance_id": "order-42",
+        "target_workflow_run_id": null,
+        "signal_name": "approve",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwECgZhZGEEBgA="
+        },
+        "payload_codec": "avro",
+        "request_id": "workflow-signal:01JSENDERRUN0000000000000A:1",
+        "task": {
+          "id": "01JTASK00000000000000000001",
+          "task_type": "workflow"
+        }
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "ExternalSignalFailed",
+      "recorded_at": "2026-11-19T10:00:00.100000Z",
+      "payload": {
+        "sequence": 1,
+        "target_workflow_instance_id": "order-42",
+        "target_workflow_run_id": null,
+        "signal_name": "approve",
+        "request_id": "workflow-signal:01JSENDERRUN0000000000000A:1",
+        "outcome": "target_not_found",
+        "reason": "instance_not_found",
+        "message": "The signal was not delivered: instance_not_found."
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "complete_workflow",
+        "command_type": "CompleteWorkflow",
+        "result": {
+          "outcome": "target_not_found",
+          "reason": "instance_not_found",
+          "target_run_id": null,
+          "target_command_id": null,
+          "delivered": false
+        }
+      }
+    ]
+  }
+}

@@ -628,6 +628,35 @@ def _request_id_conflict_details(body: object) -> dict[str, Any]:
     return {}
 
 
+class InvalidSignalName(DurableWorkflowError, ValueError):
+    """A signal name the Server would refuse, raised before anything is sent.
+
+    Signal names must be non-blank, at most 191 characters and 255 UTF-8
+    bytes, and free of control characters (code points below U+0020 and
+    U+007F). :attr:`reason` is ``"blank"``, ``"control_character"``,
+    ``"too_many_characters"`` or ``"too_many_bytes"``. It is a
+    :class:`ValueError`, so existing ``except ValueError`` handlers catch it.
+    """
+
+    def __init__(self, signal_name: object, reason: str, message: str) -> None:
+        super().__init__(f"invalid signal name ({reason}): {message}")
+        self.signal_name = signal_name
+        self.reason = reason
+
+
+def validate_signal_name(signal_name: object) -> str:
+    """Return ``signal_name`` if the Server accepts it, else raise :class:`InvalidSignalName`."""
+    if not isinstance(signal_name, str) or not signal_name.strip():
+        raise InvalidSignalName(signal_name, "blank", "a signal name must be a non-blank string")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in signal_name):
+        raise InvalidSignalName(signal_name, "control_character", "a signal name must not contain control characters")
+    if len(signal_name) > 191:
+        raise InvalidSignalName(signal_name, "too_many_characters", "a signal name must be at most 191 characters")
+    if len(signal_name.encode("utf-8")) > 255:
+        raise InvalidSignalName(signal_name, "too_many_bytes", "a signal name must be at most 255 UTF-8 bytes")
+    return signal_name
+
+
 class SignalFailed(DurableWorkflowError):
     """A workflow signal was rejected before it could be delivered.
 

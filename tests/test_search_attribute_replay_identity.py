@@ -377,6 +377,8 @@ EXPECTED_CLAIMS = {
     **dict.fromkeys(("CooperativeCancellationDelivered", "CancellationScopeDelivered"), "cancellation_delivery"),
     "WorkflowContinuedAsNew": "continue_as_new",
     "SideEffectRecorded": "side_effect",
+    **dict.fromkeys(("ExternalSignalRequested", "ExternalSignalDelivered", "ExternalSignalFailed"),
+                    "external_signal"),
     "VersionMarkerRecorded": "version_marker",
     "MemoUpserted": "memo",
     "SearchAttributesUpserted": "search_attributes",

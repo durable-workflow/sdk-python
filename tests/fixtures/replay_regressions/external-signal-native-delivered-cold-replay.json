@@ -1,0 +1,192 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "external-signal-native-delivered-cold-replay",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.signal-external.integration-sender",
+    "input": [
+      "capture-1c7680ff-receiver",
+      false
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "timestamp": "2026-11-19T13:10:57.730000Z",
+      "principal": {
+        "type": "auth:token",
+        "id": "legacy-token",
+        "label": "Admin"
+      },
+      "payload": {
+        "workflow_instance_id": "capture-1c7680ff-sender",
+        "workflow_run_id": "01M7SYX1E17HF805K4R0S97V5N",
+        "workflow_type": "tests.signal-external.integration-sender",
+        "workflow_class": "tests.signal-external.integration-sender",
+        "workflow_command_id": "01M7SYX1E17HF805K4R0S97V5P",
+        "memo": null,
+        "business_key": null,
+        "visibility_labels": null,
+        "search_attributes": null,
+        "outcome": "started_new",
+        "command": {
+          "id": "01M7SYX1E17HF805K4R0S97V5P",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01M7SYX1E17HF805K4R0S97V5N",
+          "payload_codec": "avro",
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwECjJjYXB0dXJlLTFjNzY4MGZmLXJlY2VpdmVyAgAA"
+          },
+          "source": "control_plane",
+          "context": {
+            "principal": {
+              "type": "auth:token",
+              "id": "legacy-token",
+              "label": "Admin"
+            }
+          },
+          "caller_label": "Standalone Server",
+          "principal_type": "auth:token",
+          "principal_id": "legacy-token",
+          "principal_label": "Admin",
+          "auth_status": "authorized",
+          "auth_method": "token",
+          "request_method": "POST",
+          "request_path": "/api/workflows",
+          "request_fingerprint": "sha256:060f7cc49033b37268984cb6580951ceb3f124cebd4795a018e1d77fb88c35fa",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-11-19T13:10:57.729000Z",
+          "applied_at": "2026-11-19T13:10:57.729000Z"
+        }
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "timestamp": "2026-11-19T13:10:57.730000Z",
+      "principal": {
+        "type": "auth:token",
+        "id": "legacy-token",
+        "label": "Admin"
+      },
+      "payload": {
+        "workflow_instance_id": "capture-1c7680ff-sender",
+        "workflow_run_id": "01M7SYX1E17HF805K4R0S97V5N",
+        "workflow_type": "tests.signal-external.integration-sender",
+        "workflow_class": "tests.signal-external.integration-sender",
+        "workflow_command_id": "01M7SYX1E17HF805K4R0S97V5P",
+        "execution_timeout_seconds": 3600,
+        "run_timeout_seconds": 600,
+        "execution_deadline_at": "2026-11-19T14:10:57.729Z",
+        "run_deadline_at": "2026-11-19T13:20:57.729Z",
+        "command": {
+          "id": "01M7SYX1E17HF805K4R0S97V5P",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01M7SYX1E17HF805K4R0S97V5N",
+          "payload_codec": "avro",
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwECjJjYXB0dXJlLTFjNzY4MGZmLXJlY2VpdmVyAgAA"
+          },
+          "source": "control_plane",
+          "context": {
+            "principal": {
+              "type": "auth:token",
+              "id": "legacy-token",
+              "label": "Admin"
+            }
+          },
+          "caller_label": "Standalone Server",
+          "principal_type": "auth:token",
+          "principal_id": "legacy-token",
+          "principal_label": "Admin",
+          "auth_status": "authorized",
+          "auth_method": "token",
+          "request_method": "POST",
+          "request_path": "/api/workflows",
+          "request_fingerprint": "sha256:060f7cc49033b37268984cb6580951ceb3f124cebd4795a018e1d77fb88c35fa",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-11-19T13:10:57.729000Z",
+          "applied_at": "2026-11-19T13:10:57.729000Z"
+        }
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ExternalSignalRequested",
+      "timestamp": "2026-11-19T13:10:57.886000Z",
+      "principal": null,
+      "payload": {
+        "sequence": 1,
+        "target_workflow_instance_id": "capture-1c7680ff-receiver",
+        "target_workflow_run_id": null,
+        "signal_name": "approve",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwECgZhZGEEBgA="
+        },
+        "payload_codec": "avro",
+        "request_id": "workflow-signal:01M7SYX1E17HF805K4R0S97V5N:1",
+        "task": {
+          "id": "01M7SYX1E2S4G2F26094X5HCZF",
+          "type": "workflow",
+          "status": "leased",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "queue": "capture-1c7680ff",
+          "connection": "sqlite",
+          "available_at": "2026-11-19T13:10:57.730000Z",
+          "leased_at": "2026-11-19T13:10:57.854000Z",
+          "lease_expires_at": "2026-11-19T13:11:57.854000Z",
+          "last_dispatch_attempt_at": "2026-11-19T13:10:57.730000Z",
+          "last_dispatched_at": "2026-11-19T13:10:57.730000Z",
+          "lease_owner": "capture-1c7680ff-w"
+        }
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "ExternalSignalDelivered",
+      "timestamp": "2026-11-19T13:10:57.888000Z",
+      "principal": null,
+      "payload": {
+        "sequence": 1,
+        "target_workflow_instance_id": "capture-1c7680ff-receiver",
+        "target_workflow_run_id": "01M7SYX1CQRVN2PJB58ZR63BY4",
+        "signal_name": "approve",
+        "request_id": "workflow-signal:01M7SYX1E17HF805K4R0S97V5N:1",
+        "outcome": "delivered",
+        "target_command_id": "01M7SYX1JZ4H327BGCHCKC1HBD",
+        "target_signal_id": "01M7SYX1JZ4H327BGCHCKC1HBE",
+        "retained": false
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "complete_workflow",
+        "command_type": "CompleteWorkflow",
+        "result": {
+          "outcome": "delivered",
+          "reason": null,
+          "target_run_id": "01M7SYX1CQRVN2PJB58ZR63BY4",
+          "target_command_id": "01M7SYX1JZ4H327BGCHCKC1HBD"
+        }
+      }
+    ]
+  }
+}

@@ -38,6 +38,7 @@ from tests.business_clock_workflows import (
 )
 from tests.condition_fingerprint_workflows import FingerprintApproval, FingerprintGenexpr, FingerprintTerminalDuplicate
 from tests.deregistration_recovery import RecoveredWorkflow as FencedRecoveryWorkflow
+from tests.integration.test_signal_external_workflow import IntegrationSenderWorkflow
 from tests.test_condition_occurrence_id import OccurrenceApproval, SelectionOccurrences
 from tests.test_condition_replay_drift import ConditionIdentityWorkflow
 from tests.test_generator_lifecycle import CleanupSideEffect, PendingFinally
@@ -74,6 +75,7 @@ from tests.test_replay_clock import (
     RedriveVisibilityWorkflow,
 )
 from tests.test_run_closed_settlement_replay import AllFailureClosedWorkflow, SelectionLoserAtCloseWorkflow
+from tests.test_signal_external_workflow import SenderWorkflow as ExternalSignalSenderWorkflow
 from tests.test_typed_values import TypedActivityResultsWorkflow
 from tests.test_typed_workflow_values import TypedOnboarding, TypedTerminalResult
 from tests.test_update_signal_condition_replay import (
@@ -418,6 +420,8 @@ class BlankFailureWorkflow:
 
 WORKFLOWS = [
     ScheduleOriginWindowWorkflow,
+    ExternalSignalSenderWorkflow,
+    IntegrationSenderWorkflow,
     ChildBusinessClockWorkflow,
     CyclicFinalizerBusinessClockWorkflow,
     ParallelActivityBusinessClockWorkflow,

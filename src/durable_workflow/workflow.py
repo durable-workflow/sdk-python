@@ -75,6 +75,7 @@ from .errors import (
     WorkflowEntryArgumentsMismatchError,
     WorkflowPayloadDecodeError,
     _cancellation_requested,
+    validate_signal_name,
 )
 from .external_storage import ExternalPayloadCache, ExternalStorageDriver
 from .nexus import NexusOperationResult, stable_nexus_idempotency_key
@@ -1407,6 +1408,171 @@ class NexusServiceCall:
         )
 
 
+EXTERNAL_SIGNAL_DELIVERED = "delivered"
+EXTERNAL_SIGNAL_TARGET_NOT_FOUND = "target_not_found"
+EXTERNAL_SIGNAL_TARGET_CLOSED = "target_closed"
+EXTERNAL_SIGNAL_REJECTED = "rejected"
+EXTERNAL_SIGNAL_OUTCOMES = frozenset({
+    EXTERNAL_SIGNAL_DELIVERED,
+    EXTERNAL_SIGNAL_TARGET_NOT_FOUND,
+    EXTERNAL_SIGNAL_TARGET_CLOSED,
+    EXTERNAL_SIGNAL_REJECTED,
+})
+_EXTERNAL_SIGNAL_RESOLUTIONS = frozenset({"ExternalSignalDelivered", "ExternalSignalFailed"})
+
+
+@dataclass(frozen=True)
+class ExternalSignalResult:
+    """Recorded outcome of :meth:`WorkflowContext.signal_external_workflow`.
+
+    ``outcome`` is one of ``"delivered"``, ``"target_not_found"``,
+    ``"target_closed"`` or ``"rejected"``. A failed outcome is a value, not an
+    exception: the Server records it in the sender's history and workflow code
+    decides what to do. ``reason`` names why a signal was not delivered (for
+    example ``"instance_not_found"``, ``"run_not_active"`` or
+    ``"unknown_signal"``) and is ``None`` when it was delivered.
+
+    ``target_run_id`` is the run that received the signal, or, for a failed
+    outcome, the run that refused it (``None`` when no run was resolved).
+    ``target_command_id`` is the signal command the target recorded, when it
+    recorded one. ``retained`` is true when the Server returned an earlier
+    delivery of the same command key instead of delivering again.
+    """
+
+    outcome: str
+    reason: str | None
+    target_workflow_id: str
+    target_run_id: str | None
+    signal_name: str
+    target_command_id: str | None = None
+    target_signal_id: str | None = None
+    message: str | None = None
+    request_id: str | None = None
+    retained: bool = False
+
+    @property
+    def delivered(self) -> bool:
+        """``True`` when the target run admitted the signal."""
+        return self.outcome == EXTERNAL_SIGNAL_DELIVERED
+
+    @classmethod
+    def from_history_payload(cls, event_type: str, payload: Mapping[str, Any]) -> ExternalSignalResult:
+        """Read an ``ExternalSignalDelivered`` or ``ExternalSignalFailed`` payload."""
+        if event_type not in _EXTERNAL_SIGNAL_RESOLUTIONS:
+            raise ValueError(f"{event_type!r} does not resolve an external signal")
+        outcome = payload.get("outcome")
+        if event_type == "ExternalSignalDelivered":
+            if outcome not in (None, EXTERNAL_SIGNAL_DELIVERED):
+                raise ValueError(f"ExternalSignalDelivered records outcome {outcome!r}")
+            outcome = EXTERNAL_SIGNAL_DELIVERED
+        elif outcome not in EXTERNAL_SIGNAL_OUTCOMES - {EXTERNAL_SIGNAL_DELIVERED}:
+            raise ValueError(f"ExternalSignalFailed records unsupported outcome {outcome!r}")
+        target = payload.get("target_workflow_instance_id")
+        signal_name = payload.get("signal_name")
+        if not isinstance(target, str) or not target or not isinstance(signal_name, str) or not signal_name:
+            raise ValueError(f"{event_type} must name its target workflow and signal")
+        return cls(
+            outcome=cast(str, outcome),
+            reason=_optional_str(payload.get("reason")) if outcome != EXTERNAL_SIGNAL_DELIVERED else None,
+            target_workflow_id=target,
+            target_run_id=_optional_str(payload.get("target_workflow_run_id")),
+            signal_name=signal_name,
+            target_command_id=_optional_str(payload.get("target_command_id")),
+            target_signal_id=_optional_str(payload.get("target_signal_id")),
+            message=_optional_str(payload.get("message")),
+            request_id=_optional_str(payload.get("request_id")),
+            retained=payload.get("retained") is True,
+        )
+
+
+@dataclass
+class SignalExternalWorkflow:
+    """Command signalling another workflow from workflow code.
+
+    Yielding it records the signal once in this run's history and resumes
+    with an :class:`ExternalSignalResult`. Replay returns the recorded outcome
+    and never sends the signal again. Create it with
+    :meth:`WorkflowContext.signal_external_workflow`.
+    """
+
+    workflow_id: str
+    signal_name: str
+    arguments: list[Any] = field(default_factory=list)
+    run_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workflow_id, str) or not self.workflow_id.strip():
+            raise ValueError("signal_external_workflow requires a non-blank target workflow_id")
+        if len(self.workflow_id) > 191:
+            raise ValueError("signal_external_workflow workflow_id must be at most 191 characters")
+        if self.run_id is not None and (not isinstance(self.run_id, str) or not self.run_id.strip()):
+            raise ValueError("signal_external_workflow run_id must be None or a non-blank string")
+        # Refused here, in workflow code, rather than as a 422 that fails the task.
+        validate_signal_name(self.signal_name)
+        # Dataclass and Enum arguments travel as their neutral values.
+        self.arguments = to_payload_values(list(self.arguments))
+
+    def to_server_command(
+        self,
+        task_queue: str,
+        *,
+        payload_codec: str = serializer.AVRO_CODEC,
+        size_warning: serializer.PayloadSizeWarningConfig | None = serializer.DEFAULT_PAYLOAD_SIZE_WARNING,
+        warning_context: PayloadWarningContext = None,
+        **_: Any,
+    ) -> dict[str, Any]:
+        # The contract takes an inline Avro envelope whatever the worker's
+        # command codec, and no external payload reference.
+        return {
+            "type": "signal_external_workflow",
+            "workflow_id": self.workflow_id,
+            "run_id": self.run_id,
+            "signal_name": self.signal_name,
+            "arguments": serializer.envelope(
+                self.arguments,
+                codec=serializer.AVRO_CODEC,
+                size_warning=size_warning,
+                warning_context=_payload_warning_context(
+                    warning_context, kind="external_signal_input", task_queue=task_queue,
+                ),
+            ),
+        }
+
+    def _recorded_mismatch(self, recorded: Mapping[str, Any] | None) -> str | None:
+        """Compare this command with its recorded ``ExternalSignalRequested``."""
+        if recorded is None:
+            return "external_signal_request_missing: the outcome has no ExternalSignalRequested event"
+        if recorded.get("workflow_id") != self.workflow_id:
+            return (
+                f"external_signal_target_changed: recorded target {recorded.get('workflow_id')!r}, "
+                f"but current workflow signals {self.workflow_id!r}"
+            )
+        if recorded.get("run_id") != self.run_id:
+            return (
+                f"external_signal_target_changed: recorded target run {recorded.get('run_id')!r}, "
+                f"but current workflow signals run {self.run_id!r}"
+            )
+        if recorded.get("signal_name") != self.signal_name:
+            return (
+                f"external_signal_name_changed: recorded signal {recorded.get('signal_name')!r}, "
+                f"but current workflow sends {self.signal_name!r}"
+            )
+        try:
+            raw = recorded.get("arguments")
+            recorded_arguments = [] if raw is None else serializer.decode_envelope(
+                raw, codec=_optional_str(recorded.get("payload_codec")) or serializer.AVRO_CODEC,
+            )
+            current = serializer.decode(
+                serializer.encode(self.arguments, codec=serializer.AVRO_CODEC, size_warning=None),
+                codec=serializer.AVRO_CODEC,
+            )
+        except Exception as error:
+            return f"external_signal_arguments_changed: recorded arguments cannot be compared: {error}"
+        if recorded_arguments != current:
+            return "external_signal_arguments_changed: recorded arguments differ from the workflow command"
+        return None
+
+
 @dataclass
 class RecordVersionMarker:
     """Command recording a workflow code-version marker."""
@@ -1820,7 +1986,7 @@ Command = (
     ScheduleActivity | RecordLocalActivity | StartTimer | CompleteWorkflow | FailWorkflow
     | CompleteUpdate | FailUpdate | ContinueAsNew | RecordSideEffect | StartChildWorkflow
     | NexusServiceCall | RecordVersionMarker | UpsertMemo | UpsertSearchAttributes | WaitCondition
-    | CancelDurableOperation
+    | CancelDurableOperation | SignalExternalWorkflow
 )
 
 
@@ -2895,6 +3061,41 @@ class WorkflowContext:
             operation_name,
             arguments,
             **kwargs,
+        )
+
+    def signal_external_workflow(
+        self,
+        workflow_id: str,
+        signal_name: str,
+        args: Sequence[Any] | None = None,
+        *,
+        run_id: str | None = None,
+    ) -> SignalExternalWorkflow:
+        """Yield a durable signal to another workflow and resume with its outcome.
+
+        ``workflow_id`` names the target workflow instance in this workflow's
+        namespace. Without ``run_id`` the signal goes to the instance's
+        current run; with it, only to that run. ``args`` are the signal
+        handler's arguments, encoded like child workflow arguments.
+
+        The yield resumes with an :class:`ExternalSignalResult`. A target that
+        does not exist, has closed or refuses the signal is a recorded outcome
+        (``target_not_found``, ``target_closed`` or ``rejected``), not an
+        exception, so workflow code decides what to do. The signal is
+        recorded once in this run's history; replay returns the recorded
+        outcome and never sends it again.
+
+        The connected Server must advertise ``signal_external_workflow``.
+        Otherwise the Worker fails the workflow task with
+        ``signal_external_workflow_unavailable`` before submitting the command.
+        The command must be yielded on its own, not in a parallel group or
+        selection.
+        """
+        return SignalExternalWorkflow(
+            workflow_id=workflow_id,
+            signal_name=signal_name,
+            arguments=list(args) if args is not None else [],
+            run_id=run_id,
         )
 
     def get_version(
@@ -4370,6 +4571,7 @@ _DURABLE_COMMAND_KINDS: dict[str, str] = {
     **dict.fromkeys(("CooperativeCancellationDelivered", "CancellationScopeDelivered"), "cancellation_delivery"),
     "WorkflowContinuedAsNew": "continue_as_new",
     "SideEffectRecorded": "side_effect",
+    **dict.fromkeys(("ExternalSignalRequested", *_EXTERNAL_SIGNAL_RESOLUTIONS), "external_signal"),
     "VersionMarkerRecorded": "version_marker",
     "MemoUpserted": "memo",
     "SearchAttributesUpserted": "search_attributes",
@@ -4701,6 +4903,8 @@ def _is_resolved_step_event(
         "ServiceCallCompleted",
         "ServiceCallFailed",
         "ServiceCallCancelled",
+        "ExternalSignalDelivered",
+        "ExternalSignalFailed",
     ):
         return True
     if event_type == "ServiceCallStarted":
@@ -4721,6 +4925,8 @@ def _command_history_shape(command: Any) -> str | None:
         return "child workflow"
     if isinstance(command, NexusServiceCall):
         return "service operation"
+    if isinstance(command, SignalExternalWorkflow):
+        return "external signal"
     if isinstance(command, RecordSideEffect):
         return "side effect"
     if isinstance(command, RecordVersionMarker):
@@ -4746,10 +4952,15 @@ def _command_diagnostic_shape(command: Any) -> str:
         return f"{shape}:nexus:{command.endpoint_name}/{command.service_name}/{command.operation_name}"
     if isinstance(command, RecordVersionMarker):
         return f"{shape}:{command.change_id}"
+    if isinstance(command, SignalExternalWorkflow):
+        return f"{shape}:{command.workflow_id}/{command.signal_name}"
     return shape
 
 
 def _recorded_detail_mismatch(command: Any, step: _RecordedStep) -> str | None:
+    if isinstance(command, SignalExternalWorkflow):
+        recorded = step.details.get("external_signal")
+        return command._recorded_mismatch(recorded if isinstance(recorded, Mapping) else None)
     if isinstance(command, NexusServiceCall):
         for key in ("endpoint_name", "service_name", "operation_name", "idempotency_key"):
             recorded = step.details.get(key)
@@ -5312,6 +5523,16 @@ def _replay_state(
                 **(previous_policies or {}), **incoming_policies,
             }
             details_by_sequence[sequence].update(child_policies_by_sequence[sequence])
+        if event_type == "ExternalSignalRequested":
+            # Only the request names the intended target run; a resolution
+            # names the run that received or refused it.
+            details_by_sequence[sequence]["external_signal"] = {
+                "workflow_id": payload.get("target_workflow_instance_id"),
+                "run_id": payload.get("target_workflow_run_id"),
+                "signal_name": payload.get("signal_name"),
+                "arguments": payload.get("arguments"),
+                "payload_codec": payload.get("payload_codec"),
+            }
         if event_type == "ConditionWaitOpened":
             wait_id = payload.get("condition_wait_id")
             if isinstance(wait_id, str) and wait_id:
@@ -5963,6 +6184,8 @@ def _replay_state(
                 "ChildRunFailed",
                 "ChildRunCancelled",
                 "ChildRunTerminated",
+                "ExternalSignalDelivered",
+                "ExternalSignalFailed",
             }
             and sequence is not None
         ):
@@ -6066,6 +6289,17 @@ def _replay_state(
                 _append_resolved_result(_ServiceCallDelivery(payload), "service operation", ev)
             else:
                 _append_pending_step("service operation", ev)
+        elif etype == "ExternalSignalRequested":
+            _append_pending_step("external signal", ev)
+        elif etype in _EXTERNAL_SIGNAL_RESOLUTIONS:
+            try:
+                external_signal = ExternalSignalResult.from_history_payload(etype, payload)
+            except ValueError as error:
+                raise NonDeterministicReplayError(
+                    sequence or len(recorded_steps) + 1, "external signal", [etype],
+                    detail=f"external_signal_history_invalid: {error}",
+                ) from error
+            _append_resolved_result(external_signal, "external signal", ev)
         elif etype in ("SideEffectRecorded", "ChildRunCompleted"):
             shape = "side effect" if etype == "SideEffectRecorded" else "child workflow"
             _append_resolved_result(
@@ -6572,6 +6806,8 @@ def _replay_state(
             return "condition"
         if isinstance(command, NexusServiceCall):
             raise TypeError("Nexus service calls must be yielded one at a time")
+        if isinstance(command, SignalExternalWorkflow):
+            raise TypeError("external workflow signals must be yielded one at a time")
         raise TypeError(
             "parallel groups support activities, timers, child workflows, "
             f"conditions, and nested lists: {command!r}"
@@ -7124,7 +7360,7 @@ def _replay_state(
             operation_span = command.size
         if kind != "selection_handle" and (kind is not None or isinstance(
             command, RecordSideEffect | RecordVersionMarker | UpsertMemo | UpsertSearchAttributes | NexusServiceCall
-            | _OpenCancellationScope,
+            | SignalExternalWorkflow | _OpenCancellationScope,
         )):
             authored_sequence += span
         if kind is None or span == 0 or cancellation.request is None and not allow_cancellation_scope_delivery:
@@ -8217,6 +8453,20 @@ def _replay_state(
                     # Admission already has its durable sequence. A later task
                     # waits for that call's terminal history instead of starting
                     # the same operation again at a new sequence.
+                    return _state(pending)
+                pending.append(cmd)
+                return _state(pending)
+            if isinstance(cmd, SignalExternalWorkflow):
+                if result_cursor < len(resolved_results):
+                    _assert_next_step_matches(cmd)
+                    next_value = resolved_results[result_cursor]
+                    result_cursor += 1
+                    continue
+                _set_replaying(False)
+                _assert_pending_step_matches(cmd)
+                if _next_unconsumed_recorded_step() is not None:
+                    # The request is recorded and its outcome is not: wait
+                    # for that outcome instead of sending the signal again.
                     return _state(pending)
                 pending.append(cmd)
                 return _state(pending)
