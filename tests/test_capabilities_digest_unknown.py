@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 from typing import Any
 
 import httpx
@@ -211,6 +212,7 @@ async def test_a_garbled_poll_answer_is_resent_in_full_and_the_worker_keeps_poll
 async def test_a_garbled_completion_answer_is_resent_and_its_duplicate_is_not_a_failure(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.INFO, logger="durable_workflow.worker")
     calls.clear()
     runtime = Runtime(garble_poll=False, garble_completion=True)
     await run_worker_until(runtime, lambda: len(runtime.completions) >= 2 and len(runtime.polls) >= 4)
