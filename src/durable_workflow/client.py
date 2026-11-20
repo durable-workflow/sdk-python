@@ -24,6 +24,7 @@ import copy
 import hashlib
 import json
 import json as json_module
+import logging
 import math
 import os
 import re
@@ -79,6 +80,7 @@ from .errors import (
     NonDeterministicReplayError,
     RuntimeCapabilityUnsupported,
     RuntimeDiscoveryUnavailable,
+    ServerCapabilitiesDigestError,
     ServerError,
     SignalFailed,
     UnrecognizedUpdateOutcome,
@@ -130,6 +132,8 @@ _MESSAGE_STREAMS_CAPABILITY = "message_streams"
 _MESSAGE_STREAMS_MINIMUM_WORKER_PROTOCOL = (1, 15)
 CONTROL_PLANE_REQUEST_CONTRACT_SCHEMA = "durable-workflow.v2.control-plane-request.contract"
 CONTROL_PLANE_REQUEST_CONTRACT_VERSION = 1
+log = logging.getLogger("durable_workflow.client")
+
 _QUERY_TASKS_DISCOVERY_PATH = "worker_protocol.server_capabilities.query_tasks"
 _COOPERATIVE_CANCELLATION_DISCOVERY_PATH = "worker_protocol.server_capabilities.cooperative_cancellation"
 _UPDATE_OUTCOME_READS_DISCOVERY_PATH = "capabilities.update_outcome_reads"
@@ -2296,9 +2300,10 @@ class Client:
                 raise
             return resp
 
-        try:
+        async def _answer() -> httpx.Response:
+            nonlocal status_code, outcome
             try:
-                resp = await self.retry_policy.execute(_do_request) if retry else await _do_request()
+                return await self.retry_policy.execute(_do_request) if retry else await _do_request()
             except httpx.HTTPStatusError as exc:
                 status_code = str(exc.response.status_code)
                 outcome = "http_error"
@@ -2307,8 +2312,12 @@ class Client:
                     body = exc.response.json()
                 except ValueError:
                     body = exc.response.text
-                if capabilities_digest is not None:
-                    self._capabilities_digest.restore(body, capabilities_digest)
+                if capabilities_digest is not None and self._capabilities_digest.restore(
+                    body, capabilities_digest, drop_unknown=True,
+                ):
+                    # The HTTP error is the answer; an unusable digest in it
+                    # never replaces it. Ask for full capabilities next time.
+                    self._capabilities_digest.forget()
                 # The typed completion-size refusal carries the limit; the
                 # size is the encoded request body this client sent.
                 if raise_for_status is _raise_for_status:
@@ -2319,13 +2328,35 @@ class Client:
                 raise_for_status(exc.response.status_code, body, context=context)
                 raise  # unreachable, but keeps type checker happy
 
+        try:
+            resp = await _answer()
             status_code = str(resp.status_code)
             if resp.status_code == 204 or not resp.content:
                 outcome = "ok"
                 return None
             result = resp.json()
             if capabilities_digest is not None:
-                self._capabilities_digest.restore(result, capabilities_digest)
+                try:
+                    self._capabilities_digest.restore(result, capabilities_digest)
+                except ServerCapabilitiesDigestError as unknown:
+                    if capabilities_digest[0] is None:
+                        raise
+                    # The answer named capabilities this worker does not hold.
+                    # Forget the held pair and send this request once more with
+                    # ``none``, which gets the full object. Worker requests are
+                    # fenced, so one the Server already committed is answered
+                    # as a duplicate (409 stale_attempt).
+                    log.warning("worker answer from %s named unknown capabilities (%s); resending once for "
+                                "the full capabilities", path, unknown)
+                    self._capabilities_digest.forget()
+                    capabilities_digest = (None, None)
+                    resp = await _answer()
+                    status_code = str(resp.status_code)
+                    if resp.status_code == 204 or not resp.content:
+                        outcome = "ok"
+                        return None
+                    result = resp.json()
+                    self._capabilities_digest.restore(result, capabilities_digest)
             if (worker and activity_authority is not None
                     and activity_authority.governs(self, self.namespace, path)
                     and path.endswith("/heartbeat") and isinstance(result, dict)

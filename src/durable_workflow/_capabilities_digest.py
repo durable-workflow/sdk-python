@@ -45,13 +45,23 @@ class ServerCapabilitiesDigest:
     def header(captured: Captured) -> str:
         return captured[0] if captured[0] is not None and captured[1] is not None else "none"
 
-    def restore(self, answer: Any, captured: Captured) -> None:
-        """Strip and learn tagged copies, then restore elided ones, in place."""
+    def forget(self) -> None:
+        """Drop the held pair, so the next request sends ``none`` and gets full capabilities."""
+        self._digest = None
+        self._capabilities = None
+
+    def restore(self, answer: Any, captured: Captured, *, drop_unknown: bool = False) -> bool:
+        """Strip and learn tagged copies, then restore elided ones, in place.
+
+        An elided copy naming a digest neither captured for the request nor
+        tagged in this answer raises :class:`ServerCapabilitiesDigestError`;
+        with ``drop_unknown`` it is removed instead and ``True`` is returned.
+        """
         if not isinstance(answer, dict):
-            return
+            return False
         learned: dict[str, dict[str, Any]] = {}
         self._learn(answer, learned, 1)
-        self._resolve(answer, captured, learned, 1)
+        return self._resolve(answer, captured, learned, 1, drop_unknown)
 
     def _learn(self, answer: dict[str, Any], learned: dict[str, dict[str, Any]], depth: int) -> None:
         for key, value in answer.items():
@@ -67,18 +77,23 @@ class ServerCapabilitiesDigest:
                 self._learn(value, learned, depth + 1)
 
     def _resolve(self, answer: dict[str, Any], captured: Captured, learned: dict[str, dict[str, Any]],
-                 depth: int) -> None:
-        for key, value in answer.items():
+                 depth: int, drop_unknown: bool) -> bool:
+        dropped = False
+        for key, value in list(answer.items()):
             if key == _KEY:
                 if isinstance(value, str) and value.startswith(_PREFIX):
                     if value == captured[0] and captured[1] is not None:
                         answer[key] = copy.deepcopy(captured[1])
                     elif value in learned:
                         answer[key] = copy.deepcopy(learned[value])
+                    elif drop_unknown:
+                        del answer[key]
+                        dropped = True
                     else:
                         raise ServerCapabilitiesDigestError(
                             "the Server elided server_capabilities this worker does not hold "
                             f"({value}; sent {self.header(captured)})"
                         )
             elif isinstance(value, dict) and depth < _MAX_DEPTH:
-                self._resolve(value, captured, learned, depth + 1)
+                dropped = self._resolve(value, captured, learned, depth + 1, drop_unknown) or dropped
+        return dropped
