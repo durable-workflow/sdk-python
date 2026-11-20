@@ -111,7 +111,7 @@ The helper records the original exception, sets the cancellation event, and
 stops heartbeating when cancellation, lease-authority loss or a transport error
 occurs. After the work unwinds, it joins the helper and re-raises that exception
 before a result can be returned. In particular, do not swallow `ActivityCancelled`
-or `ActivityLeaseAuthorityLost`, replace them with an application error, or
+or `ActivityWorkerLost`, replace them with an application error, or
 return a successful result after either. `ActivityCancelled` inherits from
 `BaseException`, so `except Exception` alone does not catch it. Ordinary return
 and work exceptions also stop and join the helper.

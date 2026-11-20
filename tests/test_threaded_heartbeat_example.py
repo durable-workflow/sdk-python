@@ -11,7 +11,7 @@ from typing import Any
 
 from durable_workflow import activity
 from durable_workflow.activity import ActivityContext, ActivityInfo, _set_context
-from durable_workflow.errors import ActivityCancelled, ActivityLeaseAuthorityLost
+from durable_workflow.errors import ActivityCancelled, ActivityWorkerLost
 
 SPEC = importlib.util.spec_from_file_location(
     "threaded_heartbeats_example",
@@ -108,7 +108,7 @@ class ThreadedHeartbeatExampleTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_authority_loss_keeps_original_identity_and_reason(self) -> None:
         self.client.response = {"can_continue": False, "reason": "activity_attempt_replaced"}
-        with self.assertRaises(ActivityLeaseAuthorityLost) as caught:
+        with self.assertRaises(ActivityWorkerLost) as caught:
             await self.run_work(self.cancelled_work)
         self.assertEqual(caught.exception.task_id, "task-original")
         self.assertEqual(caught.exception.reason, "activity_attempt_replaced")

@@ -42,7 +42,13 @@ from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Uni
 import httpx
 
 from . import serializer
-from ._activity_lease import activity_lease_renewal_supported, current_activity_authority
+from ._activity_lease import (
+    ACTIVITY_LEASE_RENEWAL_EXHAUSTED,
+    ActivityLeaseAuthority,
+    activity_lease_renewal_supported,
+    current_activity_authority,
+    release_worker_lost,
+)
 from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProcessLost, SupervisedCallback
 from ._cancellation_scope_history import CancellationScopeBudget, CancellationScopeDeliveryReceipt
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
@@ -76,7 +82,7 @@ from .client import (
 from .errors import (
     ActivityCancelled,
     ActivityFailed,
-    ActivityLeaseAuthorityLost,
+    ActivityWorkerLost,
     AvroNotInstalledError,
     DuplicateRegistrationError,
     DurableWorkflowError,
@@ -179,7 +185,7 @@ _RUN_CLOSED_REFUSAL = "run_closed"
 
 def _run_closed_refusal(error: BaseException) -> bool:
     """Whether a claim or outcome request was refused because its run closed."""
-    if isinstance(error, ActivityLeaseAuthorityLost):
+    if isinstance(error, ActivityWorkerLost):
         return error.reason == _RUN_CLOSED_REFUSAL
     return isinstance(error, ServerError) and error.reason() == _RUN_CLOSED_REFUSAL
 
@@ -3422,6 +3428,9 @@ class Worker:
             observability_supported=self._observability_claim(task, "activity"), remote=True,
         ))
         self._remote_activity_processes.add(callback)
+        claim = current_activity_authority.get()
+        if claim is not None:
+            claim.track(callback)
         invocation: asyncio.Task[Any] | None = None
         abandoned = False
         observation = asyncio.create_task(observe_ownership())
@@ -3475,9 +3484,46 @@ class Worker:
             return "claim_aborted"
         try:
             return await authority.run(lambda: self._run_activity_task_body(task))
-        except ActivityLeaseAuthorityLost as error:
+        except ActivityWorkerLost as error:
+            if error.reason == ACTIVITY_LEASE_RENEWAL_EXHAUSTED:
+                return await self._fail_unrenewable_activity_claim(task, authority, error)
             log.warning("activity claim abandoned: %s", error)
             return "claim_aborted"
+
+    async def _fail_unrenewable_activity_claim(self, task: dict[str, Any], authority: ActivityLeaseAuthority,
+                                               error: ActivityWorkerLost) -> str:
+        """Release, never silently drop, a claim whose lease could not be renewed.
+
+        Renewal kept failing transiently until only the release reserve of the
+        lease was left (sdk-php#445). The release is sent only after every
+        execution of the claim is confirmed stopped inside the lease. A Python
+        thread cannot be killed: it is asked to stop (its next heartbeat raises
+        ``ActivityWorkerLost``) and awaited until the first half of the reserve
+        is used. If it is still running, nothing is sent and the Server settles
+        the claim at lease expiry, so two executions never overlap.
+        """
+        task_id = str(task["task_id"])
+        attempt_id = task.get("activity_attempt_id") or task.get("attempt_id", "")
+        stop_deadline = authority.lease_until - authority.report_reserve() / 2
+        if not await authority.confirm_stopped(stop_deadline):
+            log.warning("activity claim %s not released: its execution did not stop before the lease deadline; "
+                        "the Server settles it when the lease expires (%s)", task_id, error.reason)
+            return "claim_aborted"
+        window = authority.lease_until - time.monotonic()
+        # The authority fences its own publications once lost. This release is
+        # the deliberate exception, bounded by the lease that is still left.
+        fence = current_activity_authority.set(None)
+        try:
+            released = await release_worker_lost(
+                self.client, task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id,
+                cause=error.reason, timeout=window,
+            )
+        finally:
+            current_activity_authority.reset(fence)
+        if not released:
+            return "claim_aborted"
+        log.warning("activity claim %s released as worker_lost: %s", task_id, error.reason)
+        return "failed"
 
     async def _run_activity_task_body(self, task: dict[str, Any]) -> str:
         self._track_worker_session_from_task(task)
@@ -3518,7 +3564,7 @@ class Worker:
                 # A caught heartbeat refusal cannot restore outcome authority,
                 # including when user code subsequently raises another error.
                 act_ctx._raise_if_cannot_continue()
-        except ActivityLeaseAuthorityLost as error:
+        except ActivityWorkerLost as error:
             log.warning("activity %s cannot continue after heartbeat: %s", task_id, error.reason)
             return "claim_aborted"
         except _RemoteActivityExecutionAborted as error:
@@ -3652,6 +3698,10 @@ class Worker:
                                       fn: Callable[..., Any], args: list[Any], info: ActivityInfo) -> Any:
         if self._cooperative_cancellation_supported:
             return await self._execute_cooperative_remote_callable(task, fn, tuple(args), info)
+        claim = current_activity_authority.get()
+        if claim is not None and not inspect.iscoroutinefunction(fn):
+            # A worker_lost release must wait until this thread has stopped.
+            fn = claim.guard_thread(fn)
         return await self._execute_activity_callable(
             task, activity_type, tuple(args), fn, run_sync_in_thread=True, remote=True,
         )

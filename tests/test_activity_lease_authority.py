@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from durable_workflow._activity_lease import ActivityLeaseAuthority
-from durable_workflow.errors import ActivityLeaseAuthorityLost, ServerError
+from durable_workflow.errors import ActivityWorkerLost, ServerError
 
 ORIGINAL = datetime(2026, 10, 21, tzinfo=timezone.utc)
 
@@ -58,7 +58,7 @@ def reply(**changes: Any) -> dict[str, Any]:
 ])
 def test_invalid_original_delivery_never_authorizes_execution(clock: list[float], field: str, value: Any) -> None:
     original = task(**{field: value})
-    with pytest.raises(ActivityLeaseAuthorityLost):
+    with pytest.raises(ActivityWorkerLost):
         delivery(original)
 
 
@@ -78,7 +78,7 @@ def test_wrong_or_unbounded_renewal_cannot_extend_the_grant(
     original = authority.lease_until
     clock[0] = 101.1
     renewal = reply(**{field: value})
-    with pytest.raises(ActivityLeaseAuthorityLost):
+    with pytest.raises(ActivityWorkerLost):
         authority.acknowledge(renewal, 101)
     assert authority.lease_until == original
 
@@ -97,7 +97,7 @@ def test_acknowledgement_arriving_after_expiry_cannot_revive_the_claim(clock: li
     authority = delivery(task(deadlines={}))
     clock[0] = 105.1
     renewal = reply(server_time=timestamp(4), lease_expires_at=timestamp(20))
-    with pytest.raises(ActivityLeaseAuthorityLost, match="budget_expired"):
+    with pytest.raises(ActivityWorkerLost, match="budget_expired"):
         authority.acknowledge(renewal, 104)
     assert authority.lease_until == 105
 
@@ -110,7 +110,7 @@ def test_replaying_a_successful_reply_at_a_later_request_cannot_reset_latency(cl
     assert authority.lease_until == 111
     clock[0] = 101.2
     replayed = reply()
-    with pytest.raises(ActivityLeaseAuthorityLost, match="invalid_activity_renewal"):
+    with pytest.raises(ActivityWorkerLost, match="invalid_activity_renewal"):
         authority.acknowledge(replayed, 101.15)
     assert authority.lease_until == 111
 
@@ -174,3 +174,84 @@ async def test_temporary_renewal_failure_grants_nothing_but_does_not_revoke_a_li
     assert await authority.renew() is False
     assert authority.lease_until == original
     assert authority.remaining() > 0
+
+
+@pytest.mark.parametrize(("failures", "ceiling"), [(1, 0.25), (2, 0.5), (3, 1.0), (4, 2.0), (5, 4.0), (9, 4.0)])
+def test_renewal_retry_backoff_uses_full_jitter_up_to_four_seconds(
+    monkeypatch: pytest.MonkeyPatch, failures: int, ceiling: float,
+) -> None:
+    from durable_workflow import _activity_lease
+
+    calls: list[tuple[float, float]] = []
+    monkeypatch.setattr(_activity_lease.random, "uniform", lambda low, high: calls.append((low, high)) or high)
+    assert _activity_lease.renewal_retry_delay(failures) == ceiling
+    assert calls == [(0.0, ceiling)]
+
+
+def test_renewal_retry_backoff_spreads_retries() -> None:
+    from durable_workflow._activity_lease import renewal_retry_delay
+
+    delays = [renewal_retry_delay(5) for _ in range(200)]
+    assert all(0.0 <= delay <= 4.0 for delay in delays)
+    assert len({round(delay, 3) for delay in delays}) > 50
+
+
+class _Callback:
+    def __init__(self, stopped: bool) -> None:
+        self.stopped = stopped
+
+
+async def test_stop_confirmation_requires_every_execution_to_have_stopped() -> None:
+    import time
+    from concurrent.futures import Future
+
+    authority = ActivityLeaseAuthority.delivery(
+        object(), "17", task(lease_expires_at=timestamp(60), deadlines={}), owner="worker-1",
+        task_queue="queue-1", server_time=timestamp(0), request_started=time.monotonic(),
+    )
+    assert await authority.confirm_stopped(time.monotonic() + 0.05) is True
+
+    running: Future[Any] = Future()
+    callback = _Callback(stopped=False)
+    authority.track(running)
+    authority.track(callback)
+    assert await authority.confirm_stopped(time.monotonic() + 0.05) is False
+
+    running.set_result("done")
+    assert await authority.confirm_stopped(time.monotonic() + 0.05) is False, "callback process still running"
+    callback.stopped = True
+    assert await authority.confirm_stopped(time.monotonic() + 0.05) is True
+    assert await authority.confirm_stopped(time.monotonic() - 1) is False, "a stop after the deadline is too late"
+
+
+def test_thread_guard_fences_a_thread_that_has_not_started() -> None:
+    import threading
+    import time
+
+    authority = ActivityLeaseAuthority.delivery(
+        object(), "17", task(lease_expires_at=timestamp(60), deadlines={}), owner="worker-1",
+        task_queue="queue-1", server_time=timestamp(0), request_started=time.monotonic(),
+    )
+    calls: list[str] = []
+    queued = authority.guard_thread(lambda: calls.append("queued"))
+    # Asked before its thread starts: counts as stopped and never runs later.
+    assert authority.executions[0].fence_or_finished() is True
+    with pytest.raises(ActivityWorkerLost):
+        queued()
+    assert calls == []
+
+    entered, leave = threading.Event(), threading.Event()
+
+    def running() -> str:
+        entered.set()
+        leave.wait(timeout=2)
+        return "done"
+
+    guarded = authority.guard_thread(running)
+    thread = threading.Thread(target=guarded)
+    thread.start()
+    entered.wait(timeout=2)
+    assert authority.executions[1].fence_or_finished() is False
+    leave.set()
+    thread.join(timeout=2)
+    assert authority.executions[1].fence_or_finished() is True
