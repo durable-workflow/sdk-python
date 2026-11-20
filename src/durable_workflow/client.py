@@ -5477,6 +5477,54 @@ class Client:
             )
         return cast(dict[str, Any], data)
 
+    async def _run_terminal_outcome(
+        self, workflow_id: str, run_id: str, desc: WorkflowExecution, result_type: Any,
+    ) -> tuple[str, Any]:
+        """Read one run's terminal event from its history.
+
+        Returns ``("result", value)`` for a completed run,
+        ``("continued", successor_run_id)`` for a run that continued as new, or
+        ``("no_terminal_event", None)``; raises the typed error of a failed,
+        terminated, cancelled or timed-out run.
+        """
+        page_token: str | None = None
+        seen_tokens: set[str] = set()
+        while True:
+            history = await self.get_history(workflow_id, run_id, page_size=1000, next_page_token=page_token)
+            events = history.get("events", [])
+            for ev in reversed(events):
+                etype = ev.get("event_type")
+                payload = ev.get("payload") or {}
+                if etype == "WorkflowCompleted":
+                    output = serializer.decode_envelope(
+                        payload.get("output"),
+                        codec=payload.get("payload_codec") or desc.payload_codec,
+                        external_storage=self.external_storage,
+                        external_storage_cache=self.external_storage_cache,
+                    )
+                    if result_type is None:
+                        return "result", output
+                    return "result", decode_payload_value(output, result_type, "workflow result")
+                if etype == "WorkflowFailed":
+                    raise WorkflowFailed(
+                        payload.get("message", "workflow failed"),
+                        payload.get("exception_class"),
+                    )
+                if etype == "WorkflowTerminated":
+                    raise WorkflowTerminated(payload.get("reason", "workflow was terminated"))
+                if etype == "WorkflowCancelled":
+                    raise WorkflowCancelled(payload.get("reason", "workflow was cancelled"))
+                if etype == "WorkflowTimedOut":
+                    raise WorkflowTimedOut()
+                if etype == "WorkflowContinuedAsNew":
+                    return "continued", payload.get("continued_to_run_id")
+            page_token = history.get("next_page_token")
+            if not page_token:
+                return "no_terminal_event", None
+            if page_token in seen_tokens:
+                raise RuntimeError("history pagination repeated a page token")
+            seen_tokens.add(page_token)
+
     async def get_result(
         self,
         handle: WorkflowHandle,
@@ -5510,47 +5558,25 @@ class Client:
                 run_id = handle.run_id or desc.run_id
                 if run_id is None:
                     raise WorkflowFailed("no run_id available to fetch history")
-                page_token: str | None = None
-                seen_tokens: set[str] = set()
+                # A handle bound to an earlier run follows its continue-as-new
+                # chain to the run that actually ended, as PHP and Rust do.
+                visited: set[str] = set()
                 while True:
-                    history = await self.get_history(
-                        handle.workflow_id, run_id, page_size=1000, next_page_token=page_token
-                    )
-                    events = history.get("events", [])
-                    for ev in reversed(events):
-                        etype = ev.get("event_type")
-                        payload = ev.get("payload") or {}
-                        if etype == "WorkflowCompleted":
-                            output = serializer.decode_envelope(
-                                payload.get("output"),
-                                codec=payload.get("payload_codec") or desc.payload_codec,
-                                external_storage=self.external_storage,
-                                external_storage_cache=self.external_storage_cache,
-                            )
-                            if result_type is None:
-                                return output
-                            return decode_payload_value(output, result_type, "workflow result")
-                        if etype == "WorkflowFailed":
-                            raise WorkflowFailed(
-                                payload.get("message", "workflow failed"),
-                                payload.get("exception_class"),
-                            )
-                        if etype == "WorkflowTerminated":
-                            raise WorkflowTerminated(
-                                payload.get("reason", "workflow was terminated")
-                            )
-                        if etype == "WorkflowCancelled":
-                            raise WorkflowCancelled(
-                                payload.get("reason", "workflow was cancelled")
-                            )
-                        if etype == "WorkflowTimedOut":
-                            raise WorkflowTimedOut()
-                    page_token = history.get("next_page_token")
-                    if not page_token:
-                        return None
-                    if page_token in seen_tokens:
-                        raise RuntimeError("history pagination repeated a page token")
-                    seen_tokens.add(page_token)
+                    visited.add(run_id)
+                    kind, value = await self._run_terminal_outcome(handle.workflow_id, run_id, desc, result_type)
+                    if kind == "result":
+                        return value
+                    # Continued as new: follow the recorded successor, else the
+                    # newest run the status read named.
+                    successor = value if isinstance(value, str) and value else desc.run_id
+                    if successor is None or successor in visited:
+                        if kind == "no_terminal_event":
+                            return None
+                        raise WorkflowFailed(
+                            f"workflow {handle.workflow_id} run {run_id} continued as new, but its "
+                            "successor run could not be followed"
+                        )
+                    run_id = successor
             if asyncio.get_running_loop().time() > deadline:
                 raise TimeoutError(
                     f"workflow {handle.workflow_id} not terminal after {timeout}s (status={status})"
