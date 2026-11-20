@@ -64,12 +64,15 @@ class FlakyRuntime:
         self.response = response if response is not None else (503, STORAGE_UNAVAILABLE)
         self.served = 0
         self.polls = 0
+        self.discovery = 0
         info = compatible_cluster_info()
         info["worker_protocol"]["server_capabilities"].pop("worker_deregistration_fencing", None)  # type: ignore[index]
         self.info = info
 
     async def respond(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
+        if path.endswith("/cluster/info"):
+            self.discovery += 1
         if path.endswith(self.path) and self.served < self.failures:
             self.served += 1
             if self.response == "refused":
@@ -141,6 +144,8 @@ async def test_transient_failures_then_recovery_leave_the_worker_running(
     ("/register", (403, {"reason": "forbidden"}), ServerError),
     ("/register", (503, {"reason": "storage_unavailable", "retryable": False}), ServerError),
     ("/cluster/info", (401, {"message": "bad token"}), RuntimeError),
+    ("/cluster/info", (403, {"reason": "forbidden"}), RuntimeError),
+    ("/cluster/info", (500, {"reason": "internal", "retryable": False}), RuntimeError),
 ])
 async def test_fatal_failures_stop_the_worker_with_a_clear_log(
     path: str, response: Any, expected: type[Exception], caplog: pytest.LogCaptureFixture,
@@ -316,3 +321,71 @@ async def test_failure_report_is_repeated_through_transients(monkeypatch: pytest
     assert client.fail_activity_task.await_count == 3
     assert delays == [0.25, 0.5]
     client.complete_activity_task.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("fast_retries")
+@pytest.mark.parametrize("response", [
+    (500, {"message": "Server Error"}),
+    (500, {"reason": "internal"}),
+    (501, None),
+    (429, {"reason": "rate_limited"}),
+    "refused",
+], ids=["500", "500-reason", "501", "429", "refused"])
+async def test_cluster_info_failures_at_startup_wait_then_start(response: Any) -> None:
+    runtime = FlakyRuntime("/cluster/info", failures=6, response=response)
+    client, worker = worker_for(runtime)
+    running = asyncio.create_task(worker.run())
+    try:
+        for _ in range(500):
+            if runtime.polls >= 3:
+                break
+            await asyncio.sleep(0.01)
+        assert not running.done(), running.exception() if running.done() else None
+        assert runtime.served == 6
+        assert worker._registered is True
+        assert runtime.polls >= 3
+        # At run time the worker uses the discovery it registered with; it
+        # does not read cluster info again, so nothing later can fail on it.
+        assert runtime.discovery == 7
+    finally:
+        await worker.stop()
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        await client.aclose()
+
+
+async def test_a_long_startup_outage_escalates_to_errors(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import durable_workflow.worker as worker_module
+
+    clock = [0.0]
+    real_time = worker_module.time
+    monkeypatch.setattr(worker_module, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], perf_counter=real_time.perf_counter, time=real_time.time,
+    ))
+    monkeypatch.setattr(worker_module, "_transient_retry_delay", lambda failures: 0.0)
+    calls = 0
+
+    async def cluster_info() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        clock[0] += 31.0  # each attempt takes the clock 31 s further into the outage
+        if calls <= 12:
+            raise ServerError(500, {"message": "Server Error"})
+        raise RuntimeError("incompatible runtime: stop here")
+
+    client = AsyncMock(spec=Client)
+    client.get_cluster_info.side_effect = cluster_info
+    worker = Worker(client, task_queue="q", workflows=[], activities=[noop], worker_id="worker-1")
+    with caplog.at_level(logging.WARNING, logger="durable_workflow.worker"), pytest.raises(RuntimeError):
+        await worker._register_through_transients()
+    levels = [record.levelno for record in caplog.records if "registration" in record.getMessage()]
+    # Warnings for the first minute, an error at 62 s, then every 5 minutes (372 s).
+    assert levels.count(logging.WARNING) == 1
+    errors = [record.getMessage() for record in caplog.records if record.levelno == logging.ERROR
+              and "has failed for" in record.getMessage()]
+    assert [message.split("failed for ")[1].split(" s")[0] for message in errors] == ["62", "372"]

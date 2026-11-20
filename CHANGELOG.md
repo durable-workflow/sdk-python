@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A cluster-info read failure at worker startup no longer stops the worker.
+  - **Retried:** `GET /api/cluster/info` has no side effects, so `Worker.run()` and `run_until()` now treat any failed connection and any 5xx or 429 answer to it as transient, unless the Server says `retryable: false`. Before, only the narrower transient set did (for example 503 `storage_unavailable`), so a plain `500` stopped the worker. The read is retried with the shared backoff `uniform(0, min(4, 0.25 * 2**(n - 1)))` seconds until the runtime answers.
+  - **Logging:** startup retries now escalate like poll outages, to ERROR after 60 s and then every 5 minutes.
+  - **Still fatal:** typed refusals keep their behavior. A 401 or 403 is fatal at startup.
 - A worker no longer exits when the runtime is warming up or briefly unavailable while it registers (same issue as durable-workflow/sdk-php#448). Before, `Worker.run()` and `Worker.run_until()` raised once the client's three transport attempts had failed on `GET /api/cluster/info` or `POST /api/worker/register`. That covered native Server's `503 {"reason":"storage_unavailable"}` during warm-up, a refused connection and an upstream 502/503/504.
   - **Retried:** discovery and registration are now repeated with the backoff shared across SDKs, `uniform(0, min(4, 0.25 * 2**(n - 1)))` seconds, logging a warning each time. The transient failures are: refused, reset or timed-out connections; upstream 502/503/504 without a protocol body; 503 `storage_unavailable` or `backend_unavailable`; and any 5xx or 429 with `retryable: true`.
   - **Still fatal:** `retryable: false`, HTTP 401/403, other 4xx refusals and an incompatible Server still stop the worker. It now logs `worker <id> stopping: registration failed with a non-retryable error: ...` at error level first.

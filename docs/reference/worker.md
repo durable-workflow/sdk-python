@@ -140,9 +140,18 @@ registration are repeated whole after a transient failure:
   (native Server answers every storage failure with this body)
 - any 5xx or 429 that says `retryable: true`
 
+Cluster discovery (`GET /api/cluster/info`) is a read with no side effects, so
+any refused or failed connection, and any 5xx or 429 answer to it, counts as
+transient unless the Server says `retryable: false`.
+
 The wait before the *n*-th retry is `uniform(0, min(4, 0.25 * 2**(n - 1)))`
-seconds. This is the backoff schedule shared by every Durable Workflow SDK. Each
-retry logs a warning, and shutdown interrupts the wait.
+seconds. This is the backoff schedule shared by every Durable Workflow SDK.
+Each retry logs a warning during the first minute. After 60 seconds the outage
+is logged at ERROR level, then again every 5 minutes while it lasts, the same
+escalation pollers use. Shutdown interrupts the wait.
+
+After registration the worker uses the discovery it registered with. It does
+not read cluster info again, so a later cluster-info outage cannot stop it.
 
 Some failures are never retried:
 
