@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -18,6 +19,27 @@ from .errors import ActivityLeaseAuthorityLost, ServerError
 
 _T = TypeVar("_T")
 _UTC6 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\Z")
+log = logging.getLogger("durable_workflow.worker")
+
+#: Reason of the :class:`ActivityLeaseAuthorityLost` raised when renewal kept
+#: failing until only the failure-report reserve of the lease was left. The
+#: worker then fails the attempt through the Server instead of dropping it.
+ACTIVITY_LEASE_RENEWAL_EXHAUSTED = "activity_lease_renewal_unavailable"
+# Part of the lease kept back for that failure report: at most this many
+# seconds, and at most a fifth of the granted lease.
+_REPORT_RESERVE_SECONDS = 10.0
+_REPORT_RESERVE_FRACTION = 0.2
+# Backoff between renewal attempts after a transient failure.
+_RETRY_BASE_SECONDS = 1.0
+_RETRY_MAX_SECONDS = 8.0
+# Upper bound of one renewal exchange (the client accepts at most five).
+_RENEWAL_TIMEOUT_SECONDS = 5.0
+
+
+def _transient(error: BaseException) -> bool:
+    """A failed exchange that grants nothing but does not revoke the claim."""
+    return (isinstance(error, (httpx.TransportError, asyncio.TimeoutError))
+            or isinstance(error, ServerError) and (error.status >= 500 or error.status == 429))
 
 
 def _timestamp(value: Any) -> datetime:
@@ -64,6 +86,10 @@ class ActivityLeaseAuthority:
     heartbeat_deadline: datetime | None
     last_renewal: tuple[datetime, datetime, float] | None = None
     lost_reason: str | None = field(default=None, init=False)
+    # Length of the latest confirmed grant, and consecutive transient renewal
+    # failures since it. Neither changes recorded history.
+    lease_seconds: float = field(default=0.0, init=False)
+    renewal_failures: int = field(default=0, init=False)
 
     @classmethod
     async def confirm_delivery(cls, client: Any, namespace: str, task: Mapping[str, Any], *, owner: str,
@@ -75,14 +101,28 @@ class ActivityLeaseAuthority:
                                    server_time=server_time, request_started=time.monotonic())
         started = time.monotonic()
         try:
+            budget = provisional.renewal_budget()
+            if budget <= 0:
+                raise asyncio.TimeoutError("no time left to confirm the claim outside the report reserve")
             reply = await client.renew_activity_task_lease(
                 task_id=provisional.task_id, activity_attempt_id=provisional.identity["activity_attempt_id"],
-                lease_owner=owner, timeout=min(5.0, provisional.remaining()),
+                lease_owner=owner, timeout=budget,
             )
             provisional.acknowledge(reply, started)
         except ActivityLeaseAuthorityLost:
             raise
         except Exception as error:
+            if _transient(error):
+                # A slow or flaky link is not a lost claim (sdk-php#445). Keep
+                # the claim under the poll's grant and let maintenance retry
+                # the confirmation with backoff. If the grant runs down to the
+                # report reserve unconfirmed, the worker fails the attempt
+                # through the Server; it never drops the claim silently.
+                provisional.renewal_failures = 1
+                log.warning("activity task %s initial lease confirmation failed (%s); continuing under the "
+                            "claimed lease and retrying", provisional.task_id, repr(error))
+                provisional.remaining()
+                return provisional
             reason = error.reason() if isinstance(error, ServerError) else None
             raise ActivityLeaseAuthorityLost(
                 provisional.task_id, reason or "activity_initial_lease_unavailable",
@@ -135,6 +175,7 @@ class ActivityLeaseAuthority:
             )
         except (KeyError, TypeError, ValueError, OverflowError) as error:
             raise ActivityLeaseAuthorityLost(task_id, "invalid_activity_claim") from error
+        result.lease_seconds = duration
         result.remaining()
         return result
 
@@ -207,6 +248,20 @@ class ActivityLeaseAuthority:
             raise ActivityLeaseAuthorityLost(self.task_id, self.lost_reason)
         return remaining
 
+    def report_reserve(self) -> float:
+        """Lease time kept back to fail the attempt if renewal keeps failing."""
+        return min(_REPORT_RESERVE_SECONDS, self.lease_seconds * _REPORT_RESERVE_FRACTION)
+
+    def renewal_budget(self) -> float:
+        """Bound one renewal so a timeout still leaves the report reserve."""
+        return min(_RENEWAL_TIMEOUT_SECONDS, self.remaining(),
+                   self.lease_until - time.monotonic() - self.report_reserve())
+
+    def renewal_exhausted(self) -> bool:
+        """Renewal has failed and only the report reserve of the lease is left."""
+        return (self.renewal_failures > 0
+                and self.lease_until - time.monotonic() <= self.report_reserve())
+
     def acknowledge(self, reply: Any, request_started: float) -> None:
         self.remaining()
         received = time.monotonic()
@@ -235,6 +290,7 @@ class ActivityLeaseAuthority:
                     return
                 raise ValueError("replayed activity renewal")
             self.lease_until = max(self.lease_until, request_started + duration)
+            self.lease_seconds = duration
             self._observe_progress(reply, server, request_started, received)
             self.server_time, self.lease_expiry, self.last_renewal = server, expiry, confirmation
         except (TypeError, ValueError, OverflowError) as error:
@@ -260,34 +316,49 @@ class ActivityLeaseAuthority:
     async def renew(self) -> bool:
         started = time.monotonic()
         try:
+            budget = self.renewal_budget()
+            if budget <= 0:
+                # No time for a renewal that would still leave the reserve.
+                self.renewal_failures += 1
+                return False
             reply = await asyncio.wait_for(self.client.renew_activity_task_lease(
                 task_id=self.task_id, activity_attempt_id=self.identity["activity_attempt_id"],
-                lease_owner=self.identity["lease_owner"], timeout=min(5.0, self.remaining()),
-            ), timeout=min(5.0, self.remaining()))
+                lease_owner=self.identity["lease_owner"], timeout=budget,
+            ), timeout=budget)
             self.acknowledge(reply, started)
+            self.renewal_failures = 0
             return True
         except ActivityLeaseAuthorityLost:
             raise
         except Exception as error:
-            if (isinstance(error, (httpx.TransportError, asyncio.TimeoutError))
-                    or isinstance(error, ServerError) and (error.status >= 500 or error.status == 429)):
+            if _transient(error):
                 # A failed exchange grants nothing. The existing lease may
                 # still authorize work until its original local bound.
+                self.renewal_failures += 1
                 self.remaining()
                 return False
             self.lost_reason = "activity_renewal_unavailable"
             raise ActivityLeaseAuthorityLost(self.task_id, self.lost_reason) from error
 
     async def _maintain(self, stopped: asyncio.Event) -> None:
-        confirmed = True
         while not stopped.is_set():
-            delay = min(30.0 if confirmed else 1.0, max(0.0, self.lease_until - time.monotonic()) / 3)
+            lease_left = max(0.0, self.lease_until - time.monotonic())
+            if self.renewal_failures:
+                # Back off on a struggling link, but keep retrying inside the
+                # grant, ahead of the reserve kept for the failure report.
+                backoff = min(_RETRY_MAX_SECONDS, _RETRY_BASE_SECONDS * 2 ** min(self.renewal_failures - 1, 8))
+                delay = min(backoff, max(0.0, lease_left - self.report_reserve()) / 3)
+            else:
+                delay = min(30.0, lease_left / 3)
             if self.heartbeat_timeout is not None:
                 delay = min(delay, self.heartbeat_timeout / 3)
             await asyncio.sleep(min(delay, self.remaining()))
             if stopped.is_set():
                 return
-            confirmed = await self.renew()
+            if self.renewal_exhausted():
+                self.lost_reason = ACTIVITY_LEASE_RENEWAL_EXHAUSTED
+                return
+            await self.renew()
 
     async def run(self, operation: Callable[[], Awaitable[_T]]) -> _T:
         self.remaining()
@@ -300,7 +371,7 @@ class ActivityLeaseAuthority:
                                              return_when=asyncio.FIRST_COMPLETED)
                 if maintenance in done:
                     await maintenance
-                    raise ActivityLeaseAuthorityLost(self.task_id, "activity_renewal_stopped")
+                    raise ActivityLeaseAuthorityLost(self.task_id, self.lost_reason or "activity_renewal_stopped")
                 if execution in done:
                     result = await execution
                     self.remaining()

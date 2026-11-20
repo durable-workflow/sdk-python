@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -61,6 +62,11 @@ class LeaseServer:
         self.delay_renewal = 0.0
         self.fail_completion = False
         self.publication_times: list[float] = []
+        # Transient faults applied to successive renew-lease exchanges:
+        # "timeout" stalls past the caller's budget, "reset" drops the
+        # connection, "503" answers a temporary server error.
+        self.renewal_faults: list[str | None] = []
+        self.fail_bodies: list[dict[str, Any]] = []
 
     async def respond(self, request: httpx.Request) -> httpx.Response:
         self.paths.append(request.url.path)
@@ -86,6 +92,13 @@ class LeaseServer:
             })
         if request.url.path.endswith("/renew-lease"):
             self.renewals += 1
+            fault = self.renewal_faults.pop(0) if self.renewal_faults else None
+            if fault == "timeout":
+                await asyncio.sleep(30)
+            if fault == "reset":
+                raise httpx.ConnectError("connection reset by peer", request=request)
+            if fault == "503":
+                return httpx.Response(503, json={"reason": "temporary_failure"})
             await asyncio.sleep(self.delay_renewal if self.renewals > 1 else 0)
             now = datetime.now(timezone.utc)
             denied = (self.deny and self.renewals > 1
@@ -117,6 +130,8 @@ class LeaseServer:
                 "lease_expires_at": timestamp(now + timedelta(seconds=self.lease)),
             })
         if request.url.path.endswith("/fail"):
+            self.publication_times.append(time.monotonic() - self.monotonic_started)
+            self.fail_bodies.append(json.loads(request.content))
             return httpx.Response(200, json={"outcome": "failed", "recorded": True})
         raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
 
@@ -205,7 +220,7 @@ async def test_loading_supervision_can_settle_before_the_same_claim_runs_its_cal
     assert authority.remaining() > 0
 
 
-@pytest.mark.parametrize("loss", ["denied", "slow-renewal", "business-deadline"])
+@pytest.mark.parametrize("loss", ["denied", "business-deadline"])
 async def test_lost_claim_cannot_publish_a_late_result_or_failure(loss: str) -> None:
     server = LeaseServer(deadline=0.13 if loss == "business-deadline" else None)
     server.deny = loss == "denied"
@@ -321,3 +336,116 @@ async def test_waiting_for_a_new_task_does_not_consume_its_not_yet_created_lease
 
     assert await execute(server, handler) == "completed"
     assert len(server.publications()) == 1
+
+
+def assert_retryable_renewal_failure(server: LeaseServer) -> None:
+    assert server.publications() == ["/api/worker/activity-tasks/task/17/fail"]
+    assert len(server.fail_bodies) == 1
+    body = server.fail_bodies[0]
+    assert body["activity_attempt_id"] == "attempt-017"
+    assert body["lease_owner"] == "worker-1"
+    assert body["failure"]["type"] == "ActivityLeaseAuthorityLost"
+    assert "activity_lease_renewal_unavailable" in body["failure"]["message"]
+    assert "non_retryable" not in body["failure"]
+    # Reported inside the claimed lease, so the Server can still accept it.
+    assert all(elapsed < server.lease for elapsed in server.publication_times)
+
+
+async def test_slow_renewal_fails_the_claim_retryably_instead_of_dropping_it() -> None:
+    server = LeaseServer()
+    server.delay_renewal = 0.3
+    cancelled = False
+
+    @activity.defn(name="maintained")
+    async def handler() -> str:
+        nonlocal cancelled
+        try:
+            await asyncio.sleep(0.45)
+        except asyncio.CancelledError:
+            cancelled = True
+            await asyncio.sleep(0.02)
+        return "late result"
+
+    assert await execute(server, handler) == "failed"
+    assert cancelled is True
+    assert_retryable_renewal_failure(server)
+
+
+@pytest.mark.parametrize("faults", [
+    ["timeout"], ["reset"], ["503"], ["timeout", "reset", "503", "timeout"],
+])
+async def test_transient_initial_confirmation_failure_keeps_the_claim(
+    monkeypatch: pytest.MonkeyPatch, faults: list[str],
+) -> None:
+    # sdk-php#445: one stalled renewal at activity start must not drop the
+    # claim. The activity runs under the claimed lease while confirmation is
+    # retried, and its completion is accepted.
+    monkeypatch.setattr("durable_workflow._activity_lease._RENEWAL_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr("durable_workflow._activity_lease._RETRY_BASE_SECONDS", 0.02)
+    server = LeaseServer(lease=1.0)
+    server.renewal_faults = list(faults)
+    started = False
+
+    @activity.defn(name="maintained")
+    async def handler() -> str:
+        nonlocal started
+        started = True
+        await asyncio.sleep(0.6)
+        return "completed despite a flaky start"
+
+    assert await execute(server, handler) == "completed"
+    assert started is True
+    assert server.renewals > len(faults), "confirmation must be retried until it succeeds"
+    assert server.publications() == ["/api/worker/activity-tasks/task/17/complete"]
+
+
+async def test_flaky_renewal_mid_execution_keeps_the_claim_beyond_the_original_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("durable_workflow._activity_lease._RENEWAL_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr("durable_workflow._activity_lease._RETRY_BASE_SECONDS", 0.02)
+    server = LeaseServer(lease=0.6)
+    server.renewal_faults = [None, "503", "timeout", "reset"]
+
+    @activity.defn(name="maintained")
+    async def handler() -> str:
+        await asyncio.sleep(1.0)
+        return "outlived the original lease"
+
+    assert await execute(server, handler) == "completed"
+    assert server.renewals > 4
+    assert server.publications() == ["/api/worker/activity-tasks/task/17/complete"]
+
+
+@pytest.mark.parametrize("fault", ["timeout", "reset", "503"])
+async def test_renewal_that_never_recovers_fails_the_claim_through_the_server(
+    monkeypatch: pytest.MonkeyPatch, fault: str,
+) -> None:
+    monkeypatch.setattr("durable_workflow._activity_lease._RENEWAL_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr("durable_workflow._activity_lease._RETRY_BASE_SECONDS", 0.02)
+    server = LeaseServer(lease=0.5)
+    server.renewal_faults = [fault] * 100
+
+    @activity.defn(name="maintained")
+    async def handler() -> str:
+        await asyncio.sleep(2.0)
+        return "must not be published"
+
+    assert await execute(server, handler) == "failed"
+    assert server.renewals >= 2, "renewal must be retried before the claim is given up"
+    assert_retryable_renewal_failure(server)
+
+
+async def test_initial_confirmation_refused_by_the_server_still_raises() -> None:
+    # A typed refusal is the Server's own decision about the claim, not a
+    # transient failure, so the claim is not kept.
+    server = LeaseServer(lease=0.06)
+    server.delay_poll = 0.1
+
+    @activity.defn(name="maintained")
+    async def handler() -> str:
+        return "must not run"
+
+    with pytest.raises(Exception, match="lease_expired"):
+        await execute(server, handler)
+    assert server.publications() == []

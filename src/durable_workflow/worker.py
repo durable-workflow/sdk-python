@@ -42,7 +42,12 @@ from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Uni
 import httpx
 
 from . import serializer
-from ._activity_lease import activity_lease_renewal_supported, current_activity_authority
+from ._activity_lease import (
+    ACTIVITY_LEASE_RENEWAL_EXHAUSTED,
+    ActivityLeaseAuthority,
+    activity_lease_renewal_supported,
+    current_activity_authority,
+)
 from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProcessLost, SupervisedCallback
 from ._cancellation_scope_history import CancellationScopeBudget, CancellationScopeDeliveryReceipt
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
@@ -3476,8 +3481,48 @@ class Worker:
         try:
             return await authority.run(lambda: self._run_activity_task_body(task))
         except ActivityLeaseAuthorityLost as error:
+            if error.reason == ACTIVITY_LEASE_RENEWAL_EXHAUSTED:
+                return await self._fail_unrenewable_activity_claim(task, authority, error)
             log.warning("activity claim abandoned: %s", error)
             return "claim_aborted"
+
+    async def _fail_unrenewable_activity_claim(self, task: dict[str, Any], authority: ActivityLeaseAuthority,
+                                               error: ActivityLeaseAuthorityLost) -> str:
+        """Fail, never silently drop, a claim whose lease could not be renewed.
+
+        Renewal kept failing transiently until only the report reserve of the
+        lease was left (sdk-php#445). The execution is already stopped and
+        fenced; this retryable failure, sent inside the remaining lease, lets
+        the Server apply the retry policy now instead of at lease expiry.
+        """
+        task_id = str(task["task_id"])
+        attempt_id = task.get("activity_attempt_id") or task.get("attempt_id", "")
+        window = authority.lease_until - time.monotonic()
+        if window <= 0:
+            log.warning("activity claim %s lost its lease before its renewal failure could be reported: %s",
+                        task_id, error)
+            return "claim_aborted"
+        # The authority fences its own publications once lost. This report is
+        # the deliberate exception, bounded by the lease that is still left.
+        fence = current_activity_authority.set(None)
+        try:
+            await asyncio.wait_for(self.client.fail_activity_task(
+                task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id,
+                message=f"activity lease could not be renewed before it expired ({error.reason})",
+                failure_type=type(error).__name__, failure_class=_exception_class_name(error),
+                non_retryable=False,
+            ), timeout=window)
+        except Exception as report_error:
+            if _run_closed_refusal(report_error):
+                log.info("renewal failure for activity task %s not recorded: its workflow run closed", task_id)
+            else:
+                log.warning("activity claim %s could not be renewed and its failure was not recorded (%r); "
+                            "the Server settles it when the lease expires", task_id, report_error)
+            return "claim_aborted"
+        finally:
+            current_activity_authority.reset(fence)
+        log.warning("activity claim %s failed retryably: %s", task_id, error)
+        return "failed"
 
     async def _run_activity_task_body(self, task: dict[str, Any]) -> str:
         self._track_worker_session_from_task(task)
