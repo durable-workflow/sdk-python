@@ -367,8 +367,8 @@ ACTIVITY_RESULT_TOO_LARGE = "ActivityResultTooLarge"
 def _activity_result_too_large_message(error: BaseException) -> str | None:
     """The failure message for an undeliverable oversized result, or ``None``."""
     if _payload_too_large(error):
-        body = error.body if isinstance(error, ServerError) and isinstance(error.body, Mapping) else {}
-        limit = body.get("limit")
+        # _payload_too_large established a ServerError with a mapping body.
+        limit = getattr(error, "body", {}).get("limit")
         limit_text = (f"the Server's payload limit of {limit} bytes" if type(limit) is int
                       else "the Server's payload limit")
         return f"activity result exceeds {limit_text} and cannot be stored externally under the current policy"
@@ -3937,6 +3937,31 @@ class Worker:
                             task_id, outcome, summary, delay)
                 await asyncio.sleep(delay)
 
+    async def _rediscover_cluster_info(self, context: str, window: Callable[[], float | None] | None) -> bool:
+        """Read cluster info again, through transient outages while ``window`` allows."""
+        failures = 0
+        started = time.monotonic()
+        while True:
+            try:
+                await self.client.get_cluster_info()
+                return True
+            except Exception as error:
+                if not _transient_discovery_error(error) or self._stop.is_set():
+                    log.warning("%s: payload policy rediscovery failed: %s", context, _poll_error_summary(error))
+                    return False
+                failures += 1
+                delay = _transient_retry_delay(failures)
+                left = window() if window is not None else None
+                if left is None:
+                    left = _UNKNOWN_LEASE_OUTCOME_RETRY_SECONDS - (time.monotonic() - started)
+                if left <= delay:
+                    log.exception("%s: payload policy rediscovery failed %d times (%s) and no time is left",
+                                  context, failures, _poll_error_summary(error))
+                    return False
+                log.warning("%s: payload policy rediscovery failed transiently (%s); retrying in %.2f s",
+                            context, _poll_error_summary(error), delay)
+                await asyncio.sleep(delay)
+
     async def _refresh_payload_policy(self, context: str,
                                       window: Callable[[], float | None] | None = None) -> bool:
         """Rediscover the payload policy after a ``413 payload_too_large``.
@@ -3948,28 +3973,8 @@ class Worker:
         """
         client = self.client
         before = getattr(client, "_payload_policy_snapshot", lambda: None)()
-        failures = 0
-        started = time.monotonic()
-        while True:
-            try:
-                await client.get_cluster_info()
-                break
-            except Exception as error:
-                if not _transient_discovery_error(error) or self._stop.is_set():
-                    log.warning("%s: payload policy rediscovery failed: %s", context, _poll_error_summary(error))
-                    return False
-                failures += 1
-                delay = _transient_retry_delay(failures)
-                left = window() if window is not None else None
-                if left is None:
-                    left = _UNKNOWN_LEASE_OUTCOME_RETRY_SECONDS - (time.monotonic() - started)
-                if left <= delay:
-                    log.error("%s: payload policy rediscovery failed %d times (%s) and no time is left",
-                              context, failures, _poll_error_summary(error))
-                    return False
-                log.warning("%s: payload policy rediscovery failed transiently (%s); retrying in %.2f s",
-                            context, _poll_error_summary(error), delay)
-                await asyncio.sleep(delay)
+        if not await self._rediscover_cluster_info(context, window):
+            return False
         forget = getattr(client, "_forget_payload_policy", None)
         if forget is not None:
             forget()

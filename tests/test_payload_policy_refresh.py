@@ -132,7 +132,8 @@ async def test_rediscovery_rides_out_a_discovery_outage() -> None:
     outcome, client = await run_activity(server, lower={"limit": 100 * 1024}, outage=3)
     try:
         assert outcome == "completed"
-        assert server.upload_count == 1 and len(server.completions) == 2
+        assert server.upload_count == 1
+        assert len(server.completions) == 2
         assert server.discovery_reads == 1 + 4, "three failed rediscovery reads, then one that answered"
     finally:
         await client.aclose()
