@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -15,25 +16,68 @@ from urllib.parse import quote
 
 import httpx
 
-from .errors import ActivityWorkerLost, ServerError
+from .errors import WORKER_LOST_FAILURE_TYPE, ActivityWorkerLost, ServerError
 
 _T = TypeVar("_T")
 _UTC6 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\Z")
 log = logging.getLogger("durable_workflow.worker")
 
 #: Reason of the :class:`ActivityWorkerLost` raised when renewal kept
-#: failing until only the failure-report reserve of the lease was left. The
-#: worker then fails the attempt through the Server instead of dropping it.
+#: failing until only the release reserve of the lease was left. The worker
+#: then stops the execution and, once it has confirmed the stop inside the
+#: lease, releases the claim through the Server as ``worker_lost``.
 ACTIVITY_LEASE_RENEWAL_EXHAUSTED = "activity_lease_renewal_unavailable"
-# Part of the lease kept back for that failure report: at most this many
-# seconds, and at most a fifth of the granted lease.
+# Part of the lease kept back to stop the execution and release the claim: at
+# most this many seconds, and at most a fifth of the granted lease. The first
+# half is for confirming the stop, the second for the release request.
 _REPORT_RESERVE_SECONDS = 10.0
 _REPORT_RESERVE_FRACTION = 0.2
-# Backoff between renewal attempts after a transient failure.
-_RETRY_BASE_SECONDS = 1.0
-_RETRY_MAX_SECONDS = 8.0
+# Renewal retry backoff after a transient failure, the same in every SDK:
+# delay = uniform(0, min(MAX, BASE * 2**n)) for the n-th retry (full jitter).
+_RETRY_BASE_SECONDS = 0.25
+_RETRY_MAX_SECONDS = 4.0
+# How often a stop confirmation re-checks threads and callback processes.
+_STOP_POLL_SECONDS = 0.02
 # Upper bound of one renewal exchange (the client accepts at most five).
 _RENEWAL_TIMEOUT_SECONDS = 5.0
+
+
+def renewal_retry_delay(failures: int) -> float:
+    """Full-jitter backoff before the retry after ``failures`` consecutive failures."""
+    exponent = min(max(failures - 1, 0), 16)
+    return random.uniform(0.0, min(_RETRY_MAX_SECONDS, _RETRY_BASE_SECONDS * 2 ** exponent))
+
+
+async def release_worker_lost(client: Any, *, task_id: str, activity_attempt_id: str, lease_owner: str,
+                              cause: str, timeout: float) -> bool:
+    """Release a claim the worker cannot maintain, by the cross-SDK contract.
+
+    Call only after the execution is confirmed stopped (or never started):
+    the Server may hand the attempt to another worker as soon as it records
+    this retryable ``worker_lost`` failure.
+    """
+    try:
+        await asyncio.wait_for(client.fail_activity_task(
+            task_id=task_id, activity_attempt_id=activity_attempt_id, lease_owner=lease_owner,
+            message=f"activity worker released the claim: lease could not be renewed ({cause})",
+            failure_type=WORKER_LOST_FAILURE_TYPE, failure_class=ActivityWorkerLost.__name__,
+            non_retryable=False, details={"reason": WORKER_LOST_FAILURE_TYPE, "cause": cause},
+        ), timeout=timeout)
+        return True
+    except Exception as error:
+        if isinstance(error, ServerError) and error.reason() == "run_closed":
+            log.info("worker_lost release for activity task %s not recorded: its workflow run closed", task_id)
+        else:
+            log.warning("activity claim %s could not be released (%r); the Server settles it when the lease "
+                        "expires", task_id, error)
+        return False
+
+
+def _execution_stopped(execution: Any) -> bool:
+    done = getattr(execution, "done", None)
+    if callable(done):
+        return bool(done())
+    return getattr(execution, "stopped", False) is True
 
 
 def _transient(error: BaseException) -> bool:
@@ -90,10 +134,15 @@ class ActivityLeaseAuthority:
     # failures since it. Neither changes recorded history.
     lease_seconds: float = field(default=0.0, init=False)
     renewal_failures: int = field(default=0, init=False)
+    # Physical executions (thread futures, callback processes) started for
+    # this claim. A release waits until every one has actually stopped.
+    executions: list[Any] = field(default_factory=list, init=False)
+    execution_started: bool = field(default=False, init=False)
 
     @classmethod
     async def confirm_delivery(cls, client: Any, namespace: str, task: Mapping[str, Any], *, owner: str,
-                               task_queue: str, server_time: Any) -> ActivityLeaseAuthority:
+                               task_queue: str, server_time: Any,
+                               poll_started: float | None = None) -> ActivityLeaseAuthority:
         # A long poll may wait before a task or its lease exists. Establish the
         # first execution budget with a separate, original-claim confirmation;
         # its entire round trip is charged and it cannot revive an expired lease.
@@ -115,14 +164,11 @@ class ActivityLeaseAuthority:
             if _transient(error):
                 # A slow or flaky link is not a lost claim (sdk-php#445). Keep
                 # the claim under the poll's grant and let maintenance retry
-                # the confirmation with backoff. If the grant runs down to the
-                # report reserve unconfirmed, the worker fails the attempt
-                # through the Server; it never drops the claim silently.
-                provisional.renewal_failures = 1
-                log.warning("activity task %s initial lease confirmation failed (%s); continuing under the "
-                            "claimed lease and retrying", provisional.task_id, repr(error))
-                provisional.remaining()
-                return provisional
+                # the confirmation with backoff.
+                return await cls._unconfirmed_delivery(
+                    client, namespace, task, owner=owner, task_queue=task_queue, server_time=server_time,
+                    poll_started=started if poll_started is None else poll_started, error=error,
+                )
             reason = error.reason() if isinstance(error, ServerError) else None
             raise ActivityWorkerLost(
                 provisional.task_id, reason or "activity_initial_lease_unavailable",
@@ -135,6 +181,33 @@ class ActivityLeaseAuthority:
                                          timespec="microseconds").replace("+00:00", "Z")}
         return cls.delivery(client, namespace, observed, owner=owner, task_queue=task_queue,
                             server_time=reply["server_time"], request_started=started)
+
+    @classmethod
+    async def _unconfirmed_delivery(cls, client: Any, namespace: str, task: Mapping[str, Any], *, owner: str,
+                                    task_queue: str, server_time: Any, poll_started: float,
+                                    error: BaseException) -> ActivityLeaseAuthority:
+        # The Server stamps the lease after it receives the poll, so charging
+        # the grant from the poll's start is the conservative bound.
+        try:
+            grant = cls.delivery(client, namespace, task, owner=owner, task_queue=task_queue,
+                                 server_time=server_time, request_started=poll_started)
+        except ActivityWorkerLost:
+            grant = None
+        if grant is None or grant.lease_until - time.monotonic() <= grant.report_reserve():
+            # Nothing has run, so releasing cannot cause a second concurrent
+            # execution; a stale release is refused by the Server.
+            task_id = str(task.get("task_id") or "")
+            log.warning("activity task %s initial lease confirmation failed (%r) and the conservative grant is "
+                        "spent; releasing the unstarted claim", task_id, error)
+            await release_worker_lost(
+                client, task_id=task_id, activity_attempt_id=str(task.get("activity_attempt_id") or ""),
+                lease_owner=owner, cause=ACTIVITY_LEASE_RENEWAL_EXHAUSTED, timeout=_RENEWAL_TIMEOUT_SECONDS,
+            )
+            raise ActivityWorkerLost(task_id, ACTIVITY_LEASE_RENEWAL_EXHAUSTED) from error
+        grant.renewal_failures = 1
+        log.warning("activity task %s initial lease confirmation failed (%r); continuing under the claimed "
+                    "lease and retrying", grant.task_id, error)
+        return grant
 
     @classmethod
     def delivery(cls, client: Any, namespace: str, task: Mapping[str, Any], *, owner: str,
@@ -257,6 +330,19 @@ class ActivityLeaseAuthority:
         return min(_RENEWAL_TIMEOUT_SECONDS, self.remaining(),
                    self.lease_until - time.monotonic() - self.report_reserve())
 
+    def track(self, execution: Any) -> None:
+        """Register a thread future or callback process that runs this claim."""
+        self.executions.append(execution)
+
+    async def confirm_stopped(self, deadline: float) -> bool:
+        """Wait until every tracked execution has stopped, or ``deadline`` passes."""
+        while not all(_execution_stopped(execution) for execution in self.executions):
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            await asyncio.sleep(min(_STOP_POLL_SECONDS, left))
+        return time.monotonic() < deadline
+
     def renewal_exhausted(self) -> bool:
         """Renewal has failed and only the report reserve of the lease is left."""
         return (self.renewal_failures > 0
@@ -344,10 +430,10 @@ class ActivityLeaseAuthority:
         while not stopped.is_set():
             lease_left = max(0.0, self.lease_until - time.monotonic())
             if self.renewal_failures:
-                # Back off on a struggling link, but keep retrying inside the
-                # grant, ahead of the reserve kept for the failure report.
-                backoff = min(_RETRY_MAX_SECONDS, _RETRY_BASE_SECONDS * 2 ** min(self.renewal_failures - 1, 8))
-                delay = min(backoff, max(0.0, lease_left - self.report_reserve()) / 3)
+                # Back off with full jitter on a struggling link, but keep
+                # retrying inside the grant, ahead of the release reserve.
+                delay = min(renewal_retry_delay(self.renewal_failures),
+                            max(0.0, lease_left - self.report_reserve()) / 3)
             else:
                 delay = min(30.0, lease_left / 3)
             if self.heartbeat_timeout is not None:
@@ -362,7 +448,12 @@ class ActivityLeaseAuthority:
 
     async def run(self, operation: Callable[[], Awaitable[_T]]) -> _T:
         self.remaining()
+        if self.renewal_exhausted():
+            # Never start work that could not be confirmed stopped in time.
+            self.lost_reason = ACTIVITY_LEASE_RENEWAL_EXHAUSTED
+            raise ActivityWorkerLost(self.task_id, self.lost_reason)
         stopped = asyncio.Event()
+        self.execution_started = True
         execution = asyncio.ensure_future(operation())
         maintenance = asyncio.create_task(self._maintain(stopped))
         try:

@@ -1528,6 +1528,53 @@ supervision. The SDK cannot forcibly stop a running native thread or undo its
 external effects. Keep side effects idempotent and heartbeat at useful progress
 boundaries.
 
+## Activity lease renewal
+
+When the Server advertises `activity_lease_renewal`, the worker keeps each
+claimed activity's lease alive in the background. It confirms the lease right
+after the poll, then renews it about every third of the lease, at most every
+30 seconds. Each renewal exchange is limited to 5 seconds, and part of the
+lease is always held in reserve: at most 10 seconds, and at most a fifth of
+the grant.
+
+A timeout, connection reset, 5xx or 429 on a renewal does not end the claim.
+The activity keeps running under the lease it already holds. Renewal is retried
+with the same backoff in every Durable Workflow SDK:
+
+- The *n*-th retry waits `uniform(0, min(4, 0.25 * 2**n))` seconds: 0.25 s,
+  doubling to a 4 s cap.
+- Full random jitter keeps workers from retrying in step after an outage.
+- Retries always stay inside the lease, ahead of the reserve.
+
+If the claim was never confirmed, its lease is charged from the start of the
+poll, because the Server stamps the lease only after it receives the poll.
+
+If renewal has still not succeeded when only the reserve is left, the worker
+stops the activity:
+
+- An async activity is cancelled.
+- A thread activity is asked to stop: its next `heartbeat_sync()` raises
+  `ActivityWorkerLost`.
+- A supervised callback process is stopped.
+
+The worker waits for that stop for up to half of the reserve. Once every
+execution of the claim has stopped, it releases the claim with
+`POST /worker/activity-tasks/{id}/fail`. The failure has type `worker_lost`
+(recorded as `exception_type`, and matchable in `non_retryable_error_types`),
+class `ActivityWorkerLost`, `non_retryable = false`, the local cause in the
+message, and `details = {"reason": "worker_lost", "cause": ...}`. The
+activity's retry policy then applies right away.
+
+If the execution does not stop in time, for example a thread that never
+heartbeats, the worker sends nothing. The Server settles the attempt when its
+lease expires (`lease_expired`), so two executions of one attempt never
+overlap. A claim that never started running is released directly.
+
+In workflow code, `ActivityFailed.lease_loss_reason()` tells these outcomes
+apart. It returns `"worker_lost"` for a released claim, `"lease_expired"` or
+`"worker_deregistered"` when the Server settled the lease, and `None` for any
+other failure.
+
 ### Acknowledged heartbeat checkpoints
 
 SDK 2.18.0 adds `activity.context().last_heartbeat_checkpoint()`,

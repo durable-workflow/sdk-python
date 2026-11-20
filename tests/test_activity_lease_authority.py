@@ -174,3 +174,51 @@ async def test_temporary_renewal_failure_grants_nothing_but_does_not_revoke_a_li
     assert await authority.renew() is False
     assert authority.lease_until == original
     assert authority.remaining() > 0
+
+
+@pytest.mark.parametrize(("failures", "ceiling"), [(1, 0.25), (2, 0.5), (3, 1.0), (4, 2.0), (5, 4.0), (9, 4.0)])
+def test_renewal_retry_backoff_uses_full_jitter_up_to_four_seconds(
+    monkeypatch: pytest.MonkeyPatch, failures: int, ceiling: float,
+) -> None:
+    from durable_workflow import _activity_lease
+
+    calls: list[tuple[float, float]] = []
+    monkeypatch.setattr(_activity_lease.random, "uniform", lambda low, high: calls.append((low, high)) or high)
+    assert _activity_lease.renewal_retry_delay(failures) == ceiling
+    assert calls == [(0.0, ceiling)]
+
+
+def test_renewal_retry_backoff_spreads_retries() -> None:
+    from durable_workflow._activity_lease import renewal_retry_delay
+
+    delays = [renewal_retry_delay(5) for _ in range(200)]
+    assert all(0.0 <= delay <= 4.0 for delay in delays)
+    assert len({round(delay, 3) for delay in delays}) > 50
+
+
+class _Callback:
+    def __init__(self, stopped: bool) -> None:
+        self.stopped = stopped
+
+
+async def test_stop_confirmation_requires_every_execution_to_have_stopped() -> None:
+    import time
+    from concurrent.futures import Future
+
+    authority = ActivityLeaseAuthority.delivery(
+        object(), "17", task(lease_expires_at=timestamp(60), deadlines={}), owner="worker-1",
+        task_queue="queue-1", server_time=timestamp(0), request_started=time.monotonic(),
+    )
+    assert await authority.confirm_stopped(time.monotonic() + 0.05) is True
+
+    running: Future[Any] = Future()
+    callback = _Callback(stopped=False)
+    authority.track(running)
+    authority.track(callback)
+    assert await authority.confirm_stopped(time.monotonic() + 0.05) is False
+
+    running.set_result("done")
+    assert await authority.confirm_stopped(time.monotonic() + 0.05) is False, "callback process still running"
+    callback.stopped = True
+    assert await authority.confirm_stopped(time.monotonic() + 0.05) is True
+    assert await authority.confirm_stopped(time.monotonic() - 1) is False, "a stop after the deadline is too late"

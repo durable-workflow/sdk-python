@@ -2316,6 +2316,7 @@ class Client:
                     activity_authority = await ActivityLeaseAuthority.confirm_delivery(
                         self, self.namespace, result["task"], owner=request_json["worker_id"],
                         task_queue=request_json["task_queue"], server_time=result.get("server_time"),
+                        poll_started=request_started,
                     )
                     current_activity_authority.set(activity_authority)
             query_authority = None

@@ -67,6 +67,9 @@ class LeaseServer:
         # connection, "503" answers a temporary server error.
         self.renewal_faults: list[str | None] = []
         self.fail_bodies: list[dict[str, Any]] = []
+        # When False, an application heartbeat is acknowledged without
+        # extending the lease, so it cannot stand in for failed renewals.
+        self.heartbeat_extends = True
 
     async def respond(self, request: httpx.Request) -> httpx.Response:
         self.paths.append(request.url.path)
@@ -127,7 +130,8 @@ class LeaseServer:
                 "lease_owner": self.task["lease_owner"], "heartbeat_recorded": True,
                 "can_continue": True, "cancel_requested": False, "reason": None,
                 "last_heartbeat_at": timestamp(now),
-                "lease_expires_at": timestamp(now + timedelta(seconds=self.lease)),
+                "lease_expires_at": (timestamp(now + timedelta(seconds=self.lease)) if self.heartbeat_extends
+                                     else self.task["lease_expires_at"]),
             })
         if request.url.path.endswith("/fail"):
             self.publication_times.append(time.monotonic() - self.monotonic_started)
@@ -356,23 +360,140 @@ def assert_retryable_renewal_failure(server: LeaseServer) -> None:
     assert all(elapsed < server.lease for elapsed in server.publication_times)
 
 
-async def test_slow_renewal_fails_the_claim_retryably_instead_of_dropping_it() -> None:
-    server = LeaseServer()
-    server.delay_renewal = 0.3
+def fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("durable_workflow._activity_lease._RENEWAL_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr("durable_workflow._activity_lease._RETRY_BASE_SECONDS", 0.02)
+
+
+async def test_slow_renewal_releases_a_cooperatively_stopped_claim() -> None:
+    server = LeaseServer(lease=0.5)
+    server.delay_renewal = 0.6
     cancelled = False
 
     @activity.defn(name="maintained")
     async def handler() -> str:
         nonlocal cancelled
         try:
-            await asyncio.sleep(0.45)
+            await asyncio.sleep(2.0)
         except asyncio.CancelledError:
             cancelled = True
-            await asyncio.sleep(0.02)
+            raise
         return "late result"
 
     assert await execute(server, handler) == "failed"
     assert cancelled is True
+    assert_retryable_renewal_failure(server)
+
+
+async def test_coroutine_that_outlives_the_stop_window_is_not_released() -> None:
+    # A coroutine may swallow cancellation. Until it has actually finished the
+    # claim is not released; past the deadline the lease is left to expire.
+    server = LeaseServer(lease=0.5)
+    server.delay_renewal = 0.6
+
+    @activity.defn(name="maintained")
+    async def handler() -> str:
+        try:
+            await asyncio.sleep(2.0)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.3)
+        return "late result"
+
+    assert await execute(server, handler) == "claim_aborted"
+    assert server.publications() == []
+
+
+async def test_thread_that_stops_at_its_next_heartbeat_is_released(monkeypatch: pytest.MonkeyPatch) -> None:
+    fast_retries(monkeypatch)
+    server = LeaseServer(lease=0.6)
+    server.renewal_faults = [None] + ["503"] * 100
+    server.heartbeat_extends = False
+    stopped_at: list[float] = []
+
+    @activity.defn(name="maintained")
+    def handler() -> str:
+        try:
+            while True:
+                activity.context().heartbeat_sync({"step": 1})
+                time.sleep(0.01)
+        finally:
+            stopped_at.append(time.monotonic() - server.monotonic_started)
+
+    assert await execute(server, handler) == "failed"
+    assert_retryable_renewal_failure(server)
+    assert len(stopped_at) == 1
+    assert stopped_at[0] <= server.publication_times[0], "release only after the thread stopped"
+
+
+async def test_thread_that_will_not_stop_is_left_to_lease_expiry(monkeypatch: pytest.MonkeyPatch) -> None:
+    fast_retries(monkeypatch)
+    server = LeaseServer(lease=0.6)
+    server.renewal_faults = [None] + ["503"] * 100
+    started, release = threading.Event(), threading.Event()
+
+    @activity.defn(name="maintained")
+    def handler() -> str:
+        started.set()
+        release.wait(timeout=5)
+        return "late thread result"
+
+    async with Client("http://lease.invalid", namespace="17", worker_token="synthetic-worker-token") as client:
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(base_url="http://lease.invalid", transport=httpx.MockTransport(server.respond))
+        client._cluster_info = {"worker_protocol": {"server_capabilities": {"activity_lease_renewal": True}}}
+        worker = Worker(client, worker_id="worker-1", task_queue="queue-1", workflows=[], activities=[handler])
+        try:
+            task = await client.poll_activity_task(worker_id="worker-1", task_queue="queue-1")
+            assert await worker._run_activity_task(task) == "claim_aborted"
+            assert started.is_set()
+            # Still running: a release now would let a second attempt overlap.
+            assert len(worker._remote_activity_threads) == 1
+            assert server.publications() == []
+        finally:
+            release.set()
+            if worker._remote_activity_executor is not None:
+                worker._remote_activity_executor.shutdown(wait=True)
+    assert server.publications() == []
+
+
+async def test_unconfirmed_grant_is_measured_from_the_poll_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    fast_retries(monkeypatch)
+    server = LeaseServer(lease=1.0)
+    server.delay_poll = 0.2
+    server.renewal_faults = ["timeout"]
+    async with Client("http://lease.invalid", namespace="17", worker_token="synthetic-worker-token") as client:
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(base_url="http://lease.invalid", transport=httpx.MockTransport(server.respond))
+        client._cluster_info = {"worker_protocol": {"server_capabilities": {"activity_lease_renewal": True}}}
+        poll_started = time.monotonic()
+        await client.poll_activity_task(worker_id="worker-1", task_queue="queue-1")
+        authority = current_activity_authority.get()
+        assert authority is not None and authority.renewal_failures == 1
+        # Charged from the poll's start, not from the response's arrival 0.2 s later.
+        assert poll_started + 0.9 < authority.lease_until < poll_started + 1.1
+        current_activity_authority.set(None)
+
+
+async def test_unstarted_claim_with_a_spent_conservative_grant_is_released(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The long poll waited longer than the lease, then confirmation failed.
+    # Nothing ran, so the claim is released rather than dropped.
+    fast_retries(monkeypatch)
+    server = LeaseServer(lease=0.25)
+    server.delay_before_claim = 0.3
+    server.renewal_faults = ["timeout"]
+    called = False
+
+    @activity.defn(name="maintained")
+    async def handler() -> str:
+        nonlocal called
+        called = True
+        return "must not run"
+
+    with pytest.raises(Exception, match="activity_lease_renewal_unavailable"):
+        await execute(server, handler)
+    assert called is False
     assert_retryable_renewal_failure(server)
 
 
@@ -385,8 +506,7 @@ async def test_transient_initial_confirmation_failure_keeps_the_claim(
     # sdk-php#445: one stalled renewal at activity start must not drop the
     # claim. The activity runs under the claimed lease while confirmation is
     # retried, and its completion is accepted.
-    monkeypatch.setattr("durable_workflow._activity_lease._RENEWAL_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr("durable_workflow._activity_lease._RETRY_BASE_SECONDS", 0.02)
+    fast_retries(monkeypatch)
     server = LeaseServer(lease=1.0)
     server.renewal_faults = list(faults)
     started = False
@@ -407,8 +527,7 @@ async def test_transient_initial_confirmation_failure_keeps_the_claim(
 async def test_flaky_renewal_mid_execution_keeps_the_claim_beyond_the_original_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("durable_workflow._activity_lease._RENEWAL_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr("durable_workflow._activity_lease._RETRY_BASE_SECONDS", 0.02)
+    fast_retries(monkeypatch)
     server = LeaseServer(lease=0.6)
     server.renewal_faults = [None, "503", "timeout", "reset"]
 
@@ -426,8 +545,7 @@ async def test_flaky_renewal_mid_execution_keeps_the_claim_beyond_the_original_l
 async def test_renewal_that_never_recovers_fails_the_claim_through_the_server(
     monkeypatch: pytest.MonkeyPatch, fault: str,
 ) -> None:
-    monkeypatch.setattr("durable_workflow._activity_lease._RENEWAL_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr("durable_workflow._activity_lease._RETRY_BASE_SECONDS", 0.02)
+    fast_retries(monkeypatch)
     server = LeaseServer(lease=0.5)
     server.renewal_faults = [fault] * 100
 
