@@ -171,8 +171,8 @@ async def test_heartbeat_outcomes_never_advance_the_received_checkpoint(outcome:
         if outcome == "success":
             await ctx.heartbeat({"cursor": 2})
         else:
-            from durable_workflow.errors import ActivityLeaseAuthorityLost
-            with pytest.raises(ActivityLeaseAuthorityLost):
+            from durable_workflow.errors import ActivityWorkerLost
+            with pytest.raises(ActivityWorkerLost):
                 await ctx.heartbeat({"cursor": 2})
     assert ctx.last_heartbeat_details() == {"cursor": 1}
     assert ctx.last_heartbeat_at() == AT

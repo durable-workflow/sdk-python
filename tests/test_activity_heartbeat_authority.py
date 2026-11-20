@@ -13,7 +13,7 @@ from durable_workflow import activity, serializer
 from durable_workflow._activity_lease import ActivityLeaseAuthority, current_activity_authority
 from durable_workflow.activity import ActivityContext, ActivityInfo
 from durable_workflow.client import Client
-from durable_workflow.errors import ActivityLeaseAuthorityLost, NonRetryableError
+from durable_workflow.errors import ActivityWorkerLost, NonRetryableError
 from durable_workflow.worker import Worker
 
 REASONS = ("activity_deadline_elapsed", "attempt_closed", "run_closed")
@@ -38,7 +38,7 @@ async def test_heartbeat_refusal_carries_original_reason(reason: str, synchronou
 
     invocation = (asyncio.to_thread(ctx.heartbeat_sync, {"progress": 1}) if synchronous
                   else ctx.heartbeat({"progress": 1}))
-    with pytest.raises(ActivityLeaseAuthorityLost) as refusal:
+    with pytest.raises(ActivityWorkerLost) as refusal:
         await invocation
 
     assert refusal.value.task_id == "original-task"
@@ -115,10 +115,10 @@ async def test_refusal_fences_only_the_matching_original_client_authority(same_o
                 task_id="original-task", activity_type="heartbeat-refusal", activity_attempt_id="original-attempt",
                 attempt_number=1, task_queue="original-queue", worker_id="original-worker",
             ), client=client)
-            with pytest.raises(ActivityLeaseAuthorityLost, match="attempt_closed"):
+            with pytest.raises(ActivityWorkerLost, match="attempt_closed"):
                 await ctx.heartbeat()
             if same_original:
-                with pytest.raises(ActivityLeaseAuthorityLost, match="attempt_closed"):
+                with pytest.raises(ActivityWorkerLost, match="attempt_closed"):
                     await client.complete_activity_task(
                         task_id="original-task", activity_attempt_id="original-attempt",
                         lease_owner="original-worker", result="late result",

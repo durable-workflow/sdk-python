@@ -5185,6 +5185,7 @@ def _activity_failed_from_payload(payload: Mapping[str, Any]) -> ActivityFailed:
         code=payload.get("code"),
         exception_payload=exposed_exception,
         activity=activity,
+        failure_reason=_optional_str(payload.get("failure_reason")),
     )
 
 

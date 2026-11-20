@@ -64,13 +64,33 @@ class QueryTaskAuthorityLost(DurableWorkflowError):
         self.reason = reason
 
 
-class ActivityLeaseAuthorityLost(DurableWorkflowError):
-    """An activity delivery lost its original live execution authority."""
+class ActivityWorkerLost(DurableWorkflowError):
+    """An activity delivery lost its original live execution authority.
+
+    ``reason`` is the local cause, for example ``attempt_closed`` from a
+    heartbeat refusal or ``activity_lease_renewal_unavailable`` when renewal
+    kept failing. When the worker releases such a claim through the Server it
+    reports the cross-SDK failure type :data:`WORKER_LOST_FAILURE_TYPE`
+    (``"worker_lost"``) with class ``ActivityWorkerLost`` and this cause in
+    the message and details.
+    """
 
     def __init__(self, task_id: str, reason: str) -> None:
         super().__init__(f"activity task {task_id!r} cannot continue: {reason}")
         self.task_id = task_id
         self.reason = reason
+
+
+#: Deprecated alias of :class:`ActivityWorkerLost`, kept so existing
+#: ``except ActivityLeaseAuthorityLost`` handlers keep working.
+ActivityLeaseAuthorityLost = ActivityWorkerLost
+
+#: Failure type of an activity attempt whose worker released a claim it could
+#: not maintain. Recorded as ``exception_type``; it can be listed in an
+#: activity retry policy's ``non_retryable_error_types``.
+WORKER_LOST_FAILURE_TYPE = "worker_lost"
+#: Exception class the Server records when it settles a lost activity lease.
+ACTIVITY_LEASE_EXPIRED_EXCEPTION_CLASS = "Workflow\\V2\\Exceptions\\ActivityLeaseExpiredException"
 
 
 class InvalidWorkflowDefinition(DurableWorkflowError, ValueError):
@@ -1028,8 +1048,10 @@ class ActivityFailed(DurableWorkflowError):
         code: Any | None = None,
         exception_payload: dict[str, Any] | None = None,
         activity: dict[str, Any] | None = None,
+        failure_reason: str | None = None,
     ) -> None:
         super().__init__(message)
+        self.failure_reason = failure_reason
         self.activity_type = activity_type
         self.step_sequence = step_sequence
         self.activity_execution_id = activity_execution_id
@@ -1042,6 +1064,21 @@ class ActivityFailed(DurableWorkflowError):
         self.code = code
         self.exception_payload = exception_payload
         self.activity = activity
+
+    def lease_loss_reason(self) -> str | None:
+        """Why this attempt failed because its worker lost the claim, if it did.
+
+        ``"worker_lost"`` when a worker released a claim it could not maintain
+        (failure type ``worker_lost``). For a lease the Server settled
+        (``ActivityLeaseExpiredException``), the recorded ``failure_reason``:
+        ``"lease_expired"`` or ``"worker_deregistered"``, defaulting to
+        ``"lease_expired"``. ``None`` for any other failure.
+        """
+        if self.exception_type == WORKER_LOST_FAILURE_TYPE:
+            return WORKER_LOST_FAILURE_TYPE
+        if self.exception_class == ACTIVITY_LEASE_EXPIRED_EXCEPTION_CLASS:
+            return self.failure_reason or "lease_expired"
+        return None
 
 
 class WorkflowTerminated(DurableWorkflowError):

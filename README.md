@@ -160,7 +160,8 @@ after cancellation. The disposal guarantees require SDK 2.12.2 or later.
 
 Both `await activity.context().heartbeat()` and synchronous
 `activity.context().heartbeat_sync()` stop at an explicit Server refusal.
-They raise `ActivityLeaseAuthorityLost` with its original `.reason` for an
+They raise `ActivityWorkerLost` (formerly `ActivityLeaseAuthorityLost`, still
+importable under that name) with its original `.reason` for an
 elapsed deadline, closed attempt or closed run. Cancellation continues to raise
 `ActivityCancelled`. The worker submits no result or failure for an attempt
 whose heartbeat refused continuation, even if application code catches that

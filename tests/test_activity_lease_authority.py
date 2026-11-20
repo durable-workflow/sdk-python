@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from durable_workflow._activity_lease import ActivityLeaseAuthority
-from durable_workflow.errors import ActivityLeaseAuthorityLost, ServerError
+from durable_workflow.errors import ActivityWorkerLost, ServerError
 
 ORIGINAL = datetime(2026, 10, 21, tzinfo=timezone.utc)
 
@@ -58,7 +58,7 @@ def reply(**changes: Any) -> dict[str, Any]:
 ])
 def test_invalid_original_delivery_never_authorizes_execution(clock: list[float], field: str, value: Any) -> None:
     original = task(**{field: value})
-    with pytest.raises(ActivityLeaseAuthorityLost):
+    with pytest.raises(ActivityWorkerLost):
         delivery(original)
 
 
@@ -78,7 +78,7 @@ def test_wrong_or_unbounded_renewal_cannot_extend_the_grant(
     original = authority.lease_until
     clock[0] = 101.1
     renewal = reply(**{field: value})
-    with pytest.raises(ActivityLeaseAuthorityLost):
+    with pytest.raises(ActivityWorkerLost):
         authority.acknowledge(renewal, 101)
     assert authority.lease_until == original
 
@@ -97,7 +97,7 @@ def test_acknowledgement_arriving_after_expiry_cannot_revive_the_claim(clock: li
     authority = delivery(task(deadlines={}))
     clock[0] = 105.1
     renewal = reply(server_time=timestamp(4), lease_expires_at=timestamp(20))
-    with pytest.raises(ActivityLeaseAuthorityLost, match="budget_expired"):
+    with pytest.raises(ActivityWorkerLost, match="budget_expired"):
         authority.acknowledge(renewal, 104)
     assert authority.lease_until == 105
 
@@ -110,7 +110,7 @@ def test_replaying_a_successful_reply_at_a_later_request_cannot_reset_latency(cl
     assert authority.lease_until == 111
     clock[0] = 101.2
     replayed = reply()
-    with pytest.raises(ActivityLeaseAuthorityLost, match="invalid_activity_renewal"):
+    with pytest.raises(ActivityWorkerLost, match="invalid_activity_renewal"):
         authority.acknowledge(replayed, 101.15)
     assert authority.lease_until == 111
 

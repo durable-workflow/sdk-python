@@ -1516,7 +1516,7 @@ storage-admission handling remain separate. See [Worker recovery](reference/work
 Use `await activity.context().heartbeat(details)` in an async activity or
 `activity.context().heartbeat_sync(details)` in a synchronous activity thread.
 Both raise `ActivityCancelled` when cancellation is requested. An explicit
-`can_continue=false` instead raises `ActivityLeaseAuthorityLost` with the
+`can_continue=false` instead raises `ActivityWorkerLost` with the
 original `.reason`, such as `activity_deadline_elapsed`, `attempt_closed` or
 `run_closed`. This is lost execution authority, not a new activity failure.
 The worker releases the slot after the callback exits and submits neither a

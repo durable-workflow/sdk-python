@@ -15,13 +15,13 @@ from urllib.parse import quote
 
 import httpx
 
-from .errors import ActivityLeaseAuthorityLost, ServerError
+from .errors import ActivityWorkerLost, ServerError
 
 _T = TypeVar("_T")
 _UTC6 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\Z")
 log = logging.getLogger("durable_workflow.worker")
 
-#: Reason of the :class:`ActivityLeaseAuthorityLost` raised when renewal kept
+#: Reason of the :class:`ActivityWorkerLost` raised when renewal kept
 #: failing until only the failure-report reserve of the lease was left. The
 #: worker then fails the attempt through the Server instead of dropping it.
 ACTIVITY_LEASE_RENEWAL_EXHAUSTED = "activity_lease_renewal_unavailable"
@@ -109,7 +109,7 @@ class ActivityLeaseAuthority:
                 lease_owner=owner, timeout=budget,
             )
             provisional.acknowledge(reply, started)
-        except ActivityLeaseAuthorityLost:
+        except ActivityWorkerLost:
             raise
         except Exception as error:
             if _transient(error):
@@ -124,7 +124,7 @@ class ActivityLeaseAuthority:
                 provisional.remaining()
                 return provisional
             reason = error.reason() if isinstance(error, ServerError) else None
-            raise ActivityLeaseAuthorityLost(
+            raise ActivityWorkerLost(
                 provisional.task_id, reason or "activity_initial_lease_unavailable",
             ) from error
         observed = dict(task)
@@ -174,7 +174,7 @@ class ActivityLeaseAuthority:
                 heartbeat,
             )
         except (KeyError, TypeError, ValueError, OverflowError) as error:
-            raise ActivityLeaseAuthorityLost(task_id, "invalid_activity_claim") from error
+            raise ActivityWorkerLost(task_id, "invalid_activity_claim") from error
         result.lease_seconds = duration
         result.remaining()
         return result
@@ -235,17 +235,17 @@ class ActivityLeaseAuthority:
             self.lease_expiry = max(self.lease_expiry, expiry)
         except (TypeError, ValueError, OverflowError) as error:
             self.lost_reason = "invalid_activity_heartbeat"
-            raise ActivityLeaseAuthorityLost(self.task_id, self.lost_reason) from error
+            raise ActivityWorkerLost(self.task_id, self.lost_reason) from error
 
     def remaining(self) -> float:
         if self.lost_reason is not None:
-            raise ActivityLeaseAuthorityLost(self.task_id, self.lost_reason)
+            raise ActivityWorkerLost(self.task_id, self.lost_reason)
         bounds = [self.lease_until, *(value for value in (self.business_until, self.heartbeat_until)
                                      if value is not None)]
         remaining = min(bounds) - time.monotonic()
         if remaining <= 0:
             self.lost_reason = "activity_execution_budget_expired"
-            raise ActivityLeaseAuthorityLost(self.task_id, self.lost_reason)
+            raise ActivityWorkerLost(self.task_id, self.lost_reason)
         return remaining
 
     def report_reserve(self) -> float:
@@ -295,7 +295,7 @@ class ActivityLeaseAuthority:
             self.server_time, self.lease_expiry, self.last_renewal = server, expiry, confirmation
         except (TypeError, ValueError, OverflowError) as error:
             self.lost_reason = "invalid_activity_renewal"
-            raise ActivityLeaseAuthorityLost(self.task_id, self.lost_reason) from error
+            raise ActivityWorkerLost(self.task_id, self.lost_reason) from error
 
     def _observe_progress(self, reply: Mapping[str, Any], server: datetime, started: float, received: float) -> None:
         if self.heartbeat_until is None or self.heartbeat_timeout is None:
@@ -328,7 +328,7 @@ class ActivityLeaseAuthority:
             self.acknowledge(reply, started)
             self.renewal_failures = 0
             return True
-        except ActivityLeaseAuthorityLost:
+        except ActivityWorkerLost:
             raise
         except Exception as error:
             if _transient(error):
@@ -338,7 +338,7 @@ class ActivityLeaseAuthority:
                 self.remaining()
                 return False
             self.lost_reason = "activity_renewal_unavailable"
-            raise ActivityLeaseAuthorityLost(self.task_id, self.lost_reason) from error
+            raise ActivityWorkerLost(self.task_id, self.lost_reason) from error
 
     async def _maintain(self, stopped: asyncio.Event) -> None:
         while not stopped.is_set():
@@ -371,7 +371,7 @@ class ActivityLeaseAuthority:
                                              return_when=asyncio.FIRST_COMPLETED)
                 if maintenance in done:
                     await maintenance
-                    raise ActivityLeaseAuthorityLost(self.task_id, self.lost_reason or "activity_renewal_stopped")
+                    raise ActivityWorkerLost(self.task_id, self.lost_reason or "activity_renewal_stopped")
                 if execution in done:
                     result = await execution
                     self.remaining()

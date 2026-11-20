@@ -344,9 +344,14 @@ def assert_retryable_renewal_failure(server: LeaseServer) -> None:
     body = server.fail_bodies[0]
     assert body["activity_attempt_id"] == "attempt-017"
     assert body["lease_owner"] == "worker-1"
-    assert body["failure"]["type"] == "ActivityLeaseAuthorityLost"
+    # Cross-SDK released-claim contract (PHP, Python, Rust).
+    assert body["failure"]["type"] == "worker_lost"
+    assert body["failure"]["class"] == "ActivityWorkerLost"
     assert "activity_lease_renewal_unavailable" in body["failure"]["message"]
     assert "non_retryable" not in body["failure"]
+    assert serializer.decode_envelope(body["failure"]["details"]) == {
+        "reason": "worker_lost", "cause": "activity_lease_renewal_unavailable",
+    }
     # Reported inside the claimed lease, so the Server can still accept it.
     assert all(elapsed < server.lease for elapsed in server.publication_times)
 

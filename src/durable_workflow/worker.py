@@ -79,9 +79,10 @@ from .client import (
     _worker_poll_http_timeout,
 )
 from .errors import (
+    WORKER_LOST_FAILURE_TYPE,
     ActivityCancelled,
     ActivityFailed,
-    ActivityLeaseAuthorityLost,
+    ActivityWorkerLost,
     AvroNotInstalledError,
     DuplicateRegistrationError,
     DurableWorkflowError,
@@ -184,7 +185,7 @@ _RUN_CLOSED_REFUSAL = "run_closed"
 
 def _run_closed_refusal(error: BaseException) -> bool:
     """Whether a claim or outcome request was refused because its run closed."""
-    if isinstance(error, ActivityLeaseAuthorityLost):
+    if isinstance(error, ActivityWorkerLost):
         return error.reason == _RUN_CLOSED_REFUSAL
     return isinstance(error, ServerError) and error.reason() == _RUN_CLOSED_REFUSAL
 
@@ -3480,14 +3481,14 @@ class Worker:
             return "claim_aborted"
         try:
             return await authority.run(lambda: self._run_activity_task_body(task))
-        except ActivityLeaseAuthorityLost as error:
+        except ActivityWorkerLost as error:
             if error.reason == ACTIVITY_LEASE_RENEWAL_EXHAUSTED:
                 return await self._fail_unrenewable_activity_claim(task, authority, error)
             log.warning("activity claim abandoned: %s", error)
             return "claim_aborted"
 
     async def _fail_unrenewable_activity_claim(self, task: dict[str, Any], authority: ActivityLeaseAuthority,
-                                               error: ActivityLeaseAuthorityLost) -> str:
+                                               error: ActivityWorkerLost) -> str:
         """Fail, never silently drop, a claim whose lease could not be renewed.
 
         Renewal kept failing transiently until only the report reserve of the
@@ -3506,11 +3507,13 @@ class Worker:
         # the deliberate exception, bounded by the lease that is still left.
         fence = current_activity_authority.set(None)
         try:
+            # The cross-SDK released-claim contract: type worker_lost, the
+            # idiomatic class name, retryable, local cause in message/details.
             await asyncio.wait_for(self.client.fail_activity_task(
                 task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id,
-                message=f"activity lease could not be renewed before it expired ({error.reason})",
-                failure_type=type(error).__name__, failure_class=_exception_class_name(error),
-                non_retryable=False,
+                message=f"activity worker released the claim: lease could not be renewed ({error.reason})",
+                failure_type=WORKER_LOST_FAILURE_TYPE, failure_class=ActivityWorkerLost.__name__,
+                non_retryable=False, details={"reason": WORKER_LOST_FAILURE_TYPE, "cause": error.reason},
             ), timeout=window)
         except Exception as report_error:
             if _run_closed_refusal(report_error):
@@ -3563,7 +3566,7 @@ class Worker:
                 # A caught heartbeat refusal cannot restore outcome authority,
                 # including when user code subsequently raises another error.
                 act_ctx._raise_if_cannot_continue()
-        except ActivityLeaseAuthorityLost as error:
+        except ActivityWorkerLost as error:
             log.warning("activity %s cannot continue after heartbeat: %s", task_id, error.reason)
             return "claim_aborted"
         except _RemoteActivityExecutionAborted as error:

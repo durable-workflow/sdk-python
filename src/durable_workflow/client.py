@@ -7226,7 +7226,7 @@ class Client:
         Worker-plane endpoint. Most code calls
         :meth:`~durable_workflow.ActivityContext.heartbeat` instead, which
         additionally raises :class:`~durable_workflow.errors.ActivityCancelled`
-        for cancellation or :class:`~durable_workflow.errors.ActivityLeaseAuthorityLost`
+        for cancellation or :class:`~durable_workflow.errors.ActivityWorkerLost`
         with the original reason when execution cannot continue.
         """
         body: dict[str, Any] = {
