@@ -283,6 +283,44 @@ def _is_storage_admission_error(error: BaseException) -> bool:
     )
 
 
+# Retry schedule after a transient runtime failure, the same in every SDK:
+# uniform(0, min(MAX, BASE * 2**(n - 1))) for the n-th consecutive failure.
+_TRANSIENT_RETRY_BASE_SECONDS = 0.25
+_TRANSIENT_RETRY_MAX_SECONDS = 4.0
+_UPSTREAM_UNAVAILABLE_STATUSES = (502, 503, 504)
+_TRANSIENT_UNAVAILABLE_REASONS = ("storage_unavailable", "backend_unavailable")
+
+
+def _transient_runtime_error(error: BaseException) -> bool:
+    """Whether a failed request may succeed unchanged once the runtime recovers.
+
+    Transient: a refused, reset or timed-out connection; an upstream 502, 503
+    or 504 without a protocol body; a 503 whose reason is
+    ``storage_unavailable`` or ``backend_unavailable`` (native Server answers
+    every storage failure with that body, for example during warm-up); and
+    any 5xx or 429 that says ``retryable: true``. Never ``retryable: false``,
+    authentication or authorization failures, or other protocol refusals.
+    """
+    if isinstance(error, httpx.TransportError):
+        return True
+    if not isinstance(error, ServerError):
+        return False
+    body = error.body if isinstance(error.body, Mapping) else None
+    retryable = body.get("retryable") if body is not None else None
+    if retryable is False or not (error.status >= 500 or error.status == 429):
+        return False
+    if retryable is True:
+        return True
+    if error.status == 503 and error.reason() in _TRANSIENT_UNAVAILABLE_REASONS:
+        return True
+    return error.status in _UPSTREAM_UNAVAILABLE_STATUSES and (body is None or "reason" not in body)
+
+
+def _transient_retry_delay(failures: int) -> float:
+    exponent = min(max(failures - 1, 0), 16)
+    return random.uniform(0.0, min(_TRANSIENT_RETRY_MAX_SECONDS, _TRANSIENT_RETRY_BASE_SECONDS * 2 ** exponent))
+
+
 def _positive_seconds(value: object) -> bool:
     return (
         isinstance(value, (int, float))
@@ -4707,12 +4745,47 @@ class Worker:
                     raise primary_error.with_traceback(primary_traceback) from shutdown_error
                 raise
 
+    async def _register_through_transients(self) -> None:
+        """Register, repeating through transient runtime failures (sdk-php#448).
+
+        A runtime that is warming up or briefly unavailable (for example
+        native Server's ``503 storage_unavailable``) must not end the worker.
+        Discovery and registration are repeated whole with the shared backoff;
+        any other failure is raised. Shutdown interrupts the wait and surfaces
+        the last failure.
+        """
+        failures = 0
+        while True:
+            try:
+                return await self._register()
+            except Exception as error:
+                # Discovery failures arrive wrapped as a compatibility error.
+                cause = error.__cause__ if isinstance(error, RuntimeError) else None
+                if not (_transient_runtime_error(error) or cause is not None and _transient_runtime_error(cause)):
+                    raise
+                if self._stop.is_set():
+                    raise
+                failures += 1
+                delay = _transient_retry_delay(failures)
+                log.warning("worker registration failed transiently: %s; retrying in %.2f s",
+                            _poll_error_summary(cause if cause is not None else error), delay)
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                if self._stop.is_set():
+                    raise
+
     async def _register_for_run(self) -> None:
         try:
-            await self._register()
+            await self._register_through_transients()
         except BaseException as error:
             if isinstance(error, Exception):
                 self._status.failed("registration")
+                if not self._stop.is_set():
+                    summary = (_poll_error_summary(error)
+                               if isinstance(error, ServerError | Unauthorized | httpx.TransportError)
+                               else f"{type(error).__name__}: {error}")
+                    log.error("worker %s stopping: registration failed with a non-retryable error: %s",
+                              self.worker_id, summary)
             if self._shutdown_task is None:
                 # run() leaves no shutdown behind a failed registration.
                 self._cancel_status_tick()
@@ -4920,7 +4993,7 @@ class Worker:
 
     async def _register_within(self, timeout: float) -> None:
         try:
-            await asyncio.wait_for(self._register(), timeout=timeout)
+            await asyncio.wait_for(self._register_through_transients(), timeout=timeout)
         except Exception:
             self._status.failed("registration")
             raise

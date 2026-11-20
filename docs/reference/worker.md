@@ -114,6 +114,34 @@ Typed capacity backpressure follows the Server's advertised retry delay.
 Storage-admission failures retain their separate identity-preserving retry and
 worker-stop behavior. Neither uses this generic poll-failure backoff.
 
+### Startup while the runtime is unavailable
+
+`Worker.run()` and `Worker.run_until()` also ride out a runtime that is warming
+up or briefly unavailable while they register. Cluster discovery and
+registration are repeated whole after a transient failure:
+
+- a refused, reset or timed-out connection
+- an upstream 502, 503 or 504 without a protocol body
+- a 503 whose reason is `storage_unavailable` or `backend_unavailable`
+  (native Server answers every storage failure with this body)
+- any 5xx or 429 that says `retryable: true`
+
+The wait before the *n*-th retry is `uniform(0, min(4, 0.25 * 2**(n - 1)))`
+seconds. This is the backoff schedule shared by every Durable Workflow SDK. Each
+retry logs a warning, and shutdown interrupts the wait.
+
+Some failures are never retried:
+
+- `retryable: false`
+- HTTP 401 or 403
+- any other 4xx protocol refusal
+- an incompatible Server
+
+For these, the worker logs `worker <id> stopping: registration failed with a
+non-retryable error: ...` at error level, and `run()` raises the error. After
+registration, pollers keep the poll-failure backoff described above. Worker
+heartbeats log a failure and try again at the next interval.
+
 ## Lifecycle and shutdown
 
 `Worker.run()` and `Worker.run_until()` register through the worker protocol
