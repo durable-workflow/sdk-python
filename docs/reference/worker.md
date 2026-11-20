@@ -90,14 +90,19 @@ This backoff requires Python SDK 2.10.0 or later. Earlier packages use a fixed
 one-second poll-error wait.
 
 Workflow, activity and query pollers back off independently after failed polls,
-including HTTP errors, rejected credentials and unreachable runtimes. The
-retry ceiling starts at 1 second, doubles on each consecutive failure and stops
-at 30 seconds. Each delay is chosen randomly between half and all of that
-ceiling, so workers do not retry in lockstep. Any successful poll, including an
-empty response, resets the ceiling to 1 second. Shutdown interrupts the wait.
+including HTTP errors, rejected credentials and unreachable runtimes. The wait
+before the *n*-th consecutive retry is `uniform(0, min(10, 0.25 * 2**(n - 1)))`
+seconds. That is the shared full-jitter schedule with a 10-second cap, so a
+poller recovers quickly once the runtime is back, and workers do not retry in
+lockstep. A bounded retry delay advertised by the Server is still honoured. Any
+successful poll, including an empty response, resets the schedule. Shutdown
+interrupts the wait.
 
-The first failure is logged immediately. An unchanged failure is logged at most
-once per minute per poller until polling succeeds.
+The first failure is logged as a warning immediately. An unchanged failure is
+logged at most once per minute per poller. Once a poller has failed
+continuously for 60 seconds, the outage is logged at ERROR level, then again
+every 5 minutes while it lasts. A successful poll ends the outage, and the next
+failure starts again with a warning.
 
 Authentication and authorization refusals are the exception to that limit:
 **every** poll answered with HTTP 401 (rejected authentication) or HTTP 403

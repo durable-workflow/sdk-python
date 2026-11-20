@@ -322,6 +322,13 @@ def _transient_runtime_error(error: BaseException) -> bool:
     return error.status in _UPSTREAM_UNAVAILABLE_STATUSES and (body is None or "reason" not in body)
 
 
+# Poll retries use the same full jitter with a 10 s cap, so a poller recovers
+# quickly after an outage. A long outage escalates from warnings to errors.
+_POLL_RETRY_MAX_SECONDS = 10.0
+_POLL_OUTAGE_ERROR_AFTER_SECONDS = 60.0
+_POLL_OUTAGE_ERROR_EVERY_SECONDS = 300.0
+
+
 def _transient_retry_delay(failures: int) -> float:
     exponent = min(max(failures - 1, 0), 16)
     return random.uniform(0.0, min(_TRANSIENT_RETRY_MAX_SECONDS, _TRANSIENT_RETRY_BASE_SECONDS * 2 ** exponent))
@@ -386,15 +393,25 @@ class _PollFailureBackoff:
         self.reset()
 
     def reset(self) -> None:
-        self._ceiling = 1.0
+        self._failures = 0
+        self._outage_started_at: float | None = None
         self._last_summary: str | None = None
         self._last_warning_at = 0.0
+        self._last_error_at: float | None = None
 
     def retry_delay(self, error: Exception, task_kind: str, *, minimum_delay: float = 0.0) -> float:
-        delay = max(minimum_delay, random.uniform(self._ceiling / 2, self._ceiling))
-        self._ceiling = min(30.0, self._ceiling * 2)
+        # Full jitter up to 10 s: uniform(0, min(10, 0.25 * 2**(n - 1))). A
+        # bounded Server retry delay (minimum_delay) is still honoured.
+        self._failures += 1
+        exponent = min(self._failures - 1, 16)
+        delay = max(minimum_delay, random.uniform(
+            0.0, min(_POLL_RETRY_MAX_SECONDS, _TRANSIENT_RETRY_BASE_SECONDS * 2 ** exponent),
+        ))
         summary = _poll_error_summary(error)
         now = time.monotonic()
+        if self._outage_started_at is None:
+            self._outage_started_at = now
+        outage = now - self._outage_started_at
         if _auth_refusal(error):
             # Every refusal is loud. The poller still retries so rotated
             # credentials recover without a restart; PHP and Rust stop instead.
@@ -404,6 +421,17 @@ class _PollFailureBackoff:
             )
             self._last_summary = summary
             self._last_warning_at = now
+        elif outage >= _POLL_OUTAGE_ERROR_AFTER_SECONDS:
+            # A long outage is an error: once when it crosses the threshold,
+            # then every few minutes while it lasts. A success resets it.
+            if self._last_error_at is None or now - self._last_error_at >= _POLL_OUTAGE_ERROR_EVERY_SECONDS:
+                log.error(
+                    "%s poll has failed for %.0f s: %s; route=/worker/%s-tasks/poll; still retrying, next in %.2f s",
+                    task_kind, outage, summary, task_kind, delay,
+                )
+                self._last_error_at = now
+                self._last_summary = summary
+                self._last_warning_at = now
         elif summary != self._last_summary or now - self._last_warning_at >= 60.0:
             log.warning(
                 "%s poll error: %s; route=/worker/%s-tasks/poll; retrying in %.2f s",

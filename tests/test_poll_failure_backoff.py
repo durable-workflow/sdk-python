@@ -78,7 +78,7 @@ async def test_recovered_poll_replays_recorded_activity_without_rescheduling(
     await asyncio.wait_for(worker._poll_workflow_tasks(), timeout=2)
     await asyncio.gather(*worker._in_flight)
     await real_sleep(0)  # Let task done callbacks return their reservations.
-    assert delays == [1, 2, 4]
+    assert delays == [0.25, 0.5, 1]
     client.complete_workflow_task.assert_awaited_once()
     publication = client.complete_workflow_task.call_args.kwargs
     assert publication["task_id"] == "recovered-task"
@@ -137,7 +137,8 @@ async def test_poll_failure_growth_cap_and_empty_success_reset(
     await getattr(worker, f"_poll_{kind}_tasks")()
     await asyncio.gather(*worker._in_flight)
 
-    assert delays == [1, 2, 4, 8, 16, 30, 30, 30, 30, 1]
+    # Full jitter capped at 10 s: uniform(0, min(10, 0.25 * 2**(n - 1))).
+    assert delays == [0.25, 0.5, 1, 2, 4, 8, 10, 10, 10, 0.25]
     assert calls == 12
     assert len(dispatched) == int(successful_task)
     # Failed/empty polls must release their reservations before retrying.
@@ -155,8 +156,43 @@ def test_jitter_uses_a_fresh_sample_with_bounded_delays(monkeypatch: pytest.Monk
     monkeypatch.setattr(random, "uniform", uniform)
     backoff = worker_module._PollFailureBackoff()
     delays = [backoff.retry_delay(Unauthorized(), "workflow") for _ in range(8)]
-    assert delays == [0.5, 2, 2, 8, 8, 30, 15, 30]
-    assert bounds == [(0.5, 1), (1, 2), (2, 4), (4, 8), (8, 16), (15, 30), (15, 30), (15, 30)]
+    assert delays == [0, 0.5, 0, 2, 0, 8, 0, 10]
+    assert bounds == [(0, 0.25), (0, 0.5), (0, 1), (0, 2), (0, 4), (0, 8), (0, 10), (0, 10)]
+
+
+def test_a_bounded_server_retry_delay_is_still_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(random, "uniform", lambda low, high: high)
+    backoff = worker_module._PollFailureBackoff()
+    assert backoff.retry_delay(ServerError(503, {}), "workflow", minimum_delay=7) == 7
+    assert backoff.retry_delay(ServerError(503, {}), "workflow", minimum_delay=0.1) == 0.5
+
+
+def test_a_long_outage_escalates_to_errors_and_resets_after_success(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    now = [1000.0]
+    clock = SimpleNamespace(monotonic=lambda: now[0], perf_counter=time.perf_counter)
+    monkeypatch.setattr(worker_module, "time", clock)
+    backoff = worker_module._PollFailureBackoff()
+    error = ServerError(503, {"reason": "storage_unavailable"})
+    levels: list[tuple[float, int]] = []
+    with caplog.at_level(logging.WARNING, logger="durable_workflow.worker"):
+        for at in (0, 30, 59, 61, 120, 300, 362, 500, 663):
+            now[0] = 1000.0 + at
+            before = len(caplog.records)
+            backoff.retry_delay(error, "activity")
+            levels.extend((at, record.levelno) for record in caplog.records[before:])
+        backoff.reset()  # a successful poll
+        now[0] = 2000.0
+        before = len(caplog.records)
+        backoff.retry_delay(error, "activity")
+        levels.extend(("after success", record.levelno) for record in caplog.records[before:])
+    # Warning at the start; error once the outage reaches 60 s, then every 5 minutes.
+    assert levels == [
+        (0, logging.WARNING), (61, logging.ERROR), (362, logging.ERROR), (663, logging.ERROR),
+        ("after success", logging.WARNING),
+    ]
+    assert "activity poll has failed for 61 s" in caplog.text
 
 
 @pytest.mark.parametrize("kind", POLL_KINDS)
@@ -176,6 +212,7 @@ async def test_changed_auth_failure_is_reported_immediately(
             worker._stop.set()
 
     monkeypatch.setattr(worker_module.asyncio, "sleep", sleep)
+    monkeypatch.setattr(random, "uniform", lambda low, high: high)
     with caplog.at_level(logging.WARNING, logger="durable_workflow.worker"):
         await getattr(worker, f"_poll_{kind}_tasks")()
     records = [r for r in caplog.records if r.name == "durable_workflow.worker"]
@@ -183,7 +220,7 @@ async def test_changed_auth_failure_is_reported_immediately(
     assert [r.levelno for r in records] == [logging.ERROR] * 4
     assert ["HTTP 401" in r.getMessage() for r in records] == [True, True, False, False]
     assert ["HTTP 403" in r.getMessage() for r in records] == [False, False, True, True]
-    assert delays[2] >= 2  # A changed failure does not reset the request backoff.
+    assert delays == [0.25, 0.5, 1, 2]  # A changed failure does not reset the request backoff.
 
 
 @pytest.mark.parametrize("kind", POLL_KINDS)
@@ -262,7 +299,7 @@ async def test_shutdown_interrupts_a_capped_backoff(kind: str, monkeypatch: pyte
     real_sleep = asyncio.sleep
 
     async def sleep(delay: float) -> None:
-        if delay == 30:
+        if delay == 10:
             waiting.set()
             await real_sleep(delay)
 
@@ -317,4 +354,4 @@ async def test_actual_client_poll_errors_back_off_then_recover(
     async with client:
         await getattr(worker, f"_poll_{kind}_tasks")()
     assert calls == 6
-    assert delays == [1, 2, 4, 1]
+    assert delays == [0.25, 0.5, 1, 0.25]
