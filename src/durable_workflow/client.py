@@ -33,6 +33,7 @@ import uuid
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from typing import Any, cast
@@ -49,6 +50,8 @@ from ._cancellation_scope_history import (
     CancellationScopeDeliveryReceipt,
     scope_timestamp,
 )
+from ._capabilities_digest import HEADER as CAPABILITIES_DIGEST_HEADER
+from ._capabilities_digest import ServerCapabilitiesDigest
 from ._cooperative_cancellation import CancellationDelivery, CancellationRequest
 from ._failure_reporting import (
     DETAIL_BYTES,
@@ -486,6 +489,8 @@ class WorkflowExecution:
     payload_codec: str | None = None
     memo: dict[str, Any] | None = None
     search_attributes: dict[str, Any] | None = None
+    # Whether ``output`` was decoded from the status read's ``output_envelope``.
+    _output_from_envelope: bool = dataclass_field(default=False, init=False, repr=False, compare=False)
 
 
 @dataclass
@@ -1988,6 +1993,7 @@ class Client:
         )
         self._cluster_info: dict[str, Any] | None = None
         self._cluster_info_lock = asyncio.Lock()
+        self._capabilities_digest = ServerCapabilitiesDigest()
         self._runtime_external_payload_transport_cache: (
             _RuntimeExternalPayloadTransport | None
         ) = None
@@ -2242,6 +2248,8 @@ class Client:
         status_code = "none"
         outcome = "pending"
         request_started = time.monotonic()
+        # The digest pair this request is sent with; its answer resolves against it.
+        capabilities_digest = self._capabilities_digest.capture() if worker else None
 
         async def _do_request() -> httpx.Response:
             nonlocal request_started
@@ -2250,6 +2258,8 @@ class Client:
             if worker and activity_authority is not None and activity_authority.governs(self, self.namespace, path):
                 request_timeout = min(request_timeout, activity_authority.remaining())
             headers = self._discovery_headers() if discovery else self._headers(worker=worker)
+            if capabilities_digest is not None:
+                headers[CAPABILITIES_DIGEST_HEADER] = ServerCapabilitiesDigest.header(capabilities_digest)
             if progress_poll:
                 headers["Accept"] = _POLL_ACCEPT
             pending = self._http.request(
@@ -2290,6 +2300,8 @@ class Client:
                     body = exc.response.json()
                 except ValueError:
                     body = exc.response.text
+                if capabilities_digest is not None:
+                    self._capabilities_digest.restore(body, capabilities_digest)
                 # The typed completion-size refusal carries the limit; the
                 # size is the encoded request body this client sent.
                 if raise_for_status is _raise_for_status:
@@ -2305,6 +2317,8 @@ class Client:
                 outcome = "ok"
                 return None
             result = resp.json()
+            if capabilities_digest is not None:
+                self._capabilities_digest.restore(result, capabilities_digest)
             if (worker and activity_authority is not None
                     and activity_authority.governs(self, self.namespace, path)
                     and path.endswith("/heartbeat") and isinstance(result, dict)
@@ -4131,6 +4145,7 @@ class Client:
         data = await self._request("GET", f"/workflows/{workflow_id}", context=workflow_id)
         input_val = data.get("input")
         output_val = data.get("output")
+        output_from_envelope = False
         envelope_jobs: list[tuple[str, Any]] = []
         if data.get("input_envelope"):
             envelope_jobs.append(("input", data["input_envelope"]))
@@ -4142,12 +4157,13 @@ class Client:
                 external_storage=self.external_storage,
                 external_storage_cache=self.external_storage_cache,
             )
-            for (field, _), value in zip(envelope_jobs, decoded, strict=True):
-                if field == "input":
+            for (field_name, _), value in zip(envelope_jobs, decoded, strict=True):
+                if field_name == "input":
                     input_val = value
                 else:
                     output_val = value
-        return WorkflowExecution(
+                    output_from_envelope = True
+        execution = WorkflowExecution(
             workflow_id=data.get("workflow_id", workflow_id),
             run_id=data.get("run_id"),
             workflow_type=data.get("workflow_type", ""),
@@ -4162,6 +4178,8 @@ class Client:
                 data.get("search_attributes") if isinstance(data.get("search_attributes"), dict) else None
             ),
         )
+        execution._output_from_envelope = output_from_envelope
+        return execution
 
     async def list_workflows(
         self,
@@ -5507,6 +5525,13 @@ class Client:
             status = desc.status
             if status in ("completed", "failed", "terminated", "canceled", "cancelled"):
                 run_id = handle.run_id or desc.run_id
+                if (status == "completed" and desc._output_from_envelope and desc.run_id is not None
+                        and desc.run_id == run_id):
+                    # The status read already carries this run's decoded output;
+                    # the history is only needed for a non-success outcome.
+                    if result_type is None:
+                        return desc.output
+                    return decode_payload_value(desc.output, result_type, "workflow result")
                 if run_id is None:
                     raise WorkflowFailed("no run_id available to fetch history")
                 page_token: str | None = None

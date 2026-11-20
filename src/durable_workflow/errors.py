@@ -64,6 +64,14 @@ class QueryTaskAuthorityLost(DurableWorkflowError):
         self.reason = reason
 
 
+class ServerCapabilitiesDigestError(DurableWorkflowError):
+    """A worker answer elided ``server_capabilities`` with a digest this worker does not hold.
+
+    The Server only elides with the digest a request sent (server#1262), so
+    this is a protocol failure, never a transient condition.
+    """
+
+
 class ActivityLeaseAuthorityLost(DurableWorkflowError):
     """An activity delivery lost its original live execution authority."""
 
