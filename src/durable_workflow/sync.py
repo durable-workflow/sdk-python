@@ -7,6 +7,7 @@ import ssl
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
+from ._response_limit import DEFAULT_MAX_RESPONSE_BODY_BYTES
 from .client import Client as AsyncClient
 from .client import (
     NamespaceDescription,
@@ -320,6 +321,7 @@ class Client:
         external_storage: ExternalStorageDriver | None = None,
         external_storage_threshold_bytes: int | None = None,
         external_storage_cache: ExternalPayloadCache | None = None,
+        max_response_body_bytes: int = DEFAULT_MAX_RESPONSE_BODY_BYTES,
     ) -> None:
         self._async = AsyncClient(
             base_url,
@@ -334,6 +336,7 @@ class Client:
             external_storage=external_storage,
             external_storage_threshold_bytes=external_storage_threshold_bytes,
             external_storage_cache=external_storage_cache,
+            max_response_body_bytes=max_response_body_bytes,
         )
         self._runner = _LoopRunner()
         self._closed = False
