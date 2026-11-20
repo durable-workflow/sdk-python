@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Overlapping requests:** each answer is resolved against the digest and object its own request was sent with. A request in flight during a rolling deploy that changes the capabilities restores the object it was sent with, while later requests use the newer digest.
   - **Errors:** a digest the worker does not hold raises the new `ServerCapabilitiesDigestError`, a protocol failure.
   - **Older Servers** ignore the header and answer in full as before.
+- Response bodies are bounded after decoding: 128 MiB by default, configurable with `Client(max_response_body_bytes=...)` (and the sync client). httpx decodes `Content-Encoding: gzip` transparently, so before this a small compressed answer could expand without limit in memory.
+  - **How:** each response stream is counted as it decodes, inflating at most 1 MiB at a time. It is refused with the new `ResponseBodyTooLarge` before httpx decodes past the limit, and that error is not retried. The bound also applies to runtime external-payload fetches.
+  - **Encodings:** the client now asks only for `gzip`, which is what native Server sends. Any other response `Content-Encoding` is refused with `httpx.DecodingError`.
 - `WorkflowHandle.result()` and `Client.get_result()` no longer read the run's history for a completed run when the status read already carries that run's `output_envelope`. The status read is `GET /workflows/{id}`, which the result poll makes anyway. Failed, cancelled, terminated and timed-out runs still read the history for their typed failure, and so does a completed run whose status read has no `output_envelope` or names a different run.
 
 ## [2.20.0] - 2026-11-19

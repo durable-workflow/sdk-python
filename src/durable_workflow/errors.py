@@ -64,6 +64,20 @@ class QueryTaskAuthorityLost(DurableWorkflowError):
         self.reason = reason
 
 
+class ResponseBodyTooLarge(DurableWorkflowError):
+    """A response body decoded to more bytes than the client allows.
+
+    The bound (``Client(max_response_body_bytes=...)``, 128 MiB by default)
+    applies after ``Content-Encoding`` decoding, so a small compressed answer
+    cannot expand without limit in memory. Not retried.
+    """
+
+    def __init__(self, limit: int, path: str = "") -> None:
+        super().__init__(f"response body{f' from {path}' if path else ''} exceeds {limit} decoded bytes")
+        self.limit = limit
+        self.path = path
+
+
 class ServerCapabilitiesDigestError(DurableWorkflowError):
     """A worker answer elided ``server_capabilities`` with a digest this worker does not hold.
 

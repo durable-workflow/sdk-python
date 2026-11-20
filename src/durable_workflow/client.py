@@ -67,6 +67,7 @@ from ._poll_transport import POLL_PATHS as _POLL_PATHS
 from ._poll_transport import unwrap_response as _unwrap_poll_response
 from ._poll_transport import warn_early_cutoff as _warn_poll_cutoff
 from ._query_task_authority import QueryTaskAuthority, current_query_authority
+from ._response_limit import ACCEPT_ENCODING, DEFAULT_MAX_RESPONSE_BODY_BYTES, response_body_limit
 from ._typed_values import decode_payload_value, to_payload_values, validate_annotation
 from .errors import (
     REQUEST_ID_AMBIGUOUS,
@@ -1948,6 +1949,7 @@ class Client:
         external_storage_threshold_bytes: int | None = None,
         external_storage_cache: ExternalPayloadCache | None = None,
         telemetry: ExecutionTelemetry | None = None,
+        max_response_body_bytes: int = DEFAULT_MAX_RESPONSE_BODY_BYTES,
     ) -> None:
         _validate_static_credential("token", token)
         _validate_static_credential("control_token", control_token)
@@ -1988,8 +1990,13 @@ class Client:
             if external_storage_cache is not None
             else ExternalPayloadCache()
         )
+        if type(max_response_body_bytes) is not int or max_response_body_bytes < 1:
+            raise ValueError("max_response_body_bytes must be a positive integer")
+        self.max_response_body_bytes = max_response_body_bytes
         self._http = httpx.AsyncClient(
             base_url=self.base_url, timeout=timeout, verify=tls_context if tls_context is not None else True,
+            headers={"Accept-Encoding": ACCEPT_ENCODING},
+            event_hooks={"response": [response_body_limit(max_response_body_bytes)]},
         )
         self._cluster_info: dict[str, Any] | None = None
         self._cluster_info_lock = asyncio.Lock()
