@@ -87,6 +87,7 @@ from .errors import (
     DuplicateRegistrationError,
     DurableWorkflowError,
     ExternalPayloadError,
+    ExternalPayloadOversized,
     FailureReportTooLarge,
     InvalidArgument,
     NonDeterministicReplayError,
@@ -356,6 +357,24 @@ def _positive_seconds(value: object) -> bool:
         and math.isfinite(value)
         and value > 0
     )
+
+
+#: Failure type and class of an activity attempt whose result cannot be
+#: delivered under the Server's payload limits (the same in PHP and Rust).
+ACTIVITY_RESULT_TOO_LARGE = "ActivityResultTooLarge"
+
+
+def _activity_result_too_large_message(error: BaseException) -> str | None:
+    """The failure message for an undeliverable oversized result, or ``None``."""
+    if _payload_too_large(error):
+        body = error.body if isinstance(error, ServerError) and isinstance(error.body, Mapping) else {}
+        limit = body.get("limit")
+        limit_text = (f"the Server's payload limit of {limit} bytes" if type(limit) is int
+                      else "the Server's payload limit")
+        return f"activity result exceeds {limit_text} and cannot be stored externally under the current policy"
+    if isinstance(error, ExternalPayloadOversized):
+        return f"activity result exceeds the Server's external payload limit: {error}"
+    return None
 
 
 def _payload_too_large(error: BaseException) -> bool:
@@ -3780,6 +3799,20 @@ class Worker:
                     task_id,
                 )
                 return "claim_aborted"
+            too_large = _activity_result_too_large_message(e)
+            if too_large is not None:
+                # The result cannot be delivered under the Server's current
+                # policy (still too large after rediscovery, no external
+                # storage, or over the upload limit). Report it as a
+                # non-retryable failure, as PHP and Rust do, instead of
+                # letting the attempt expire silently.
+                log.error("activity task %s result is too large to deliver: %s", task_id, too_large)
+                await self._report_activity_task_failure(
+                    task_id, attempt_id, "oversized activity result", message=too_large,
+                    failure_type=ACTIVITY_RESULT_TOO_LARGE, failure_class=ACTIVITY_RESULT_TOO_LARGE,
+                    non_retryable=True,
+                )
+                return "failed_non_retryable"
             log.warning("failed to complete activity task %s: %s", task_id, e)
             return "complete_error"
         return "completed"

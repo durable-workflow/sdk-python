@@ -1,6 +1,7 @@
 """A completion refused as 413 payload_too_large rediscovers a stale payload policy and resends once."""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -29,13 +30,21 @@ def big_result() -> str:
 class LimitServer(FakeRuntimePayloadServer):
     """Refuses requests over its request limit; the limit (and threshold) can change mid-run."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, storage: bool = True) -> None:
         super().__init__(threshold_bytes=2 * MIB, max_payload_bytes=8 * MIB)
+        self.storage = storage
         self.request_limit = 2 * MIB
+        self.fail_bodies: list[dict[str, Any]] = []
         self.completions: list[int] = []
         self.failures = 0
         self.discovery_failures = 0
         self.discovery_reads = 0
+
+    def cluster_info(self) -> dict[str, Any]:
+        info = super().cluster_info()
+        if not self.storage:
+            info["namespace"].pop("external_payload_storage")
+        return info
 
     def lower_limit(self, limit: int, *, threshold: int | None = None) -> None:
         # Native: an absent namespace threshold is the payload ceiling.
@@ -61,6 +70,7 @@ class LimitServer(FakeRuntimePayloadServer):
             return httpx.Response(200, json={"outcome": "completed", "recorded": True})
         if path.endswith("/activity-tasks/task-1/fail"):
             self.failures += 1
+            self.fail_bodies.append(json.loads(request.content))
             return httpx.Response(200, json={"outcome": "failed", "recorded": True})
         return super().handler(request)
 
@@ -81,7 +91,8 @@ async def run_activity(server: LimitServer, *, lower: dict[str, Any] | None,
     client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(server.handler))
     # The worker discovered the 2 MiB policy earlier in its run.
     await client.get_cluster_info()
-    assert await client._payload_policy_resolved_snapshot() == (2 * MIB, 8 * MIB)
+    expected = (2 * MIB, 8 * MIB) if server.storage else None
+    assert await client._payload_policy_resolved_snapshot() == expected
     if lower is not None:
         server.lower_limit(**lower)  # the Server's limit changes mid-run
     server.discovery_failures = outage
@@ -127,18 +138,44 @@ async def test_rediscovery_rides_out_a_discovery_outage() -> None:
         await client.aclose()
 
 
-async def test_a_genuinely_too_large_result_keeps_todays_handling(caplog: pytest.LogCaptureFixture) -> None:
+def assert_failed_as_too_large(server: LimitServer, limit: int) -> None:
+    assert server.failures == 1, "reported once"
+    failure = server.fail_bodies[0]["failure"]
+    assert failure["type"] == "ActivityResultTooLarge"
+    assert failure["class"] == "ActivityResultTooLarge"
+    assert failure["non_retryable"] is True
+    assert f"payload limit of {limit} bytes" in failure["message"]
+
+
+async def test_a_result_still_too_large_after_rediscovery_fails_non_retryably(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     # The limit drops but the namespace threshold stays at 2 MiB: rediscovery
-    # finds nothing to change, so the refusal stands after a single send.
+    # finds nothing to change, so the result cannot be delivered.
     server = LimitServer()
     with caplog.at_level(logging.WARNING, logger="durable_workflow.worker"):
         outcome, client = await run_activity(server, lower={"limit": 100 * 1024, "threshold": 2 * MIB})
     try:
-        assert outcome == "complete_error"
-        assert ran == ["ran"]
+        assert outcome == "failed_non_retryable"
+        assert ran == ["ran"], "the activity ran once"
         assert len(server.completions) == 1, "no resend when the policy did not change"
-        assert server.failures == 0, "a size refusal never becomes a failure report"
+        assert_failed_as_too_large(server, 100 * 1024)
         assert "payload policy unchanged" in caplog.text
+        # The worker carries on: the same client keeps serving requests.
+        assert await client._request("POST", "/worker/heartbeat", worker=True, json={}) == {"ok": True}
+    finally:
+        await client.aclose()
+
+
+async def test_a_result_that_cannot_be_externalised_fails_non_retryably() -> None:
+    server = LimitServer(storage=False)
+    outcome, client = await run_activity(server, lower={"limit": 100 * 1024})
+    try:
+        assert outcome == "failed_non_retryable"
+        assert ran == ["ran"]
+        assert len(server.completions) == 1
+        assert server.upload_count == 0, "no external storage to offload to"
+        assert_failed_as_too_large(server, 100 * 1024)
     finally:
         await client.aclose()
 
