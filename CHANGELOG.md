@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A cluster-info read failure at worker startup no longer stops the worker.
+  - **Retried:** `GET /api/cluster/info` has no side effects, so `Worker.run()` and `run_until()` now treat any failed connection and any 5xx or 429 answer to it as transient, unless the Server says `retryable: false`. Before, only the narrower transient set did (for example 503 `storage_unavailable`), so a plain `500` stopped the worker. The read is retried with the shared backoff `uniform(0, min(4, 0.25 * 2**(n - 1)))` seconds until the runtime answers.
+  - **Logging:** startup retries now escalate like poll outages, to ERROR after 60 s and then every 5 minutes.
+  - **Still fatal:** typed refusals keep their behavior. A 401 or 403 is fatal at startup.
 - A worker answer that names a capabilities digest the worker does not hold no longer strands the request (PHP and Rust parity). Before, it raised `ServerCapabilitiesDigestError`, and a leased task sat until its lease expired. In a lab run with garbled digests, 0 of 10 workflows finished in 150 s.
   - **Non-idempotent requests are never resent.** For a completion, failure report or heartbeat, the client keeps the answer as received, since everything but the capabilities object is valid. It reads the capabilities with a read-only `GET /api/cluster/info` (`worker_protocol.server_capabilities`, the same object) and forgets its held digest, so later requests send `none` and learn a fresh copy. If discovery is unavailable, the field is dropped; no caller reads capabilities from those answers.
   - **Task polls** are safe to repeat, so a poll is instead resent once with `none` to get the full object. An unknown digest on that resend, or in an answer to a request that already sent `none`, is a protocol error.

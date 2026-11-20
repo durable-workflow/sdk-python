@@ -322,6 +322,21 @@ def _transient_runtime_error(error: BaseException) -> bool:
     return error.status in _UPSTREAM_UNAVAILABLE_STATUSES and (body is None or "reason" not in body)
 
 
+def _transient_discovery_error(error: BaseException) -> bool:
+    """Whether a failed cluster-info read may succeed once the runtime recovers.
+
+    The read is a side-effect-free GET, so every connection failure and every
+    5xx or 429 is transient unless the Server says ``retryable: false``.
+    Authentication, authorization and other typed refusals are not.
+    """
+    if _transient_runtime_error(error):
+        return True
+    if not isinstance(error, ServerError) or not (error.status >= 500 or error.status == 429):
+        return False
+    body = error.body if isinstance(error.body, Mapping) else None
+    return body is None or body.get("retryable") is not False
+
+
 # Poll retries use the same full jitter with a 10 s cap, so a poller recovers
 # quickly after an outage. A long outage escalates from warnings to errors.
 _POLL_RETRY_MAX_SECONDS = 10.0
@@ -4900,20 +4915,32 @@ class Worker:
         the last failure.
         """
         failures = 0
+        started = time.monotonic()
+        last_error_at: float | None = None
         while True:
             try:
                 return await self._register()
             except Exception as error:
-                # Discovery failures arrive wrapped as a compatibility error.
+                # Discovery failures arrive wrapped as a compatibility error;
+                # a cluster-info read is transient on any 5xx or connection error.
                 cause = error.__cause__ if isinstance(error, RuntimeError) else None
-                if not (_transient_runtime_error(error) or cause is not None and _transient_runtime_error(cause)):
+                if not (_transient_runtime_error(error) or cause is not None and _transient_discovery_error(cause)):
                     raise
                 if self._stop.is_set():
                     raise
                 failures += 1
                 delay = _transient_retry_delay(failures)
-                log.warning("worker registration failed transiently: %s; retrying in %.2f s",
-                            _poll_error_summary(cause if cause is not None else error), delay)
+                summary = _poll_error_summary(cause if cause is not None else error)
+                now = time.monotonic()
+                if now - started >= _POLL_OUTAGE_ERROR_AFTER_SECONDS:
+                    # The same escalation as a poll outage: an error once the
+                    # runtime has been unavailable for 60 s, then every 5 min.
+                    if last_error_at is None or now - last_error_at >= _POLL_OUTAGE_ERROR_EVERY_SECONDS:
+                        log.error("worker registration has failed for %.0f s: %s; still retrying, next in %.2f s",
+                                  now - started, summary, delay)
+                        last_error_at = now
+                else:
+                    log.warning("worker registration failed transiently: %s; retrying in %.2f s", summary, delay)
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self._stop.wait(), timeout=delay)
                 if self._stop.is_set():
