@@ -2432,6 +2432,24 @@ class Client:
             raise ExternalPayloadUnsupported("activity payload reference has no authenticated runtime transport")
         return await self._resolve_runtime_payloads(value, worker=worker, transport=transport, resolved={})
 
+    def _payload_policy_snapshot(self) -> tuple[int, int] | None:
+        """The cached runtime payload policy as (threshold, max payload) bytes, if any."""
+        transport = self._runtime_external_payload_transport_cache
+        return (transport.threshold_bytes, transport.max_payload_bytes) if transport is not None else None
+
+    def _forget_payload_policy(self) -> None:
+        """Drop the cached payload policy so the next payload re-resolves it from discovery."""
+        self._runtime_external_payload_transport_cache = None
+        self._runtime_external_payload_transport_resolved = False
+
+    async def _payload_policy_resolved_snapshot(self) -> tuple[int, int] | None:
+        """Resolve the payload policy from the held discovery and snapshot it."""
+        try:
+            await self._runtime_external_payload_transport()
+        except Exception:
+            return None
+        return self._payload_policy_snapshot()
+
     async def _runtime_external_payload_transport(
         self,
     ) -> _RuntimeExternalPayloadTransport | None:

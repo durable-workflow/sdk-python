@@ -358,6 +358,12 @@ def _positive_seconds(value: object) -> bool:
     )
 
 
+def _payload_too_large(error: BaseException) -> bool:
+    """A ``413 payload_too_large`` request-size refusal (refused before processing)."""
+    return (isinstance(error, ServerError) and error.status == 413 and isinstance(error.body, Mapping)
+            and error.body.get("reason") == "payload_too_large")
+
+
 def _auth_refusal(error: BaseException) -> bool:
     return isinstance(error, Unauthorized) or isinstance(error, ServerError) and error.status in (401, 403)
 
@@ -3319,8 +3325,22 @@ class Worker:
                 sticky_cache=sticky_cache,
             )
         except WorkflowTaskCompletionTooLarge as error:
+            if _payload_too_large(error) and await self._refresh_payload_policy(f"workflow task {task_id} completion"):
+                # The policy was stale: resend once, re-encoded under it.
+                try:
+                    await self._send_workflow_task_completion(
+                        task_id=task_id,
+                        attempt=attempt,
+                        commands=commands,
+                        message_stream_cursors=message_stream_cursors,
+                        message_stream_waits=message_stream_waits,
+                        sticky_cache=sticky_cache,
+                    )
+                    return
+                except WorkflowTaskCompletionTooLarge as still_too_large:
+                    error = still_too_large
             await self._fail_run_for_oversized_completion(task_id, attempt, error)
-            raise
+            raise error
 
     async def _fail_run_for_oversized_completion(
         self,
@@ -3838,11 +3858,22 @@ class Worker:
         """
         failures = 0
         started = time.monotonic()
+        policy_refreshed = False
         while True:
             try:
                 await publish()
                 return
             except Exception as error:
+                if _payload_too_large(error) and not policy_refreshed:
+                    # The request was refused before it was processed. A
+                    # cached payload policy may be stale (the Server lowered
+                    # its limit): rediscover it and resend once, re-encoded.
+                    policy_refreshed = True
+                    if await self._refresh_payload_policy(
+                        f"activity task {task_id} {outcome}", lambda: self._activity_outcome_window(task_id),
+                    ):
+                        continue
+                    raise
                 # The client's own transport retry can resend too, so this
                 # holds on the first round as well.
                 if outcome == "completed" and _committed_own_activity_completion(
@@ -3872,6 +3903,50 @@ class Worker:
                 log.warning("activity task %s %s outcome failed transiently (%s); retrying in %.2f s",
                             task_id, outcome, summary, delay)
                 await asyncio.sleep(delay)
+
+    async def _refresh_payload_policy(self, context: str,
+                                      window: Callable[[], float | None] | None = None) -> bool:
+        """Rediscover the payload policy after a ``413 payload_too_large``.
+
+        Returns whether the policy changed, so a re-encoded resend could fit.
+        Discovery outages are retried with the shared backoff while ``window``
+        (seconds left, ``None`` when unknown) allows; the held discovery is
+        replaced only by a successful read.
+        """
+        client = self.client
+        before = getattr(client, "_payload_policy_snapshot", lambda: None)()
+        failures = 0
+        started = time.monotonic()
+        while True:
+            try:
+                await client.get_cluster_info()
+                break
+            except Exception as error:
+                if not _transient_discovery_error(error) or self._stop.is_set():
+                    log.warning("%s: payload policy rediscovery failed: %s", context, _poll_error_summary(error))
+                    return False
+                failures += 1
+                delay = _transient_retry_delay(failures)
+                left = window() if window is not None else None
+                if left is None:
+                    left = _UNKNOWN_LEASE_OUTCOME_RETRY_SECONDS - (time.monotonic() - started)
+                if left <= delay:
+                    log.error("%s: payload policy rediscovery failed %d times (%s) and no time is left",
+                              context, failures, _poll_error_summary(error))
+                    return False
+                log.warning("%s: payload policy rediscovery failed transiently (%s); retrying in %.2f s",
+                            context, _poll_error_summary(error), delay)
+                await asyncio.sleep(delay)
+        forget = getattr(client, "_forget_payload_policy", None)
+        if forget is not None:
+            forget()
+        after = await client._payload_policy_resolved_snapshot() if hasattr(
+            client, "_payload_policy_resolved_snapshot") else None
+        changed = after != before
+        log.warning("%s refused as payload_too_large; payload policy %s (%s -> %s)%s",
+                    context, "changed" if changed else "unchanged", before, after,
+                    "; resending once re-encoded" if changed else "")
+        return changed
 
     async def _report_activity_task_failure(self, task_id: str, attempt_id: str,
                                             context: str, **failure: Any) -> None:
