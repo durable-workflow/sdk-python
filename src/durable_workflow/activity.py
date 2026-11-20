@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._activity_checkpoint import ActivityHeartbeatCheckpoint, _HeartbeatResume, claim_resume
 from ._activity_lease import current_activity_authority
-from .errors import ActivityCancelled, ActivityLeaseAuthorityLost
+from .errors import ActivityCancelled, ActivityWorkerLost
 
 if TYPE_CHECKING:
     from .client import Client
@@ -190,7 +190,7 @@ class ActivityContext:
         owning workflow has requested cancellation, so the activity can exit
         cleanly at its next natural break point.
 
-        Raises :class:`~durable_workflow.errors.ActivityLeaseAuthorityLost`
+        Raises :class:`~durable_workflow.errors.ActivityWorkerLost`
         with the original Server reason when the attempt cannot continue,
         including an elapsed deadline, closed attempt or closed run.
         """
@@ -225,7 +225,7 @@ class ActivityContext:
                     and authority.identity["attempt_number"] == self._info.attempt_number
                     and authority.identity["lease_owner"] == self._info.worker_id):
                 authority.lost_reason = authority.lost_reason or self._cannot_continue_reason
-            raise ActivityLeaseAuthorityLost(self._info.task_id, self._cannot_continue_reason)
+            raise ActivityWorkerLost(self._info.task_id, self._cannot_continue_reason)
 
 
 def context() -> ActivityContext:

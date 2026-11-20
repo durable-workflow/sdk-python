@@ -20,7 +20,7 @@ import pytest
 from durable_workflow import activity, serializer
 from durable_workflow.activity import ActivityContext, ActivityInfo
 from durable_workflow.client import Client
-from durable_workflow.errors import ActivityCancelled, ActivityLeaseAuthorityLost, ServerError
+from durable_workflow.errors import ActivityCancelled, ActivityWorkerLost, ServerError
 from durable_workflow.worker import Worker
 
 RUN_CLOSED_OUTCOME = {
@@ -201,7 +201,7 @@ async def test_claim_refused_because_the_run_closed_is_an_answered_poll(
     async def poll(**_: object) -> None:
         polls.append("poll")
         if len(polls) == 1:
-            raise ActivityLeaseAuthorityLost("late-task", "run_closed")
+            raise ActivityWorkerLost("late-task", "run_closed")
         await worker.stop()
         return None
 

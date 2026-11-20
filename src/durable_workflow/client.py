@@ -2337,6 +2337,7 @@ class Client:
                     activity_authority = await ActivityLeaseAuthority.confirm_delivery(
                         self, self.namespace, result["task"], owner=request_json["worker_id"],
                         task_queue=request_json["task_queue"], server_time=result.get("server_time"),
+                        poll_started=request_started,
                     )
                     current_activity_authority.set(activity_authority)
             query_authority = None
@@ -7258,7 +7259,7 @@ class Client:
         Worker-plane endpoint. Most code calls
         :meth:`~durable_workflow.ActivityContext.heartbeat` instead, which
         additionally raises :class:`~durable_workflow.errors.ActivityCancelled`
-        for cancellation or :class:`~durable_workflow.errors.ActivityLeaseAuthorityLost`
+        for cancellation or :class:`~durable_workflow.errors.ActivityWorkerLost`
         with the original reason when execution cannot continue.
         """
         body: dict[str, Any] = {
