@@ -965,7 +965,7 @@ class TestWorkerRegistration:
         )
 
         async def stop_after_backoff(seconds: float) -> None:
-            assert 0.5 <= seconds <= 1.0
+            assert 0.0 <= seconds <= 0.25  # first retry: uniform(0, 0.25)
             worker._stop.set()
 
         monkeypatch.setattr(worker_module.asyncio, "sleep", stop_after_backoff)
