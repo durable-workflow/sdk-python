@@ -3698,6 +3698,10 @@ class Worker:
                                       fn: Callable[..., Any], args: list[Any], info: ActivityInfo) -> Any:
         if self._cooperative_cancellation_supported:
             return await self._execute_cooperative_remote_callable(task, fn, tuple(args), info)
+        claim = current_activity_authority.get()
+        if claim is not None and not inspect.iscoroutinefunction(fn):
+            # A worker_lost release must wait until this thread has stopped.
+            fn = claim.guard_thread(fn)
         return await self._execute_activity_callable(
             task, activity_type, tuple(args), fn, run_sync_in_thread=True, remote=True,
         )
@@ -3744,9 +3748,6 @@ class Worker:
                         self._remote_activity_thread_slots.release()
                         raise
                     self._remote_activity_threads.add(future)
-                    claim = current_activity_authority.get()
-                    if claim is not None:
-                        claim.track(future)
 
                     def thread_finished(completed: Future[Any]) -> None:
                         def release_capacity() -> None:

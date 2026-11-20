@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import random
 import re
+import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
@@ -73,7 +75,47 @@ async def release_worker_lost(client: Any, *, task_id: str, activity_attempt_id:
         return False
 
 
+class _ThreadRun:
+    """Whether a claim's activity thread has stopped, without a start race.
+
+    A thread that has not started yet is fenced when asked, so it never runs
+    after a release; one that has started counts as stopped only once its
+    function has returned or raised.
+    """
+
+    def __init__(self, task_id: str) -> None:
+        self._task_id = task_id
+        self._lock = threading.Lock()
+        self._started = False
+        self._finished = False
+        self._fenced = False
+
+    def wrap(self, fn: Callable[..., _T]) -> Callable[..., _T]:
+        @functools.wraps(fn)
+        def guarded(*args: Any, **kwargs: Any) -> _T:
+            with self._lock:
+                if self._fenced:
+                    raise ActivityWorkerLost(self._task_id, "activity_execution_abandoned")
+                self._started = True
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                with self._lock:
+                    self._finished = True
+        return guarded
+
+    def fence_or_finished(self) -> bool:
+        with self._lock:
+            if not self._started:
+                self._fenced = True
+                return True
+            return self._finished
+
+
 def _execution_stopped(execution: Any) -> bool:
+    fence_or_finished = getattr(execution, "fence_or_finished", None)
+    if callable(fence_or_finished):
+        return bool(fence_or_finished())
     done = getattr(execution, "done", None)
     if callable(done):
         return bool(done())
@@ -134,7 +176,7 @@ class ActivityLeaseAuthority:
     # failures since it. Neither changes recorded history.
     lease_seconds: float = field(default=0.0, init=False)
     renewal_failures: int = field(default=0, init=False)
-    # Physical executions (thread futures, callback processes) started for
+    # Physical executions (activity threads, callback processes) started for
     # this claim. A release waits until every one has actually stopped.
     executions: list[Any] = field(default_factory=list, init=False)
     execution_started: bool = field(default=False, init=False)
@@ -331,8 +373,14 @@ class ActivityLeaseAuthority:
                    self.lease_until - time.monotonic() - self.report_reserve())
 
     def track(self, execution: Any) -> None:
-        """Register a thread future or callback process that runs this claim."""
+        """Register an execution (callback process, future) that runs this claim."""
         self.executions.append(execution)
+
+    def guard_thread(self, fn: Callable[..., _T]) -> Callable[..., _T]:
+        """Wrap a synchronous activity so its thread is tracked for this claim."""
+        run = _ThreadRun(self.task_id)
+        self.track(run)
+        return run.wrap(fn)
 
     async def confirm_stopped(self, deadline: float) -> bool:
         """Wait until every tracked execution has stopped, or ``deadline`` passes."""

@@ -222,3 +222,36 @@ async def test_stop_confirmation_requires_every_execution_to_have_stopped() -> N
     callback.stopped = True
     assert await authority.confirm_stopped(time.monotonic() + 0.05) is True
     assert await authority.confirm_stopped(time.monotonic() - 1) is False, "a stop after the deadline is too late"
+
+
+def test_thread_guard_fences_a_thread_that_has_not_started() -> None:
+    import threading
+    import time
+
+    authority = ActivityLeaseAuthority.delivery(
+        object(), "17", task(lease_expires_at=timestamp(60), deadlines={}), owner="worker-1",
+        task_queue="queue-1", server_time=timestamp(0), request_started=time.monotonic(),
+    )
+    calls: list[str] = []
+    queued = authority.guard_thread(lambda: calls.append("queued"))
+    # Asked before its thread starts: counts as stopped and never runs later.
+    assert authority.executions[0].fence_or_finished() is True
+    with pytest.raises(ActivityWorkerLost):
+        queued()
+    assert calls == []
+
+    entered, leave = threading.Event(), threading.Event()
+
+    def running() -> str:
+        entered.set()
+        leave.wait(timeout=2)
+        return "done"
+
+    guarded = authority.guard_thread(running)
+    thread = threading.Thread(target=guarded)
+    thread.start()
+    entered.wait(timeout=2)
+    assert authority.executions[1].fence_or_finished() is False
+    leave.set()
+    thread.join(timeout=2)
+    assert authority.executions[1].fence_or_finished() is True
