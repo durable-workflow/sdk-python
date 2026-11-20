@@ -2342,21 +2342,27 @@ class Client:
                     if capabilities_digest[0] is None:
                         raise
                     # The answer named capabilities this worker does not hold.
-                    # Forget the held pair and send this request once more with
-                    # ``none``, which gets the full object. Worker requests are
-                    # fenced, so one the Server already committed is answered
-                    # as a duplicate (409 stale_attempt).
-                    log.warning("worker answer from %s named unknown capabilities (%s); resending once for "
-                                "the full capabilities", path, unknown)
+                    # Forget the held pair so later requests send ``none``.
                     self._capabilities_digest.forget()
-                    capabilities_digest = (None, None)
-                    resp = await _answer()
-                    status_code = str(resp.status_code)
-                    if resp.status_code == 204 or not resp.content:
-                        outcome = "ok"
-                        return None
-                    result = resp.json()
-                    self._capabilities_digest.restore(result, capabilities_digest)
+                    if not progress_poll:
+                        # Never resend a non-idempotent request (a completion,
+                        # failure or heartbeat) to recover capabilities: its
+                        # resend can answer a duplicate without what the first
+                        # answer carried. Keep this answer and read the
+                        # capabilities from discovery instead.
+                        result = await self._substitute_unknown_capabilities(result, capabilities_digest, path)
+                    else:
+                        # A task poll is safe to repeat: ask again for the full object.
+                        log.warning("worker poll answer from %s named unknown capabilities (%s); resending once "
+                                    "for the full capabilities", path, unknown)
+                        capabilities_digest = (None, None)
+                        resp = await _answer()
+                        status_code = str(resp.status_code)
+                        if resp.status_code == 204 or not resp.content:
+                            outcome = "ok"
+                            return None
+                        result = resp.json()
+                        self._capabilities_digest.restore(result, capabilities_digest)
             if (worker and activity_authority is not None
                     and activity_authority.governs(self, self.namespace, path)
                     and path.endswith("/heartbeat") and isinstance(result, dict)
@@ -3108,6 +3114,29 @@ class Client:
             }
             self.metrics.increment(CLIENT_REQUESTS, tags=tags)
             self.metrics.record(CLIENT_REQUEST_DURATION_SECONDS, time.perf_counter() - start, tags=tags)
+
+    async def _substitute_unknown_capabilities(self, result: Any, captured: Any, path: str) -> Any:
+        """Replace an answer's unknown capabilities digest with discovery's object.
+
+        ``worker_protocol.server_capabilities`` from ``GET /api/cluster/info``
+        is the object the worker plane elides. If discovery is unavailable the
+        field is dropped: no caller reads capabilities from a non-poll answer.
+        """
+        try:
+            info = await self.get_cluster_info()
+            protocol = info.get("worker_protocol")
+            capabilities = protocol.get("server_capabilities") if isinstance(protocol, dict) else None
+            if not isinstance(capabilities, dict):
+                raise ServerCapabilitiesDigestError("discovery returned no worker_protocol.server_capabilities")
+        except Exception as error:
+            log.warning("worker answer from %s named unknown capabilities and discovery failed (%r); "
+                        "keeping the answer without them", path, error)
+            self._capabilities_digest.restore(result, captured, drop_unknown=True)
+            return result
+        log.warning("worker answer from %s named unknown capabilities; kept the answer and read the "
+                    "capabilities from cluster discovery", path)
+        self._capabilities_digest.restore(result, captured, substitute=capabilities)
+        return result
 
     async def get_cluster_info(self) -> dict[str, Any]:
         """Fetch server build identity, capabilities, and protocol manifests.

@@ -50,18 +50,20 @@ class ServerCapabilitiesDigest:
         self._digest = None
         self._capabilities = None
 
-    def restore(self, answer: Any, captured: Captured, *, drop_unknown: bool = False) -> bool:
+    def restore(self, answer: Any, captured: Captured, *, drop_unknown: bool = False,
+                substitute: dict[str, Any] | None = None) -> bool:
         """Strip and learn tagged copies, then restore elided ones, in place.
 
         An elided copy naming a digest neither captured for the request nor
-        tagged in this answer raises :class:`ServerCapabilitiesDigestError`;
-        with ``drop_unknown`` it is removed instead and ``True`` is returned.
+        tagged in this answer raises :class:`ServerCapabilitiesDigestError`.
+        With ``substitute`` it is replaced by a copy of that object; with
+        ``drop_unknown`` it is removed. Either way ``True`` is returned.
         """
         if not isinstance(answer, dict):
             return False
         learned: dict[str, dict[str, Any]] = {}
         self._learn(answer, learned, 1)
-        return self._resolve(answer, captured, learned, 1, drop_unknown)
+        return self._resolve(answer, captured, learned, 1, drop_unknown, substitute)
 
     def _learn(self, answer: dict[str, Any], learned: dict[str, dict[str, Any]], depth: int) -> None:
         for key, value in answer.items():
@@ -77,7 +79,7 @@ class ServerCapabilitiesDigest:
                 self._learn(value, learned, depth + 1)
 
     def _resolve(self, answer: dict[str, Any], captured: Captured, learned: dict[str, dict[str, Any]],
-                 depth: int, drop_unknown: bool) -> bool:
+                 depth: int, drop_unknown: bool, substitute: dict[str, Any] | None) -> bool:
         dropped = False
         for key, value in list(answer.items()):
             if key == _KEY:
@@ -86,6 +88,9 @@ class ServerCapabilitiesDigest:
                         answer[key] = copy.deepcopy(captured[1])
                     elif value in learned:
                         answer[key] = copy.deepcopy(learned[value])
+                    elif substitute is not None:
+                        answer[key] = copy.deepcopy(substitute)
+                        dropped = True
                     elif drop_unknown:
                         del answer[key]
                         dropped = True
@@ -95,5 +100,5 @@ class ServerCapabilitiesDigest:
                             f"({value}; sent {self.header(captured)})"
                         )
             elif isinstance(value, dict) and depth < _MAX_DEPTH:
-                dropped = self._resolve(value, captured, learned, depth + 1, drop_unknown) or dropped
+                dropped = self._resolve(value, captured, learned, depth + 1, drop_unknown, substitute) or dropped
         return dropped

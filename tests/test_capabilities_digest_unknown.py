@@ -1,4 +1,9 @@
-"""An answer naming an unknown capabilities digest is resent once in full (PHP and Rust parity)."""
+"""Recovery from an answer naming an unknown capabilities digest (PHP and Rust parity).
+
+A non-idempotent request (completion, failure, heartbeat) is never resent: its
+answer is kept and the capabilities are read from cluster discovery. Only task
+polls, which are safe to repeat, are resent without the digest.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +15,6 @@ import httpx
 import pytest
 
 from durable_workflow import Client, Worker, activity, serializer
-from durable_workflow import worker as worker_module
 from durable_workflow._capabilities_digest import HEADER, ServerCapabilitiesDigest
 from durable_workflow.errors import ServerCapabilitiesDigestError, ServerError
 from durable_workflow.retry_policy import TransportRetryPolicy
@@ -19,6 +23,7 @@ from .test_worker import compatible_cluster_info
 
 D1, D2, GARBLED = "sha256:" + "1" * 64, "sha256:" + "2" * 64, "sha256:" + "f" * 64
 CAPS = {"activity_lease_renewal": False, "v": 1}
+DISCOVERED = {"activity_lease_renewal": False, "v": "discovered"}
 
 
 def tagged(digest: str, capabilities: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -44,8 +49,13 @@ class GarblingServer:
         self.script = list(script or [])
         self.sent: list[tuple[str, str | None]] = []
         self.current = D1
+        self.discovery = 0
 
     async def respond(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/cluster/info"):
+            self.discovery += 1
+            assert request.method == "GET" and HEADER not in request.headers
+            return httpx.Response(200, json={"worker_protocol": {"server_capabilities": DISCOVERED}})
         sent = request.headers.get(HEADER)
         self.sent.append((request.url.path, sent))
         capabilities: Any
@@ -53,7 +63,7 @@ class GarblingServer:
             status, capabilities = self.script.pop(0)
         else:
             status, capabilities = 200, self.current if sent == self.current else tagged(self.current)
-        body = {"ok": True, "server_capabilities": capabilities}
+        body = {"ok": True, "path": request.url.path, "server_capabilities": capabilities}
         if status >= 400:
             body = {"reason": "stale_attempt", "message": "refused", "server_capabilities": capabilities}
         return httpx.Response(status, json=body)
@@ -71,31 +81,66 @@ async def learned(client: Client) -> None:
     assert client._capabilities_digest.capture()[0] == D1
 
 
-async def test_a_garbled_success_answer_is_resent_once_without_the_digest() -> None:
+async def test_a_garbled_answer_to_a_completion_is_kept_and_not_resent() -> None:
+    server = GarblingServer()
+    async with client_for(server) as client:
+        await learned(client)
+        server.script = [(200, GARBLED)]
+        answer = await client._request("POST", "/worker/activity-tasks/t/complete", worker=True, json={})
+        after = await client._request("POST", "/worker/b", worker=True, json={})
+    assert server.sent[1:] == [("/api/worker/activity-tasks/t/complete", D1), ("/api/worker/b", "none")], (
+        "the completion is sent once; the held pair is forgotten afterwards"
+    )
+    assert answer["path"] == "/api/worker/activity-tasks/t/complete", "the completion's own answer is used"
+    assert answer["server_capabilities"] == DISCOVERED, "capabilities come from cluster discovery"
+    assert server.discovery == 1
+    assert after["server_capabilities"] == CAPS
+
+
+async def test_without_discovery_the_answer_is_kept_without_its_capabilities() -> None:
+    async def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/cluster/info"):
+            return httpx.Response(503, json={"reason": "storage_unavailable"})
+        return httpx.Response(200, json={"recorded": True, "server_capabilities": GARBLED})
+
+    async with Client("http://digest.invalid", worker_token="w",
+                      retry_policy=TransportRetryPolicy(max_attempts=1)) as client:
+        client._http = httpx.AsyncClient(base_url="http://digest.invalid", transport=httpx.MockTransport(respond))
+        client._capabilities_digest.restore({"server_capabilities": tagged(D1)}, (None, None))
+        answer = await client._request("POST", "/worker/heartbeat", worker=True, json={})
+    assert answer == {"recorded": True}
+
+
+async def test_a_garbled_poll_answer_is_resent_once_without_the_digest() -> None:
     server = GarblingServer()
     async with client_for(server) as client:
         await learned(client)
         server.script = [(200, GARBLED)]
         server.current = D2  # the capabilities changed; the garbled answer names neither
-        answer = await client._request("POST", "/worker/a", worker=True, json={})
+        poll = {"worker_id": "w", "task_queue": "q"}
+        answer = await client._request("POST", "/worker/query-tasks/poll", worker=True, json=poll)
         after = await client._request("POST", "/worker/b", worker=True, json={})
-    assert server.sent[1:] == [("/api/worker/a", D1), ("/api/worker/a", "none"), ("/api/worker/b", D2)]
+    assert server.sent[1:] == [
+        ("/api/worker/query-tasks/poll", D1), ("/api/worker/query-tasks/poll", "none"), ("/api/worker/b", D2),
+    ]
     assert answer["server_capabilities"] == CAPS, "the resend's full copy, not the garbled digest"
+    assert server.discovery == 0
     assert after["server_capabilities"] == CAPS
 
 
-async def test_an_unknown_digest_on_the_resend_is_a_protocol_error() -> None:
+async def test_an_unknown_digest_on_the_poll_resend_is_a_protocol_error() -> None:
     async def respond(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"server_capabilities": GARBLED})
+        return httpx.Response(200, json={"task": None, "server_capabilities": GARBLED})
 
+    poll = {"worker_id": "w", "task_queue": "q"}
     async with Client("http://digest.invalid", worker_token="w") as client:
         client._http = httpx.AsyncClient(base_url="http://digest.invalid", transport=httpx.MockTransport(respond))
         client._capabilities_digest.restore({"server_capabilities": tagged(D1)}, (None, None))
         with pytest.raises(ServerCapabilitiesDigestError):
-            await client._request("POST", "/worker/a", worker=True, json={})
+            await client._request("POST", "/worker/query-tasks/poll", worker=True, json=poll)
         # Sent with ``none`` already: no resend, the answer is a protocol error.
         with pytest.raises(ServerCapabilitiesDigestError):
-            await client._request("POST", "/worker/b", worker=True, json={})
+            await client._request("POST", "/worker/query-tasks/poll", worker=True, json=poll)
 
 
 async def test_a_garbled_error_body_surfaces_the_http_error_unchanged() -> None:
@@ -166,6 +211,7 @@ class Runtime:
                 # Committed, but the answer names capabilities the worker never held.
                 return httpx.Response(200, json={"outcome": "completed", "recorded": True,
                                                  "server_capabilities": GARBLED})
+            # A resend would only get this duplicate; it must never be sent.
             return httpx.Response(409, json={
                 "task_id": "task-1", "activity_attempt_id": "attempt-1", "outcome": "completed",
                 "recorded": False, "reason": "stale_attempt", "next_task_id": None, "lease_owner": "worker-1",
@@ -209,17 +255,16 @@ async def test_a_garbled_poll_answer_is_resent_in_full_and_the_worker_keeps_poll
     assert len(runtime.polls) >= 6, "the worker keeps polling"
 
 
-async def test_a_garbled_completion_answer_is_resent_and_its_duplicate_is_not_a_failure(
+async def test_a_garbled_completion_answer_is_kept_without_a_resend(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="durable_workflow.worker")
     calls.clear()
     runtime = Runtime(garble_poll=False, garble_completion=True)
-    await run_worker_until(runtime, lambda: len(runtime.completions) >= 2 and len(runtime.polls) >= 4)
+    await run_worker_until(runtime, lambda: len(runtime.completions) >= 1 and len(runtime.polls) >= 4)
     assert calls == ["once"], "the activity ran once"
-    assert runtime.completions[0] == D1 and runtime.completions[1] == "none"
+    assert runtime.completions == [D1], "the completion is never resent"
     assert runtime.failures == 0, "no failure report"
     assert len(runtime.polls) >= 4, "the worker keeps running"
-    if hasattr(worker_module, "_committed_own_activity_completion"):
-        # With the committed-completion rule (#355) the duplicate is success.
-        assert "already committed this worker's completion" in caplog.text
+    assert runtime.polls[-1] in ("none", D1), "later requests re-learn the capabilities"
+    assert "failed to complete" not in caplog.text, "the completion's own recorded answer is used"
