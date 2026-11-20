@@ -288,6 +288,12 @@ def _is_storage_admission_error(error: BaseException) -> bool:
 _TRANSIENT_RETRY_BASE_SECONDS = 0.25
 _TRANSIENT_RETRY_MAX_SECONDS = 4.0
 _UPSTREAM_UNAVAILABLE_STATUSES = (502, 503, 504)
+# Retry bound for an activity outcome whose lease end is unknown.
+_UNKNOWN_LEASE_OUTCOME_RETRY_SECONDS = 60.0
+# The claimed activity task this dispatch publishes outcomes for.
+_current_activity_claim: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "durable_workflow_activity_claim", default=None,
+)
 _TRANSIENT_UNAVAILABLE_REASONS = ("storage_unavailable", "backend_unavailable")
 
 
@@ -330,6 +336,34 @@ def _positive_seconds(value: object) -> bool:
     )
 
 
+def _auth_refusal(error: BaseException) -> bool:
+    return isinstance(error, Unauthorized) or isinstance(error, ServerError) and error.status in (401, 403)
+
+
+def _committed_own_activity_completion(error: BaseException, task_id: str, attempt_id: str, worker_id: str) -> bool:
+    """Whether a refusal answers a resend of a completion this worker already committed.
+
+    After a transient hid a committed completion, native Server answers the
+    resend with ``409 stale_attempt``, ``recorded: false``, the same task,
+    attempt and lease owner, and activity, attempt and task all ``completed``
+    (the same rule as PHP's ``Worker::isCommittedActivityCompletion``). Any
+    other ``stale_attempt`` is a closed attempt, not this worker's completion.
+    """
+    if not isinstance(error, ServerError) or error.status != 409 or not isinstance(error.body, Mapping):
+        return False
+    body = error.body
+    return (body.get("reason") == "stale_attempt" and body.get("recorded") is False
+            and body.get("outcome") == "completed" and body.get("task_id") == task_id
+            and body.get("activity_attempt_id") == attempt_id and body.get("lease_owner") == worker_id
+            and all(body.get(key) == "completed" for key in ("activity_status", "attempt_status", "task_status")))
+
+
+def _closed_activity_attempt(error: BaseException, attempt_id: str) -> bool:
+    """A ``409 stale_attempt`` for this attempt: it is settled, so resending cannot record anything."""
+    return (isinstance(error, ServerError) and error.status == 409 and isinstance(error.body, Mapping)
+            and error.body.get("reason") == "stale_attempt" and error.body.get("activity_attempt_id") == attempt_id)
+
+
 def _poll_error_summary(error: BaseException) -> str:
     error_class = type(error).__name__
     if isinstance(error, Unauthorized) or isinstance(error, ServerError) and error.status == 401:
@@ -361,7 +395,16 @@ class _PollFailureBackoff:
         self._ceiling = min(30.0, self._ceiling * 2)
         summary = _poll_error_summary(error)
         now = time.monotonic()
-        if summary != self._last_summary or now - self._last_warning_at >= 60.0:
+        if _auth_refusal(error):
+            # Every refusal is loud. The poller still retries so rotated
+            # credentials recover without a restart; PHP and Rust stop instead.
+            log.error(
+                "%s poll error: %s; route=/worker/%s-tasks/poll; retrying in %.2f s so rotated credentials "
+                "can recover", task_kind, summary, task_kind, delay,
+            )
+            self._last_summary = summary
+            self._last_warning_at = now
+        elif summary != self._last_summary or now - self._last_warning_at >= 60.0:
             log.warning(
                 "%s poll error: %s; route=/worker/%s-tasks/poll; retrying in %.2f s",
                 task_kind, summary, task_kind, delay,
@@ -3645,14 +3688,16 @@ class Worker:
         result = to_payload_value(result)
         log.info("completing activity task %s (%s) -> %r", task_id, activity_type, result)
         try:
-            await self.client.complete_activity_task(
-                task_id=task_id,
-                activity_attempt_id=attempt_id,
-                lease_owner=self.worker_id,
-                result=result,
-                codec=result_codec,
-                activity_name=activity_type,
-                **self._external_storage_completion_kwargs(),
+            await self._deliver_activity_outcome(
+                task_id, attempt_id, "completed", lambda: self.client.complete_activity_task(
+                    task_id=task_id,
+                    activity_attempt_id=attempt_id,
+                    lease_owner=self.worker_id,
+                    result=result,
+                    codec=result_codec,
+                    activity_name=activity_type,
+                    **self._external_storage_completion_kwargs(),
+                ),
             )
         except Exception as e:
             kept = _run_closed_completion_kept(e)
@@ -3720,12 +3765,77 @@ class Worker:
             return None
         return codec, args if isinstance(args, list) else [args]
 
+    def _activity_outcome_window(self, task_id: str) -> float | None:
+        """Seconds of lease left for publishing this attempt's outcome, if known."""
+        authority = current_activity_authority.get()
+        if authority is not None and authority.task_id == task_id:
+            try:
+                return authority.remaining()
+            except ActivityWorkerLost:
+                return 0.0
+        claim = _current_activity_claim.get()
+        expires = claim.get("lease_expires_at") if claim is not None and claim.get("task_id") == task_id else None
+        try:
+            deadline = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if deadline.tzinfo is None:
+            return None
+        return (deadline - datetime.now(timezone.utc)).total_seconds()
+
+    async def _deliver_activity_outcome(self, task_id: str, attempt_id: str, outcome: str,
+                                        publish: Callable[[], Awaitable[Any]]) -> None:
+        """Publish an activity outcome, repeating it through transients while the lease lasts.
+
+        A transient never turns the outcome into another one. A resend answered
+        as a duplicate of this worker's own recorded outcome counts as
+        delivered. Once the lease cannot cover another attempt the last
+        failure is logged as an error and raised; the Server then settles the
+        attempt at lease expiry, and the result is never dropped silently.
+        """
+        failures = 0
+        started = time.monotonic()
+        while True:
+            try:
+                await publish()
+                return
+            except Exception as error:
+                # The client's own transport retry can resend too, so this
+                # holds on the first round as well.
+                if outcome == "completed" and _committed_own_activity_completion(
+                    error, task_id, attempt_id, self.worker_id,
+                ):
+                    log.info("activity task %s: the Server had already committed this worker's completion "
+                             "(resend answered 409 stale_attempt)", task_id)
+                    return
+                if _closed_activity_attempt(error, attempt_id):
+                    # Not provably this worker's outcome: report the closed attempt as it is.
+                    log.warning("activity task %s %s outcome resend found the attempt already closed: %s",
+                                task_id, outcome, _poll_error_summary(error))
+                    raise
+                if not _transient_runtime_error(error):
+                    raise
+                failures += 1
+                delay = _transient_retry_delay(failures)
+                window = self._activity_outcome_window(task_id)
+                if window is None:
+                    window = _UNKNOWN_LEASE_OUTCOME_RETRY_SECONDS - (time.monotonic() - started)
+                summary = _poll_error_summary(error)
+                if window <= delay:
+                    log.error("activity task %s %s outcome not delivered after %d transient failures (%s): "
+                              "its lease ran out; the Server settles the attempt when the lease expires",
+                              task_id, outcome, failures, summary)
+                    raise
+                log.warning("activity task %s %s outcome failed transiently (%s); retrying in %.2f s",
+                            task_id, outcome, summary, delay)
+                await asyncio.sleep(delay)
+
     async def _report_activity_task_failure(self, task_id: str, attempt_id: str,
                                             context: str, **failure: Any) -> None:
         try:
-            await self.client.fail_activity_task(
+            await self._deliver_activity_outcome(task_id, attempt_id, "failed", lambda: self.client.fail_activity_task(
                 task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id, **failure,
-            )
+            ))
         except Exception as error:
             if _run_closed_refusal(error):
                 log.info("%s for activity task %s not recorded: its workflow run closed", context, task_id)
@@ -4380,6 +4490,13 @@ class Worker:
             self._track(self._dispatch_activity_task(task))
 
     async def _dispatch_activity_task(self, task: dict[str, Any]) -> None:
+        claim = _current_activity_claim.set(task)
+        try:
+            await self._dispatch_claimed_activity_task(task)
+        finally:
+            _current_activity_claim.reset(claim)
+
+    async def _dispatch_claimed_activity_task(self, task: dict[str, Any]) -> None:
         self._record_task_schedule_to_start("activity", task)
         task_start = time.perf_counter()
         outcome = "error"

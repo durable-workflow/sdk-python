@@ -97,10 +97,19 @@ ceiling, so workers do not retry in lockstep. Any successful poll, including an
 empty response, resets the ceiling to 1 second. Shutdown interrupts the wait.
 
 The first failure is logged immediately. An unchanged failure is logged at most
-once per minute per poller until polling succeeds. HTTP 401 identifies rejected
-authentication; HTTP 403 identifies denied authorization. Check the worker
-credentials and their permissions. Once requests succeed again, polling
-recovers without a worker restart. Poll-error metrics
+once per minute per poller until polling succeeds.
+
+Authentication and authorization refusals are the exception to that limit:
+**every** poll answered with HTTP 401 (rejected authentication) or HTTP 403
+(denied authorization) is logged at ERROR level, including refusals that come
+before a later recovery. Check the worker credentials and their permissions.
+The poller keeps retrying with the same backoff, so rotated credentials
+recover without a worker restart.
+
+This differs from the PHP and Rust SDKs, which log an error and stop the
+worker on a poll-time 401 or 403. Python retries so that credentials can be
+rotated under a running worker. Registration at startup treats 401 and 403 as
+fatal in every SDK (see below). Poll-error metrics
 still count every failed poll, including failures whose warning is suppressed.
 
 Starting with Python SDK 2.10.0, warnings name the exception class and static
@@ -138,7 +147,34 @@ Some failures are never retried:
 - an incompatible Server
 
 For these, the worker logs `worker <id> stopping: registration failed with a
-non-retryable error: ...` at error level, and `run()` raises the error. After
+non-retryable error: ...` at error level, and `run()` raises the error.
+
+### Activity outcomes through transient failures
+
+An activity completion or failure report that hits one of the transient
+failures listed above is sent again with the same backoff, as long as the
+attempt's lease still covers the next wait. The lease is the renewed lease when
+the Server supports activity lease renewal, and the claimed `lease_expires_at`
+otherwise. A transient never turns a completion into a failure report.
+
+When the lease cannot cover another wait, the worker stops resending and logs
+`activity task <id> ... outcome not delivered after N transient failures ...:
+its lease ran out` at error level. The Server then settles the attempt when its
+lease expires.
+
+A transient can hide an outcome the Server already committed. Native Server
+answers the resend with `409` and this body:
+
+```json
+{"reason": "stale_attempt", "recorded": false, "outcome": "completed",
+ "lease_owner": "<this worker>", "activity_status": "completed",
+ "attempt_status": "completed", "task_status": "completed"}
+```
+
+The body also carries the same task and attempt IDs. That exact shape counts
+as this worker's committed completion, so the activity is not run again and
+no second outcome is recorded. Any other `stale_attempt` means the attempt is
+closed. It is reported as such and never treated as success. After
 registration, pollers keep the poll-failure backoff described above. Worker
 heartbeats log a failure and try again at the next interval.
 

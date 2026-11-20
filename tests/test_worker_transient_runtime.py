@@ -173,3 +173,146 @@ async def test_shutdown_interrupts_a_transient_retry() -> None:
         running.cancel()
         await asyncio.gather(running, return_exceptions=True)
         await client.aclose()
+
+
+# ── Activity outcomes through transients ──────────────────────────────────
+
+def activity_task(lease_seconds: float = 300.0) -> dict[str, Any]:
+    from datetime import datetime, timedelta, timezone
+
+    from durable_workflow import serializer
+
+    expires = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+    return {
+        "task_id": "task-1", "activity_attempt_id": "attempt-1", "attempt_number": 1,
+        "activity_type": "transient.echo", "workflow_id": "wf-1", "run_id": "run-1",
+        "lease_owner": "worker-1", "task_queue": "q",
+        "lease_expires_at": expires.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        "arguments": serializer.envelope(["value"], codec="avro"), "payload_codec": "avro",
+    }
+
+
+@activity.defn(name="transient.echo")
+def echo(value: str) -> str:
+    return value
+
+
+@activity.defn(name="transient.boom")
+def boom(value: str) -> str:
+    raise ValueError("application failure")
+
+
+def committed_duplicate(**changes: Any) -> ServerError:
+    body = {
+        "task_id": "task-1", "activity_attempt_id": "attempt-1", "outcome": "completed", "recorded": False,
+        "reason": "stale_attempt", "next_task_id": None, "lease_owner": "worker-1",
+        "activity_status": "completed", "attempt_status": "completed", "task_status": "completed",
+    }
+    return ServerError(409, {**body, **changes})
+
+
+def outcome_worker(monkeypatch: pytest.MonkeyPatch, *activities: Any) -> tuple[Any, Worker, list[float]]:
+    from unittest.mock import AsyncMock
+
+    client = AsyncMock(spec=Client)
+    client.namespace = "default"
+    client.external_storage = None
+    client._cluster_info = {}
+    worker = Worker(client, task_queue="q", workflows=[], activities=list(activities) or [echo], worker_id="worker-1")
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("durable_workflow.worker.asyncio.sleep", sleep)
+    monkeypatch.setattr("durable_workflow.worker.random.uniform", lambda low, high: high)
+    return client, worker, delays
+
+
+async def run_activity(worker: Worker, task: dict[str, Any]) -> str:
+    from durable_workflow.worker import _current_activity_claim
+
+    claim = _current_activity_claim.set(task)
+    try:
+        return await worker._run_activity_task(task)
+    finally:
+        _current_activity_claim.reset(claim)
+        if worker._remote_activity_executor is not None:
+            worker._remote_activity_executor.shutdown(wait=True)
+
+
+async def test_completion_is_repeated_through_transients_with_the_shared_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, worker, delays = outcome_worker(monkeypatch)
+    client.complete_activity_task.side_effect = [
+        ServerError(503, STORAGE_UNAVAILABLE), httpx.ConnectError("refused"), ServerError(502, None),
+        {"outcome": "completed", "recorded": True},
+    ]
+    assert await run_activity(worker, activity_task()) == "completed"
+    assert client.complete_activity_task.await_count == 4
+    assert delays == [0.25, 0.5, 1.0]
+    client.fail_activity_task.assert_not_awaited()  # a transient never becomes a failure report
+
+
+async def test_a_resend_answered_as_our_committed_completion_is_success(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, worker, _ = outcome_worker(monkeypatch)
+    client.complete_activity_task.side_effect = [ServerError(503, STORAGE_UNAVAILABLE), committed_duplicate()]
+    with caplog.at_level(logging.INFO, logger="durable_workflow.worker"):
+        assert await run_activity(worker, activity_task()) == "completed"
+    assert "already committed this worker's completion" in caplog.text
+    client.fail_activity_task.assert_not_awaited()
+
+
+@pytest.mark.parametrize("changes", [
+    {"lease_owner": "worker-2"},
+    {"attempt_status": "expired", "activity_status": "pending"},
+    {"task_status": "failed"},
+    {"activity_attempt_id": "attempt-0"},
+    {"outcome": "failed"},
+])
+async def test_any_other_stale_attempt_is_a_closed_attempt_not_success(
+    monkeypatch: pytest.MonkeyPatch, changes: dict[str, Any],
+) -> None:
+    client, worker, delays = outcome_worker(monkeypatch)
+    client.complete_activity_task.side_effect = [ServerError(503, STORAGE_UNAVAILABLE), committed_duplicate(**changes)]
+    assert await run_activity(worker, activity_task()) == "complete_error"
+    assert client.complete_activity_task.await_count == 2, "a closed attempt is not resent again"
+    client.fail_activity_task.assert_not_awaited()
+
+
+async def test_completion_retries_stop_and_log_when_the_lease_runs_out(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, worker, delays = outcome_worker(monkeypatch)
+    client.complete_activity_task.side_effect = ServerError(503, STORAGE_UNAVAILABLE)
+    with caplog.at_level(logging.ERROR, logger="durable_workflow.worker"):
+        assert await run_activity(worker, activity_task(lease_seconds=0.9)) == "complete_error"
+    assert delays == [0.25, 0.5], "retried only while the lease covered the next wait"
+    assert client.complete_activity_task.await_count == 3
+    assert "completed outcome not delivered after 3 transient failures" in caplog.text
+    assert "lease ran out" in caplog.text
+    client.fail_activity_task.assert_not_awaited()
+
+
+async def test_completion_is_not_retried_on_a_protocol_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, worker, delays = outcome_worker(monkeypatch)
+    client.complete_activity_task.side_effect = ServerError(422, {"reason": "invalid_result"})
+    assert await run_activity(worker, activity_task()) == "complete_error"
+    assert client.complete_activity_task.await_count == 1
+    assert delays == []
+
+
+async def test_failure_report_is_repeated_through_transients(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, worker, delays = outcome_worker(monkeypatch, boom)
+    task = {**activity_task(), "activity_type": "transient.boom"}
+    client.fail_activity_task.side_effect = [
+        ServerError(503, {"reason": "backend_unavailable"}), httpx.ReadTimeout("slow"),
+        {"outcome": "failed", "recorded": True},
+    ]
+    assert await run_activity(worker, task) == "failed"
+    assert client.fail_activity_task.await_count == 3
+    assert delays == [0.25, 0.5]
+    client.complete_activity_task.assert_not_awaited()

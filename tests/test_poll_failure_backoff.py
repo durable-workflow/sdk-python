@@ -178,10 +178,11 @@ async def test_changed_auth_failure_is_reported_immediately(
     monkeypatch.setattr(worker_module.asyncio, "sleep", sleep)
     with caplog.at_level(logging.WARNING, logger="durable_workflow.worker"):
         await getattr(worker, f"_poll_{kind}_tasks")()
-    warnings = [r.getMessage() for r in caplog.records if r.name == "durable_workflow.worker"]
-    assert len(warnings) == 2
-    assert "HTTP 401" in warnings[0]
-    assert "HTTP 403" in warnings[1]
+    records = [r for r in caplog.records if r.name == "durable_workflow.worker"]
+    # Every auth refusal is an error, not only a changed one.
+    assert [r.levelno for r in records] == [logging.ERROR] * 4
+    assert ["HTTP 401" in r.getMessage() for r in records] == [True, True, False, False]
+    assert ["HTTP 403" in r.getMessage() for r in records] == [False, False, True, True]
     assert delays[2] >= 2  # A changed failure does not reset the request backoff.
 
 
@@ -190,7 +191,7 @@ async def test_changed_auth_failure_is_reported_immediately(
     (Unauthorized("private response"), "authentication failed (HTTP 401)"),
     (ServerError(403, {"message": "private response"}), "authorization failed (HTTP 403)"),
 ])
-async def test_identical_auth_warnings_are_rate_limited_and_reset_after_success(
+async def test_every_auth_refusal_is_an_error_and_polling_recovers_after_success(
     kind: str, error: Exception, diagnostic: str,
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -223,12 +224,16 @@ async def test_identical_auth_warnings_are_rate_limited_and_reset_after_success(
     with caplog.at_level(logging.WARNING, logger="durable_workflow.worker"):
         await getattr(worker, f"_poll_{kind}_tasks")()
 
-    warnings = [r.getMessage() for r in caplog.records if r.name == "durable_workflow.worker"]
-    # First refusal at 0, reminders at 61, 121 and 181, then the post-success streak.
-    assert len(warnings) == 5
-    assert all(diagnostic in message and "credentials" in message for message in warnings)
+    records = [r for r in caplog.records if r.name == "durable_workflow.worker"]
+    # Unlike other poll errors, auth refusals are never rate-limited: each of
+    # the 12 is logged at ERROR, including the one after a later success. The
+    # poller keeps retrying so rotated credentials recover without a restart.
+    assert len(records) == 12
+    assert all(r.levelno == logging.ERROR for r in records)
+    assert all(diagnostic in r.getMessage() and "rotated credentials" in r.getMessage() for r in records)
     assert "private response" not in caplog.text
     assert outcomes.count("error") == 12
+    assert outcomes.count("empty") == 2, "polling recovered after the refusals"
 
 
 @pytest.mark.parametrize("kind", POLL_KINDS)
