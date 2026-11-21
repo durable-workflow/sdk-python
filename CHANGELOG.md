@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A workflow handle bound to a run polls that run for its result. It follows
+  the recorded continue-as-new successor and skips history when the final
+  run description includes its result envelope. (#352)
+
 ## [2.21.1] - 2026-11-21
 
 ### Fixed
