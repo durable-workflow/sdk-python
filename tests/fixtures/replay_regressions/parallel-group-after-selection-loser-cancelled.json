@@ -1,0 +1,994 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "parallel-group-after-selection-loser-cancelled",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "group-after-selection",
+    "input": [
+      false
+    ],
+    "payload_codec": "avro",
+    "run_id": "01m7yd6aqxy0jfdta7gj5gaegc",
+    "workflow_id": "sdk-python-350-immediate"
+  },
+  "history": [
+    {
+      "id": "01m7yd6ar8yh7v6mrttpznfpfb",
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "namespace": "default",
+      "payload": {
+        "workflow_command_id": "01m7yd6ar1nyhcwwe68yb35h12",
+        "workflow_instance_id": "sdk-python-350-immediate",
+        "workflow_run_id": "01m7yd6aqxy0jfdta7gj5gaegc",
+        "workflow_class": "group-after-selection",
+        "workflow_type": "group-after-selection",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "outcome": "started_new",
+        "command": {
+          "id": "01m7yd6ar1nyhcwwe68yb35h12",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01m7yd6aqxy0jfdta7gj5gaegc",
+          "payload_codec": "avro",
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCAgAA"
+          },
+          "source": "control_plane",
+          "context": {
+            "principal": {
+              "type": "auth:token",
+              "id": "legacy-token",
+              "label": "Admin"
+            }
+          },
+          "caller_label": "Standalone Server",
+          "principal_type": "auth:token",
+          "principal_id": "legacy-token",
+          "principal_label": "Admin",
+          "auth_status": "authorized",
+          "auth_method": "token",
+          "request_method": "POST",
+          "request_path": "/api/workflows",
+          "request_route_name": "generated::v3GwfVp01yPRxRin",
+          "request_fingerprint": "sha256:6fdb63b39ca8b256cc2e1bb1a63c037b3bae4c5383ee00dccfbfb9327387ba4a",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-11-21T06:37:39.966399Z",
+          "applied_at": "2026-11-21T06:37:39.966408Z"
+        }
+      },
+      "workflow_task_id": null,
+      "workflow_command_id": "01m7yd6ar1nyhcwwe68yb35h12",
+      "recorded_at": "2026-11-21T06:37:39.973199Z"
+    },
+    {
+      "id": "01m7yd6ardw8482hwee1625qf7",
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "namespace": "default",
+      "payload": {
+        "workflow_class": "group-after-selection",
+        "workflow_type": "group-after-selection",
+        "workflow_instance_id": "sdk-python-350-immediate",
+        "workflow_run_id": "01m7yd6aqxy0jfdta7gj5gaegc",
+        "workflow_command_id": "01m7yd6ar1nyhcwwe68yb35h12",
+        "execution_timeout_seconds": 3600,
+        "run_timeout_seconds": 600,
+        "execution_deadline_at": "2026-11-21T07:37:39+00:00",
+        "run_deadline_at": "2026-11-21T06:47:39+00:00",
+        "workflow_definition_fingerprint": "sha256:4ea86acb6eb4ec0666123d78e5351481a71457783fe513f5b564258565023923",
+        "workflow_definition_fingerprint_source": "worker",
+        "command": {
+          "id": "01m7yd6ar1nyhcwwe68yb35h12",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01m7yd6aqxy0jfdta7gj5gaegc",
+          "payload_codec": "avro",
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCAgAA"
+          },
+          "source": "control_plane",
+          "context": {
+            "principal": {
+              "type": "auth:token",
+              "id": "legacy-token",
+              "label": "Admin"
+            }
+          },
+          "caller_label": "Standalone Server",
+          "principal_type": "auth:token",
+          "principal_id": "legacy-token",
+          "principal_label": "Admin",
+          "auth_status": "authorized",
+          "auth_method": "token",
+          "request_method": "POST",
+          "request_path": "/api/workflows",
+          "request_route_name": "generated::v3GwfVp01yPRxRin",
+          "request_fingerprint": "sha256:6fdb63b39ca8b256cc2e1bb1a63c037b3bae4c5383ee00dccfbfb9327387ba4a",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-11-21T06:37:39.966399Z",
+          "applied_at": "2026-11-21T06:37:39.966408Z"
+        },
+        "declared_queries": [],
+        "declared_query_contracts": [],
+        "declared_signals": [],
+        "declared_signal_contracts": [],
+        "declared_updates": [],
+        "declared_update_contracts": [],
+        "declared_update_validators": [],
+        "declared_entry_method": "handle",
+        "declared_entry_mode": "canonical",
+        "declared_entry_declaring_class": "external:group-after-selection"
+      },
+      "workflow_task_id": null,
+      "workflow_command_id": "01m7yd6ar1nyhcwwe68yb35h12",
+      "recorded_at": "2026-11-21T06:37:39.981120Z"
+    },
+    {
+      "id": "01m7yd6bdggzmnvv1t3c7vb2g9",
+      "sequence": 3,
+      "event_type": "TimerScheduled",
+      "namespace": "default",
+      "payload": {
+        "timer_id": "01m7yd6bat4tbwkyx6x31xmyc0",
+        "sequence": 1,
+        "delay_seconds": 1,
+        "fire_at": "2026-11-21T06:37:41.570074Z",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "selection_member_key": "timer",
+        "selection_member_index": 0,
+        "selection_member_base_sequence": 1,
+        "selection_member_size": 1,
+        "selection_member_kind": "timer",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "selection_member_key": "timer",
+            "selection_member_index": 0,
+            "selection_member_base_sequence": 1,
+            "selection_member_size": 1,
+            "selection_member_kind": "timer"
+          }
+        ],
+        "task": {
+          "id": "01m7yd6are6fvx7mf9f3snve8n",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:39.982644Z",
+          "leased_at": "2026-11-21T06:37:40.086925Z",
+          "lease_owner": "py-worker-419b077c",
+          "lease_expires_at": "2026-11-21T06:38:40.086889Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification",
+          "last_dispatch_attempt_at": "2026-11-21T06:37:39.987032Z",
+          "last_dispatched_at": "2026-11-21T06:37:39.987032Z"
+        }
+      },
+      "workflow_task_id": "01m7yd6are6fvx7mf9f3snve8n",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:40.655629Z"
+    },
+    {
+      "id": "01m7yd6bdnxsgecmjwv40qdwjc",
+      "sequence": 4,
+      "event_type": "ActivityScheduled",
+      "namespace": "default",
+      "payload": {
+        "activity_execution_id": "01m7yd6bdk39r8gn7grsqanndz",
+        "activity_class": "hold",
+        "activity_type": "hold",
+        "sequence": 2,
+        "activity": {
+          "id": "01m7yd6bdk39r8gn7grsqanndz",
+          "idempotency_key": "01m7yd6bdk39r8gn7grsqanndz",
+          "sequence": 2,
+          "type": "hold",
+          "class": "hold",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "queue": "no-worker",
+          "created_at": "2026-11-21T06:37:40.659382Z",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        },
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "selection_member_key": "slow",
+        "selection_member_index": 1,
+        "selection_member_base_sequence": 2,
+        "selection_member_size": 1,
+        "selection_member_kind": "activity",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "selection_member_key": "slow",
+            "selection_member_index": 1,
+            "selection_member_base_sequence": 2,
+            "selection_member_size": 1,
+            "selection_member_kind": "activity"
+          }
+        ],
+        "task": {
+          "id": "01m7yd6are6fvx7mf9f3snve8n",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:39.982644Z",
+          "leased_at": "2026-11-21T06:37:40.086925Z",
+          "lease_owner": "py-worker-419b077c",
+          "lease_expires_at": "2026-11-21T06:38:40.086889Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification",
+          "last_dispatch_attempt_at": "2026-11-21T06:37:39.987032Z",
+          "last_dispatched_at": "2026-11-21T06:37:39.987032Z"
+        }
+      },
+      "workflow_task_id": "01m7yd6are6fvx7mf9f3snve8n",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:40.660939Z"
+    },
+    {
+      "id": "01m7yd6ck3vh01tzmwp73y2h2v",
+      "sequence": 5,
+      "event_type": "TimerFired",
+      "namespace": "default",
+      "payload": {
+        "timer_id": "01m7yd6bat4tbwkyx6x31xmyc0",
+        "sequence": 1,
+        "delay_seconds": 1,
+        "fire_at": "2026-11-21T06:37:41.570074Z",
+        "fired_at": "2026-11-21T06:37:41.857232Z",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "selection_member_key": "timer",
+        "selection_member_index": 0,
+        "selection_member_base_sequence": 1,
+        "selection_member_size": 1,
+        "selection_member_kind": "timer",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "selection_member_key": "timer",
+            "selection_member_index": 0,
+            "selection_member_base_sequence": 1,
+            "selection_member_size": 1,
+            "selection_member_kind": "timer"
+          }
+        ],
+        "task": {
+          "id": "01m7yd6bdhv39g7b15xjg743cn",
+          "type": "timer",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:41.570074Z",
+          "leased_at": "2026-11-21T06:37:41.767951Z",
+          "lease_owner": "01m7yd6bdhv39g7b15xjg743cn",
+          "lease_expires_at": "2026-11-21T06:38:41.767954Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification"
+        }
+      },
+      "workflow_task_id": "01m7yd6bdhv39g7b15xjg743cn",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:41.859257Z"
+    },
+    {
+      "id": "01m7yd6ck5vfhesjezsyy3e379",
+      "sequence": 6,
+      "event_type": "SelectionResolved",
+      "namespace": "default",
+      "payload": {
+        "selection_group_id": "select-calls:1:2",
+        "selection_group_base_sequence": 1,
+        "selection_group_size": 2,
+        "member_key": "timer",
+        "member_index": 0,
+        "member_base_sequence": 1,
+        "member_size": 1,
+        "operation_kind": "timer",
+        "operation_identity": "01m7yd6bat4tbwkyx6x31xmyc0",
+        "outcome": "completed",
+        "resolution_event_id": "01m7yd6ck3vh01tzmwp73y2h2v",
+        "resolution_event_type": "TimerFired"
+      },
+      "workflow_task_id": null,
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:41.861660Z"
+    },
+    {
+      "id": "01m7yd6d62gvz2d4qf6nakqx0y",
+      "sequence": 7,
+      "event_type": "ActivityScheduled",
+      "namespace": "default",
+      "payload": {
+        "activity_execution_id": "01m7yd6d6159p4p8s652ts1gcz",
+        "activity_class": "step",
+        "activity_type": "step",
+        "sequence": 3,
+        "activity": {
+          "id": "01m7yd6d6159p4p8s652ts1gcz",
+          "idempotency_key": "01m7yd6d6159p4p8s652ts1gcz",
+          "sequence": 3,
+          "type": "step",
+          "class": "step",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "queue": "qualification",
+          "created_at": "2026-11-21T06:37:42.465730Z",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAAA"
+          }
+        },
+        "parallel_group_id": "parallel-activities:3:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:3:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ],
+        "task": {
+          "id": "01m7yd6ck8gte5qyca1hgkhs4r",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:41.863317Z",
+          "leased_at": "2026-11-21T06:37:41.976999Z",
+          "lease_owner": "py-worker-419b077c",
+          "lease_expires_at": "2026-11-21T06:38:41.976973Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification",
+          "last_dispatch_attempt_at": "2026-11-21T06:37:41.876279Z",
+          "last_dispatched_at": "2026-11-21T06:37:41.876279Z"
+        }
+      },
+      "workflow_task_id": "01m7yd6ck8gte5qyca1hgkhs4r",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:42.466448Z"
+    },
+    {
+      "id": "01m7yd6d66y3rxwpkg96gh1m0w",
+      "sequence": 8,
+      "event_type": "ActivityScheduled",
+      "namespace": "default",
+      "payload": {
+        "activity_execution_id": "01m7yd6d65qnpv3gqvq45p1k3y",
+        "activity_class": "step",
+        "activity_type": "step",
+        "sequence": 4,
+        "activity": {
+          "id": "01m7yd6d65qnpv3gqvq45p1k3y",
+          "idempotency_key": "01m7yd6d65qnpv3gqvq45p1k3y",
+          "sequence": 4,
+          "type": "step",
+          "class": "step",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "queue": "qualification",
+          "created_at": "2026-11-21T06:37:42.469889Z",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAIA"
+          }
+        },
+        "parallel_group_id": "parallel-activities:3:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:3:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "task": {
+          "id": "01m7yd6ck8gte5qyca1hgkhs4r",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:41.863317Z",
+          "leased_at": "2026-11-21T06:37:41.976999Z",
+          "lease_owner": "py-worker-419b077c",
+          "lease_expires_at": "2026-11-21T06:38:41.976973Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification",
+          "last_dispatch_attempt_at": "2026-11-21T06:37:41.876279Z",
+          "last_dispatched_at": "2026-11-21T06:37:41.876279Z"
+        }
+      },
+      "workflow_task_id": "01m7yd6ck8gte5qyca1hgkhs4r",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:42.470411Z"
+    },
+    {
+      "id": "01m7yd6dngtey1v0x8gwfbtabp",
+      "sequence": 9,
+      "event_type": "ActivityStarted",
+      "namespace": "default",
+      "payload": {
+        "activity_execution_id": "01m7yd6d6159p4p8s652ts1gcz",
+        "activity_attempt_id": "01M7YD6DJPVGW9NJ0KMQKEKJ97",
+        "activity_class": "step",
+        "activity_type": "step",
+        "sequence": 3,
+        "attempt_number": 1,
+        "activity": {
+          "id": "01m7yd6d6159p4p8s652ts1gcz",
+          "idempotency_key": "01m7yd6d6159p4p8s652ts1gcz",
+          "sequence": 3,
+          "type": "step",
+          "class": "step",
+          "local_activity": false,
+          "attempt_id": "01M7YD6DJPVGW9NJ0KMQKEKJ97",
+          "status": "running",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "queue": "qualification",
+          "created_at": "2026-11-21T06:37:42.465730Z",
+          "started_at": "2026-11-21T06:37:42.870659Z",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAAA"
+          }
+        },
+        "parallel_group_id": "parallel-activities:3:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:3:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ],
+        "task": {
+          "id": "01m7yd6d64s85cj89pck9ps7zn",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:42.468112Z",
+          "leased_at": "2026-11-21T06:37:42.870659Z",
+          "lease_owner": "py-worker-419b077c",
+          "lease_expires_at": "2026-11-21T06:42:42.870746Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification"
+        }
+      },
+      "workflow_task_id": "01m7yd6d64s85cj89pck9ps7zn",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:42.960469Z"
+    },
+    {
+      "id": "01m7yd6ebgensr1v68g9c2za6n",
+      "sequence": 10,
+      "event_type": "ActivityCompleted",
+      "namespace": "default",
+      "payload": {
+        "activity_execution_id": "01m7yd6d6159p4p8s652ts1gcz",
+        "activity_attempt_id": "01M7YD6DJPVGW9NJ0KMQKEKJ97",
+        "activity_class": "step",
+        "activity_type": "step",
+        "sequence": 3,
+        "attempt_number": 1,
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwQA"
+        },
+        "payload_codec": "avro",
+        "activity": {
+          "id": "01m7yd6d6159p4p8s652ts1gcz",
+          "idempotency_key": "01m7yd6d6159p4p8s652ts1gcz",
+          "sequence": 3,
+          "type": "step",
+          "class": "step",
+          "local_activity": false,
+          "attempt_id": "01M7YD6DJPVGW9NJ0KMQKEKJ97",
+          "status": "completed",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "queue": "qualification",
+          "created_at": "2026-11-21T06:37:42.465730Z",
+          "started_at": "2026-11-21T06:37:42.870659Z",
+          "closed_at": "2026-11-21T06:37:43.663701Z",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAAA"
+          },
+          "result": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwQA"
+          }
+        },
+        "parallel_group_id": "parallel-activities:3:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:3:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ],
+        "task": {
+          "id": "01m7yd6d64s85cj89pck9ps7zn",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:42.468112Z",
+          "leased_at": "2026-11-21T06:37:42.870659Z",
+          "lease_owner": "py-worker-419b077c",
+          "lease_expires_at": "2026-11-21T06:42:43.365760Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification"
+        }
+      },
+      "workflow_task_id": "01m7yd6d64s85cj89pck9ps7zn",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:43.664550Z"
+    },
+    {
+      "id": "01m7yd6eqq7kpw1t3jz8c7a2x1",
+      "sequence": 11,
+      "event_type": "ActivityStarted",
+      "namespace": "default",
+      "payload": {
+        "activity_execution_id": "01m7yd6d65qnpv3gqvq45p1k3y",
+        "activity_attempt_id": "01M7YD6EN7CB45EQATVVJ3K9Y3",
+        "activity_class": "step",
+        "activity_type": "step",
+        "sequence": 4,
+        "attempt_number": 1,
+        "activity": {
+          "id": "01m7yd6d65qnpv3gqvq45p1k3y",
+          "idempotency_key": "01m7yd6d65qnpv3gqvq45p1k3y",
+          "sequence": 4,
+          "type": "step",
+          "class": "step",
+          "local_activity": false,
+          "attempt_id": "01M7YD6EN7CB45EQATVVJ3K9Y3",
+          "status": "running",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "queue": "qualification",
+          "created_at": "2026-11-21T06:37:42.469889Z",
+          "started_at": "2026-11-21T06:37:43.975545Z",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAIA"
+          }
+        },
+        "parallel_group_id": "parallel-activities:3:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:3:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "task": {
+          "id": "01m7yd6d67ttxgte1gr53jh50g",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:42.471700Z",
+          "leased_at": "2026-11-21T06:37:43.975545Z",
+          "lease_owner": "py-worker-419b077c",
+          "lease_expires_at": "2026-11-21T06:42:43.975624Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification"
+        }
+      },
+      "workflow_task_id": "01m7yd6d67ttxgte1gr53jh50g",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:44.053512Z"
+    },
+    {
+      "id": "01m7yd6f7x2say5ab5813kx913",
+      "sequence": 12,
+      "event_type": "ActivityCompleted",
+      "namespace": "default",
+      "payload": {
+        "activity_execution_id": "01m7yd6d65qnpv3gqvq45p1k3y",
+        "activity_attempt_id": "01M7YD6EN7CB45EQATVVJ3K9Y3",
+        "activity_class": "step",
+        "activity_type": "step",
+        "sequence": 4,
+        "attempt_number": 1,
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwQC"
+        },
+        "payload_codec": "avro",
+        "activity": {
+          "id": "01m7yd6d65qnpv3gqvq45p1k3y",
+          "idempotency_key": "01m7yd6d65qnpv3gqvq45p1k3y",
+          "sequence": 4,
+          "type": "step",
+          "class": "step",
+          "local_activity": false,
+          "attempt_id": "01M7YD6EN7CB45EQATVVJ3K9Y3",
+          "status": "completed",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "queue": "qualification",
+          "created_at": "2026-11-21T06:37:42.469889Z",
+          "started_at": "2026-11-21T06:37:43.975545Z",
+          "closed_at": "2026-11-21T06:37:44.572608Z",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAIA"
+          },
+          "result": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwQC"
+          }
+        },
+        "parallel_group_id": "parallel-activities:3:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:3:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "task": {
+          "id": "01m7yd6d67ttxgte1gr53jh50g",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:42.471700Z",
+          "leased_at": "2026-11-21T06:37:43.975545Z",
+          "lease_owner": "py-worker-419b077c",
+          "lease_expires_at": "2026-11-21T06:42:44.279715Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification"
+        }
+      },
+      "workflow_task_id": "01m7yd6d67ttxgte1gr53jh50g",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:44.573385Z"
+    },
+    {
+      "id": "01m7yd6g3zb8gr8dwcg4r8wfm5",
+      "sequence": 13,
+      "event_type": "ActivityCancelled",
+      "namespace": "default",
+      "payload": {
+        "workflow_command_id": null,
+        "activity_execution_id": "01m7yd6bdk39r8gn7grsqanndz",
+        "activity_attempt_id": null,
+        "activity_class": "hold",
+        "activity_type": "hold",
+        "sequence": 2,
+        "attempt_number": 0,
+        "cancelled_at": "2026-11-21T06:37:45.466867Z",
+        "activity": {
+          "id": "01m7yd6bdk39r8gn7grsqanndz",
+          "idempotency_key": "01m7yd6bdk39r8gn7grsqanndz",
+          "sequence": 2,
+          "type": "hold",
+          "class": "hold",
+          "local_activity": false,
+          "status": "cancelled",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "queue": "no-worker",
+          "created_at": "2026-11-21T06:37:40.659382Z",
+          "closed_at": "2026-11-21T06:37:45.466867Z",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        },
+        "activity_attempt": null,
+        "task": {
+          "id": "01m7yd6bdpgfqgmts1k4zm50xw",
+          "type": "activity",
+          "status": "cancelled",
+          "available_at": "2026-11-21T06:37:40.662419Z",
+          "attempt_count": 0,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "no-worker"
+        }
+      },
+      "workflow_task_id": "01m7yd6bdpgfqgmts1k4zm50xw",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:45.471398Z"
+    },
+    {
+      "id": "01m7yd6g42h5et56251nhc051d",
+      "sequence": 14,
+      "event_type": "SelectionOperationCancelled",
+      "namespace": "default",
+      "payload": {
+        "selection_group_id": "select-calls:1:2",
+        "member_key": "slow",
+        "member_index": 1,
+        "member_base_sequence": 2,
+        "member_size": 1,
+        "operation_kind": "activity",
+        "operation_identity": "01m7yd6bdk39r8gn7grsqanndz",
+        "cancelled_at": "2026-11-21T06:37:45.473024Z",
+        "task": {
+          "id": "01m7yd6fapkym5jmn8gtvxvse1",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:44.662437Z",
+          "leased_at": "2026-11-21T06:37:45.068975Z",
+          "lease_owner": "py-worker-419b077c",
+          "lease_expires_at": "2026-11-21T06:38:45.068946Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification",
+          "last_dispatch_attempt_at": "2026-11-21T06:37:44.769861Z",
+          "last_dispatched_at": "2026-11-21T06:37:44.769861Z"
+        }
+      },
+      "workflow_task_id": "01m7yd6fapkym5jmn8gtvxvse1",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:45.473508Z"
+    },
+    {
+      "id": "01m7yd6g6hg6nww3pvfmf97pq7",
+      "sequence": 15,
+      "event_type": "ActivityScheduled",
+      "namespace": "default",
+      "payload": {
+        "activity_execution_id": "01m7yd6g49snh1t52pqz5w81m7",
+        "activity_class": "step",
+        "activity_type": "step",
+        "sequence": 5,
+        "activity": {
+          "id": "01m7yd6g49snh1t52pqz5w81m7",
+          "idempotency_key": "01m7yd6g49snh1t52pqz5w81m7",
+          "sequence": 5,
+          "type": "step",
+          "class": "step",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "queue": "qualification",
+          "created_at": "2026-11-21T06:37:45.481560Z",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAQA"
+          }
+        },
+        "task": {
+          "id": "01m7yd6fapkym5jmn8gtvxvse1",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:44.662437Z",
+          "leased_at": "2026-11-21T06:37:45.068975Z",
+          "lease_owner": "py-worker-419b077c",
+          "lease_expires_at": "2026-11-21T06:38:45.068946Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification",
+          "last_dispatch_attempt_at": "2026-11-21T06:37:44.769861Z",
+          "last_dispatched_at": "2026-11-21T06:37:44.769861Z"
+        }
+      },
+      "workflow_task_id": "01m7yd6fapkym5jmn8gtvxvse1",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:45.482037Z"
+    },
+    {
+      "id": "01m7yd6gd5a73v0mmv05bbqz6b",
+      "sequence": 16,
+      "event_type": "ActivityStarted",
+      "namespace": "default",
+      "payload": {
+        "activity_execution_id": "01m7yd6g49snh1t52pqz5w81m7",
+        "activity_attempt_id": "01M7YD6GD2PHKJ65Z5CMCVE4GE",
+        "activity_class": "step",
+        "activity_type": "step",
+        "sequence": 5,
+        "attempt_number": 1,
+        "activity": {
+          "id": "01m7yd6g49snh1t52pqz5w81m7",
+          "idempotency_key": "01m7yd6g49snh1t52pqz5w81m7",
+          "sequence": 5,
+          "type": "step",
+          "class": "step",
+          "local_activity": false,
+          "attempt_id": "01M7YD6GD2PHKJ65Z5CMCVE4GE",
+          "status": "running",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "queue": "qualification",
+          "created_at": "2026-11-21T06:37:45.481560Z",
+          "started_at": "2026-11-21T06:37:45.762633Z",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAQA"
+          }
+        },
+        "task": {
+          "id": "01m7yd6g6psms4sxvndsnx9p56",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:45.558117Z",
+          "leased_at": "2026-11-21T06:37:45.762633Z",
+          "lease_owner": "py-worker-419b077c",
+          "lease_expires_at": "2026-11-21T06:42:45.762704Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification"
+        }
+      },
+      "workflow_task_id": "01m7yd6g6psms4sxvndsnx9p56",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:45.765498Z"
+    },
+    {
+      "id": "01m7yd6gsttxh9qt0n3stw5fsz",
+      "sequence": 17,
+      "event_type": "ActivityCompleted",
+      "namespace": "default",
+      "payload": {
+        "activity_execution_id": "01m7yd6g49snh1t52pqz5w81m7",
+        "activity_attempt_id": "01M7YD6GD2PHKJ65Z5CMCVE4GE",
+        "activity_class": "step",
+        "activity_type": "step",
+        "sequence": 5,
+        "attempt_number": 1,
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwQE"
+        },
+        "payload_codec": "avro",
+        "activity": {
+          "id": "01m7yd6g49snh1t52pqz5w81m7",
+          "idempotency_key": "01m7yd6g49snh1t52pqz5w81m7",
+          "sequence": 5,
+          "type": "step",
+          "class": "step",
+          "local_activity": false,
+          "attempt_id": "01M7YD6GD2PHKJ65Z5CMCVE4GE",
+          "status": "completed",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "queue": "qualification",
+          "created_at": "2026-11-21T06:37:45.481560Z",
+          "started_at": "2026-11-21T06:37:45.762633Z",
+          "closed_at": "2026-11-21T06:37:46.169407Z",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCBAQA"
+          },
+          "result": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwQE"
+          }
+        },
+        "task": {
+          "id": "01m7yd6g6psms4sxvndsnx9p56",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-21T06:37:45.558117Z",
+          "leased_at": "2026-11-21T06:37:45.762633Z",
+          "lease_owner": "py-worker-419b077c",
+          "lease_expires_at": "2026-11-21T06:42:45.982942Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "qualification"
+        }
+      },
+      "workflow_task_id": "01m7yd6g6psms4sxvndsnx9p56",
+      "workflow_command_id": null,
+      "recorded_at": "2026-11-21T06:37:46.170243Z"
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "complete_workflow",
+        "result": {
+          "selected": "timer",
+          "steps": [
+            0,
+            1,
+            2
+          ]
+        }
+      }
+    ]
+  }
+}

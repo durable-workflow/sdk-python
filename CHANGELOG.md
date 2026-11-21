@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A parallel list group schedules at the next free command sequence after a
+  resolved selection or an applied update. Replay still assigns a cancelled
+  selection member to its original selection when the Server omits the
+  selection metadata from the cancellation event. (#350)
+
 ## [2.21.0] - 2026-11-21
 
 ### Added

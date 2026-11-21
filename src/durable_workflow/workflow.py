@@ -5766,7 +5766,11 @@ def _replay_state(
             details=details,
             history_index=event_index,
         )
-        if _selection_group_metadata(payload) is not None:
+        # PHP Server can record ActivityCancelled without the selection path.
+        # The durable opening still binds its sequence to the selected group.
+        if _selection_group_metadata(payload) is not None or (
+            event_type == "ActivityCancelled" and workflow_sequence in selection_opening_payloads
+        ):
             selection_resolutions[workflow_sequence] = value
             selection_resolution_indexes[workflow_sequence] = event_index
             _append_selection_step(shape, event, fallback_sequence=workflow_sequence)
