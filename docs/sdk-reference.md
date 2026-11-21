@@ -173,12 +173,13 @@ Server acceptance remain tracked in
 [the shared run-activity issue](https://github.com/durable-workflow/.github/issues/235).
 This source addition is outside the current typed-value release candidate.
 
-## Start a standalone activity (unreleased duplicate policies)
+## Start a standalone activity
 
 `Client.start_activity()` and `SyncClient.start_activity()` dispatch an
-activity directly to an SDK worker. Keep one `activity_id` per job. On native
-Server 3.14.0 or later, `duplicate_policy="use-existing"` returns the active
-execution for that ID, with its original run and activity execution IDs.
+activity directly to an SDK worker. Keep one `activity_id` per job. Duplicate
+policies are available with Python SDK 2.22.0 and Native Server 3.14.0 or later.
+`duplicate_policy="use-existing"` returns the active execution for that ID
+with its original run and activity execution IDs.
 `duplicate_policy="fail"`, the Server default, raises `ActivityAlreadyStarted`
 with the conflicting activity ID and its run ID if supplied. An omitted
 policy sends the original request shape for older Servers.
