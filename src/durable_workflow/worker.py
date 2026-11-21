@@ -1318,7 +1318,7 @@ RECORD_PARALLEL_FAILURE_ORDER_ENV = "DURABLE_WORKFLOW_RECORD_PARALLEL_FAILURE_OR
 def _record_parallel_failure_order(value: bool | None) -> bool:
     """The worker's failure-order recording setting, refused when malformed."""
     if value is None:
-        raw = os.environ.get(RECORD_PARALLEL_FAILURE_ORDER_ENV, "")
+        raw = os.environ.get(RECORD_PARALLEL_FAILURE_ORDER_ENV, "true")
         setting = raw.strip().lower()
         if setting in ("", "false", "0"):
             return False
@@ -1366,9 +1366,10 @@ class Worker:
         failure-order marker before their first all-group, so their groups
         raise the first recorded member failure (sdk-python#307). ``None``
         reads ``DURABLE_WORKFLOW_RECORD_PARALLEL_FAILURE_ORDER`` (``true`` or
-        ``false``, default ``false``). Enable it only after every worker on the
-        task queue runs this release or later: older workers cannot replay a
-        marked run. Every worker follows a marker that a run already recorded.
+        ``false``, default ``true``). Before using this default, upgrade every
+        worker on the task queue to SDK 2.21.0 or later. Set ``False`` to keep
+        recording off. Workers on 2.21.0 and later follow a marker that a run
+        already recorded regardless of the setting.
         """
         self.client = client
         self.record_parallel_failure_order = _record_parallel_failure_order(record_parallel_failure_order)

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import Mapping, Sequence
 from importlib import metadata
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -21,6 +22,7 @@ from durable_workflow.errors import (
 )
 from durable_workflow.replay_conformance import compose_report
 from durable_workflow.retry_policy import TransportRetryPolicy
+from durable_workflow.worker import RECORD_PARALLEL_FAILURE_ORDER_ENV
 from durable_workflow.workflow import (
     LocalActivityExecutionAborted,
     WorkflowContext,
@@ -715,7 +717,11 @@ def _execute_completion_size_limit(inputs: Any) -> list[dict[str, Any]]:
                         retry_policy=TransportRetryPolicy(max_attempts=1))
         client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(reply))
         async with client:
-            worker = Worker(client, task_queue="queue", worker_id="holder", workflows=[CompletionSizeFanOutWorkflow])
+            # Keep the original completion-limit fixtures on the pre-marker wire contract.
+            worker = Worker(
+                client, task_queue="queue", worker_id="holder", workflows=[CompletionSizeFanOutWorkflow],
+                record_parallel_failure_order=False,
+            )
             await worker._run_workflow_task({
                 "task_id": "task", "workflow_id": "workflow", "run_id": "run", "workflow_task_attempt": 1,
                 "workflow_type": "sdk.completion-size-limit.fan-out", "payload_codec": "avro",
@@ -849,6 +855,24 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     assert isinstance(history, list)
     if "history" in fixture:
         assert history
+
+    if workflow.get("worker_default_parallel_failure_order") is True:
+        async def run_first_task() -> list[dict[str, Any]]:
+            client = AsyncMock(spec=Client)
+            with patch.dict(os.environ):
+                os.environ.pop(RECORD_PARALLEL_FAILURE_ORDER_ENV, None)
+                worker = Worker(client, task_queue="regression-corpus", workflows=[WORKFLOW_TYPES[workflow_type]])
+            await worker._run_workflow_task({
+                "task_id": "first-task", "workflow_type": workflow_type, "workflow_task_attempt": 1,
+                "workflow_id": workflow["workflow_id"], "run_id": workflow["run_id"], "history_events": history,
+                "arguments": serializer.envelope(start_input, codec=payload_codec), "payload_codec": payload_codec,
+            })
+            client.complete_workflow_task.assert_awaited_once()
+            return client.complete_workflow_task.call_args.kwargs["commands"]
+
+        commands = asyncio.run(run_first_task())
+        _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
+        return commands
 
     query = workflow.get("query")
     query_result: Any = None

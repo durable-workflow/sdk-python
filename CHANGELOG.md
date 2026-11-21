@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   3.14.0 or later. `use-existing` returns the active execution's identifiers.
   A duplicate under the default `fail` policy raises `ActivityAlreadyStarted`.
 
+### Changed
+
+- Workers record the parallel failure-order marker by default. Before
+  upgrading, ensure every worker polling the same queue runs SDK 2.21.0 or
+  later. Set `record_parallel_failure_order=False` on the worker or
+  `DURABLE_WORKFLOW_RECORD_PARALLEL_FAILURE_ORDER=false` to turn off recording.
+  All workers from 2.21.0 onward replay runs with a recorded marker. Drain
+  marked runs before rolling back below 2.21.0. (#351)
+
 ## [2.21.2] - 2026-11-21
 
 ### Fixed

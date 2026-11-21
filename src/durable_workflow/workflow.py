@@ -3764,9 +3764,9 @@ def replay(
 
     ``record_parallel_failure_order`` lets a run that reaches its first
     all-group now record ``PARALLEL_FAILURE_ORDER_MARKER`` and raise its first
-    recorded member failure (sdk-python#307). It is off by default, so new runs
-    send the same commands as 2.20.0. A history that already contains the
-    marker follows it whether or not this is set.
+    recorded member failure (sdk-python#307). Direct calls to this helper
+    default to recording off. Workers pass their configured setting. Replay
+    always follows a marker already present in history.
     """
     return _replay_state(
         workflow_cls,
@@ -6848,10 +6848,9 @@ def _replay_state(
         A run reaching its first all-group now records the marker directly
         before scheduling it. No all-group of the run has produced an outcome
         before that point, so no earlier task can have chosen a failure under
-        the other rule. Recording is opt-in (``record_parallel_failure_order``)
-        because workers up to 2.20.0 cannot replay a marked run. A run with a
-        cancellation request that may replace the group records no marker and
-        keeps the earlier rule.
+        the other rule. Recording follows ``record_parallel_failure_order``.
+        A run with a cancellation request that may replace the group records
+        no marker and keeps the earlier rule.
         """
         nonlocal result_cursor, authored_sequence
         marker = RecordVersionMarker(
@@ -6880,9 +6879,8 @@ def _replay_state(
             pending.append(marker)
             authored_sequence += 1
             return True
-        # Recorded without the marker, scheduled now with recording off (the
-        # default until every worker reads the marker), or scheduled under a
-        # cancellation request that may replace it: the earlier rule.
+        # Keep the earlier rule when the group was recorded without a marker,
+        # recording is off, or cancellation may replace the group.
         return False
 
     def _parallel_leaf_kind(command: Any) -> str:
