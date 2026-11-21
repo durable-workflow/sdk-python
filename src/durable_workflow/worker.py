@@ -3369,8 +3369,8 @@ class Worker:
     ) -> None:
         """Fail the run once with a structural-limit failure (.github#228).
 
-        Replaying the task would produce the same oversized commands under the
-        current policy. The same leased task completes with one small
+        The refused completion is never resent: a replay produces the same
+        commands. The same leased task completes with one small
         ``fail_workflow`` command instead, which the Server records with the
         ``structural_limit`` failure category. If that completion also fails,
         the typed error is raised again with the follow-up's error as its
