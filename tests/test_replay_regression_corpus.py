@@ -50,6 +50,7 @@ from tests.test_golden_history_replay import (
     GoldenVersionMarkerWorkflow,
 )
 from tests.test_parallel_failure_order import ReviewPlain, ReviewSelectCancel, ReviewZeroCommandCatch
+from tests.test_parallel_group_boundaries import GroupAfterSelectionWithCancellation
 from tests.test_parallel_group_policy import ParallelFailurePolicyWorkflow
 from tests.test_parallel_member_failure_open_siblings import (
     NativeCaughtMemberFailure,
@@ -485,6 +486,7 @@ WORKFLOWS = [
     NativeUncaughtMemberFailure,
     ReviewPlain,
     ReviewSelectCancel,
+    GroupAfterSelectionWithCancellation,
     ReviewZeroCommandCatch,
     UpdateSignalConditionTimerWorkflow,
     WorkflowStreamAuthorWorkflow,

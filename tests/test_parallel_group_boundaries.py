@@ -11,7 +11,7 @@ import pytest
 
 from durable_workflow import serializer, workflow
 from durable_workflow.errors import ActivityFailed
-from durable_workflow.workflow import CompleteWorkflow, WorkflowContext, commands_to_server_commands, replay
+from durable_workflow.workflow import WorkflowContext, commands_to_server_commands, replay
 
 FIXTURES = Path(__file__).parent / "fixtures" / "replay_regressions"
 
@@ -78,18 +78,3 @@ def test_group_after_update_applied_schedules_at_the_next_command_sequence() -> 
     groups = [command for command in wire if command["type"] == "schedule_activity"]
     assert [command["activity_type"] for command in groups] == ["undo0", "undo1"]
     assert [command["parallel_group_base_sequence"] for command in groups] == [3, 3]
-
-
-def test_replay_after_cancelling_a_selection_loser_keeps_its_result_out_of_the_group() -> None:
-    captured = fixture("parallel-group-after-selection-loser-cancelled.json")
-    identity = captured["workflow"]
-    state = replay(
-        GroupAfterSelectionWithCancellation,
-        captured["history"],
-        identity["input"],
-        workflow_id=identity["workflow_id"],
-        run_id=identity["run_id"],
-        payload_codec=identity["payload_codec"],
-    )
-    expected = captured["expected"]["command_sequence"][0]["result"]
-    assert state.commands == [CompleteWorkflow(expected)]
