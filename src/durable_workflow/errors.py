@@ -359,9 +359,9 @@ class WorkflowTaskCompletionTooLarge(ServerError):
     Server 3.6.0 and later accept a workflow-task completion of up to 16
     payload limits (32 MiB by default) and refuse a larger one with ``413
     payload_too_large`` and ``limit_kind: workflow_task_completion_bytes``.
-    Replaying the task produces the same commands, so resending it cannot
-    succeed: this error is not retryable. The worker fails the run with a
-    ``structural_limit`` failure instead of resending the completion.
+    The worker may re-encode the same commands once under a refreshed payload
+    policy. If the current policy still cannot fit the completion, the worker
+    fails the run with a ``structural_limit`` failure.
 
     :attr:`limit` is the Server's aggregate limit in bytes, when it reported
     one. :attr:`size` is the encoded request body the SDK sent, in bytes.

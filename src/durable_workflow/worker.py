@@ -3369,8 +3369,8 @@ class Worker:
     ) -> None:
         """Fail the run once with a structural-limit failure (.github#228).
 
-        The refused completion is never resent: a replay produces the same
-        commands. The same leased task completes with one small
+        Replaying the task would produce the same oversized commands under the
+        current policy. The same leased task completes with one small
         ``fail_workflow`` command instead, which the Server records with the
         ``structural_limit`` failure category. If that completion also fails,
         the typed error is raised again with the follow-up's error as its
@@ -3937,18 +3937,18 @@ class Worker:
                             task_id, outcome, summary, delay)
                 await asyncio.sleep(delay)
 
-    async def _rediscover_cluster_info(self, context: str, window: Callable[[], float | None] | None) -> bool:
-        """Read cluster info again, through transient outages while ``window`` allows."""
+    async def _rediscover_cluster_info(self, context: str, window: Callable[[], float | None] | None) -> None:
+        """Read cluster info again, raising the discovery error if retries end."""
         failures = 0
         started = time.monotonic()
         while True:
             try:
                 await self.client.get_cluster_info()
-                return True
+                return
             except Exception as error:
                 if not _transient_discovery_error(error) or self._stop.is_set():
                     log.warning("%s: payload policy rediscovery failed: %s", context, _poll_error_summary(error))
-                    return False
+                    raise
                 failures += 1
                 delay = _transient_retry_delay(failures)
                 left = window() if window is not None else None
@@ -3957,7 +3957,7 @@ class Worker:
                 if left <= delay:
                     log.exception("%s: payload policy rediscovery failed %d times (%s) and no time is left",
                                   context, failures, _poll_error_summary(error))
-                    return False
+                    raise
                 log.warning("%s: payload policy rediscovery failed transiently (%s); retrying in %.2f s",
                             context, _poll_error_summary(error), delay)
                 await asyncio.sleep(delay)
@@ -3969,12 +3969,12 @@ class Worker:
         Returns whether the policy changed, so a re-encoded resend could fit.
         Discovery outages are retried with the shared backoff while ``window``
         (seconds left, ``None`` when unknown) allows; the held discovery is
-        replaced only by a successful read.
+        replaced only by a successful read. A discovery error propagates so
+        callers do not record a permanent size failure on an unknown policy.
         """
         client = self.client
         before = getattr(client, "_payload_policy_snapshot", lambda: None)()
-        if not await self._rediscover_cluster_info(context, window):
-            return False
+        await self._rediscover_cluster_info(context, window)
         forget = getattr(client, "_forget_payload_policy", None)
         if forget is not None:
             forget()

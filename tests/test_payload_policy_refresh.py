@@ -39,6 +39,7 @@ class LimitServer(FakeRuntimePayloadServer):
         self.failures = 0
         self.discovery_failures = 0
         self.discovery_reads = 0
+        self.refuse_offloaded_completion = False
 
     def cluster_info(self) -> dict[str, Any]:
         info = super().cluster_info()
@@ -58,7 +59,10 @@ class LimitServer(FakeRuntimePayloadServer):
             if self.discovery_failures:
                 self.discovery_failures -= 1
                 return httpx.Response(503, json={"reason": "storage_unavailable"})
-        if path.startswith("/api/worker/") and len(request.content) > self.request_limit:
+        over_limit = len(request.content) > self.request_limit
+        if path.endswith("/activity-tasks/task-1/complete") and self.refuse_offloaded_completion:
+            over_limit |= b'"external_payload"' in request.content
+        if path.startswith("/api/worker/") and over_limit:
             if path.endswith("/complete"):
                 self.completions.append(len(request.content))
             return httpx.Response(413, json={
@@ -139,6 +143,23 @@ async def test_rediscovery_rides_out_a_discovery_outage() -> None:
         await client.aclose()
 
 
+async def test_rediscovery_outage_leaves_the_activity_attempt_for_lease_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Worker, "_activity_outcome_window", lambda *_: 0.0)
+    server = LimitServer()
+    outcome, client = await run_activity(server, lower={"limit": 100 * 1024}, outage=1)
+    try:
+        assert outcome == "complete_error"
+        assert ran == ["ran"]
+        assert len(server.completions) == 1
+        assert server.discovery_reads == 2
+        assert server.failures == 0
+        assert client._payload_policy_snapshot() == (2 * MIB, 8 * MIB)
+    finally:
+        await client.aclose()
+
+
 def assert_failed_as_too_large(server: LimitServer, limit: int) -> None:
     assert server.failures == 1, "reported once"
     failure = server.fail_bodies[0]["failure"]
@@ -176,6 +197,21 @@ async def test_a_result_that_cannot_be_externalised_fails_non_retryably() -> Non
         assert ran == ["ran"]
         assert len(server.completions) == 1
         assert server.upload_count == 0, "no external storage to offload to"
+        assert_failed_as_too_large(server, 100 * 1024)
+    finally:
+        await client.aclose()
+
+
+async def test_a_second_size_refusal_reports_the_failure_without_resending_again() -> None:
+    server = LimitServer()
+    server.refuse_offloaded_completion = True
+    outcome, client = await run_activity(server, lower={"limit": 100 * 1024})
+    try:
+        assert outcome == "failed_non_retryable"
+        assert ran == ["ran"]
+        assert len(server.completions) == 2
+        assert server.discovery_reads == 2
+        assert server.upload_count == 1
         assert_failed_as_too_large(server, 100 * 1024)
     finally:
         await client.aclose()

@@ -2444,10 +2444,7 @@ class Client:
 
     async def _payload_policy_resolved_snapshot(self) -> tuple[int, int] | None:
         """Resolve the payload policy from the held discovery and snapshot it."""
-        try:
-            await self._runtime_external_payload_transport()
-        except Exception:
-            return None
+        await self._runtime_external_payload_transport()
         return self._payload_policy_snapshot()
 
     async def _runtime_external_payload_transport(
