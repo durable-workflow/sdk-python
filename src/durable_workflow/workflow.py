@@ -5766,7 +5766,11 @@ def _replay_state(
             details=details,
             history_index=event_index,
         )
-        if _selection_group_metadata(payload) is not None:
+        # PHP Server can record ActivityCancelled without the selection path.
+        # The durable opening still binds its sequence to the selected group.
+        if _selection_group_metadata(payload) is not None or (
+            event_type == "ActivityCancelled" and workflow_sequence in selection_opening_payloads
+        ):
             selection_resolutions[workflow_sequence] = value
             selection_resolution_indexes[workflow_sequence] = event_index
             _append_selection_step(shape, event, fallback_sequence=workflow_sequence)
@@ -6966,7 +6970,9 @@ def _replay_state(
             recorded_sequences = [
                 step.workflow_sequence for step in recorded_steps + recorded_wait_steps + recorded_pending_steps
             ]
-            base_sequence = max([*recorded_sequences, *consumed_policy_sequences], default=0) + len(pending) + 1
+            base_sequence = max(
+                [*recorded_sequences, *consumed_policy_sequences, *consumed_selection_sequences], default=0,
+            ) + len(pending) + 1
 
         def _build(group: list[Any], group_base: int) -> tuple[list[Any], list[Any]]:
             size = len(_parallel_leaves(group, nested=group is not commands))
@@ -7855,7 +7861,9 @@ def _replay_state(
         ``parallel_sequence_mismatch`` (sdk-python#338).
         """
         base = commands[0]._parallel_group_path[0]["parallel_group_base_sequence"]
-        return any(sequence in event_types_by_sequence for sequence in range(base, base + len(commands)))
+        # Receiver events, such as UpdateApplied, can reference the next
+        # command sequence without reserving it for an authored operation.
+        return any(base <= step.workflow_sequence < base + len(commands) for step in _unconsumed_recorded_steps())
 
     def _parallel_failure_marker(commands: list[Any]) -> int | None:
         """The member sequence a recorded early-failure decision names, if any.
