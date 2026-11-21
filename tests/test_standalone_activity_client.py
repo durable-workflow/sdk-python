@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from durable_workflow import serializer
+from durable_workflow import ActivityAlreadyStarted, serializer
 from durable_workflow.client import (
     Client,
     StandaloneActivityHandle,
@@ -103,6 +103,48 @@ class TestStartActivity:
         assert "input" not in body
         assert "activity_id" not in body
         assert "retry_policy" not in body
+        assert "duplicate_policy" not in body
+
+    async def test_use_existing_returns_the_original_execution(self, client: Client) -> None:
+        response = _mock_response(200, {
+            "activity_id": "job-1",
+            "activity_execution_id": "original-execution",
+            "workflow_run_id": "original-run",
+            "workflow_type": "dw.standalone_activity",
+            "activity_type": "original-type",
+            "outcome": "returned_existing_active",
+        })
+        with patch.object(client._http, "request", new_callable=AsyncMock, return_value=response) as request:
+            handle = await client.start_activity(
+                activity_type="retry-type",
+                task_queue="outbox",
+                activity_id="job-1",
+                duplicate_policy="use-existing",
+            )
+        request.assert_awaited_once()
+        assert request.call_args.kwargs["json"]["duplicate_policy"] == "use-existing"
+        assert handle.activity_execution_id == "original-execution"
+        assert handle.workflow_run_id == "original-run"
+        assert handle.activity_type == "original-type"
+
+    @pytest.mark.parametrize("policy", [None, "fail"])
+    async def test_duplicate_conflict_is_typed(self, client: Client, policy: str | None) -> None:
+        response = _mock_response(409, {
+            "reason": "activity_already_started",
+            "activity_id": "job-1",
+            "workflow_run_id": "original-run",
+        })
+        with (
+            patch.object(client._http, "request", new_callable=AsyncMock, return_value=response) as request,
+            pytest.raises(ActivityAlreadyStarted) as caught,
+        ):
+            await client.start_activity(
+                activity_type="original-type", task_queue="outbox", activity_id="job-1", duplicate_policy=policy,
+            )
+        request.assert_awaited_once()
+        assert request.call_args.kwargs["json"].get("duplicate_policy") == policy
+        assert caught.value.activity_id == "job-1"
+        assert caught.value.workflow_run_id == "original-run"
 
 
 class TestDescribeAndResultActivity:

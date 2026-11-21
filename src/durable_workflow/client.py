@@ -4779,6 +4779,7 @@ class Client:
         schedule_to_start_timeout_seconds: int | None = None,
         schedule_to_close_timeout_seconds: int | None = None,
         heartbeat_timeout_seconds: int | None = None,
+        duplicate_policy: str | None = None,
     ) -> StandaloneActivityHandle:
         """Start a standalone activity and return a handle bound to it.
 
@@ -4795,6 +4796,14 @@ class Client:
         the server generates one. ``activity_class`` is an optional
         free-form label that surfaces on the listing/show endpoints — it
         does not affect dispatch.
+
+        Native Server 3.14.0 and later accept ``duplicate_policy="fail"``
+        or ``"use-existing"`` for an active activity ID. Omission uses the
+        Server's default, ``fail``, which raises
+        :class:`~durable_workflow.errors.ActivityAlreadyStarted`. A
+        ``use-existing`` start returns the original execution's handle and
+        keeps its original arguments and type. A closed ID starts a new
+        execution under either policy.
 
         ``input`` is a list of positional arguments passed to the
         activity, encoded with the default payload codec.
@@ -4836,6 +4845,8 @@ class Client:
             body["schedule_to_close_timeout_seconds"] = schedule_to_close_timeout_seconds
         if heartbeat_timeout_seconds is not None:
             body["heartbeat_timeout_seconds"] = heartbeat_timeout_seconds
+        if duplicate_policy is not None:
+            body["duplicate_policy"] = duplicate_policy
 
         data = await self._request(
             "POST",

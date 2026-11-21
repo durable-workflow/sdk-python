@@ -173,6 +173,21 @@ Server acceptance remain tracked in
 [the shared run-activity issue](https://github.com/durable-workflow/.github/issues/235).
 This source addition is outside the current typed-value release candidate.
 
+## Start a standalone activity (unreleased duplicate policies)
+
+`Client.start_activity()` and `SyncClient.start_activity()` dispatch an
+activity directly to an SDK worker. Keep one `activity_id` per job. On native
+Server 3.14.0 or later, `duplicate_policy="use-existing"` returns the active
+execution for that ID, with its original run and activity execution IDs.
+`duplicate_policy="fail"`, the Server default, raises `ActivityAlreadyStarted`
+with the conflicting activity ID and its run ID if supplied. An omitted
+policy sends the original request shape for older Servers.
+
+A closed activity ID starts a new execution under either policy. Activity
+description and result polling by ID address its current execution. See the
+[Server standalone activity reference](https://github.com/durable-workflow/server/blob/3.19.0/docs/server-reference.md#standalone-activities)
+for timeout, payload and retention behavior.
+
 ## Schedule visibility and paging
 
 `list_schedules()` returns one typed `ScheduleList` page. Status and workflow
