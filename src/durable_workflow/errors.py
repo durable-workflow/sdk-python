@@ -536,6 +536,15 @@ class WorkflowAlreadyStarted(DurableWorkflowError):
         self.workflow_id = workflow_id
 
 
+class ActivityAlreadyStarted(DurableWorkflowError):
+    """A standalone activity ID already has an active execution."""
+
+    def __init__(self, activity_id: str, workflow_run_id: str | None = None) -> None:
+        super().__init__(f"activity already started: {activity_id}")
+        self.activity_id = activity_id
+        self.workflow_run_id = workflow_run_id
+
+
 class NamespaceNotFound(DurableWorkflowError):
     """The namespace configured on the :class:`~durable_workflow.Client` is unknown to the server."""
 
@@ -1391,6 +1400,11 @@ def _raise_for_status(
     if status == 409:
         if reason == "schedule_already_exists":
             raise ScheduleAlreadyExists(context)
+        if reason == "activity_already_started":
+            raise ActivityAlreadyStarted(
+                _body_string(body, "activity_id") or context,
+                _body_string(body, "workflow_run_id"),
+            )
         if reason in ("duplicate_not_allowed", "instance_already_started"):
             raise WorkflowAlreadyStarted(context)
         if reason == "run_not_active":

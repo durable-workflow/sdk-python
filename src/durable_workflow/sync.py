@@ -710,6 +710,7 @@ class Client:
         schedule_to_start_timeout_seconds: int | None = None,
         schedule_to_close_timeout_seconds: int | None = None,
         heartbeat_timeout_seconds: int | None = None,
+        duplicate_policy: str | None = None,
     ) -> SyncStandaloneActivityHandle:
         handle = self._runner.run(
             self._async.start_activity(
@@ -724,6 +725,7 @@ class Client:
                 schedule_to_start_timeout_seconds=schedule_to_start_timeout_seconds,
                 schedule_to_close_timeout_seconds=schedule_to_close_timeout_seconds,
                 heartbeat_timeout_seconds=heartbeat_timeout_seconds,
+                duplicate_policy=duplicate_policy,
             )
         )
         return SyncStandaloneActivityHandle(handle, self._runner)

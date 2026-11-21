@@ -686,6 +686,7 @@ class TestSyncStandaloneActivities:
                 schedule_to_start_timeout_seconds=10,
                 schedule_to_close_timeout_seconds=180,
                 heartbeat_timeout_seconds=30,
+                duplicate_policy="use-existing",
             )
 
         assert isinstance(handle, SyncStandaloneActivityHandle)
@@ -704,6 +705,7 @@ class TestSyncStandaloneActivities:
         assert body["schedule_to_start_timeout_seconds"] == 10
         assert body["schedule_to_close_timeout_seconds"] == 180
         assert body["heartbeat_timeout_seconds"] == 30
+        assert body["duplicate_policy"] == "use-existing"
         assert serializer.decode(body["input"]["blob"], codec=body["input"]["codec"]) == [{"order_id": "o-42"}]
 
     def test_get_activity_handle_wraps_existing_activity(self) -> None:

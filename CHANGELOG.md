@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Standalone activity starts accept `duplicate_policy` with native Server
+  3.14.0 or later. `use-existing` returns the active execution's identifiers.
+  A duplicate under the default `fail` policy raises `ActivityAlreadyStarted`.
+
 ## [2.21.2] - 2026-11-21
 
 ### Fixed

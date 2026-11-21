@@ -69,6 +69,7 @@ from .client import (
     WorkflowStreamPage,
 )
 from .errors import (
+    ActivityAlreadyStarted,
     ActivityCancelled,
     ActivityFailed,
     ActivityHeartbeatResumeUnavailable,
@@ -262,6 +263,7 @@ from .workflow import (
 
 __all__ = [
     "__version__",
+    "ActivityAlreadyStarted",
     "ActivityCancelled",
     "ActivityFailed",
     "ActivityContext",
