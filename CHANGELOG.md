@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.21.0] - 2026-11-21
+
 ### Added
 
 - Opt-in first-recorded-failure selection for `all()` groups (`yield [...]`), as a two-phase rollout (#307). With `Worker(..., record_parallel_failure_order=True)` or `DURABLE_WORKFLOW_RECORD_PARALLEL_FAILURE_ORDER=true`, a new run records the version marker `durable_workflow.parallel_failure_order` (version 1) directly before its first group that contains an activity or child workflow. A marked run raises the failure recorded first in history, even when every member had settled before the workflow resumed. Workers up to 2.20.0 raise the lowest-position failure in that case, so the exception a workflow caught depended on whether its task ran before or after the other members finished. The first recorded failure is still raised as soon as it is recorded, and the other members keep running, are not cancelled, and have their outcomes ignored. Ties follow durable event order, as the shared parallel-group contract specifies. Workflow's embedded engine compares millisecond timestamps and then member index, so failures recorded in the same millisecond can be chosen differently (durable-workflow/.github#415). Any other value of the environment variable is refused when the `Worker` is created.
