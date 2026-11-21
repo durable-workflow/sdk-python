@@ -1,0 +1,14 @@
+{
+  "schema": "sdk-python.reviewed-release/v1",
+  "version": "2.21.1",
+  "source_commit": "d65f0c290a45b72a176191e06ddb1bedd9950c6a",
+  "source_tree": "d22253fbb1f9871eb4cc971e2debf62fb5c50f5c",
+  "run_id": 44877368724,
+  "run_attempt": 1,
+  "artifact_id": 14696382486,
+  "artifact_sha256": "0fe36bc9fdc48d5d4d24c8a1ccbf514ad987b4805a25e0978936eba418f08f1a",
+  "files": {
+    "durable_workflow-2.21.1-py3-none-any.whl": "4ae1a20de92fd31c0dc6b3ecdb449ec0f0fa8b5b5e1366bea3800b7b8302e3ea",
+    "durable_workflow-2.21.1.tar.gz": "a0ae8eda7b195b7710969ae58e3ada2d866d4fdb58045fb42911abc2ae7ecbcb"
+  }
+}
