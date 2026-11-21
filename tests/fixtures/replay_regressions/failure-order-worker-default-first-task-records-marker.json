@@ -1,0 +1,192 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "failure-order-worker-default-first-task-records-marker",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "parallel_failure_order": {
+    "issues": [
+      "durable-workflow/sdk-python#351"
+    ],
+    "note": "A real first-task history with no previous group is delivered to a worker constructed without a recording option or environment override. Its completion records the marker before the same group. The original fixture still covers the old unmarked commands with recording disabled."
+  },
+  "workflow": {
+    "type": "rv348_plain",
+    "input": [],
+    "payload_codec": "avro",
+    "run_id": "01m7tfn1drg737gpdqqq521f99",
+    "workflow_id": "rv307-rv348_plain-021643",
+    "worker_default_parallel_failure_order": true
+  },
+  "history": [
+    {
+      "id": "01m7tfn1dyeq9qmk4mqccjd4k3",
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "namespace": "default",
+      "payload": {
+        "memo": null,
+        "command": {
+          "id": "01m7tfn1dt9s08nvqqk4kh61am",
+          "type": "start",
+          "source": "control_plane",
+          "status": "accepted",
+          "context": {
+            "principal": {
+              "id": "legacy-token",
+              "type": "auth:token",
+              "label": "Admin"
+            }
+          },
+          "outcome": "started_new",
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          },
+          "sequence": 1,
+          "applied_at": "2026-11-19T18:03:41.369328Z",
+          "accepted_at": "2026-11-19T18:03:41.369324Z",
+          "auth_method": "token",
+          "auth_status": "authorized",
+          "caller_label": "Standalone Server",
+          "principal_id": "legacy-token",
+          "request_path": "/api/workflows",
+          "target_scope": "instance",
+          "payload_codec": "avro",
+          "principal_type": "auth:token",
+          "request_method": "POST",
+          "principal_label": "Admin",
+          "resolved_run_id": "01m7tfn1drg737gpdqqq521f99",
+          "request_route_name": "generated::FqJuJMl97iiXlIDz",
+          "request_fingerprint": "sha256:6f781847735e7bee891c0cee63c564fe6ff8c5bdabac5982864acea8cb2c003c"
+        },
+        "outcome": "started_new",
+        "business_key": null,
+        "workflow_type": "rv348_plain",
+        "workflow_class": "rv348_plain",
+        "workflow_run_id": "01m7tfn1drg737gpdqqq521f99",
+        "search_attributes": null,
+        "visibility_labels": null,
+        "workflow_command_id": "01m7tfn1dt9s08nvqqk4kh61am",
+        "workflow_instance_id": "rv307-rv348_plain-021643"
+      },
+      "workflow_task_id": null,
+      "workflow_command_id": "01m7tfn1dt9s08nvqqk4kh61am",
+      "recorded_at": "2026-11-19T18:03:41.373188Z"
+    },
+    {
+      "id": "01m7tfn1e1g7qswx5qqcjvx475",
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "namespace": "default",
+      "payload": {
+        "command": {
+          "id": "01m7tfn1dt9s08nvqqk4kh61am",
+          "type": "start",
+          "source": "control_plane",
+          "status": "accepted",
+          "context": {
+            "principal": {
+              "id": "legacy-token",
+              "type": "auth:token",
+              "label": "Admin"
+            }
+          },
+          "outcome": "started_new",
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          },
+          "sequence": 1,
+          "applied_at": "2026-11-19T18:03:41.369328Z",
+          "accepted_at": "2026-11-19T18:03:41.369324Z",
+          "auth_method": "token",
+          "auth_status": "authorized",
+          "caller_label": "Standalone Server",
+          "principal_id": "legacy-token",
+          "request_path": "/api/workflows",
+          "target_scope": "instance",
+          "payload_codec": "avro",
+          "principal_type": "auth:token",
+          "request_method": "POST",
+          "principal_label": "Admin",
+          "resolved_run_id": "01m7tfn1drg737gpdqqq521f99",
+          "request_route_name": "generated::FqJuJMl97iiXlIDz",
+          "request_fingerprint": "sha256:6f781847735e7bee891c0cee63c564fe6ff8c5bdabac5982864acea8cb2c003c"
+        },
+        "workflow_type": "rv348_plain",
+        "workflow_class": "rv348_plain",
+        "run_deadline_at": "2026-11-19T18:13:41+00:00",
+        "workflow_run_id": "01m7tfn1drg737gpdqqq521f99",
+        "declared_queries": [
+          "caught"
+        ],
+        "declared_signals": [],
+        "declared_updates": [
+          "report"
+        ],
+        "declared_entry_mode": "canonical",
+        "run_timeout_seconds": 600,
+        "workflow_command_id": "01m7tfn1dt9s08nvqqk4kh61am",
+        "workflow_instance_id": "rv307-rv348_plain-021643",
+        "declared_entry_method": "handle",
+        "execution_deadline_at": "2026-11-19T19:03:41+00:00",
+        "declared_query_contracts": [
+          {
+            "name": "caught",
+            "parameters": []
+          }
+        ],
+        "declared_signal_contracts": [],
+        "declared_update_contracts": [
+          {
+            "name": "report",
+            "parameters": [
+              {
+                "name": "_",
+                "type": null,
+                "default": null,
+                "position": 0,
+                "required": false,
+                "variadic": true,
+                "allows_null": true,
+                "default_available": false
+              }
+            ]
+          }
+        ],
+        "execution_timeout_seconds": 3600,
+        "declared_update_validators": [],
+        "declared_entry_declaring_class": "external:rv348_plain",
+        "workflow_definition_fingerprint": "sha256:4cca49f53721ff6d13fd7cd42526e63e2497bbd302876fde0ff10eb9748ac44b",
+        "workflow_definition_fingerprint_source": "worker"
+      },
+      "workflow_task_id": null,
+      "workflow_command_id": "01m7tfn1dt9s08nvqqk4kh61am",
+      "recorded_at": "2026-11-19T18:03:41.376531Z"
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "record_version_marker",
+        "change_id": "durable_workflow.parallel_failure_order",
+        "version": 1,
+        "min_supported": 1,
+        "max_supported": 1
+      },
+      {
+        "type": "schedule_activity",
+        "activity_type": "m0",
+        "parallel_group_base_sequence": 2
+      },
+      {
+        "type": "schedule_activity",
+        "activity_type": "m1",
+        "parallel_group_base_sequence": 2
+      }
+    ]
+  }
+}
