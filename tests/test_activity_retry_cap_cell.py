@@ -84,7 +84,7 @@ def approval(digest="a" * 64):
 
 def test_effective_lock_adds_only_the_approved_sdk_to_the_fixed_dependencies():
     result, digest = release.lock(b"pytest==1 --hash=sha256:" + b"c" * 64 + b"\n", approval())
-    assert result.endswith(f"durable-workflow==2.20.0 --hash=sha256:{digest}\n".encode())
+    assert result.endswith(f"durable-workflow==2.21.0 --hash=sha256:{digest}\n".encode())
     assert result.count(b"durable-workflow") == 1
 
 
