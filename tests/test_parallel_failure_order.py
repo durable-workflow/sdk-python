@@ -1,8 +1,7 @@
 """sdk-python#307: which member failure an all() group raises.
 
-With recording enabled (``record_parallel_failure_order``, off by default in
-this release), a run records ``PARALLEL_FAILURE_ORDER_MARKER`` directly before
-the first all-group that can fail, when that group is first scheduled. A marked
+With recording enabled, a run records ``PARALLEL_FAILURE_ORDER_MARKER``
+directly before scheduling the first all-group that can fail. A marked
 run raises the first member failure recorded in history, as soon as it is
 recorded, whether or not the other members have settled. Every worker follows a
 recorded marker, with recording on or off. A run whose first all-group was
@@ -124,9 +123,9 @@ def _commands(history: list[dict[str, Any]], definition: type = FailureOrder, *,
                   record_parallel_failure_order=record).commands
 
 
-def test_recording_is_off_by_default_and_new_runs_send_the_released_commands() -> None:
+def test_recording_disabled_keeps_the_released_commands_for_new_runs() -> None:
     started = [{"event_type": "WorkflowStarted", "payload": {}}]
-    commands = replay(FailureOrder, started, [], payload_codec=serializer.AVRO_CODEC).commands
+    commands = _commands(started, record=False)
     assert FAILURE_ORDER_MARKER not in commands
     wire = commands_to_server_commands(commands, "queue", payload_codec=serializer.AVRO_CODEC)
     assert [command["parallel_group_base_sequence"] for command in wire] == [1] * SIZE
@@ -423,7 +422,7 @@ class ReviewPlain:
         return self.caught
 
 
-@pytest.mark.parametrize("raw,expected", [(None, False), ("", False), ("false", False), ("0", False),
+@pytest.mark.parametrize("raw,expected", [(None, True), ("", False), ("false", False), ("0", False),
                                           ("true", True), ("1", True), (" TRUE ", True)])
 def test_the_worker_setting_reads_its_environment_variable(
     monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: bool,
@@ -449,9 +448,12 @@ def test_a_malformed_worker_setting_is_refused(monkeypatch: pytest.MonkeyPatch, 
                record_parallel_failure_order="true")  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("record", [False, True])
+@pytest.mark.parametrize("record", [None, False, True])
 @pytest.mark.asyncio
-async def test_the_worker_writes_the_marker_only_when_enabled(record: bool) -> None:
+async def test_the_worker_writes_the_marker_only_when_enabled(
+    monkeypatch: pytest.MonkeyPatch, record: bool | None,
+) -> None:
+    monkeypatch.delenv(RECORD_PARALLEL_FAILURE_ORDER_ENV, raising=False)
     client = AsyncMock(spec=Client)
     worker = Worker(client, task_queue="q", workflows=[FailureOrder], record_parallel_failure_order=record)
     await worker._run_workflow_task({
@@ -461,4 +463,4 @@ async def test_the_worker_writes_the_marker_only_when_enabled(record: bool) -> N
     })
     commands = client.complete_workflow_task.call_args.kwargs["commands"]
     types = [command["type"] for command in commands]
-    assert types == (["record_version_marker"] if record else []) + ["schedule_activity"] * SIZE
+    assert types == (["record_version_marker"] if record is not False else []) + ["schedule_activity"] * SIZE

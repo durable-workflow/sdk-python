@@ -715,7 +715,11 @@ def _execute_completion_size_limit(inputs: Any) -> list[dict[str, Any]]:
                         retry_policy=TransportRetryPolicy(max_attempts=1))
         client._http = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(reply))
         async with client:
-            worker = Worker(client, task_queue="queue", worker_id="holder", workflows=[CompletionSizeFanOutWorkflow])
+            # Keep the original completion-limit fixtures on the pre-marker wire contract.
+            worker = Worker(
+                client, task_queue="queue", worker_id="holder", workflows=[CompletionSizeFanOutWorkflow],
+                record_parallel_failure_order=False,
+            )
             await worker._run_workflow_task({
                 "task_id": "task", "workflow_id": "workflow", "run_id": "run", "workflow_task_attempt": 1,
                 "workflow_type": "sdk.completion-size-limit.fan-out", "payload_codec": "avro",

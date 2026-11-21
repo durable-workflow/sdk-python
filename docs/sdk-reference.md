@@ -553,17 +553,14 @@ index, so two failures recorded in the same millisecond can be chosen
 differently
 ([durable-workflow/.github#415](https://github.com/durable-workflow/.github/issues/415)).
 
-Recording the marker is opt-in in this release: pass
-`Worker(..., record_parallel_failure_order=True)` or set
-`DURABLE_WORKFLOW_RECORD_PARALLEL_FAILURE_ORDER=true`. Turn it on only after
-every worker that polls the task queue runs this release or later. Workers up
-to 2.20.0 cannot replay a marked run: the Server marks its workflow task
-replay-blocked, and the run waits until it is repaired, which can hand it to an
-old worker again. Every worker of this release follows a marker a run already
-recorded, whether or not recording is on, so turning recording off again is
-safe. Rolling back below this release needs marked runs drained first. A later
-minor release turns recording on by default
-([#351](https://github.com/durable-workflow/sdk-python/issues/351)).
+Starting in SDK 2.22.0, workers record the marker by default. Before
+upgrading, ensure every worker polling the task queue runs SDK 2.21.0 or later.
+Set `Worker(..., record_parallel_failure_order=False)` or
+`DURABLE_WORKFLOW_RECORD_PARALLEL_FAILURE_ORDER=false` to turn off recording.
+Workers from 2.21.0 onward always follow a marker already recorded in history.
+The Server marks tasks replay-blocked when an older worker cannot read the
+marker. Drain marked runs before rolling back below 2.21.0.
+[#351](https://github.com/durable-workflow/sdk-python/issues/351)
 
 A run without the marker keeps the earlier rule for its whole life, on every
 task, query and update: if every member had settled when the workflow resumed,
