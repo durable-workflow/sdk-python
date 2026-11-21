@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A completion refused as `413 payload_too_large` because the worker's cached payload policy is stale no longer loses the computed result.
+  - **The bug:** the worker resolves the runtime external payload policy (`namespace.external_payload_storage`, including `threshold_bytes`) once and keeps it. When the Server lowered its limit mid-run, a result under the old threshold was sent inline and refused. Python did not exit, unlike PHP, but logged `failed to complete`. The result was lost, and the activity failed later as a lost lease.
+  - **The fix:** on such a 413 for an activity completion, failure report or workflow-task completion, the worker rediscovers the policy (`GET /api/cluster/info`, retried through outages with the shared backoff while the lease lasts). If the policy changed, it re-encodes the request, externalising payloads the new threshold requires, and resends once. The 413 is refused before the request is processed, so the resend is safe. The worker never exits and never reruns the activity.
+  - **Undeliverable results:** some activity results still cannot be delivered. That covers a result that is still too large after rediscovery, one with no external storage to offload to, and one over the upload limit. Instead of expiring silently, the attempt is now reported as a non-retryable failure with `failure.type` and `failure.class` set to `ActivityResultTooLarge`, the same as PHP and Rust, and a message naming the Server's limit. The worker keeps running.
+  - **Unchanged:** an oversized workflow-task completion still fails the run with the structural-limit failure.
 - A cluster-info read failure at worker startup no longer stops the worker.
   - **Retried:** `GET /api/cluster/info` has no side effects, so `Worker.run()` and `run_until()` now treat any failed connection and any 5xx or 429 answer to it as transient, unless the Server says `retryable: false`. Before, only the narrower transient set did (for example 503 `storage_unavailable`), so a plain `500` stopped the worker. The read is retried with the shared backoff `uniform(0, min(4, 0.25 * 2**(n - 1)))` seconds until the runtime answers.
   - **Logging:** startup retries now escalate like poll outages, to ERROR after 60 s and then every 5 minutes.
