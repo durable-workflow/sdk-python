@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.21.2] - 2026-11-21
+
 ### Fixed
 
 - A workflow handle bound to a run polls that run for its result. It follows
