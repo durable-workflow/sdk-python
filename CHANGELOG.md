@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.21.1] - 2026-11-21
+
 ### Fixed
 
 - A parallel list group schedules at the next free command sequence after a
