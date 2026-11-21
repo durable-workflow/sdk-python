@@ -193,16 +193,56 @@ async def run_result(server: ResultServer, run_id: str | None = None) -> Any:
 async def test_completed_result_comes_from_the_status_read(run_id: str | None) -> None:
     server = ResultServer("completed")
     assert await run_result(server, run_id) == {"from": "status"}
-    assert server.paths == ["/api/workflows/wf"], "no history read"
+    path = "/api/workflows/wf"
+    if run_id is not None:
+        path += f"/runs/{run_id}"
+    assert server.paths == [path]
 
 
 @pytest.mark.parametrize(("server", "run_id"), [
     (ResultServer("completed", envelope=False), None),
-    (ResultServer("completed"), "run-1"),  # the status read names a newer run
+    (ResultServer("completed", envelope=False), "run-2"),
 ])
 async def test_completed_result_falls_back_to_history(server: ResultServer, run_id: str | None) -> None:
     assert await run_result(server, run_id) == {"from": "history"}
     assert any(path.endswith("/history") for path in server.paths)
+
+
+async def test_selected_result_rejects_a_response_for_another_run() -> None:
+    server = ResultServer("completed")
+    with pytest.raises(WorkflowFailed, match="a different run"):
+        await run_result(server, "run-1")
+    assert server.paths == ["/api/workflows/wf/runs/run-1"]
+
+
+async def test_selected_result_reads_the_recorded_continuation() -> None:
+    paths: list[str] = []
+    first = "/api/workflows/wf/runs/run-1"
+    next_run = "/api/workflows/wf/runs/run-2"
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        paths.append(path)
+        if path == first:
+            return httpx.Response(200, json={"workflow_id": "wf", "run_id": "run-1", "status": "continued"})
+        if path == first + "/history":
+            return httpx.Response(200, json={"events": [{
+                "event_type": "WorkflowContinuedAsNew", "payload": {"continued_to_run_id": "run-2"},
+            }]})
+        assert path == next_run
+        assert paths.count(next_run) <= 2
+        status = "running" if paths.count(next_run) == 1 else "completed"
+        body: dict[str, Any] = {"workflow_id": "wf", "run_id": "run-2", "status": status}
+        if status == "completed":
+            body["output_envelope"] = serializer.envelope({"from": "continued run"})
+        return httpx.Response(200, json=body)
+
+    async with Client("http://result.invalid", namespace="17", token="control-token") as client:
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(base_url="http://result.invalid", transport=httpx.MockTransport(respond))
+        handle = client.get_workflow_handle("wf", run_id="run-1")
+        assert await handle.result(timeout=1, poll_interval=0) == {"from": "continued run"}
+    assert paths == [first, first + "/history", next_run, next_run]
 
 
 async def test_failed_result_still_reads_history() -> None:

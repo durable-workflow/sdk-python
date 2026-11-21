@@ -4225,7 +4225,15 @@ class Client:
         any continue-as-new runs). Decodes the recorded ``input`` and
         ``output`` envelopes when present.
         """
-        data = await self._request("GET", f"/workflows/{workflow_id}", context=workflow_id)
+        return await self._describe_workflow_execution(workflow_id)
+
+    async def _describe_workflow_execution(
+        self, workflow_id: str, run_id: str | None = None,
+    ) -> WorkflowExecution:
+        path = f"/workflows/{quote(workflow_id, safe='')}"
+        if run_id is not None:
+            path += f"/runs/{quote(run_id, safe='')}"
+        data = await self._request("GET", path, context=workflow_id)
         input_val = data.get("input")
         output_val = data.get("output")
         output_from_envelope = False
@@ -5651,11 +5659,21 @@ class Client:
         if result_type is not None:
             validate_annotation(result_type, "result_type")
         deadline = asyncio.get_running_loop().time() + timeout
+        selected_run_id = handle.run_id or None
+        visited: set[str] = set()
         while True:
-            desc = await self.describe_workflow(handle.workflow_id)
+            if selected_run_id is None:
+                desc = await self.describe_workflow(handle.workflow_id)
+            else:
+                desc = await self._describe_workflow_execution(handle.workflow_id, selected_run_id)
+                if desc.run_id is not None and desc.run_id != selected_run_id:
+                    raise WorkflowFailed("the server returned a different run from the selected workflow run")
             status = desc.status
-            if status in ("completed", "failed", "terminated", "canceled", "cancelled"):
-                run_id = handle.run_id or desc.run_id
+            terminal = status in (
+                "completed", "failed", "terminated", "canceled", "cancelled", "timed_out", "continued",
+            )
+            if terminal:
+                run_id = selected_run_id or desc.run_id
                 if (status == "completed" and desc._output_from_envelope and desc.run_id is not None
                         and desc.run_id == run_id):
                     # The status read already carries this run's decoded output;
@@ -5665,30 +5683,27 @@ class Client:
                     return decode_payload_value(desc.output, result_type, "workflow result")
                 if run_id is None:
                     raise WorkflowFailed("no run_id available to fetch history")
-                # A handle bound to an earlier run follows its continue-as-new
-                # chain to the run that actually ended, as PHP and Rust do.
-                visited: set[str] = set()
-                while True:
-                    visited.add(run_id)
-                    kind, value = await self._run_terminal_outcome(handle.workflow_id, run_id, desc, result_type)
-                    if kind == "result":
-                        return value
-                    # Continued as new: follow the recorded successor, else the
-                    # newest run the status read named.
-                    successor = value if isinstance(value, str) and value else desc.run_id
-                    if successor is None or successor in visited:
-                        if kind == "no_terminal_event":
-                            return None
-                        raise WorkflowFailed(
-                            f"workflow {handle.workflow_id} run {run_id} continued as new, but its "
-                            "successor run could not be followed"
-                        )
-                    run_id = successor
+                kind, value = await self._run_terminal_outcome(handle.workflow_id, run_id, desc, result_type)
+                if kind == "result":
+                    return value
+                if kind == "no_terminal_event":
+                    return None
+                visited.add(run_id)
+                successor = value if isinstance(value, str) and value else (
+                    await self.describe_workflow(handle.workflow_id)
+                ).run_id
+                if successor is None or successor in visited:
+                    raise WorkflowFailed(
+                        f"workflow {handle.workflow_id} run {run_id} continued as new, but its "
+                        "successor run could not be followed"
+                    )
+                selected_run_id = successor
             if asyncio.get_running_loop().time() > deadline:
                 raise TimeoutError(
                     f"workflow {handle.workflow_id} not terminal after {timeout}s (status={status})"
                 )
-            await asyncio.sleep(poll_interval)
+            if not terminal:
+                await asyncio.sleep(poll_interval)
 
     # ── Schedules ─────────────────────────────────────────────────────
     def get_schedule_handle(self, schedule_id: str) -> ScheduleHandle:

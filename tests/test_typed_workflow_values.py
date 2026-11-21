@@ -230,7 +230,7 @@ async def test_the_client_decodes_a_result_type_and_sends_neutral_arguments() ->
     from durable_workflow.client import Client, WorkflowExecution, WorkflowHandle
 
     client = Client("http://server.invalid", token="t")
-    client.describe_workflow = AsyncMock(return_value=WorkflowExecution(  # type: ignore[method-assign]
+    client._describe_workflow_execution = AsyncMock(return_value=WorkflowExecution(  # type: ignore[method-assign]
         workflow_id="wf", run_id="run", workflow_type="x", status="completed", payload_codec="avro"))
     client.get_history = AsyncMock(return_value={"events": [  # type: ignore[method-assign]
         {"event_type": "WorkflowCompleted", "payload": {"output": serializer.envelope(ADA_NEUTRAL),

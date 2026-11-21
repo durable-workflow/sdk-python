@@ -9,9 +9,9 @@ from durable_workflow.errors import WorkflowCancelled, WorkflowFailed, WorkflowT
 
 def result_client(status: str, event_type: str, payload: dict) -> tuple[Client, WorkflowHandle]:
     client = Client("https://unused.example")
-    client.describe_workflow = AsyncMock(
+    client._describe_workflow_execution = AsyncMock(
         return_value=WorkflowExecution(
-            workflow_id="order", run_id="current-run", workflow_type="order", status=status,
+            workflow_id="order", run_id="selected-run", workflow_type="order", status=status,
         )
     )
     client.get_history = AsyncMock(

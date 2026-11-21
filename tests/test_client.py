@@ -3585,7 +3585,7 @@ class TestGetResult:
     @pytest.mark.asyncio
     async def test_completed_result_on_later_history_page(self, client: Client) -> None:
         handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
-        client.describe_workflow = AsyncMock(
+        client._describe_workflow_execution = AsyncMock(
             return_value=WorkflowExecution(
                 workflow_id="wf-1", run_id="run-1", workflow_type="greeter", status="completed",
             )
@@ -3607,7 +3607,7 @@ class TestGetResult:
     @pytest.mark.asyncio
     async def test_repeated_history_page_token_fails(self, client: Client) -> None:
         handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
-        client.describe_workflow = AsyncMock(
+        client._describe_workflow_execution = AsyncMock(
             return_value=WorkflowExecution(
                 workflow_id="wf-1", run_id="run-1", workflow_type="greeter", status="completed",
             )
@@ -3621,7 +3621,7 @@ class TestGetResult:
     @pytest.mark.asyncio
     async def test_completed_result_uses_event_payload_codec(self, client: Client) -> None:
         handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
-        client.describe_workflow = AsyncMock(
+        client._describe_workflow_execution = AsyncMock(
             return_value=WorkflowExecution(
                 workflow_id="wf-1",
                 run_id="run-1",
@@ -3651,7 +3651,7 @@ class TestGetResult:
     @pytest.mark.asyncio
     async def test_completed_result_uses_describe_payload_codec_fallback(self, client: Client) -> None:
         handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
-        client.describe_workflow = AsyncMock(
+        client._describe_workflow_execution = AsyncMock(
             return_value=WorkflowExecution(
                 workflow_id="wf-1",
                 run_id="run-1",
@@ -3685,7 +3685,7 @@ class TestGetResult:
     @pytest.mark.asyncio
     async def test_snake_case_workflow_completed_is_not_accepted(self, client: Client) -> None:
         handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
-        client.describe_workflow = AsyncMock(
+        client._describe_workflow_execution = AsyncMock(
             return_value=WorkflowExecution(
                 workflow_id="wf-1",
                 run_id="run-1",
@@ -3713,7 +3713,7 @@ class TestGetResult:
     @pytest.mark.asyncio
     async def test_snake_case_workflow_failed_is_not_accepted(self, client: Client) -> None:
         handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
-        client.describe_workflow = AsyncMock(
+        client._describe_workflow_execution = AsyncMock(
             return_value=WorkflowExecution(
                 workflow_id="wf-1",
                 run_id="run-1",
@@ -3738,7 +3738,7 @@ class TestGetResult:
     @pytest.mark.asyncio
     async def test_result_field_is_not_read_as_output_fallback(self, client: Client) -> None:
         handle = WorkflowHandle(client, workflow_id="wf-1", run_id="run-1", workflow_type="greeter")
-        client.describe_workflow = AsyncMock(
+        client._describe_workflow_execution = AsyncMock(
             return_value=WorkflowExecution(
                 workflow_id="wf-1",
                 run_id="run-1",

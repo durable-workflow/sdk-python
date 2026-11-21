@@ -30,11 +30,12 @@ class ChainServer:
     async def respond(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         self.paths.append(path)
+        _, _, run_path = path.partition("/runs/")
+        run = run_path.split("/")[0] or self.current
         if path.endswith("/history"):
-            run = path.split("/runs/")[1].split("/")[0]
             return httpx.Response(200, json={"events": [STARTED, *self.histories[run]], "next_page_token": None})
-        return httpx.Response(200, json={"workflow_id": "wf", "run_id": self.current, "workflow_type": "t",
-                                         "status": self.status})
+        status = self.status if run == self.current else "continued"
+        return httpx.Response(200, json={"workflow_id": "wf", "run_id": run, "workflow_type": "t", "status": status})
 
 
 async def result_of(server: ChainServer, run_id: str | None) -> Any:

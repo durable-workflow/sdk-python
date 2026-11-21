@@ -569,7 +569,7 @@ async def test_client_start_and_result_use_runtime_credentials_without_provider_
         "run_id": "run-1",
         "workflow_type": "runtime-payload-replay",
     }
-    server.responses[("GET", "/api/workflows/runtime-payload-workflow")] = {
+    server.responses[("GET", "/api/workflows/runtime-payload-workflow/runs/run-1")] = {
         "workflow_id": "runtime-payload-workflow",
         "run_id": "run-1",
         "workflow_type": "runtime-payload-replay",
