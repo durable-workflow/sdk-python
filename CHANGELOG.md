@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.23.0] - 2026-11-23
+
+### Added
+
+- `ctx.continue_as_new(..., target_build="promoted")` can move the successor
+  onto the queue's eligible promoted build. The current worker registration
+  must advertise support. Plain continue-as-new keeps the predecessor's build.
+  An unavailable promotion follows the normal workflow-task retry path.
+  (durable-workflow/workflow#880)
+
 ## [2.22.1] - 2026-11-23
 
 ### Fixed
