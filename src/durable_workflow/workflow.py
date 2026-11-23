@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import PureWindowsPath
 from typing import Any, TypeVar, cast
 
-from . import replay_clock, serializer
+from . import _condition_input_order, replay_clock, serializer
 from ._cancellation_scope import CancellationScopeHistory, scope_identity
 from ._cancellation_scope_history import (
     CancellationScopeDeliveryIntent,
@@ -1874,6 +1874,7 @@ class WaitCondition:
     condition_definition_fingerprint: str | None = None
     timeout_seconds: int | None = None
     condition_wait_occurrence_id: str | None = None
+    _ordered_inputs: bool = field(default=False, init=False, repr=False, compare=False)
     _cancellation_scope_id: str = field(
         default_factory=_authored_cancellation_scope, init=False, repr=False, compare=False,
     )
@@ -1899,6 +1900,10 @@ class WaitCondition:
             cmd["condition_definition_fingerprint"] = self.condition_definition_fingerprint
         if self.timeout_seconds is not None:
             cmd["timeout_seconds"] = self.timeout_seconds
+            if self._ordered_inputs:
+                cmd[_condition_input_order.CAPABILITY] = _condition_input_order.ORDER
+                cmd["deadline_policy"] = "occurrence"
+                cmd["condition_wait_timeout_budget_seconds"] = self.timeout_seconds
         if self.condition_wait_occurrence_id is not None:
             cmd["condition_wait_occurrence_id"] = self.condition_wait_occurrence_id
         return cmd
@@ -1992,6 +1997,21 @@ class CancelDurableOperation:
         }
 
 
+@dataclass(frozen=True)
+class _ResolveConditionWait:
+    wait_id: str
+    satisfied: bool
+    receipt: int | None
+
+    def to_server_command(self, task_queue: str, **_: Any) -> dict[str, Any]:
+        command: dict[str, Any] = {
+            "type": "resolve_condition_wait", "condition_wait_id": self.wait_id, "satisfied": self.satisfied,
+        }
+        if self.receipt is not None:
+            command["input_receipt_sequence"] = self.receipt
+        return command
+
+
 def _condition_predicate_fingerprint(predicate: Callable[[], bool]) -> str | None:
     """The stable v2 predicate fingerprint, or None without source (#258)."""
     return _stable_condition_fingerprint(predicate)
@@ -2001,7 +2021,7 @@ Command = (
     ScheduleActivity | RecordLocalActivity | StartTimer | CompleteWorkflow | FailWorkflow
     | CompleteUpdate | FailUpdate | ContinueAsNew | RecordSideEffect | StartChildWorkflow
     | NexusServiceCall | RecordVersionMarker | UpsertMemo | UpsertSearchAttributes | WaitCondition
-    | CancelDurableOperation | SignalExternalWorkflow
+    | CancelDurableOperation | SignalExternalWorkflow | _ResolveConditionWait
 )
 
 
@@ -3486,6 +3506,7 @@ class _PendingReceiver:
     args: list[Any]
     condition_wait_id: str | None = None
     after_cancellation_delivery: bool = False
+    receipt_sequence: int | None = None
 
 
 @dataclass(frozen=True)
@@ -3803,6 +3824,8 @@ def replay(
     allow_cancellation_scope_delivery: bool = False,
     record_parallel_failure_order: bool = False,
     allow_continue_as_new_target_build: bool = False,
+    allow_ordered_condition_inputs: bool = False,
+    pending_condition_input: tuple[int | None] | None = None,
 ) -> ReplayOutcome:
     """Replay ``history_events`` and return the next commands.
 
@@ -3832,6 +3855,8 @@ def replay(
         allow_cancellation_scope_delivery=allow_cancellation_scope_delivery,
         record_parallel_failure_order=record_parallel_failure_order,
         allow_continue_as_new_target_build=allow_continue_as_new_target_build,
+        allow_ordered_condition_inputs=allow_ordered_condition_inputs,
+        pending_condition_input=pending_condition_input,
     ).outcome
 
 
@@ -5373,6 +5398,8 @@ def _replay_state(
     parallel_group_policies: tuple[str, ...] = (),
     record_parallel_failure_order: bool = False,
     allow_continue_as_new_target_build: bool = False,
+    allow_ordered_condition_inputs: bool = False,
+    pending_condition_input: tuple[int | None] | None = None,
 ) -> _ReplayState:
     _validate_workflow_entrypoint(workflow_cls)
     _workflow_handler_registries(workflow_cls)
@@ -5404,6 +5431,7 @@ def _replay_state(
     # an all() group and never supplies replay time: the workflow had closed
     # past it. Every history reader below sees the activity as still open.
     events = [event for event in retained_events if not _settled_at_close(event)]
+    ordered_condition_history = _condition_input_order.read(events)
     if len(events) != len(retained_events):
         recorded_group_policies = _read_parallel_group_policies(events, parallel_group_policies)
     # A malformed delivery span refuses replay before any history parser can
@@ -6117,6 +6145,8 @@ def _replay_state(
             )
             == "condition_timeout"
         ):
+            if _condition_input_order.marked(payload):
+                return None
             return "condition"
         if event_type in (
             "WorkflowCompleted",
@@ -6150,6 +6180,7 @@ def _replay_state(
 
     def _receiver_condition_wait_bindings() -> dict[int, str | None]:
         bindings: dict[int, str | None] = {}
+        active_ordered_waits: dict[str, None] = {}
         prefix_receivers: list[int] = []
         prefix_can_bind_to_first_wait = True
         current_wait_id: str | None = None
@@ -6166,6 +6197,8 @@ def _replay_state(
                 if not isinstance(wait_id, str) or not wait_id:
                     continue
                 condition_wait_opened_indexes.setdefault(wait_id, index)
+                if wait_id in ordered_condition_history.waits:
+                    active_ordered_waits[wait_id] = None
 
                 if current_wait_id is None:
                     for receiver_index in prefix_receivers:
@@ -6188,6 +6221,9 @@ def _replay_state(
                 continue
 
             if _is_external_receiver_event(event_type):
+                if active_ordered_waits:
+                    bindings[index] = next(reversed(active_ordered_waits))
+                    continue
                 explicit_sequence = _workflow_sequence(payload)
                 explicit_selected_wait_id = (
                     selected_condition_wait_ids_by_sequence.get(explicit_sequence)
@@ -6217,6 +6253,10 @@ def _replay_state(
                 continue
 
             boundary_kind = _receiver_binding_boundary_kind(event_type, payload)
+            if event_type in ("ConditionWaitSatisfied", "ConditionWaitTimedOut", "ConditionWaitCancelled"):
+                wait_id = payload.get("condition_wait_id")
+                if isinstance(wait_id, str):
+                    active_ordered_waits.pop(wait_id, None)
             if boundary_kind is None:
                 continue
 
@@ -6336,6 +6376,8 @@ def _replay_state(
                     condition_wait_ids_by_sequence,
                 )
                 if wait_id is not None:
+                    if wait_id in ordered_condition_history.waits:
+                        continue
                     condition_wait_terminal_indexes.setdefault(wait_id, event_index)
                     if not _append_selection_condition_resolution(ev, wait_id, False):
                         wait_resolutions[wait_id] = "timed_out"
@@ -6526,6 +6568,10 @@ def _replay_state(
                     condition_wait_id = condition_wait_ids_by_sequence.get(workflow_sequence)
                 else:
                     condition_wait_id = None
+                receipt_sequence = _condition_input_order.positive_sequence(ev.get("sequence"))
+                if (condition_wait_id in ordered_condition_history.waits
+                    and receipt_sequence not in ordered_condition_history.applied_signal_receipts):
+                    continue
                 pending_receivers.append(_PendingReceiver(
                     history_index=event_index,
                     result_index=len(resolved_results),
@@ -6543,6 +6589,7 @@ def _replay_state(
                         external_storage_cache=external_storage_cache,
                     ),
                     condition_wait_id=condition_wait_id,
+                    receipt_sequence=receipt_sequence,
                     after_cancellation_delivery=(
                         cancellation.delivery_index is not None and event_index > cancellation.delivery_index
                     ),
@@ -6574,6 +6621,7 @@ def _replay_state(
                         external_storage_cache=external_storage_cache,
                     ),
                     condition_wait_id=condition_wait_id,
+                    receipt_sequence=ordered_condition_history.update_receipts.get(ev.get("sequence")),
                     after_cancellation_delivery=(
                         cancellation.delivery_index is not None and event_index > cancellation.delivery_index
                     ),
@@ -6665,6 +6713,77 @@ def _replay_state(
             boundary += 1
         for _ in range(boundary):
             _apply_receiver(pending_receivers.pop(0))
+
+    def _ordered_condition_result(
+        wait_id: str, wait: _condition_input_order.Wait, predicate: Callable[[], bool],
+    ) -> tuple[bool | None, int | None]:
+        receivers = sorted(
+            (receiver for receiver in pending_receivers
+             if receiver.condition_wait_id == wait_id and receiver.receipt_sequence is not None),
+            key=lambda receiver: cast(int, receiver.receipt_sequence),
+        )
+        consumed: set[int] = set()
+
+        def apply(receiver: _PendingReceiver) -> None:
+            _apply_receiver(receiver)
+            consumed.add(id(receiver))
+
+        try:
+            if wait.settled is not None:
+                cutoff = (wait.satisfying_receipt or wait.opening_sequence) if wait.settled else cast(int, wait.fired_sequence) - 1
+                for receiver in receivers:
+                    if cast(int, receiver.receipt_sequence) > cutoff:
+                        break
+                    apply(receiver)
+                return wait.settled, wait.satisfying_receipt
+
+            if reconstruction_only:
+                for receiver in receivers:
+                    apply(receiver)
+                return None, None
+
+            if not allow_ordered_condition_inputs or pending_condition_input is None:
+                raise LocalActivityExecutionAborted("ordered condition replay requires the Server input snapshot")
+            first_pending = pending_condition_input[0]
+            boundaries = [position for position in (first_pending, wait.fired_sequence) if position is not None]
+            boundary = min(boundaries) if boundaries else math.inf
+            eligible = [receiver for receiver in receivers if cast(int, receiver.receipt_sequence) < boundary]
+            entry_count = 0
+            receipt: int | None = None
+            for receiver in eligible:
+                if cast(int, receiver.receipt_sequence) > wait.opening_sequence:
+                    break
+                apply(receiver)
+                receipt = receiver.receipt_sequence
+                entry_count += 1
+
+            def evaluate() -> tuple[bool, Exception | None]:
+                try:
+                    return bool(predicate()), None
+                except Exception as error:
+                    return False, error
+
+            satisfied, predicate_error = evaluate()
+            if satisfied and (receipt is not None or wait.fired_sequence is None):
+                return True, receipt
+            for receiver in eligible[entry_count:]:
+                apply(receiver)
+                satisfied, predicate_error = evaluate()
+                if satisfied:
+                    return True, receiver.receipt_sequence
+            settled_prefix = first_pending is None or (
+                wait.fired_sequence is not None and first_pending >= wait.fired_sequence
+            )
+            if settled_prefix and predicate_error is not None:
+                raise predicate_error
+            return (False, None) if settled_prefix and wait.fired_sequence is not None else (None, None)
+        finally:
+            pending_receivers[:] = [receiver for receiver in pending_receivers if id(receiver) not in consumed]
+
+    def _release_ordered_condition_receivers(wait_id: str) -> None:
+        for receiver in pending_receivers:
+            if receiver.condition_wait_id == wait_id:
+                receiver.condition_wait_id = None
 
     def _condition_wait_mismatch(
         opened: Mapping[str, Any], cmd: WaitCondition,
@@ -8301,8 +8420,27 @@ def _replay_state(
                         has_recorded_member_history = True
                 if marker is None:
                     if has_recorded_member_history:
+                        for sequence, leaf in enumerate(annotated, start=group_base):
+                            if not isinstance(leaf, WaitCondition) or not selection_steps.get(sequence):
+                                continue
+                            wait_id = _selection_leaf_identity("condition", sequence)
+                            wait = ordered_condition_history.waits.get(wait_id or "")
+                            if wait is None or wait.settled is not None:
+                                continue
+                            try:
+                                decision, receipt = _ordered_condition_result(cast(str, wait_id), wait, leaf.predicate)
+                            except LocalActivityExecutionAborted:
+                                raise
+                            except Exception as exc:
+                                return _state([_fail_workflow_from_exception(exc, prefix="wait_condition predicate raised")])
+                            if decision is not None:
+                                pending.append(_ResolveConditionWait(cast(str, wait_id), decision, receipt))
                         return _state(pending)
                     _set_replaying(False)
+                    if allow_ordered_condition_inputs:
+                        for leaf in annotated:
+                            if isinstance(leaf, WaitCondition) and leaf.timeout_seconds is not None:
+                                leaf._ordered_inputs = True
                     pending.extend(annotated)
                     return _state(pending)
 
@@ -8375,7 +8513,13 @@ def _replay_state(
                 ):
                     leaf = annotated[sequence - group_base]
                     if isinstance(leaf, WaitCondition):
-                        _apply_condition_wait_receivers(_selection_leaf_identity("condition", sequence))
+                        wait_id = _selection_leaf_identity("condition", sequence)
+                        ordered_wait = ordered_condition_history.waits.get(wait_id or "")
+                        if ordered_wait is None:
+                            _apply_condition_wait_receivers(wait_id)
+                        else:
+                            _ordered_condition_result(cast(str, wait_id), ordered_wait, leaf.predicate)
+                            _release_ordered_condition_receivers(cast(str, wait_id))
                 next_value = SelectionResult(
                     key=winner.key,
                     index=winner.index,
@@ -8764,6 +8908,7 @@ def _replay_state(
                     if step is not None:
                         _assert_step_matches(cmd, step)
                     _set_replaying(False)
+                    cmd._ordered_inputs = allow_ordered_condition_inputs and cmd.timeout_seconds is not None
                     pending.append(cmd)
                     return _state(pending)
                 # Terminal cleanup may only skip a later open after this
@@ -8815,6 +8960,25 @@ def _replay_state(
                             raise mismatch
                         opened_id = opened.get("condition_wait_id")
                         if isinstance(opened_id, str):
+                            ordered_wait = ordered_condition_history.waits.get(opened_id)
+                            if ordered_wait is not None:
+                                try:
+                                    resolution_value, receipt = _ordered_condition_result(opened_id, ordered_wait, cmd.predicate)
+                                except LocalActivityExecutionAborted:
+                                    raise
+                                except Exception as exc:
+                                    return _state([_fail_workflow_from_exception(exc, prefix="wait_condition predicate raised")])
+                                if resolution_value is None:
+                                    return _state(pending)
+                                if ordered_wait.settled is None:
+                                    pending.append(_ResolveConditionWait(opened_id, resolution_value, receipt))
+                                else:
+                                    _advance_cancellation_clock([condition_wait_terminal_indexes.get(opened_id)])
+                                _release_ordered_condition_receivers(opened_id)
+                                terminal_condition_reopen_cmd = None
+                                next_value = resolution_value
+                                wait_yield_count += 1
+                                break
                             resolution = wait_resolutions.get(opened_id)
                             _apply_condition_wait_receivers(opened_id)
                             if resolution is not None:
