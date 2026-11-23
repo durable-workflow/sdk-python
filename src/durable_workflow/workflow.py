@@ -45,6 +45,8 @@ from ._cancellation_scope_history import (
 )
 from ._condition_fingerprint import fingerprint as _stable_condition_fingerprint
 from ._condition_fingerprint import fingerprint_verdict, is_legacy
+from ._continue_as_new import ContinueAsNewTargetBuild
+from ._continue_as_new import valid_target as _valid_continue_as_new_target
 from ._cooperative_cancellation import CancellationDelivery, read_cancellation_history
 from ._failure_reporting import exception_message
 from ._typed_values import decode_payload_value, to_payload_value, to_payload_values, validate_annotation
@@ -63,6 +65,7 @@ from .errors import (
     ChildWorkflowCancelled,
     ChildWorkflowFailed,
     ChildWorkflowTerminated,
+    ContinueAsNewTargetUnsupported,
     DuplicateRegistrationError,
     DurableOperationCancelled,
     InvalidWorkflowDefinition,
@@ -1146,6 +1149,14 @@ class ContinueAsNew:
     workflow_type: str | None = None
     arguments: list[Any] = field(default_factory=list)
     task_queue: str | None = None
+    target_build: ContinueAsNewTargetBuild | None = None
+
+    def __post_init__(self) -> None:
+        if self.target_build is not None and not _valid_continue_as_new_target(self.target_build):
+            raise ValueError("invalid_target_build: use the exact inherited or promoted target")
+        context = _ACTIVE_WORKFLOW_REPLAY.get()
+        if self.target_build is not None and context is not None and not context._allow_continue_as_new_target_build:
+            raise ContinueAsNewTargetUnsupported()
 
     def to_server_command(
         self,
@@ -1158,6 +1169,8 @@ class ContinueAsNew:
         external_storage_threshold_bytes: int | None = None,
     ) -> dict[str, Any]:
         cmd: dict[str, Any] = {"type": "continue_as_new"}
+        if self.target_build is not None:
+            cmd["target_build"] = self.target_build
         if self.workflow_type is not None:
             cmd["workflow_type"] = self.workflow_type
         cmd["arguments"] = _payload_envelope(
@@ -2097,6 +2110,8 @@ def commands_to_server_commands(
         if isinstance(command, ContinueAsNew):
             queue = command.task_queue or task_queue
             server_command = {"type": "continue_as_new", "queue": queue}
+            if command.target_build is not None:
+                server_command["target_build"] = command.target_build
             if command.workflow_type is not None:
                 server_command["workflow_type"] = command.workflow_type
             server_commands.append(server_command)
@@ -2451,6 +2466,7 @@ class WorkflowContext:
         cancel_requested: bool = False,
         allow_cancellation_scope_authoring: bool = False,
         _allow_wall_clock: bool = True,
+        allow_continue_as_new_target_build: bool = False,
     ) -> None:
         self._workflow_id = workflow_id
         self._run_id = run_id
@@ -2471,6 +2487,7 @@ class WorkflowContext:
         self._cancellation_replay_time_available = False
         self._cancellation_shield_depth = 0
         self._allow_cancellation_scope_authoring = allow_cancellation_scope_authoring
+        self._allow_continue_as_new_target_build = allow_continue_as_new_target_build
         self._cancellation_scope_id = "root"
         seed = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16)
         self._rng = random.Random(seed)
@@ -3147,8 +3164,16 @@ class WorkflowContext:
         *args: Any,
         workflow_type: str | None = None,
         task_queue: str | None = None,
+        target_build: ContinueAsNewTargetBuild | None = None,
     ) -> ContinueAsNew:
-        return ContinueAsNew(workflow_type=workflow_type, arguments=list(args), task_queue=task_queue)
+        """Start the successor on the inherited build or opt into the promotion."""
+        if target_build is not None and not _valid_continue_as_new_target(target_build):
+            raise ValueError("invalid_target_build: use the exact inherited or promoted target")
+        if target_build is not None and not self._allow_continue_as_new_target_build:
+            raise ContinueAsNewTargetUnsupported()
+        return ContinueAsNew(
+            workflow_type=workflow_type, arguments=list(args), task_queue=task_queue, target_build=target_build,
+        )
 
     def now(self) -> datetime:
         """Return the persisted workflow-start time, fixed during replay."""
@@ -3777,6 +3802,7 @@ def replay(
     allow_cancellation_scope_authoring: bool = False,
     allow_cancellation_scope_delivery: bool = False,
     record_parallel_failure_order: bool = False,
+    allow_continue_as_new_target_build: bool = False,
 ) -> ReplayOutcome:
     """Replay ``history_events`` and return the next commands.
 
@@ -3805,6 +3831,7 @@ def replay(
         allow_cancellation_scope_authoring=allow_cancellation_scope_authoring,
         allow_cancellation_scope_delivery=allow_cancellation_scope_delivery,
         record_parallel_failure_order=record_parallel_failure_order,
+        allow_continue_as_new_target_build=allow_continue_as_new_target_build,
     ).outcome
 
 
@@ -4282,6 +4309,41 @@ def _fail_workflow_from_exception(exc: BaseException, *, prefix: str | None = No
 def _history_event_type(event: Mapping[str, Any]) -> str | None:
     value = event.get("event_type") or event.get("type")
     return value if isinstance(value, str) and value else None
+
+
+def _recorded_continuation(
+    events: Iterable[dict[str, Any]],
+) -> tuple[ContinueAsNewTargetBuild | None, bool]:
+    target: ContinueAsNewTargetBuild | None = None
+    recorded = False
+    for event in events:
+        if _history_event_type(event) != "WorkflowContinuedAsNew":
+            continue
+        if target is not None:
+            raise NonDeterministicReplayError(
+                0, "one terminal continuation", ["WorkflowContinuedAsNew"],
+                detail="invalid_continue_as_new_transition: history records multiple continuations",
+            )
+        target = "inherited"
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping) or "build_transition" not in payload:
+            continue
+        transition = payload["build_transition"]
+        resolution = transition.get("resolution") if isinstance(transition, Mapping) else None
+        if (
+            not isinstance(transition, Mapping)
+            or not _valid_continue_as_new_target(resolution)
+            or any(
+                key not in transition or (transition[key] is not None and not isinstance(transition[key], str))
+                for key in ("from_compatibility", "to_compatibility")
+            )
+        ):
+            raise NonDeterministicReplayError(
+                0, "recorded build transition", ["WorkflowContinuedAsNew"],
+                detail="invalid_continue_as_new_transition: history lacks a complete build transition",
+            )
+        target, recorded = resolution, True
+    return target, recorded
 
 
 # ``cancellation_reason`` of an ActivityCancelled that the run's own close
@@ -5310,6 +5372,7 @@ def _replay_state(
     allow_cancellation_scope_delivery: bool = False,
     parallel_group_policies: tuple[str, ...] = (),
     record_parallel_failure_order: bool = False,
+    allow_continue_as_new_target_build: bool = False,
 ) -> _ReplayState:
     _validate_workflow_entrypoint(workflow_cls)
     _workflow_handler_registries(workflow_cls)
@@ -5332,6 +5395,10 @@ def _replay_state(
     # Retained metadata still requires a qualified consumer when its event is
     # excluded from semantic outcomes, including run-close settlements.
     retained_events = list(history_events)
+    recorded_continuation, recorded_build_transition = _recorded_continuation(retained_events)
+    can_author_target = (
+        allow_continue_as_new_target_build or recorded_continuation is not None or reconstruction_only
+    )
     recorded_group_policies = _read_parallel_group_policies(retained_events, parallel_group_policies)
     # A run-close cancellation never resolves a select() member, never fails
     # an all() group and never supplies replay time: the workflow had closed
@@ -5640,6 +5707,7 @@ def _replay_state(
         cancel_requested=cancel_requested,
         allow_cancellation_scope_authoring=allow_cancellation_scope_authoring,
         _allow_wall_clock=not events,
+        allow_continue_as_new_target_build=can_author_target,
     )
     ctx._replay_clock_error = replay_clock_error if workflow_start_time is None else None
     ctx._schedule_origin = _schedule_origin(events)
@@ -6712,6 +6780,36 @@ def _replay_state(
     except TypeError:
         raise WorkflowEntryArgumentsMismatchError(workflow_type, "argument_binding_failed") from None
 
+    def _terminal_continuation(command: ContinueAsNew, pending_commands: list[Command]) -> list[Command]:
+        _assert_no_unconsumed_history("continue as new")
+        target = command.target_build
+        if target is not None and not _valid_continue_as_new_target(target):
+            raise ValueError("invalid_target_build: use the exact inherited or promoted target")
+        if target is not None and not can_author_target:
+            raise ContinueAsNewTargetUnsupported()
+        if recorded_continuation is None:
+            return pending_commands + [command]
+        if (target or "inherited") != recorded_continuation:
+            raise NonDeterministicReplayError(
+                0, recorded_continuation, ["WorkflowContinuedAsNew"],
+                detail="continue_as_new_target_changed: workflow chose a different build target on replay",
+            )
+        if recorded_build_transition or target is not None:
+            if pending_commands:
+                raise NonDeterministicReplayError(
+                    0, "recorded continuation", ["WorkflowContinuedAsNew"],
+                    detail="continue_as_new_target_changed: recorded continuation follows new commands",
+                )
+            return []
+        return pending_commands + [command]
+
+    def _assert_continuation_replayed() -> None:
+        if recorded_continuation is not None:
+            raise NonDeterministicReplayError(
+                0, "recorded continuation", ["WorkflowContinuedAsNew"],
+                detail="continue_as_new_target_changed: workflow finished without its recorded continuation",
+            )
+
     # Binding happens outside the application-error path. A TypeError raised
     # by a successfully bound body is still an actual workflow failure.
     try:
@@ -6720,7 +6818,7 @@ def _replay_state(
             gen = entry(ctx, *start_input)
     except NonDeterministicReplayError:
         raise
-    except LocalActivityExecutionAborted:
+    except (LocalActivityExecutionAborted, ContinueAsNewTargetUnsupported):
         raise
     except WorkflowCancelled as exc:
         return _state([_fail_workflow_from_exception(exc)])
@@ -6729,9 +6827,9 @@ def _replay_state(
     if not hasattr(gen, "__next__"):
         _validate_workflow_result(gen, workflow_cls)
         if isinstance(gen, ContinueAsNew):
-            _assert_no_unconsumed_history("continue as new")
-            return _state([gen])
+            return _state(_terminal_continuation(gen, []))
         _assert_no_unconsumed_history("complete workflow")
+        _assert_continuation_replayed()
         return _state([CompleteWorkflow(result=gen)])
 
     lifetime.generator = gen
@@ -7702,9 +7800,9 @@ def _replay_state(
         _consume_terminal_condition_reopens()
         commands = list(pending) if include_pending else []
         if isinstance(value, ContinueAsNew):
-            _assert_no_unconsumed_history("continue as new")
-            return _state(commands + [value])
+            return _state(_terminal_continuation(value, commands))
         _assert_no_unconsumed_history("complete workflow")
+        _assert_continuation_replayed()
         return _state(commands + [CompleteWorkflow(result=value)])
 
     def _consume_cancellation(command: Any, boundary: CancellationDelivery) -> _ReplayState | None:
@@ -8859,7 +8957,9 @@ def _replay_state(
         try:
             return _terminal_state(stop.value, include_pending=True)
         except Exception as exc:
-            if isinstance(exc, (NonDeterministicReplayError, InvalidWorkflowDefinition)):
+            if isinstance(exc, (
+                NonDeterministicReplayError, InvalidWorkflowDefinition, ContinueAsNewTargetUnsupported,
+            )):
                 raise
             return _state(pending + [_fail_workflow_from_exception(exc)])
     except NonDeterministicReplayError as exc:
@@ -8868,7 +8968,7 @@ def _replay_state(
         raise
     except InvalidWorkflowDefinition:
         raise
-    except LocalActivityExecutionAborted:
+    except (LocalActivityExecutionAborted, ContinueAsNewTargetUnsupported):
         raise
     except WorkflowCancelled as exc:
         return _state(pending + [_fail_workflow_from_exception(exc)])

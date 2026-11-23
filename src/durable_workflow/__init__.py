@@ -8,6 +8,7 @@ except PackageNotFoundError:  # source checkout without installed metadata
 
 from . import activity, sync, testing, workflow
 from ._activity_checkpoint import ActivityHeartbeatCheckpoint
+from ._continue_as_new import ContinueAsNewTargetBuild
 from .activity import ActivityContext, ActivityInfo, ActivityRetryInfo
 from .auth_composition import (
     AUTH_COMPOSITION_CONTRACT_SCHEMA,
@@ -76,6 +77,7 @@ from .errors import (
     ChildWorkflowCancelled,
     ChildWorkflowFailed,
     ChildWorkflowTerminated,
+    ContinueAsNewTargetUnsupported,
     DuplicateRegistrationError,
     DurableOperationCancelled,
     DurableWorkflowError,
@@ -287,6 +289,8 @@ __all__ = [
     "ChildWorkflowTerminated",
     "Client",
     "ContinueAsNew",
+    "ContinueAsNewTargetBuild",
+    "ContinueAsNewTargetUnsupported",
     "DurableOperationCancelled",
     "DurableOperationHandle",
     "MessageStream",

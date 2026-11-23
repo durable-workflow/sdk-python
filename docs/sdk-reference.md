@@ -1129,6 +1129,22 @@ libraries.
 - **Worker interceptors**: Typed hooks around workflow tasks, activity calls, and query tasks for tracing, logging, and custom metrics
 - **Metrics hooks**: Pluggable counters and histograms, with an optional Prometheus adapter
 
+## Continue on the promoted build
+
+A continue-as-new successor inherits its predecessor's build by default.
+To move a long-lived chain to the promoted build at the next run boundary,
+return or yield the targeted command inside the workflow.
+
+```python
+return ctx.continue_as_new(next_cursor, target_build="promoted")
+```
+
+The promoted build must serve the successor's workflow type on its task queue
+and accept the arguments you pass. The Server records the build selection in
+both runs. An unavailable promotion leaves the run open and the task follows
+its normal retry path. When the worker's current registration lacks support,
+the SDK raises `ContinueAsNewTargetUnsupported` at the authoring call.
+
 ## Workflow time and durable waits
 
 `ctx.now()` returns the run's persisted start time and stays fixed for that

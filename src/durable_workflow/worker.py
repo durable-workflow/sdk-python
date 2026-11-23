@@ -41,7 +41,7 @@ from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Uni
 
 import httpx
 
-from . import serializer
+from . import _continue_as_new, serializer
 from ._activity_lease import (
     ACTIVITY_LEASE_RENEWAL_EXHAUSTED,
     ActivityLeaseAuthority,
@@ -84,6 +84,7 @@ from .errors import (
     ActivityFailed,
     ActivityWorkerLost,
     AvroNotInstalledError,
+    ContinueAsNewTargetUnsupported,
     DuplicateRegistrationError,
     DurableWorkflowError,
     ExternalPayloadError,
@@ -1465,6 +1466,7 @@ class Worker:
         self._poller_tasks: set[asyncio.Task[Any]] = set()
         self._registered = False
         self._deregistration_fenced = False
+        self._continue_as_new_target_build_supported = False
         self._sticky_history_suffix_supported = False
         self._registration_token: str | None = None
         self._registration_worker_id: str | None = None
@@ -1763,6 +1765,7 @@ class Worker:
                 "supported": True, "minimum_protocol_version": "1.18", "version": 1,
             }
 
+        self._continue_as_new_target_build_supported = False
         ack = await self.client.register_worker(
             worker_id=self.worker_id,
             task_queue=self.task_queue,
@@ -1797,6 +1800,9 @@ class Worker:
             },
             task_slots=self._current_task_slots(),
             process_metrics=self._current_process_metrics(),
+        )
+        self._continue_as_new_target_build_supported = _continue_as_new.registration_supports_target(
+            ack, self.worker_id,
         )
         if self._deregistration_fenced:
             token = ack.get("registration_token") if isinstance(ack, dict) else None
@@ -2148,6 +2154,7 @@ class Worker:
                     allow_cancellation_scope_authoring=self._allow_cancellation_scope_authoring,
                     allow_cancellation_scope_delivery=self._allow_cancellation_scope_delivery,
                     record_parallel_failure_order=self.record_parallel_failure_order,
+                    allow_continue_as_new_target_build=self._continue_as_new_target_build_supported,
                 )
                 if outcome.cancellation_scope_delivery is not None:
                     if outcome.commands:
@@ -3146,6 +3153,9 @@ class Worker:
         except _WorkflowClaimDeferred:
             log.info("workflow task %s released for durable successor work", task_id)
             return None
+        except ContinueAsNewTargetUnsupported as error:
+            log.info("workflow task %s left on its original claim: %s", task_id, error)
+            return None
         except LocalActivityExecutionAborted as e:
             log.warning("abandoning workflow task %s before local activity commit: %s", task_id, e)
             return None
@@ -3316,7 +3326,27 @@ class Worker:
                 message_stream_waits=outcome.message_stream_waits,
                 sticky_cache=self._sticky_cache_claim(task, history, commands),
             )
+        except ContinueAsNewTargetUnsupported as error:
+            log.info("workflow task %s left on its original claim: %s", task_id, error)
+            return None
         except Exception as e:
+            if (
+                isinstance(e, ServerError)
+                and e.status == 409
+                and e.reason() == _continue_as_new.PROMOTED_BUILD_UNAVAILABLE
+                and isinstance(e.body, dict)
+                and e.body.get("retryable") is True
+                and e.body.get("request_admitted") is False
+                and any(
+                    command.get("type") == "continue_as_new" and command.get("target_build") == "promoted"
+                    for command in commands
+                )
+            ):
+                log.info("workflow task %s will retry after promoted build admission was refused", task_id)
+                await self._report_workflow_task_after_completion_error(
+                    task_id, attempt, e, failure_reason=_continue_as_new.PROMOTED_BUILD_UNAVAILABLE,
+                )
+                return None
             log.warning("failed to complete workflow task %s: %s", task_id, e)
             if _is_storage_admission_error(e) or isinstance(e, WorkflowTaskCompletionTooLarge):
                 return None
@@ -3453,15 +3483,22 @@ class Worker:
         task_id: str,
         attempt: int,
         error: Exception,
+        *,
+        failure_reason: str | None = None,
     ) -> None:
+        promoted_unavailable = failure_reason == _continue_as_new.PROMOTED_BUILD_UNAVAILABLE
         try:
             await self.client.fail_workflow_task(
                 task_id=task_id,
                 lease_owner=self.worker_id,
                 workflow_task_attempt=attempt,
-                message=f"workflow task completion failed after commands were produced: {error}",
-                failure_type=type(error).__name__,
-                stack_trace=traceback.format_exc(),
+                message=(
+                    "The promoted build is unavailable for the successor workflow." if promoted_unavailable
+                    else f"workflow task completion failed after commands were produced: {error}"
+                ),
+                failure_type="PromotedBuildUnavailable" if promoted_unavailable else type(error).__name__,
+                stack_trace=None if promoted_unavailable else traceback.format_exc(),
+                failure_reason=failure_reason,
             )
         except Exception as fail_error:
             log.warning(
