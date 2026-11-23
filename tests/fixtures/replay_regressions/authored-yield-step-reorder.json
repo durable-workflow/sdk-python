@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "python-authored-yield-step-reorder",
+  "protocol_version": "1.20",
+  "bindings": ["python"],
+  "workflow": {
+    "type": "replay-verify.reordered",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "prepare",
+        "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoIZG9uZQ=="}
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "finish",
+        "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoIZG9uZQ=="}
+      }
+    }
+  ],
+  "expected": {"command_sequence": []},
+  "expected_replay_error": {
+    "type": "NonDeterministicReplayError",
+    "workflow_sequence": 2,
+    "message_contains": "Authored at ReorderedWorkflow[.]final_steps"
+  }
+}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import sys
@@ -1737,6 +1738,29 @@ class TestWorkflowTaskExecution:
         assert result[0]["type"] == "schedule_activity"
         assert mock_client.complete_workflow_task.await_count == 2
         mock_client.fail_workflow_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workflow_task_reports_the_authored_yield_on_replay_drift(self, mock_client: AsyncMock) -> None:
+        worker = Worker(mock_client, task_queue="q1", workflows=[TestWorkflow], activities=[])
+        task = {
+            "task_id": "t-replay-source",
+            "workflow_type": "test-wf",
+            "workflow_task_attempt": 2,
+            "history_events": [
+                {"event_type": "TimerScheduled", "payload": {"sequence": 1, "timer_kind": "durable_timer"}},
+            ],
+            "arguments": serializer.encode(["hello"], codec="avro"),
+            "payload_codec": "avro",
+        }
+        assert await worker._run_workflow_task(task) is None
+        mock_client.complete_workflow_task.assert_not_awaited()
+        mock_client.fail_workflow_task.assert_awaited_once()
+        failure = mock_client.fail_workflow_task.await_args.kwargs
+        line = inspect.getsourcelines(TestWorkflow.run)[1] + 1
+        assert failure["failure_type"] == "NonDeterministicReplayError"
+        assert f"Authored at TestWorkflow.run ({Path(__file__).name}:{line})." in failure["message"]
+        assert str(Path(__file__).resolve().parent) not in failure["message"]
+        assert failure["stack_trace"] is None
 
     @pytest.mark.asyncio
     async def test_workflow_task_definite_completion_rejection_fails_task(

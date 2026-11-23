@@ -79,6 +79,7 @@ from tests.test_replay_clock import (
     RedriveVisibilityCleanupWorkflow,
     RedriveVisibilityWorkflow,
 )
+from tests.test_replay_verify import ReorderedWorkflow
 from tests.test_run_closed_settlement_replay import AllFailureClosedWorkflow, SelectionLoserAtCloseWorkflow
 from tests.test_signal_external_workflow import SenderWorkflow as ExternalSignalSenderWorkflow
 from tests.test_typed_values import TypedActivityResultsWorkflow
@@ -424,6 +425,7 @@ class BlankFailureWorkflow:
 
 
 WORKFLOWS = [
+    ReorderedWorkflow,
     ScheduleOriginWindowWorkflow,
     ExternalSignalSenderWorkflow,
     IntegrationSenderWorkflow,

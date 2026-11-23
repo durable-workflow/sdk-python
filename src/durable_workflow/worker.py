@@ -3091,7 +3091,7 @@ class Worker:
                         workflow_task_attempt=attempt,
                         message=f"workflow replay failed before update {update_id!r}: {exc}",
                         failure_type=type(exc).__name__,
-                        stack_trace=traceback.format_exc(),
+                        stack_trace=None,
                     )
                 except Exception as failure_error:
                     log.warning("failed to report update replay failure: %s", failure_error)
@@ -3178,7 +3178,7 @@ class Worker:
                     workflow_task_attempt=attempt,
                     message=f"replay failed: {e}",
                     failure_type=type(e).__name__,
-                    stack_trace=traceback.format_exc(),
+                    stack_trace=None if isinstance(e, NonDeterministicReplayError) else traceback.format_exc(),
                     **failure_details,
                 )
             except Exception as fe:

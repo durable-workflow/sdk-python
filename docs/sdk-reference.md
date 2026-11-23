@@ -997,6 +997,14 @@ bundle simulation does not execute workflow code in Python, a clean
 integrity-only simulation recommends `review_before_promote` rather than
 `safe_to_promote`.
 
+When replay finds a mismatch at a suspended yield,
+`NonDeterministicReplayError.workflow_source` identifies the authored function,
+source filename, and line. The offline JSON report includes this location as
+`divergence.workflow_source`, and the worker adds it to the workflow task's
+failure message. For example, `ApproveOrder.run (orders.py:42)` points to the
+yield to check in the deployed workflow code. The location includes only the
+filename, without its directory path.
+
 Schema-2 history-bundle verification requires Python SDK 2.10.0 or later.
 Earlier packages refuse these exports; upgrade the SDK while preserving the
 original bundle's version, checksum and bytes.
