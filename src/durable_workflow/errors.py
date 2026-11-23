@@ -18,7 +18,7 @@ https://github.com/temporalio/sdk-python/issues/1292.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
 
 from .cancellation import CancellationContext, ScopedCancellationContext
 
@@ -810,6 +810,14 @@ class WorkflowEntryArgumentsMismatchError(DurableWorkflowError):
         )
 
 
+class WorkflowSourceLocation(TypedDict):
+    """Authored suspension site using the source filename without its directory."""
+
+    function: str
+    file: str
+    line: int
+
+
 class NonDeterministicReplayError(DurableWorkflowError):
     """Current workflow code yielded a command shape that does not match history."""
 
@@ -835,6 +843,14 @@ class NonDeterministicReplayError(DurableWorkflowError):
         self.workflow_sequence = workflow_sequence
         self.expected_shape = expected_shape
         self.recorded_event_types = list(recorded_event_types)
+        self.workflow_source: WorkflowSourceLocation | None = None
+
+    def __str__(self) -> str:
+        message = super().__str__()
+        source = self.workflow_source
+        if source is None:
+            return message
+        return f"{message} Authored at {source['function']} ({source['file']}:{source['line']})."
 
 
 class UpdateFailed(InvalidArgument):

@@ -33,6 +33,7 @@ from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from pathlib import PureWindowsPath
 from typing import Any, TypeVar, cast
 
 from . import replay_clock, serializer
@@ -74,6 +75,7 @@ from .errors import (
     WorkflowCancelled,
     WorkflowEntryArgumentsMismatchError,
     WorkflowPayloadDecodeError,
+    WorkflowSourceLocation,
     _cancellation_requested,
     validate_signal_name,
 )
@@ -3409,6 +3411,22 @@ class _ReplayState:
     outcome: ReplayOutcome
     instance: Any
     context: WorkflowContext
+
+
+def _authored_source(generator: Any) -> WorkflowSourceLocation | None:
+    location: WorkflowSourceLocation | None = None
+    while inspect.isgenerator(generator) and inspect.getgeneratorstate(generator) == inspect.GEN_SUSPENDED:
+        frame = generator.gi_frame
+        if frame is None:
+            break
+        module = frame.f_globals.get("__name__", "")
+        if isinstance(module, str) and not (module == "durable_workflow" or module.startswith("durable_workflow.")):
+            filename = PureWindowsPath(frame.f_code.co_filename).name
+            function = getattr(frame.f_code, "co_qualname", generator.__qualname__)
+            if filename.endswith((".py", ".pyw")) and filename.isprintable() and function.isprintable():
+                location = {"function": function, "file": filename, "line": frame.f_lineno}
+        generator = generator.gi_yieldfrom
+    return location
 
 
 def _consume_replay_result(state: _ReplayState, result: Any, *, business_clock: bool = False) -> Any:
@@ -8001,8 +8019,10 @@ def _replay_state(
         _advance_cancellation_clock(indexes)
 
     replay_token = _ACTIVE_WORKFLOW_REPLAY.set(ctx)
+    matching_yield = False
     try:
         while True:
+            matching_yield = False
             _consume_duplicate_version_markers()
             # Cursor-0 receivers are start-boundary events. Enter run() once
             # before applying them so workflow initialization observes the
@@ -8021,6 +8041,7 @@ def _replay_state(
                     return _terminal_state(stop.value, include_pending=True)
                 first = False
             _apply_due_receivers()
+            matching_yield = True
             _validate_local_activity_policies(cmd)
             if recorded_failure_order is None and _ordinary_all_group(cmd):
                 recorded_failure_order = _resolve_failure_order()
@@ -8841,7 +8862,11 @@ def _replay_state(
             if isinstance(exc, (NonDeterministicReplayError, InvalidWorkflowDefinition)):
                 raise
             return _state(pending + [_fail_workflow_from_exception(exc)])
-    except (NonDeterministicReplayError, InvalidWorkflowDefinition):
+    except NonDeterministicReplayError as exc:
+        if matching_yield and exc.workflow_source is None:
+            exc.workflow_source = _authored_source(gen)
+        raise
+    except InvalidWorkflowDefinition:
         raise
     except LocalActivityExecutionAborted:
         raise

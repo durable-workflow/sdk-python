@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from pathlib import Path
 from typing import Any
@@ -123,11 +124,48 @@ def test_verify_replay_refuses_different_command_shape_with_actionable_diagnosti
     assert report.error["expected_shape"] == "timer"
     assert report.error["recorded_event_types"] == ["ActivityCompleted"]
     assert "current workflow yielded timer" in report.error["message"]
+    location = {
+        "function": "TimerDivergenceWorkflow.run",
+        "file": Path(__file__).name,
+        "line": inspect.getsourcelines(TimerDivergenceWorkflow.run)[1] + 1,
+    }
+    assert report.error["workflow_source"] == location
+    assert str(Path(__file__).resolve().parent) not in report.error["message"]
     assert report.divergence == {
         "workflow_sequence": 1,
         "expected_shape": "timer",
         "recorded_event_types": ["ActivityCompleted"],
         "message": report.error["message"],
+        "workflow_source": location,
+    }
+
+
+def test_verify_replay_points_to_the_delegated_yield_after_a_step_reorder() -> None:
+    @workflow.defn(name="replay-verify.reordered")
+    class ReorderedWorkflow:
+        def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+            yield ctx.schedule_activity("prepare", [])
+            yield from self.final_steps(ctx)
+
+        def final_steps(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+            yield ctx.start_timer(5)
+            yield ctx.schedule_activity("finish", [])
+
+    history = [
+        {
+            "event_type": "ActivityCompleted",
+            "payload": {"sequence": sequence, "activity_type": activity, "result": _avro("done")},
+        }
+        for sequence, activity in [(1, "prepare"), (2, "finish")]
+    ]
+    report = verify_replay(ReorderedWorkflow, history, case_id="step-reorder")
+    assert report.status == STATUS_DRIFTED
+    assert report.error is not None
+    assert report.error["workflow_sequence"] == 2
+    assert report.error["workflow_source"] == {
+        "function": ReorderedWorkflow.final_steps.__qualname__,
+        "file": Path(__file__).name,
+        "line": inspect.getsourcelines(ReorderedWorkflow.final_steps)[1] + 1,
     }
 
 
@@ -229,6 +267,9 @@ def test_verify_replay_refuses_removed_wait_condition_history() -> None:
     assert report.error is not None
     assert report.error["expected_shape"] == "complete workflow"
     assert report.error["recorded_event_types"] == ["ConditionWaitOpened"]
+    assert "workflow_source" not in report.error
+    assert report.divergence is not None
+    assert "workflow_source" not in report.divergence
 
 
 def test_verify_replay_refuses_wait_replacing_in_flight_activity() -> None:

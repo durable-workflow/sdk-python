@@ -553,12 +553,14 @@ def _replay_case(replayer: Replayer, case: Mapping[str, Any]) -> CaseReport:
             workflow_type=workflow_type,
         )
     except NonDeterministicReplayError as exc:
-        divergence = {
+        divergence: dict[str, Any] = {
             "workflow_sequence": exc.workflow_sequence,
             "expected_shape": exc.expected_shape,
             "recorded_event_types": list(exc.recorded_event_types),
             "message": str(exc),
         }
+        if exc.workflow_source is not None:
+            divergence["workflow_source"] = exc.workflow_source
         return CaseReport(
             id=case_id,
             status=STATUS_DRIFTED,
@@ -570,10 +572,7 @@ def _replay_case(replayer: Replayer, case: Mapping[str, Any]) -> CaseReport:
             expected=case.get("expected"),
             error={
                 "class": type(exc).__name__,
-                "message": str(exc),
-                "workflow_sequence": exc.workflow_sequence,
-                "expected_shape": exc.expected_shape,
-                "recorded_event_types": list(exc.recorded_event_types),
+                **divergence,
             },
         )
     except (TypeError, ValueError, ChildWorkflowFailed, WorkflowFailed) as exc:

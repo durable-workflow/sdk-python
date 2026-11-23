@@ -1,5 +1,25 @@
 # Testing
 
+## Locate a replay divergence
+
+Replay a captured history against the current workflow definition and read the
+authored location from the divergence report.
+
+```python
+from durable_workflow.replay_verify import verify_replay
+
+report = verify_replay(ApproveOrder, captured_history)
+location = (report.divergence or {}).get("workflow_source")
+if location:
+    print(f"{location['function']} ({location['file']}:{location['line']})")
+```
+
+For example, `ApproveOrder.run (orders.py:42)` identifies the yield that
+disagreed with the recorded history. Use the accompanying workflow sequence
+and recorded event types to confirm which command changed. The location may
+be absent when there is no suspended yield, such as when the current workflow
+returns before a recorded step.
+
 ## Test failures, retries and compensation
 
 This failure/retry behavior and callable child mocks require Python SDK
