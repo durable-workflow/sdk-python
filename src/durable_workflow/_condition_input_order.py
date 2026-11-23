@@ -19,6 +19,38 @@ def positive_sequence(value: Any) -> int | None:
     return value if type(value) is int and value > 0 else None
 
 
+@dataclass(frozen=True)
+class CompetingSelection:
+    terminal_id: str
+    sequence: int
+
+
+def competing_selection(events: Sequence[Mapping[str, Any]], group_id: str) -> CompetingSelection | None:
+    candidates = [
+        (event, payload) for event in events
+        if event.get("event_type", event.get("type")) == "SelectionCandidateReady"
+        and isinstance(payload := event.get("payload"), Mapping)
+        and payload.get("selection_group_id") == group_id
+    ]
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise ValueError("an ordered selection has more than one competing terminal event")
+    candidate, payload = candidates[0]
+    terminal_id = payload.get("resolution_event_id")
+    sequence = positive_sequence(payload.get("resolution_event_sequence"))
+    if (not isinstance(terminal_id, str) or not terminal_id or sequence is None
+        or sequence >= (positive_sequence(candidate.get("sequence")) or 0)
+        or not any(
+            event.get("sequence") == sequence
+            and (event.get("id") or event.get("event_id")) == terminal_id
+            and event.get("event_type", event.get("type")) == payload.get("resolution_event_type")
+            for event in events
+        )):
+        raise ValueError("ordered selection candidate does not match its terminal history event")
+    return CompetingSelection(terminal_id, sequence)
+
+
 @dataclass
 class Wait:
     opening_sequence: int

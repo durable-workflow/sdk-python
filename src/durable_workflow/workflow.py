@@ -2002,6 +2002,7 @@ class _ResolveConditionWait:
     wait_id: str
     satisfied: bool
     receipt: int | None
+    competing_resolution_event_id: str | None = None
 
     def to_server_command(self, task_queue: str, **_: Any) -> dict[str, Any]:
         command: dict[str, Any] = {
@@ -2009,6 +2010,8 @@ class _ResolveConditionWait:
         }
         if self.receipt is not None:
             command["input_receipt_sequence"] = self.receipt
+        if self.competing_resolution_event_id is not None:
+            command["competing_resolution_event_id"] = self.competing_resolution_event_id
         return command
 
 
@@ -6716,7 +6719,8 @@ def _replay_state(
 
     def _ordered_condition_result(
         wait_id: str, wait: _condition_input_order.Wait, predicate: Callable[[], bool],
-    ) -> tuple[bool | None, int | None]:
+        competing: _condition_input_order.CompetingSelection | None = None,
+    ) -> tuple[bool | None, int | None, str | None]:
         receivers = sorted(
             (receiver for receiver in pending_receivers
              if receiver.condition_wait_id == wait_id and receiver.receipt_sequence is not None),
@@ -6735,18 +6739,21 @@ def _replay_state(
                     if cast(int, receiver.receipt_sequence) > cutoff:
                         break
                     apply(receiver)
-                return wait.settled, wait.satisfying_receipt
+                return wait.settled, wait.satisfying_receipt, None
 
             if reconstruction_only:
                 for receiver in receivers:
                     apply(receiver)
-                return None, None
+                return None, None, None
 
             if not allow_ordered_condition_inputs or pending_condition_input is None:
                 raise LocalActivityExecutionAborted("ordered condition replay requires the Server input snapshot")
             first_pending = pending_condition_input[0]
-            boundaries = [position for position in (first_pending, wait.fired_sequence) if position is not None]
-            boundary = min(boundaries) if boundaries else math.inf
+            terminal_boundary = min(
+                wait.fired_sequence if wait.fired_sequence is not None else math.inf,
+                competing.sequence if competing is not None else math.inf,
+            )
+            boundary = min(first_pending, terminal_boundary) if first_pending is not None else terminal_boundary
             eligible = [receiver for receiver in receivers if cast(int, receiver.receipt_sequence) < boundary]
             entry_count = 0
             receipt: int | None = None
@@ -6765,18 +6772,19 @@ def _replay_state(
 
             satisfied, predicate_error = evaluate()
             if satisfied and (receipt is not None or wait.fired_sequence is None):
-                return True, receipt
+                return True, receipt, None
             for receiver in eligible[entry_count:]:
                 apply(receiver)
                 satisfied, predicate_error = evaluate()
                 if satisfied:
-                    return True, receiver.receipt_sequence
-            settled_prefix = first_pending is None or (
-                wait.fired_sequence is not None and first_pending >= wait.fired_sequence
-            )
+                    return True, receiver.receipt_sequence, None
+            settled_prefix = first_pending is None or first_pending >= terminal_boundary
             if settled_prefix and predicate_error is not None:
                 raise predicate_error
-            return (False, None) if settled_prefix and wait.fired_sequence is not None else (None, None)
+            if settled_prefix and terminal_boundary != math.inf:
+                winner = competing.terminal_id if competing is not None and competing.sequence == terminal_boundary else None
+                return False, None, winner
+            return None, None, None
         finally:
             pending_receivers[:] = [receiver for receiver in pending_receivers if id(receiver) not in consumed]
 
@@ -8428,13 +8436,18 @@ def _replay_state(
                             if wait is None or wait.settled is not None:
                                 continue
                             try:
-                                decision, receipt = _ordered_condition_result(cast(str, wait_id), wait, leaf.predicate)
+                                competing = _condition_input_order.competing_selection(
+                                    events, leaf._parallel_group_path[0]["parallel_group_id"],
+                                )
+                                decision, receipt, competing_id = _ordered_condition_result(
+                                    cast(str, wait_id), wait, leaf.predicate, competing,
+                                )
                             except LocalActivityExecutionAborted:
                                 raise
                             except Exception as exc:
                                 return _state([_fail_workflow_from_exception(exc, prefix="wait_condition predicate raised")])
                             if decision is not None:
-                                pending.append(_ResolveConditionWait(cast(str, wait_id), decision, receipt))
+                                pending.append(_ResolveConditionWait(cast(str, wait_id), decision, receipt, competing_id))
                         return _state(pending)
                     _set_replaying(False)
                     if allow_ordered_condition_inputs:
@@ -8963,7 +8976,7 @@ def _replay_state(
                             ordered_wait = ordered_condition_history.waits.get(opened_id)
                             if ordered_wait is not None:
                                 try:
-                                    resolution_value, receipt = _ordered_condition_result(opened_id, ordered_wait, cmd.predicate)
+                                    resolution_value, receipt, _ = _ordered_condition_result(opened_id, ordered_wait, cmd.predicate)
                                 except LocalActivityExecutionAborted:
                                     raise
                                 except Exception as exc:
