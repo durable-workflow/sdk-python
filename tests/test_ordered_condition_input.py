@@ -63,4 +63,5 @@ def test_a_replacement_worker_replays_the_first_applied_true_prefix() -> None:
     }))
     recorded = replay(Approval, history, [])
     assert isinstance(recorded.commands[-1], CompleteWorkflow) and recorded.commands[-1].result is True
-    assert [command["type"] for command in commands_to_server_commands(recorded.commands, "test")] == ["complete_workflow"]
+    commands = commands_to_server_commands(recorded.commands, "test")
+    assert [command["type"] for command in commands] == ["complete_workflow"]

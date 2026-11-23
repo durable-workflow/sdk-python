@@ -130,7 +130,8 @@ def read(events: Sequence[Mapping[str, Any]]) -> History:
                 or payload.get("timer_fired_sequence") != wait.fired_sequence
                 or (receipt is not None and receipt >= sequence)
                 or (not satisfied and (wait.fired_sequence is None or receipt is not None))
-                or (satisfied and wait.fired_sequence is not None and (receipt is None or receipt >= wait.fired_sequence))):
+                or (satisfied and wait.fired_sequence is not None
+                    and (receipt is None or receipt >= wait.fired_sequence))):
                 raise ValueError("ordered condition outcome does not match its original input boundary")
             wait.settled = satisfied
             wait.satisfying_receipt = receipt

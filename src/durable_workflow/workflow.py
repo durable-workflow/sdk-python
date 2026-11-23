@@ -6603,6 +6603,11 @@ def _replay_state(
         elif etype == "UpdateApplied":
             update_name = payload.get("update_name")
             if isinstance(update_name, str) and update_name:
+                applied_sequence = _condition_input_order.positive_sequence(ev.get("sequence"))
+                receipt_sequence = (
+                    ordered_condition_history.update_receipts.get(applied_sequence)
+                    if applied_sequence is not None else None
+                )
                 workflow_sequence = _workflow_sequence(payload)
                 if event_index in receiver_condition_wait_ids:
                     condition_wait_id = receiver_condition_wait_ids[event_index]
@@ -6627,7 +6632,7 @@ def _replay_state(
                         external_storage_cache=external_storage_cache,
                     ),
                     condition_wait_id=condition_wait_id,
-                    receipt_sequence=ordered_condition_history.update_receipts.get(ev.get("sequence")),
+                    receipt_sequence=receipt_sequence,
                     after_cancellation_delivery=(
                         cancellation.delivery_index is not None and event_index > cancellation.delivery_index
                     ),
@@ -6737,7 +6742,10 @@ def _replay_state(
 
         try:
             if wait.settled is not None:
-                cutoff = (wait.satisfying_receipt or wait.opening_sequence) if wait.settled else cast(int, wait.fired_sequence) - 1
+                cutoff = (
+                    (wait.satisfying_receipt or wait.opening_sequence)
+                    if wait.settled else cast(int, wait.fired_sequence) - 1
+                )
                 for receiver in receivers:
                     if cast(int, receiver.receipt_sequence) > cutoff:
                         break
@@ -6785,7 +6793,10 @@ def _replay_state(
             if settled_prefix and predicate_error is not None:
                 raise predicate_error
             if settled_prefix and terminal_boundary != math.inf:
-                winner = competing.terminal_id if competing is not None and competing.sequence == terminal_boundary else None
+                winner = (
+                    competing.terminal_id
+                    if competing is not None and competing.sequence == terminal_boundary else None
+                )
                 return False, None, winner
             return None, None, None
         finally:
@@ -8431,6 +8442,7 @@ def _replay_state(
                         has_recorded_member_history = True
                 if marker is None:
                     if has_recorded_member_history:
+                        group_id = next(iter(handles.values())).selection_group_id
                         for sequence, leaf in enumerate(annotated, start=group_base):
                             if not isinstance(leaf, WaitCondition) or not selection_steps.get(sequence):
                                 continue
@@ -8440,17 +8452,21 @@ def _replay_state(
                                 continue
                             try:
                                 competing = _condition_input_order.competing_selection(
-                                    events, leaf._parallel_group_path[0]["parallel_group_id"],
+                                    events, group_id,
                                 )
                                 decision, receipt, competing_id = _ordered_condition_result(
-                                    cast(str, wait_id), wait, leaf.predicate, competing,
+                                    wait_id, wait, leaf.predicate, competing,
                                 )
                             except LocalActivityExecutionAborted:
                                 raise
                             except Exception as exc:
-                                return _state([_fail_workflow_from_exception(exc, prefix="wait_condition predicate raised")])
+                                return _state([
+                                    _fail_workflow_from_exception(exc, prefix="wait_condition predicate raised"),
+                                ])
                             if decision is not None:
-                                pending.append(_ResolveConditionWait(cast(str, wait_id), decision, receipt, competing_id))
+                                pending.append(
+                                    _ResolveConditionWait(wait_id, decision, receipt, competing_id),
+                                )
                         return _state(pending)
                     _set_replaying(False)
                     if allow_ordered_condition_inputs and author_ordered_condition_inputs:
@@ -8534,8 +8550,8 @@ def _replay_state(
                         if ordered_wait is None:
                             _apply_condition_wait_receivers(wait_id)
                         else:
-                            _ordered_condition_result(cast(str, wait_id), ordered_wait, leaf.predicate)
-                            _release_ordered_condition_receivers(cast(str, wait_id))
+                            _ordered_condition_result(wait_id, ordered_wait, leaf.predicate)
+                            _release_ordered_condition_receivers(wait_id)
                 next_value = SelectionResult(
                     key=winner.key,
                     index=winner.index,
@@ -8983,11 +8999,15 @@ def _replay_state(
                             ordered_wait = ordered_condition_history.waits.get(opened_id)
                             if ordered_wait is not None:
                                 try:
-                                    resolution_value, receipt, _ = _ordered_condition_result(opened_id, ordered_wait, cmd.predicate)
+                                    resolution_value, receipt, _ = _ordered_condition_result(
+                                        opened_id, ordered_wait, cmd.predicate,
+                                    )
                                 except LocalActivityExecutionAborted:
                                     raise
                                 except Exception as exc:
-                                    return _state([_fail_workflow_from_exception(exc, prefix="wait_condition predicate raised")])
+                                    return _state([
+                                        _fail_workflow_from_exception(exc, prefix="wait_condition predicate raised"),
+                                    ])
                                 if resolution_value is None:
                                     return _state(pending)
                                 if ordered_wait.settled is None:
