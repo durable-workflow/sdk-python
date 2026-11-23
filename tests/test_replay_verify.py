@@ -59,6 +59,17 @@ class TimerDivergenceWorkflow:
         return "timer-fired"
 
 
+@workflow.defn(name="replay-verify.reordered")
+class ReorderedWorkflow:
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.schedule_activity("prepare", [])
+        yield from self.final_steps(ctx)
+
+    def final_steps(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield ctx.start_timer(5)
+        yield ctx.schedule_activity("finish", [])
+
+
 @workflow.defn(name="replay-verify.activity-divergence")
 class ActivityDivergenceWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -141,24 +152,9 @@ def test_verify_replay_refuses_different_command_shape_with_actionable_diagnosti
 
 
 def test_verify_replay_points_to_the_delegated_yield_after_a_step_reorder() -> None:
-    @workflow.defn(name="replay-verify.reordered")
-    class ReorderedWorkflow:
-        def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
-            yield ctx.schedule_activity("prepare", [])
-            yield from self.final_steps(ctx)
-
-        def final_steps(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
-            yield ctx.start_timer(5)
-            yield ctx.schedule_activity("finish", [])
-
-    history = [
-        {
-            "event_type": "ActivityCompleted",
-            "payload": {"sequence": sequence, "activity_type": activity, "result": _avro("done")},
-        }
-        for sequence, activity in [(1, "prepare"), (2, "finish")]
-    ]
-    report = verify_replay(ReorderedWorkflow, history, case_id="step-reorder")
+    fixture_path = Path(__file__).parent / "fixtures" / "replay_regressions" / "authored-yield-step-reorder.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    report = verify_replay(ReorderedWorkflow, fixture["history"], case_id=fixture["id"])
     assert report.status == STATUS_DRIFTED
     assert report.error is not None
     assert report.error["workflow_sequence"] == 2
