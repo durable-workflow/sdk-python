@@ -6187,7 +6187,7 @@ class Client:
         session = (self.namespace, worker_id)
         self._continue_as_new_target_workers.discard(session)
         ack = await self._request("POST", "/worker/register", worker=True, json=body)
-        if _continue_as_new.registration_supports_target(ack, worker_id):
+        if _continue_as_new.registration_supports_target(ack, worker_id, self.namespace, task_queue):
             self._continue_as_new_target_workers.add(session)
         return ack
 

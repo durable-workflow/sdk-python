@@ -1780,6 +1780,9 @@ class Worker:
             capabilities=capabilities,
             capability_manifest={
                 **affinity_manifest,
+                _continue_as_new.CAPABILITY: {
+                    "supported": True, "minimum_protocol_version": _continue_as_new.WORKER_PROTOCOL,
+                },
                 **({"nexus_cooperative_cancellation": {
                     "supported": True, "minimum_protocol_version": "1.20",
                     "implementation": "owned_workflow_run_canonical_delivery",
@@ -1802,7 +1805,7 @@ class Worker:
             process_metrics=self._current_process_metrics(),
         )
         self._continue_as_new_target_build_supported = _continue_as_new.registration_supports_target(
-            ack, self.worker_id,
+            ack, self.worker_id, getattr(self.client, "namespace", None), self.task_queue,
         )
         if self._deregistration_fenced:
             token = ack.get("registration_token") if isinstance(ack, dict) else None

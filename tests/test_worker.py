@@ -457,6 +457,10 @@ class TestWorkerRegistration:
                     "minimum_protocol_version": "1.18",
                     "reason": "sticky_cache_disabled",
                 },
+                "continue_as_new_target_build": {
+                    "supported": True,
+                    "minimum_protocol_version": "1.21",
+                },
             },
             "task_slots": {
                 "workflow_available": 10,

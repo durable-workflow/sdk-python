@@ -68,8 +68,12 @@ async def test_worker_reports_the_refusal_on_the_current_attempt_and_can_retry(s
             return httpx.Response(200, json=compatible_cluster_info())
         if path == "/api/worker/register":
             assert req.headers["x-durable-workflow-protocol-version"] == "1.20"
+            assert json.loads(req.content)["capability_manifest"]["continue_as_new_target_build"] == {
+                "supported": True, "minimum_protocol_version": "1.21",
+            }
             return httpx.Response(201, json={
-                "registered": True, "worker_id": "worker", "protocol_version": "1.21" if supported else "1.20",
+                "registered": True, "worker_id": "worker", "namespace": "default", "task_queue": "queue",
+                "protocol_version": "1.21" if supported else "1.20",
                 "server_capabilities": {"continue_as_new_target_build": supported},
             })
         if path.endswith(("/complete", "/fail")):
@@ -113,14 +117,22 @@ async def test_worker_reports_the_refusal_on_the_current_attempt_and_can_retry(s
 
 
 async def test_client_requires_exact_value_and_current_registration() -> None:
-    registrations = iter([("1.20", True), ("1.21", "true"), ("1.21", True), ("1.21", False)])
+    registrations = iter([
+        ("1.20", True, "default", "queue"),
+        ("1.21", "true", "default", "queue"),
+        ("1.21", True, "different-namespace", "queue"),
+        ("1.21", True, "default", "different-queue"),
+        ("1.21", True, "default", "queue"),
+        ("1.21", False, "default", "queue"),
+    ])
     completions = []
 
     def request(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/api/worker/register":
-            version, flag = next(registrations)
+            version, flag, namespace, queue = next(registrations)
             return httpx.Response(201, json={
-                "registered": True, "worker_id": "worker", "protocol_version": version,
+                "registered": True, "worker_id": "worker", "namespace": namespace, "task_queue": queue,
+                "protocol_version": version,
                 "server_capabilities": {"continue_as_new_target_build": flag},
             })
         if req.url.path == "/api/cluster/info":
@@ -138,7 +150,7 @@ async def test_client_requires_exact_value_and_current_registration() -> None:
             )
 
         explicit = {"type": "continue_as_new", "target_build": "inherited"}
-        for _ in range(2):
+        for _ in range(4):
             await client.register_worker(worker_id="worker", task_queue="queue", capability_manifest={})
             with pytest.raises(ContinueAsNewTargetUnsupported):
                 await complete(explicit)
