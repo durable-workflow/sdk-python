@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.22.1] - 2026-11-23
+
+### Fixed
+
+- Replay mismatches report the authored Python function, filename and source
+  line when replay can identify the yielded operation. The replay verifier and
+  worker show the same location alongside the existing mismatch details.
+
 ## [2.22.0] - 2026-11-21
 
 ### Added
