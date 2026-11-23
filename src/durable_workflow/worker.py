@@ -41,7 +41,7 @@ from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Uni
 
 import httpx
 
-from . import _continue_as_new, serializer
+from . import _condition_input_order, _continue_as_new, serializer
 from ._activity_lease import (
     ACTIVITY_LEASE_RENEWAL_EXHAUSTED,
     ActivityLeaseAuthority,
@@ -1477,6 +1477,7 @@ class Worker:
         self._query_tasks_supported = False
         self._workflow_memo_updates_supported = False
         self._signal_external_workflow_supported = False
+        self._ordered_condition_inputs_supported = False
         self._update_validation_tasks_supported = False
         self._query_thread_stop = threading.Event()
         self._query_thread: threading.Thread | None = None
@@ -1711,6 +1712,9 @@ class Worker:
                                "Server query_task_authority=true before registration")
         self._workflow_memo_updates_supported = _server_supports_workflow_memo_updates(info)
         self._signal_external_workflow_supported = _server_supports_signal_external_workflow(info)
+        self._ordered_condition_inputs_supported = (
+            isinstance(server_capabilities, Mapping) and _condition_input_order.marked(server_capabilities)
+        )
         has_update_validators = any(
             contract["update_validators"] for contract in self.workflow_command_contracts.values()
         )
@@ -1738,6 +1742,8 @@ class Worker:
         if any(contract["updates"] for contract in self.workflow_command_contracts.values()):
             capabilities.append(WORKFLOW_UPDATES_CAPABILITY)
         capabilities.append(MESSAGE_STREAMS_CAPABILITY)
+        if self._ordered_condition_inputs_supported:
+            capabilities.append(_condition_input_order.CAPABILITY)
         capabilities.extend(self.capabilities)
         if self._nexus_cooperative_cancellation_supported and "nexus_cooperative_cancellation" not in capabilities:
             capabilities.append("nexus_cooperative_cancellation")
@@ -2126,6 +2132,13 @@ class Worker:
         self, cls: type, task: dict[str, Any], history: list[dict[str, Any]], start_input: list[Any],
         *, payload_codec: str | None, execute_local: Callable[[RecordLocalActivity], Any],
     ) -> tuple[ReplayOutcome, list[dict[str, Any]]]:
+        pending_condition_input: tuple[int | None] | None = None
+        if _condition_input_order.PENDING_INPUT in task:
+            raw_sequence = task[_condition_input_order.PENDING_INPUT]
+            sequence = _condition_input_order.positive_sequence(raw_sequence)
+            if raw_sequence is not None and sequence is None:
+                raise LocalActivityExecutionAborted("invalid ordered condition input snapshot")
+            pending_condition_input = (sequence,)
         observation = task.get("cancellation_request")
         if observation is not None:
             observed = self._observe_workflow_cancellation(task, observation)
@@ -2158,6 +2171,9 @@ class Worker:
                     allow_cancellation_scope_delivery=self._allow_cancellation_scope_delivery,
                     record_parallel_failure_order=self.record_parallel_failure_order,
                     allow_continue_as_new_target_build=self._continue_as_new_target_build_supported,
+                    allow_ordered_condition_inputs=self._ordered_condition_inputs_supported,
+                    author_ordered_condition_inputs=task.get(_condition_input_order.AUTHORING) is True,
+                    pending_condition_input=pending_condition_input,
                 )
                 if outcome.cancellation_scope_delivery is not None:
                     if outcome.commands:
@@ -3199,6 +3215,15 @@ class Worker:
             return None
 
         workflow_commands = list(outcome.commands)
+        if not workflow_commands and _condition_input_order.PENDING_INPUT in task:
+            await self.client.fail_workflow_task(
+                task_id=task_id,
+                lease_owner=self.worker_id,
+                workflow_task_attempt=attempt,
+                message="Workflow task waiting for scheduled history.",
+                failure_type="WorkflowTaskWaitingForHistory",
+            )
+            return None
 
         if (
             any(isinstance(command, UpsertMemo) for command in workflow_commands)

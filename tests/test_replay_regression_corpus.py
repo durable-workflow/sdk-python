@@ -29,6 +29,7 @@ from durable_workflow.workflow import (
     WorkflowContext,
     commands_to_server_commands,
     query_state,
+    replay,
 )
 from tests.business_clock_workflows import (
     ChildBusinessClockWorkflow,
@@ -52,6 +53,7 @@ from tests.test_golden_history_replay import (
     GoldenTimeoutWaitWorkflow,
     GoldenVersionMarkerWorkflow,
 )
+from tests.test_ordered_condition_input import Approval as OrderedConditionApproval
 from tests.test_parallel_failure_order import ReviewPlain, ReviewSelectCancel, ReviewZeroCommandCatch
 from tests.test_parallel_group_boundaries import GroupAfterSelectionWithCancellation
 from tests.test_parallel_group_policy import ParallelFailurePolicyWorkflow
@@ -520,6 +522,7 @@ WORKFLOW_TYPES = {str(getattr(workflow, "__workflow_name__", workflow.__name__))
 WORKFLOW_TYPES["tests.replay.condition-identity"] = ConditionIdentityWorkflow
 WORKFLOW_TYPES["tests.replay.entry-arguments-required"] = RequiredEntryArgumentWorkflow
 WORKFLOW_TYPES["tests.replay.parallel-failure-policy"] = ParallelFailurePolicyWorkflow
+WORKFLOW_TYPES["tests.ordered-condition-input"] = OrderedConditionApproval
 
 
 # Immutable evidence whose recorded expectation was the sdk-python#338 defect:
@@ -896,7 +899,17 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
             workflows=[WORKFLOW_TYPES[name] for name in worker_registrations],
         )
         registered_workflows = list(worker.workflows.values())
-    if query is None:
+    if workflow_type == "tests.ordered-condition-input":
+        task = fixture["worker_task"]
+        outcome = replay(
+            OrderedConditionApproval, history, [] if start_input is None else start_input,
+            allow_ordered_condition_inputs=True,
+            pending_condition_input=(task["condition_wait_pending_input_sequence"],),
+        )
+        commands = _command_documents(outcome.commands)
+        message_stream_cursors = outcome.message_stream_cursors
+        message_stream_waits = outcome.message_stream_waits
+    elif query is None:
         outcome = Replayer(workflows=registered_workflows).replay(
             history,
             start_input,
