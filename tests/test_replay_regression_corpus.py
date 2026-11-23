@@ -24,6 +24,7 @@ from durable_workflow.replay_conformance import compose_report
 from durable_workflow.retry_policy import TransportRetryPolicy
 from durable_workflow.worker import RECORD_PARALLEL_FAILURE_ORDER_ENV
 from durable_workflow.workflow import (
+    ContinueAsNew,
     LocalActivityExecutionAborted,
     WorkflowContext,
     commands_to_server_commands,
@@ -99,6 +100,12 @@ from tests.test_workflow_identity import IdentityAcrossReplay, IdentityContinueA
 
 FIXTURE_SCHEMA = "durable-workflow.replay-regression/v1"
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "replay_regressions"
+
+
+@workflow.defn(name="sdk.promoted-continue-replay")
+class PromotedContinueReplay:
+    def run(self, ctx: WorkflowContext, cursor: str) -> ContinueAsNew:
+        return ctx.continue_as_new(cursor, target_build="promoted")
 
 
 @workflow.defn(name="sdk.query-task-dispatch")
@@ -440,6 +447,7 @@ WORKFLOWS = [
     BlankFailureWorkflow,
     IdentityAcrossReplay,
     IdentityContinueAsNew,
+    PromotedContinueReplay,
     PersistedClockWorkflow,
     RedriveChangedStageWorkflow,
     RedriveSignalWorkflow,

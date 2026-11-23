@@ -42,7 +42,7 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import httpx
 
-from . import serializer
+from . import _continue_as_new, serializer
 from ._activity_checkpoint import capture_poll as _capture_activity_checkpoint
 from ._activity_lease import ActivityLeaseAuthority, current_activity_authority
 from ._cancellation_scope import CancellationScopeOpenReceipt, scope_identity
@@ -73,6 +73,7 @@ from ._typed_values import decode_payload_value, to_payload_values, validate_ann
 from .errors import (
     REQUEST_ID_AMBIGUOUS,
     REQUEST_ID_CONFLICT,
+    ContinueAsNewTargetUnsupported,
     ExternalPayloadIntegrityMismatch,
     ExternalPayloadOversized,
     ExternalPayloadUnavailable,
@@ -2005,6 +2006,7 @@ class Client:
         self._cluster_info: dict[str, Any] | None = None
         self._cluster_info_lock = asyncio.Lock()
         self._capabilities_digest = ServerCapabilitiesDigest()
+        self._continue_as_new_target_workers: set[tuple[str, str]] = set()
         self._runtime_external_payload_transport_cache: (
             _RuntimeExternalPayloadTransport | None
         ) = None
@@ -2023,6 +2025,7 @@ class Client:
         Safe to call multiple times.
         """
         self._workflow_payload_observers.clear()
+        self._continue_as_new_target_workers.clear()
         await self._http.aclose()
 
     async def __aenter__(self) -> Client:
@@ -2208,6 +2211,7 @@ class Client:
         context: str = "",
         retry: bool = True,
         raise_for_status: Callable[..., None] = _raise_for_status,
+        worker_protocol_version: str | None = None,
     ) -> Any:
         if worker and discovery:
             raise ValueError("a request cannot be both worker-plane and cluster discovery")
@@ -2269,6 +2273,8 @@ class Client:
             if worker and activity_authority is not None and activity_authority.governs(self, self.namespace, path):
                 request_timeout = min(request_timeout, activity_authority.remaining())
             headers = self._discovery_headers() if discovery else self._headers(worker=worker)
+            if worker and worker_protocol_version is not None:
+                headers["X-Durable-Workflow-Protocol-Version"] = worker_protocol_version
             if capabilities_digest is not None:
                 headers[CAPABILITIES_DIGEST_HEADER] = ServerCapabilitiesDigest.header(capabilities_digest)
             if progress_poll:
@@ -4101,6 +4107,7 @@ class Client:
 
     async def deregister_worker(self, worker_id: str) -> dict[str, Any]:
         """Remove a stale or retired worker from the server roster."""
+        self._continue_as_new_target_workers.discard((self.namespace, worker_id))
         data = await self._request("DELETE", f"/workers/{quote(worker_id, safe='')}", context=worker_id)
         if not isinstance(data, dict):
             raise ServerError(
@@ -6177,7 +6184,12 @@ class Client:
             body["process_metrics"] = process_metrics
         if heartbeat_interval_seconds is not None:
             body["heartbeat_interval_seconds"] = heartbeat_interval_seconds
-        return await self._request("POST", "/worker/register", worker=True, json=body)
+        session = (self.namespace, worker_id)
+        self._continue_as_new_target_workers.discard(session)
+        ack = await self._request("POST", "/worker/register", worker=True, json=body)
+        if _continue_as_new.registration_supports_target(ack, worker_id, self.namespace, task_queue):
+            self._continue_as_new_target_workers.add(session)
+        return ack
 
     async def create_worker_session(
         self, worker_id: str, options: WorkerSessionOptions
@@ -6228,6 +6240,7 @@ class Client:
             not isinstance(registration_token, str) or re.fullmatch(r"[a-f0-9]{32}", registration_token) is None
         ):
             raise ValueError("registration_token must contain exactly 32 lowercase hexadecimal characters")
+        self._continue_as_new_target_workers.discard((self.namespace, worker_id))
         fenced = registration_token is not None
         try:
             data = await self._request(
@@ -6444,6 +6457,18 @@ class Client:
                 failure_type="WorkflowTaskWaitingForHistory",
             )
 
+        supports_target = (self.namespace, lease_owner) in self._continue_as_new_target_workers
+        continuation_protocol = None
+        for command in commands:
+            is_continuation = command.get("type") == "continue_as_new"
+            if "target_build" in command:
+                if not is_continuation or not _continue_as_new.valid_target(command["target_build"]):
+                    raise ValueError("invalid_target_build: use the exact inherited or promoted continuation target")
+                if not supports_target:
+                    raise ContinueAsNewTargetUnsupported()
+            if is_continuation and supports_target:
+                continuation_protocol = _continue_as_new.WORKER_PROTOCOL
+
         body: dict[str, Any] = {
             "lease_owner": lease_owner,
             "workflow_task_attempt": workflow_task_attempt,
@@ -6462,6 +6487,7 @@ class Client:
         return await self._request(
             "POST", f"/worker/workflow-tasks/{task_id}/complete", worker=True, json=body,
             context="task_completion",
+            worker_protocol_version=continuation_protocol,
         )
 
     async def fail_workflow_task(
@@ -6482,6 +6508,11 @@ class Client:
         The runtime may block incompatible replay until compatible code and
         a supported repair are available instead of automatically retrying it.
         """
+        continuation_protocol = None
+        if failure_reason == _continue_as_new.PROMOTED_BUILD_UNAVAILABLE:
+            if (self.namespace, lease_owner) not in self._continue_as_new_target_workers:
+                raise ContinueAsNewTargetUnsupported()
+            continuation_protocol = _continue_as_new.WORKER_PROTOCOL
         failure: dict[str, Any] = {"message": message}
         if failure_type is not None:
             failure["type"] = failure_type
@@ -6495,7 +6526,8 @@ class Client:
             "failure": failure,
         }
         return await self._request(
-            "POST", f"/worker/workflow-tasks/{task_id}/fail", worker=True, json=body
+            "POST", f"/worker/workflow-tasks/{task_id}/fail", worker=True, json=body,
+            worker_protocol_version=continuation_protocol,
         )
 
     async def heartbeat_workflow_task(

@@ -27,6 +27,15 @@ class DurableWorkflowError(Exception):
     """Base class for every exception raised by the SDK."""
 
 
+class ContinueAsNewTargetUnsupported(DurableWorkflowError):
+    """The current worker registration cannot send a continue-as-new target."""
+
+    reason = "unsupported_target_build"
+
+    def __init__(self) -> None:
+        super().__init__(f"{self.reason}: the Server did not advertise build selection for this worker session")
+
+
 class ActivityHeartbeatResumeUnavailable(DurableWorkflowError):
     """This claim did not supply the supported heartbeat-resume contract."""
 
