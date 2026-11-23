@@ -21,7 +21,13 @@ class Approval:
 
 
 def test_a_replacement_worker_replays_the_first_applied_true_prefix() -> None:
-    opening = replay(Approval, [], [], allow_ordered_condition_inputs=True)
+    legacy = replay(Approval, [], [], allow_ordered_condition_inputs=True)
+    legacy_open, = commands_to_server_commands(legacy.commands, "test")
+    assert "condition_wait_input_order" not in legacy_open
+
+    opening = replay(
+        Approval, [], [], allow_ordered_condition_inputs=True, author_ordered_condition_inputs=True,
+    )
     opened, = commands_to_server_commands(opening.commands, "test")
     assert opened.pop("type") == "open_condition_wait"
     assert opened["condition_wait_input_order"] == "durable_receipt_order"

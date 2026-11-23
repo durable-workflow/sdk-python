@@ -3828,6 +3828,7 @@ def replay(
     record_parallel_failure_order: bool = False,
     allow_continue_as_new_target_build: bool = False,
     allow_ordered_condition_inputs: bool = False,
+    author_ordered_condition_inputs: bool = False,
     pending_condition_input: tuple[int | None] | None = None,
 ) -> ReplayOutcome:
     """Replay ``history_events`` and return the next commands.
@@ -3859,6 +3860,7 @@ def replay(
         record_parallel_failure_order=record_parallel_failure_order,
         allow_continue_as_new_target_build=allow_continue_as_new_target_build,
         allow_ordered_condition_inputs=allow_ordered_condition_inputs,
+        author_ordered_condition_inputs=author_ordered_condition_inputs,
         pending_condition_input=pending_condition_input,
     ).outcome
 
@@ -5402,6 +5404,7 @@ def _replay_state(
     record_parallel_failure_order: bool = False,
     allow_continue_as_new_target_build: bool = False,
     allow_ordered_condition_inputs: bool = False,
+    author_ordered_condition_inputs: bool = False,
     pending_condition_input: tuple[int | None] | None = None,
 ) -> _ReplayState:
     _validate_workflow_entrypoint(workflow_cls)
@@ -8450,7 +8453,7 @@ def _replay_state(
                                 pending.append(_ResolveConditionWait(cast(str, wait_id), decision, receipt, competing_id))
                         return _state(pending)
                     _set_replaying(False)
-                    if allow_ordered_condition_inputs:
+                    if allow_ordered_condition_inputs and author_ordered_condition_inputs:
                         for leaf in annotated:
                             if isinstance(leaf, WaitCondition) and leaf.timeout_seconds is not None:
                                 leaf._ordered_inputs = True
@@ -8921,7 +8924,11 @@ def _replay_state(
                     if step is not None:
                         _assert_step_matches(cmd, step)
                     _set_replaying(False)
-                    cmd._ordered_inputs = allow_ordered_condition_inputs and cmd.timeout_seconds is not None
+                    cmd._ordered_inputs = (
+                        allow_ordered_condition_inputs
+                        and author_ordered_condition_inputs
+                        and cmd.timeout_seconds is not None
+                    )
                     pending.append(cmd)
                     return _state(pending)
                 # Terminal cleanup may only skip a later open after this

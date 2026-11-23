@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 CAPABILITY = "condition_wait_input_order"
+AUTHORING = "condition_wait_input_order_authoring"
 ORDER = "durable_receipt_order"
 PENDING_INPUT = "condition_wait_pending_input_sequence"
 

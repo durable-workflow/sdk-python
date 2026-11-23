@@ -2172,6 +2172,7 @@ class Worker:
                     record_parallel_failure_order=self.record_parallel_failure_order,
                     allow_continue_as_new_target_build=self._continue_as_new_target_build_supported,
                     allow_ordered_condition_inputs=self._ordered_condition_inputs_supported,
+                    author_ordered_condition_inputs=task.get(_condition_input_order.AUTHORING) is True,
                     pending_condition_input=pending_condition_input,
                 )
                 if outcome.cancellation_scope_delivery is not None:
