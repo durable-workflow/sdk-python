@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.23.1] - 2026-11-24
+
+2.23.1 is the first published release containing the 2.23.0 changes. The
+`2.23.0` tag exists but was never published to PyPI or GitHub Releases.
+
+### Fixed
+
+- Replay applies signal and update effects in durable receipt order when
+  evaluating a condition wait with a timeout. It keeps the first true prefix and
+  compares it with the original timer or the competing child terminal. Ordered
+  authoring stays disabled until every Server process sharing the database
+  supports marked waits. (durable-workflow/.github#230)
+
 ## [2.23.0] - 2026-11-23
 
 ### Added
