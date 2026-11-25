@@ -186,3 +186,22 @@ class TolerantEntryWorkflow:
     @workflow.update_validator("touch")
     def validate_touch(self) -> None:
         return None
+
+
+@workflow.defn(name="tests.replay.empty-group-entry-clock")
+class EmptyGroupEntryWorkflow:
+    """An empty group carries the entry value into the next resume."""
+
+    def __init__(self) -> None:
+        self.entry: str | None = None
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        yield []
+        self.entry = clock_text(ctx)
+        yield ctx.schedule_activity("clock.first", [])
+        yield ctx.start_timer(2)
+        return self.entry
+
+    @workflow.query("entry")
+    def entry_query(self) -> str | None:
+        return self.entry

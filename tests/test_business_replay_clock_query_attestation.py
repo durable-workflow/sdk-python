@@ -19,7 +19,7 @@ from durable_workflow.workflow import (
     _UpdateValidationReplayOptions,
     replay,
 )
-from tests.business_clock_workflows import TolerantEntryWorkflow, clock_text
+from tests.business_clock_workflows import EmptyGroupEntryWorkflow, TolerantEntryWorkflow, clock_text
 from tests.query_task_helpers import leased_query_task
 from tests.test_business_replay_clock import history
 from tests.test_replay_clock import redrive_fixture
@@ -83,13 +83,31 @@ def test_an_explicit_null_attests_that_the_workflow_task_had_no_carrier() -> Non
     assert validate(None, attested=True) is None
 
 
-@pytest.mark.parametrize("entry", [None, {**CARRIER, "workflow_run_id": "another-run"}])
-def test_an_unattested_rebuild_fails_instead_of_answering_with_other_state(entry: Any) -> None:
-    attested = entry is not None  # An invalid object is never attestation.
+def test_an_unattested_rebuild_fails_instead_of_answering_with_other_state() -> None:
     with pytest.raises(QueryFailed, match="replay_clock"):
-        query(entry, attested=attested)
+        query(None, attested=False)
     with pytest.raises(UpdateValidationFailed, match="replay_clock"):
-        validate(entry, attested=attested)
+        validate(None, attested=False)
+
+
+def test_a_rejected_object_attests_no_carrier_like_null() -> None:
+    invalid = {**CARRIER, "workflow_run_id": "another-run"}
+    assert workflow_task_entry(invalid) is None
+    assert query(invalid, attested=True) is None
+    assert validate(invalid, attested=True) is None
+
+
+def test_entry_time_carried_through_an_empty_group_still_needs_attestation() -> None:
+    outcome = replay(EmptyGroupEntryWorkflow, history(), [], payload_codec="avro", run_id=RUN,
+                     replay_clock_entry=CARRIER)
+    try:
+        assert outcome.commands[0].result == ENTRY
+    finally:
+        outcome.close()
+    assert query(CARRIER, attested=True, workflow_cls=EmptyGroupEntryWorkflow) == ENTRY
+    assert query(None, attested=True, workflow_cls=EmptyGroupEntryWorkflow) is None
+    with pytest.raises(QueryFailed, match="replay_clock"):
+        query(None, attested=False, workflow_cls=EmptyGroupEntryWorkflow)
 
 
 def test_only_entry_reads_need_attestation() -> None:

@@ -35,6 +35,7 @@ from durable_workflow.workflow import (
 from tests.business_clock_workflows import (
     ChildBusinessClockWorkflow,
     CyclicFinalizerBusinessClockWorkflow,
+    EmptyGroupEntryWorkflow,
     NativeRedriveBusinessClockWorkflow,
     ParallelActivityBusinessClockWorkflow,
     ParallelFailureBusinessClockWorkflow,
@@ -465,6 +466,7 @@ WORKFLOWS = [
     PrefixedCoreTimerBusinessClockWorkflow,
     ScalarBusinessClockWorkflow,
     TolerantEntryWorkflow,
+    EmptyGroupEntryWorkflow,
     PendingFinally,
     BlankFailureWorkflow,
     IdentityAcrossReplay,

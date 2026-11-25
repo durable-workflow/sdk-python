@@ -301,7 +301,10 @@ class BusinessReplayClock:
                 self.initial = (None, entry.started_at)
         self._pending: tuple[int | None, datetime | None] = self.initial
         self._current: tuple[int | None, datetime | None] = self.initial
-        self._at_entry = True
+        # Whether the pending/current time is still the entry value. An empty
+        # group carries it into the next resume without consuming history.
+        self._pending_entry = True
+        self._current_entry = False
         # A query or validation rebuild whose task does not attest the entry
         # carrier cannot know what the workflow task's entry read returned.
         self.entry_unattested = False
@@ -378,7 +381,8 @@ class BusinessReplayClock:
 
     def resume(self, owner: object, function: Callable[..., _T], *args: Any) -> _T:
         self._current, self._pending = self._pending, (None, None)
-        entry, self._at_entry = self._at_entry, False
+        entry, self._pending_entry = self._pending_entry, False
+        self._current_entry = entry
         with execution_scope(owner, self._current[1], entry=entry):
             return function(*args)
 
@@ -398,6 +402,7 @@ class BusinessReplayClock:
     def preserve_boundary(self) -> None:
         """An empty group consumes no new event and retains the proved prefix."""
         self._pending = self._current
+        self._pending_entry = self._current_entry
 
     def observe_activity_group(
         self, members: Sequence[_GroupMember], failed_member: int | None, *, reconstruction: bool,

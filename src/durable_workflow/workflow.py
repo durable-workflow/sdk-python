@@ -3241,8 +3241,10 @@ class WorkflowContext:
         matching caught failure uses canonical-v1 integer milliseconds.
         Ordinary entry reads the run's canonical start from the workflow
         task's ``replay_clock`` carrier (``WorkerReplayClock`` v1). Entry is
-        unavailable without that carrier, including query and update-
-        validation rebuilds and offline replay that omit it. Other groups,
+        unavailable without that carrier, including offline replay that
+        omits it. A query or update-validation rebuild whose task has no
+        ``replay_clock`` key fails when the workflow reads entry time, even
+        if it catches the error. Other groups,
         inline/local operations, unproved times and group-only query time
         remain unavailable. Reads are stable,
         and proved boundaries may move backwards. Adopt
@@ -5815,12 +5817,10 @@ def _replay_state(
     )
     # Server sends a query or validation task's replay_clock key whenever it
     # can (server#1338): an object, or null when no start is provable. A
-    # missing key or an invalid object leaves the workflow task's entry
-    # value unknown, so an entry read must fail the rebuild, not diverge.
-    ctx._business_clock.entry_unattested = reconstruction_only and (
-        not replay_clock_attested
-        or (replay_clock_entry is not None and replay_clock.entry_instant(replay_clock_entry, run_id) is None)
-    )
+    # missing key leaves the workflow task's entry value unknown, so an entry
+    # read must fail the rebuild, not diverge. An object this SDK rejects was
+    # rejected on the workflow task too, so it attests no carrier, like null.
+    ctx._business_clock.entry_unattested = reconstruction_only and not replay_clock_attested
     lifetime = _ReplayLifetime(ctx.logger)
 
     def _set_replaying(replaying: bool) -> None:

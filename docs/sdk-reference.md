@@ -1219,7 +1219,8 @@ unavailable for:
   even when the workflow catches the error, so it never answers with state the
   workflow task did not compute. A `replay_clock` of `null` on those tasks
   means the run has no provable start, so the workflow task had no carrier
-  either and the rebuild proceeds;
+  either and the rebuild proceeds. So does an object this SDK rejects, which
+  it rejected on the workflow task too;
 - offline replay (`replay_history`, `Replayer.replay`) unless you pass the
   task's object as `replay_clock_entry`, and the in-memory
   `WorkflowEnvironment`, which supplies no carrier;

@@ -17,12 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a redrive anchor that history already proves is never replaced. Update tasks
   rebuild the workflow with their own carrier. A query task or pre-accept
   update validation rebuilds with its own task's `replay_clock`. When that
-  task has no `replay_clock` key (Servers without durable-workflow/server#1338)
-  or an invalid one, a rebuild in which the workflow reads the clock at entry
+  task has no `replay_clock` key (Servers without durable-workflow/server#1338),
+  a rebuild in which the workflow reads the clock at entry
   fails the query or validation, even if the workflow catches
   `ReplayClockUnavailable`, rather than answering with state the workflow task
-  never computed. An explicit `null` says the workflow task had no carrier
-  either, so the rebuild proceeds. Upgrade note: an in-flight run whose code
+  never computed. An explicit `null`, or an object this SDK rejects, means
+  the workflow task had no carrier either, so the rebuild proceeds. Upgrade note: an in-flight run whose code
   branches on entry unavailability takes the other branch after this upgrade,
   so version such code or drain those runs first. `replay()`,
   `Replayer.replay()`, `replay_history()` and `apply_update()` accept the
