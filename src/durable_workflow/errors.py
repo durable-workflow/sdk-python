@@ -26,6 +26,11 @@ from .cancellation import CancellationContext, ScopedCancellationContext
 class DurableWorkflowError(Exception):
     """Base class for every exception raised by the SDK."""
 
+    #: Seconds the Server asked the client to wait before retrying, parsed
+    #: from the ``Retry-After`` header of the HTTP response this error was
+    #: raised for (delta-seconds or HTTP-date). ``None`` when there was none.
+    retry_after: float | None = None
+
 
 class ContinueAsNewTargetUnsupported(DurableWorkflowError):
     """The current worker registration cannot send a continue-as-new target."""

@@ -74,6 +74,7 @@ from .errors import (
     REQUEST_ID_AMBIGUOUS,
     REQUEST_ID_CONFLICT,
     ContinueAsNewTargetUnsupported,
+    DurableWorkflowError,
     ExternalPayloadIntegrityMismatch,
     ExternalPayloadOversized,
     ExternalPayloadUnavailable,
@@ -104,7 +105,7 @@ from .external_storage import (
 )
 from .metrics import CLIENT_REQUEST_DURATION_SECONDS, CLIENT_REQUESTS, NOOP_METRICS, MetricsRecorder
 from .nexus import NexusOperationResult, nexus_request_payload
-from .retry_policy import TransportRetryPolicy
+from .retry_policy import TransportRetryPolicy, response_retry_after
 from .telemetry import ExecutionTelemetry, current_execution_telemetry
 from .telemetry_carrier import supported as observability_supported
 from .worker_session import WorkerSessionOptions
@@ -2324,14 +2325,20 @@ class Client:
                     # The HTTP error is the answer; an unusable digest in it
                     # never replaces it. Ask for full capabilities next time.
                     self._capabilities_digest.forget()
-                # The typed completion-size refusal carries the limit; the
-                # size is the encoded request body this client sent.
-                if raise_for_status is _raise_for_status:
-                    raise_for_status(
-                        exc.response.status_code, body, context=context,
-                        request_bytes=_request_body_bytes(exc.request),
-                    )
-                raise_for_status(exc.response.status_code, body, context=context)
+                retry_after = response_retry_after(exc)
+                try:
+                    # The typed completion-size refusal carries the limit; the
+                    # size is the encoded request body this client sent.
+                    if raise_for_status is _raise_for_status:
+                        raise_for_status(
+                            exc.response.status_code, body, context=context,
+                            request_bytes=_request_body_bytes(exc.request),
+                        )
+                    raise_for_status(exc.response.status_code, body, context=context)
+                except DurableWorkflowError as typed:
+                    if retry_after is not None:
+                        typed.retry_after = retry_after
+                    raise
                 raise  # unreachable, but keeps type checker happy
 
         try:

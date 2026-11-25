@@ -17,10 +17,13 @@ import asyncio
 import contextvars
 import json
 import logging
+import math
 import random
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import TypeVar
 
 import httpx
@@ -34,6 +37,35 @@ log = logging.getLogger("durable_workflow.worker")
 _worker_storage_admission_stop: contextvars.ContextVar[Callable[[], bool] | None] = contextvars.ContextVar(
     "worker_storage_admission_stop", default=None,
 )
+
+
+def parse_retry_after(value: str | None, *, now: datetime | None = None) -> float | None:
+    """Seconds to wait from an HTTP ``Retry-After`` value, or ``None``.
+
+    Both forms of RFC 9110 are accepted: delta-seconds (``"5"``) and an
+    HTTP-date (``"Wed, 25 Nov 2026 22:40:41 GMT"``). A date in the past waits
+    zero seconds. Anything else is ignored. Callers apply their own cap.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if value.isascii() and value.isdigit():
+        return float(int(value))
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    seconds = (when - (now or datetime.now(timezone.utc))).total_seconds()
+    return max(0.0, seconds) if math.isfinite(seconds) else None
+
+
+def response_retry_after(exc: BaseException) -> float | None:
+    """The ``Retry-After`` delay of a failed HTTP response, or ``None``."""
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    return parse_retry_after(exc.response.headers.get("retry-after"))
 
 
 def _query_timeout_refusal(exc: httpx.HTTPStatusError) -> bool:
@@ -220,7 +252,9 @@ class TransportRetryPolicy:
     child workflow retries with
     :class:`durable_workflow.workflow.ChildWorkflowRetryPolicy`.
 
-    Uses exponential backoff with jitter to avoid thundering herd.
+    Uses exponential backoff with jitter to avoid thundering herd. A
+    ``Retry-After`` header on a retried response (delta-seconds or HTTP-date)
+    lengthens that wait, capped at ``max_backoff_seconds``.
     Canonical query timeouts end the original query and are surfaced without
     another query admission; unrelated transient HTTP failures still retry.
     """
@@ -320,6 +354,10 @@ class TransportRetryPolicy:
 
                 if attempt + 1 < self.max_attempts:
                     backoff = self.backoff_seconds(attempt)
+                    retry_after = response_retry_after(exc)
+                    if retry_after is not None:
+                        # Honour the Server's Retry-After, capped by this policy's ceiling.
+                        backoff = max(backoff, min(retry_after, self.max_backoff_seconds))
                     await asyncio.sleep(backoff)
 
                 attempt += 1

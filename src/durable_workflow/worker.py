@@ -290,7 +290,12 @@ def _is_storage_admission_error(error: BaseException) -> bool:
 # uniform(0, min(MAX, BASE * 2**(n - 1))) for the n-th consecutive failure.
 _TRANSIENT_RETRY_BASE_SECONDS = 0.25
 _TRANSIENT_RETRY_MAX_SECONDS = 4.0
-_UPSTREAM_UNAVAILABLE_STATUSES = (502, 503, 504)
+# Statuses that are transient when they carry no protocol ``reason``: an
+# upstream proxy, or an unclassified Server error (for example the HTTP 500
+# a Server answered while its database failed over, cloud#752).
+_UPSTREAM_UNAVAILABLE_STATUSES = (500, 502, 503, 504)
+# Upper bound on a Server ``Retry-After`` the worker honours, in seconds.
+_RETRY_AFTER_MAX_SECONDS = 60.0
 # Retry bound for an activity outcome whose lease end is unknown.
 _UNKNOWN_LEASE_OUTCOME_RETRY_SECONDS = 60.0
 # The claimed activity task this dispatch publishes outcomes for.
@@ -303,12 +308,14 @@ _TRANSIENT_UNAVAILABLE_REASONS = ("storage_unavailable", "backend_unavailable")
 def _transient_runtime_error(error: BaseException) -> bool:
     """Whether a failed request may succeed unchanged once the runtime recovers.
 
-    Transient: a refused, reset or timed-out connection; an upstream 502, 503
-    or 504 without a protocol body; a 503 whose reason is
+    Transient: a refused, reset or timed-out connection; a 500, 502, 503 or
+    504 without a protocol ``reason`` (an upstream proxy, or an unclassified
+    Server error such as a database failover); a 503 whose reason is
     ``storage_unavailable`` or ``backend_unavailable`` (native Server answers
     every storage failure with that body, for example during warm-up); and
     any 5xx or 429 that says ``retryable: true``. Never ``retryable: false``,
-    authentication or authorization failures, or other protocol refusals.
+    a 5xx with any other typed ``reason``, authentication or authorization
+    failures, or other protocol refusals.
     """
     if isinstance(error, httpx.TransportError):
         return True
@@ -350,6 +357,30 @@ _POLL_OUTAGE_ERROR_EVERY_SECONDS = 300.0
 def _transient_retry_delay(failures: int) -> float:
     exponent = min(max(failures - 1, 0), 16)
     return random.uniform(0.0, min(_TRANSIENT_RETRY_MAX_SECONDS, _TRANSIENT_RETRY_BASE_SECONDS * 2 ** exponent))
+
+
+def _retry_after_delay(error: BaseException) -> float:
+    """The Server's ``Retry-After`` for this failure, capped, or 0 when it sent none."""
+    retry_after = getattr(error, "retry_after", None)
+    if not isinstance(retry_after, (int, float)) or not _positive_seconds(retry_after):
+        return 0.0
+    return min(float(retry_after), _RETRY_AFTER_MAX_SECONDS)
+
+
+def _transient_backoff(failures: int, error: BaseException) -> float:
+    """The shared jittered backoff, lengthened to a bounded Server ``Retry-After``."""
+    return max(_transient_retry_delay(failures), _retry_after_delay(error))
+
+
+def _lease_seconds_left(expires: object) -> float | None:
+    """Seconds until an ISO-8601 ``lease_expires_at``, or ``None`` when it is unknown."""
+    try:
+        deadline = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if deadline.tzinfo is None:
+        return None
+    return (deadline - datetime.now(timezone.utc)).total_seconds()
 
 
 def _positive_seconds(value: object) -> bool:
@@ -1334,6 +1365,11 @@ def _record_parallel_failure_order(value: bool | None) -> bool:
 
 class Worker:
     """Polls workflow and activity tasks and dispatches them to Python callables."""
+
+    # Replaces ``asyncio.sleep`` for retry backoffs after Server and transport
+    # failures (polls, outcomes, workflow-task completions), so tests can
+    # observe the waits without spending them.
+    _retry_sleep: Callable[[float], Awaitable[None]] | None = None
 
     def __init__(
         self,
@@ -3156,6 +3192,7 @@ class Worker:
                     attempt=attempt,
                     commands=[command],
                     sticky_cache=self._sticky_cache_claim(task, history, [command]),
+                    lease_expires_at=task.get("lease_expires_at"),
                 )
             except Exception as e:
                 log.warning("failed to complete workflow update task %s: %s", task_id, e)
@@ -3370,6 +3407,7 @@ class Worker:
                 message_stream_cursors=outcome.message_stream_cursors,
                 message_stream_waits=outcome.message_stream_waits,
                 sticky_cache=self._sticky_cache_claim(task, history, commands),
+                lease_expires_at=task.get("lease_expires_at"),
             )
         except ContinueAsNewTargetUnsupported as error:
             log.info("workflow task %s left on its original claim: %s", task_id, error)
@@ -3409,6 +3447,7 @@ class Worker:
         message_stream_cursors: list[dict[str, Any]] | None = None,
         message_stream_waits: list[dict[str, Any]] | None = None,
         sticky_cache: dict[str, Any] | None = None,
+        lease_expires_at: object = None,
     ) -> None:
         try:
             await self._send_workflow_task_completion(
@@ -3418,6 +3457,7 @@ class Worker:
                 message_stream_cursors=message_stream_cursors,
                 message_stream_waits=message_stream_waits,
                 sticky_cache=sticky_cache,
+                lease_expires_at=lease_expires_at,
             )
         except WorkflowTaskCompletionTooLarge as error:
             if _payload_too_large(error) and await self._refresh_payload_policy(f"workflow task {task_id} completion"):
@@ -3430,6 +3470,7 @@ class Worker:
                         message_stream_cursors=message_stream_cursors,
                         message_stream_waits=message_stream_waits,
                         sticky_cache=sticky_cache,
+                        lease_expires_at=lease_expires_at,
                     )
                     return
                 except WorkflowTaskCompletionTooLarge as still_too_large:
@@ -3489,8 +3530,26 @@ class Worker:
         message_stream_cursors: list[dict[str, Any]] | None = None,
         message_stream_waits: list[dict[str, Any]] | None = None,
         sticky_cache: dict[str, Any] | None = None,
+        lease_expires_at: object = None,
     ) -> None:
-        for completion_attempt in range(1, _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS + 1):
+        """Send a workflow-task completion, resending it through Server failures.
+
+        Every resend is the same request: the same task, lease owner, attempt
+        and commands, so the Server fences it exactly like the first send. A
+        lease or attempt refusal of a resend is never reported as a
+        workflow-task failure, so a completion a transient hid stays intact.
+
+        A transient runtime failure (``_transient_runtime_error``, such as
+        an HTTP 500 or 503 during a database failover) is resent with the
+        shared backoff, honouring a bounded ``Retry-After``, while the task's
+        ``lease_expires_at`` still covers the next wait (60 seconds when the
+        lease is unknown). Other retryable failures keep the short
+        three-attempt budget.
+        """
+        started = time.monotonic()
+        transient_failures = 0
+        other_failures = 0
+        while True:
             try:
                 completion_kwargs = {"sticky_cache": sticky_cache} if sticky_cache is not None else {}
                 await self.client.complete_workflow_task(
@@ -3504,24 +3563,40 @@ class Worker:
                 )
                 return
             except Exception as error:
-                if (
-                    completion_attempt >= _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS
-                    or not _should_retry_workflow_task_completion_error(error)
-                ):
+                if not _should_retry_workflow_task_completion_error(error):
                     raise
-
-                delay_index = min(
-                    completion_attempt - 1,
-                    len(_WORKFLOW_TASK_COMPLETION_RETRY_DELAYS) - 1,
-                )
-                log.warning(
-                    "retrying workflow task %s completion after attempt %d/%d failed: %s",
-                    task_id,
-                    completion_attempt,
-                    _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS,
-                    error,
-                )
-                await asyncio.sleep(_WORKFLOW_TASK_COMPLETION_RETRY_DELAYS[delay_index])
+                if _transient_runtime_error(error):
+                    transient_failures += 1
+                    delay = _transient_backoff(transient_failures, error)
+                    window = _lease_seconds_left(lease_expires_at)
+                    if window is None:
+                        window = _UNKNOWN_LEASE_OUTCOME_RETRY_SECONDS - (time.monotonic() - started)
+                    if window <= delay:
+                        log.error(
+                            "workflow task %s completion not delivered after %d transient failures (%s): its "
+                            "lease ran out; the Server delivers the task again when the lease expires",
+                            task_id, transient_failures, _poll_error_summary(error),
+                        )
+                        raise
+                    log.warning(
+                        "workflow task %s completion failed transiently (%s); retrying in %.2f s",
+                        task_id, _poll_error_summary(error), delay,
+                    )
+                else:
+                    other_failures += 1
+                    if other_failures >= _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS:
+                        raise
+                    delay = _WORKFLOW_TASK_COMPLETION_RETRY_DELAYS[
+                        min(other_failures - 1, len(_WORKFLOW_TASK_COMPLETION_RETRY_DELAYS) - 1)
+                    ]
+                    log.warning(
+                        "retrying workflow task %s completion after attempt %d/%d failed: %s",
+                        task_id,
+                        other_failures,
+                        _WORKFLOW_TASK_COMPLETION_MAX_ATTEMPTS,
+                        error,
+                    )
+                await self._sleep_before_retry(delay)
 
     async def _report_workflow_task_after_completion_error(
         self,
@@ -3954,13 +4029,7 @@ class Worker:
                 return 0.0
         claim = _current_activity_claim.get()
         expires = claim.get("lease_expires_at") if claim is not None and claim.get("task_id") == task_id else None
-        try:
-            deadline = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if deadline.tzinfo is None:
-            return None
-        return (deadline - datetime.now(timezone.utc)).total_seconds()
+        return _lease_seconds_left(expires)
 
     async def _deliver_activity_outcome(self, task_id: str, attempt_id: str, outcome: str,
                                         publish: Callable[[], Awaitable[Any]]) -> None:
@@ -4006,7 +4075,7 @@ class Worker:
                 if not _transient_runtime_error(error):
                     raise
                 failures += 1
-                delay = _transient_retry_delay(failures)
+                delay = _transient_backoff(failures, error)
                 window = self._activity_outcome_window(task_id)
                 if window is None:
                     window = _UNKNOWN_LEASE_OUTCOME_RETRY_SECONDS - (time.monotonic() - started)
@@ -4018,7 +4087,7 @@ class Worker:
                     raise
                 log.warning("activity task %s %s outcome failed transiently (%s); retrying in %.2f s",
                             task_id, outcome, summary, delay)
-                await asyncio.sleep(delay)
+                await self._sleep_before_retry(delay)
 
     async def _rediscover_cluster_info(self, context: str, window: Callable[[], float | None] | None) -> None:
         """Read cluster info again, raising the discovery error if retries end."""
@@ -4502,6 +4571,11 @@ class Worker:
         except Exception as e:
             log.warning("failed to report query task failure %s: %s", query_task_id, e)
 
+    async def _sleep_before_retry(self, delay: float) -> None:
+        """Wait out a retry backoff; tests inject ``_retry_sleep`` to observe it."""
+        sleep = self._retry_sleep if self._retry_sleep is not None else asyncio.sleep
+        await sleep(delay)
+
     def _track(self, coro: Any) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)
         self._in_flight.add(task)
@@ -4589,7 +4663,9 @@ class Worker:
                     await asyncio.sleep(delay)
                     continue
                 self._record_poll_metrics("workflow", "error", time.perf_counter() - poll_start)
-                await asyncio.sleep(failures.retry_delay(e, "workflow"))
+                await self._sleep_before_retry(
+                    failures.retry_delay(e, "workflow", minimum_delay=_retry_after_delay(e)),
+                )
                 continue
             failures.reset()
             self._status.request_succeeded("workflow_poll")
@@ -4713,7 +4789,9 @@ class Worker:
                     await asyncio.sleep(delay)
                     continue
                 self._record_poll_metrics("activity", "error", time.perf_counter() - poll_start)
-                await asyncio.sleep(failures.retry_delay(e, "activity"))
+                await self._sleep_before_retry(
+                    failures.retry_delay(e, "activity", minimum_delay=_retry_after_delay(e)),
+                )
                 continue
             failures.reset()
             self._status.request_succeeded("activity_poll")
@@ -4786,7 +4864,9 @@ class Worker:
                     await asyncio.sleep(delay)
                     continue
                 self._record_poll_metrics("query", "error", time.perf_counter() - poll_start)
-                await asyncio.sleep(failures.retry_delay(e, "query"))
+                await self._sleep_before_retry(
+                    failures.retry_delay(e, "query", minimum_delay=_retry_after_delay(e)),
+                )
                 continue
             failures.reset()
             self._status.request_succeeded("query_poll")
@@ -5129,7 +5209,7 @@ class Worker:
                 if self._stop.is_set():
                     raise
                 failures += 1
-                delay = _transient_retry_delay(failures)
+                delay = _transient_backoff(failures, cause if cause is not None else error)
                 summary = _poll_error_summary(cause if cause is not None else error)
                 now = time.monotonic()
                 if now - started >= _POLL_OUTAGE_ERROR_AFTER_SECONDS:
