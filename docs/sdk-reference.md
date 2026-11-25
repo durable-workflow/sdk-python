@@ -1192,6 +1192,25 @@ decision. Never compare UTC and monotonic values or subtract monotonic readings
 from different processes or hosts. Subtracting Python `ctx.now()` values does
 not measure elapsed time.
 
+### Advancing replay clock
+
+`ctx.replay_now()` is an additive UTC clock that advances with consumed
+history. At ordinary workflow entry, before any durable step, it returns the
+run's canonical start from the workflow task's `replay_clock` carrier
+(`WorkerReplayClock` v1, sent by Server 3.6.0 and later). After a supported
+activity, timer or child step it returns that step's recorded time, so a
+deadline loop around a durable timer terminates and the difference between two
+reads after two durable steps measures their recorded elapsed time. Repeated
+reads between durable steps return the same value, and every replay of the
+same history returns the same values.
+
+Where the SDK cannot prove the time, `ctx.replay_now()` raises
+`ReplayClockUnavailable` instead of using any other time: a task without the
+carrier (older Servers), group, inline and local operations it does not yet
+support, query callbacks, and cancellation scopes. Adopt business-time
+decisions through normal workflow versioning. `ctx.now()` keeps its fixed
+start time, so runs that already read it replay unchanged.
+
 For event ordering, use Workflow Stream offsets, the relevant message/outbox
 sequence, or a deterministic workflow-local counter paired with `run_id`.
 Carry application sequence state explicitly through continue-as-new when

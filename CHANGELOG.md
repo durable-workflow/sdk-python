@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ctx.replay_now()` is available at ordinary workflow entry, before any
+  durable step. It returns the run's canonical start from the workflow task's
+  `replay_clock` carrier (`WorkerReplayClock` v1, sent by Server 3.6.0 and
+  later, durable-workflow/server#1156). Every lease of the same run carries the
+  same value, so replay is unchanged. A task without a valid carrier, or whose
+  carrier disagrees with the history's start kind, keeps entry unavailable, and
+  a redrive anchor that history already proves is never replaced. `ctx.now()`
+  still returns the fixed start time. (durable-workflow/.github#215)
+
 ## [2.23.1] - 2026-11-24
 
 2.23.1 is the first published release containing the 2.23.0 changes. The

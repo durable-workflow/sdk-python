@@ -3214,8 +3214,11 @@ class WorkflowContext:
         children, explicit redrive start, and validated lists of remote
         activities. Group success retains the selected event's full precision;
         matching caught failure uses canonical-v1 integer milliseconds.
-        Ordinary entry, other groups, inline/local operations, unproved times
-        and group-only query time remain unavailable. Reads are stable,
+        Ordinary entry reads the run's canonical start from the workflow
+        task's ``replay_clock`` carrier (``WorkerReplayClock`` v1); a task
+        without that carrier leaves entry unavailable. Other groups,
+        inline/local operations, unproved times and group-only query time
+        remain unavailable. Reads are stable,
         and proved boundaries may move backwards. Adopt
         business-time decisions through normal workflow versioning. ``now()``
         remains the legacy fixed-start accessor, and timestamps are not order IDs.
@@ -3830,6 +3833,7 @@ def replay(
     allow_ordered_condition_inputs: bool = False,
     author_ordered_condition_inputs: bool = False,
     pending_condition_input: tuple[int | None] | None = None,
+    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> ReplayOutcome:
     """Replay ``history_events`` and return the next commands.
 
@@ -3838,6 +3842,11 @@ def replay(
     recorded member failure (sdk-python#307). Direct calls to this helper
     default to recording off. Workers pass their configured setting. Replay
     always follows a marker already present in history.
+
+    ``replay_clock_entry`` is the workflow task's ``replay_clock`` object
+    (``WorkerReplayClock`` v1, server#1156). When it validates for ``run_id``,
+    ``WorkflowContext.replay_now()`` reads its ``started_at`` at ordinary
+    entry; otherwise entry stays unavailable. Workers pass the task's object.
     """
     return _replay_state(
         workflow_cls,
@@ -3862,6 +3871,7 @@ def replay(
         allow_ordered_condition_inputs=allow_ordered_condition_inputs,
         author_ordered_condition_inputs=author_ordered_condition_inputs,
         pending_condition_input=pending_condition_input,
+        replay_clock_entry=replay_clock_entry,
     ).outcome
 
 
@@ -5406,6 +5416,7 @@ def _replay_state(
     allow_ordered_condition_inputs: bool = False,
     author_ordered_condition_inputs: bool = False,
     pending_condition_input: tuple[int | None] | None = None,
+    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> _ReplayState:
     _validate_workflow_entrypoint(workflow_cls)
     _workflow_handler_registries(workflow_cls)
@@ -5747,6 +5758,7 @@ def _replay_state(
     ctx._schedule_origin = _schedule_origin(events)
     ctx._business_clock = replay_clock.BusinessReplayClock(
         events, workflow_id or "", run_id, sequence_claim=_workflow_sequence,
+        entry=replay_clock.entry_instant(replay_clock_entry, run_id),
     )
     lifetime = _ReplayLifetime(ctx.logger)
 

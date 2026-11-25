@@ -2174,6 +2174,7 @@ class Worker:
                     allow_ordered_condition_inputs=self._ordered_condition_inputs_supported,
                     author_ordered_condition_inputs=task.get(_condition_input_order.AUTHORING) is True,
                     pending_condition_input=pending_condition_input,
+                    replay_clock_entry=task.get("replay_clock"),
                 )
                 if outcome.cancellation_scope_delivery is not None:
                     if outcome.commands:
