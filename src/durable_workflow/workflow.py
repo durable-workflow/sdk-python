@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import PureWindowsPath
 from typing import Any, TypeVar, cast
 
-from . import _condition_input_order, replay_clock, serializer
+from . import _condition_input_order, _timeout_cleanup, replay_clock, serializer
 from ._cancellation_scope import CancellationScopeHistory, scope_identity
 from ._cancellation_scope_history import (
     CancellationScopeDeliveryIntent,
@@ -79,6 +79,7 @@ from .errors import (
     WorkflowEntryArgumentsMismatchError,
     WorkflowPayloadDecodeError,
     WorkflowSourceLocation,
+    WorkflowTimeoutCleanupRequested,
     _cancellation_requested,
     validate_signal_name,
 )
@@ -1046,6 +1047,8 @@ class FailWorkflow:
     non_retryable: bool = False
     failed_step_sequence: int | None = None
     failed_activity_execution_id: str | None = None
+    interruption: str | None = None
+    """``"timeout_cleanup"`` when the delivered timeout interruption escaped workflow code (server#1201)."""
 
     def to_server_command(
         self,
@@ -1070,6 +1073,8 @@ class FailWorkflow:
         if self.failed_step_sequence is not None and self.failed_activity_execution_id is not None:
             cmd["failed_step_sequence"] = self.failed_step_sequence
             cmd["failed_activity_execution_id"] = self.failed_activity_execution_id
+        if self.interruption is not None:
+            cmd["failure"] = {"interruption": self.interruption}
         return cmd
 
 
@@ -2504,6 +2509,8 @@ class WorkflowContext:
         self._cancel_requested = bool(cancel_requested)
         self._cancellation_request_id: str | None = None
         self._cancellation_context: CancellationContext | ScopedCancellationContext | None = None
+        # Timeout interruptions this runtime raised, compared by identity (server#1201).
+        self._delivered_timeout_interruptions: list[WorkflowCancelled] = []
         self._scope_cancellation_states: dict[str, ScopedCancellationContext] = {}
         self._scope_cleanup_proofs: dict[str, dict[str, str]] = {}
         self._cancellation_replay_time: datetime | None = None
@@ -2665,10 +2672,28 @@ class WorkflowContext:
     def throw_if_cancellation_requested(self) -> None:
         """Raise :class:`WorkflowCancelled` at an explicit safe point."""
         if self._cancel_requested and self._cancellation_shield_depth == 0:
-            raise _cancellation_requested(
+            raise self._delivered_cancellation(
                 "workflow cancellation was requested", request_id=self._cancellation_request_id,
                 context=self._cancellation_context,
             )
+
+    def _delivered_cancellation(
+        self, message: str, *, request_id: str | None,
+        context: CancellationContext | ScopedCancellationContext | None,
+    ) -> WorkflowCancelled:
+        """The exception the runtime raises for a delivered request, remembered when it is a timeout."""
+        exception = _cancellation_requested(message, request_id=request_id, context=context)
+        if isinstance(exception, WorkflowTimeoutCleanupRequested):
+            self._delivered_timeout_interruptions.append(exception)
+        return exception
+
+    def _workflow_failure(self, exception: BaseException) -> FailWorkflow:
+        """The ``fail_workflow`` command for an exception that escaped workflow code."""
+        command = _fail_workflow_from_exception(exception)
+        command.interruption = _timeout_cleanup.failure_interruption(
+            exception, delivered=self._delivered_timeout_interruptions, run_id=self._run_id,
+        )
+        return command
 
     @property
     def cancellation_context(self) -> CancellationContext | ScopedCancellationContext | None:
@@ -7982,7 +8007,7 @@ def _replay_state(
             authored_sequence += 1
         try:
             _refresh_replay_logging()
-            advanced_cmd = _resume_business(gen.throw, _cancellation_requested(
+            advanced_cmd = _resume_business(gen.throw, ctx._delivered_cancellation(
                 "workflow cancellation was requested", request_id=boundary.request_id,
                 context=ctx._cancellation_context,
             ))
@@ -9175,7 +9200,7 @@ def _replay_state(
     except (LocalActivityExecutionAborted, ContinueAsNewTargetUnsupported):
         raise
     except WorkflowCancelled as exc:
-        return _state(pending + [_fail_workflow_from_exception(exc)])
+        return _state(pending + [ctx._workflow_failure(exc)])
     except Exception as exc:
         return _state(pending + [_fail_workflow_from_exception(exc)])
     finally:

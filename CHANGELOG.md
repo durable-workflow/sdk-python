@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Workers with cooperative cancellation enabled advertise the `timeout_cleanup`
+  capability, version 1: `capabilities` lists it and `capability_manifest`
+  carries `{supported: true, minimum_protocol_version: "1.20", version: 1}`. A
+  native Server can then admit starts that reserve time for deadline-triggered
+  timeout cleanup on their queue. When workflow code lets the delivered
+  `WorkflowTimeoutCleanupRequested` escape, uncaught or re-raised, the
+  `fail_workflow` command carries `failure.interruption: "timeout_cleanup"`,
+  and the Server records the cleanup as completed. An exception the
+  application constructs or wraps, a compensation failure and an ordinary or
+  explicit `cause: "cancellation"` request stay ordinary failures, which the
+  Server records as failed cleanup. `FailWorkflow` gains an optional
+  `interruption` field. Workers without cooperative cancellation are unchanged
+  and never send the marker; listing `timeout_cleanup` without
+  `cooperative_cancellation` raises `ValueError`.
+  ([Server #1201](https://github.com/durable-workflow/server/issues/1201))
+
 ## [2.23.1] - 2026-11-24
 
 2.23.1 is the first published release containing the 2.23.0 changes. The

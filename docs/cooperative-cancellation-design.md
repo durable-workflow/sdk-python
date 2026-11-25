@@ -42,7 +42,33 @@ work deadline through the same cooperative delivery. The context then has
 `except WorkflowCancelled:` handlers therefore run on timeout too. Like
 `WorkflowCancelled`, it derives from `BaseException`, never from
 `asyncio.CancelledError`. Test `cause`, the cross-SDK discriminator, rather than
-the type, to tell the two apart. The run still ends timed out.
+the type, to tell the two apart.
+
+A worker registered with the `cooperative_cancellation` capability advertises
+the `timeout_cleanup` capability, version 1
+([server#1201](https://github.com/durable-workflow/server/issues/1201)). The
+Server admits a start with `timeout_cleanup_seconds` only on a task queue where
+such a worker is live, and refuses it otherwise with
+`timeout_cleanup_not_supported`. A worker without cooperative cancellation
+does not advertise it, and listing `timeout_cleanup` without
+`cooperative_cancellation` raises `ValueError`.
+
+The run always ends timed out. How workflow code finishes cleanup sets the
+recorded cleanup outcome:
+
+- Returning, or letting the delivered `WorkflowTimeoutCleanupRequested` escape
+  (uncaught, re-raised, or raised again by `throw_if_cancellation_requested()`),
+  records `completed`. For the escaped interruption the worker adds
+  `failure.interruption: "timeout_cleanup"` to its `fail_workflow` command. The
+  marker is sent only for the exception object the runtime raised for this
+  run's root request with `cause: "timeout"`. It is never sent for an exception
+  the application constructs, or for a different exception raised `from` the
+  interruption, even of the same type.
+- Raising any other exception, such as a failed compensation, records
+  `failed`, with the failure linked.
+- Running past the cleanup deadline records `expired`.
+
+This support is experimental. It is opt-in for each start and for each worker.
 
 `cause` is `None` (absent) or `"cancellation"` for an ordinary request; any
 other value is refused. `cleanup_deadline_at` is the cleanup deadline. The
