@@ -3904,6 +3904,12 @@ def replay(
     ).outcome
 
 
+_UNATTESTED_ENTRY = (
+    "the workflow read replay_now() at entry, and this task does not carry the replay_clock "
+    "entry instant its workflow task used"
+)
+
+
 def _prepare_query_state(
     workflow_cls: type,
     history_events: Iterable[dict[str, Any]],
@@ -3920,6 +3926,7 @@ def _prepare_query_state(
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
     replay_clock_entry: Mapping[str, Any] | None = None,
+    replay_clock_attested: bool = True,
 ) -> Callable[[], Any]:
     """Prepare the query so a worker can recheck authority after replay."""
     try:
@@ -3938,9 +3945,13 @@ def _prepare_query_state(
             prepare_local_activity_groups=prepare_local_activity_groups,
             local_activity_cancellation_policies=local_activity_cancellation_policies,
             replay_clock_entry=replay_clock_entry,
+            replay_clock_attested=replay_clock_attested,
         )
     except Exception as exc:
         raise QueryFailed(f"workflow replay failed before query: {exc}") from exc
+    if state.context._business_clock.unattested_entry_read:
+        state.outcome.close()
+        raise QueryFailed(f"workflow replay failed before query: {_UNATTESTED_ENTRY}")
     if state.outcome.commands and isinstance(state.outcome.commands[0], FailWorkflow):
         failure = state.outcome.commands[0]
         state.outcome.close()
@@ -4141,6 +4152,7 @@ class _UpdateValidationReplayOptions:
     prepare_local_activity_groups: bool = False
     local_activity_cancellation_policies: tuple[str, ...] = ()
     replay_clock_entry: Mapping[str, Any] | None = None
+    replay_clock_attested: bool = True
 
 
 def validate_update(
@@ -4212,11 +4224,16 @@ def _prepare_update_validation(
             prepare_local_activity_groups=replay_options.prepare_local_activity_groups,
             local_activity_cancellation_policies=replay_options.local_activity_cancellation_policies,
             replay_clock_entry=replay_options.replay_clock_entry,
+            replay_clock_attested=replay_options.replay_clock_attested,
         )
     except Exception as exc:
         raise UpdateValidationFailed(
             f"workflow replay failed before update validation: {str(exc) or type(exc).__name__}"
         ) from exc
+
+    if state.context._business_clock.unattested_entry_read:
+        state.outcome.close()
+        raise UpdateValidationFailed(f"workflow replay failed before update validation: {_UNATTESTED_ENTRY}")
 
     if state.outcome.commands and isinstance(state.outcome.commands[0], FailWorkflow):
         failure = state.outcome.commands[0]
@@ -5452,6 +5469,7 @@ def _replay_state(
     author_ordered_condition_inputs: bool = False,
     pending_condition_input: tuple[int | None] | None = None,
     replay_clock_entry: Mapping[str, Any] | None = None,
+    replay_clock_attested: bool = True,
 ) -> _ReplayState:
     _validate_workflow_entrypoint(workflow_cls)
     _workflow_handler_registries(workflow_cls)
@@ -5794,6 +5812,14 @@ def _replay_state(
     ctx._business_clock = replay_clock.BusinessReplayClock(
         events, workflow_id or "", run_id, sequence_claim=_workflow_sequence,
         entry=replay_clock.entry_instant(replay_clock_entry, run_id),
+    )
+    # Server sends a query or validation task's replay_clock key whenever it
+    # can (server#1338): an object, or null when no start is provable. A
+    # missing key or an invalid object leaves the workflow task's entry
+    # value unknown, so an entry read must fail the rebuild, not diverge.
+    ctx._business_clock.entry_unattested = reconstruction_only and (
+        not replay_clock_attested
+        or (replay_clock_entry is not None and replay_clock.entry_instant(replay_clock_entry, run_id) is None)
     )
     lifetime = _ReplayLifetime(ctx.logger)
 
@@ -7002,7 +7028,7 @@ def _replay_state(
     # by a successfully bound body is still an actual workflow failure.
     try:
         _refresh_replay_logging()
-        with replay_clock.execution_scope(ctx, ctx._business_clock.initial[1]):
+        with replay_clock.execution_scope(ctx, ctx._business_clock.initial[1], entry=True):
             gen = entry(ctx, *start_input)
     except NonDeterministicReplayError:
         raise

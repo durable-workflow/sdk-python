@@ -85,6 +85,7 @@ class _Frame:
     time: datetime | None
     thread: int
     task: object | None
+    entry: bool = False
 
 
 _ACTIVE: ContextVar[_Frame | None] = ContextVar("business_replay_clock", default=None)
@@ -92,8 +93,8 @@ _DISCARD = threading.local()
 
 
 @contextlib.contextmanager
-def execution_scope(owner: object | None, time: datetime | None) -> Iterator[None]:
-    token = _ACTIVE.set(_Frame(owner, time, threading.get_ident(), _task()))
+def execution_scope(owner: object | None, time: datetime | None, *, entry: bool = False) -> Iterator[None]:
+    token = _ACTIVE.set(_Frame(owner, time, threading.get_ident(), _task(), entry))
     try:
         yield
     finally:
@@ -139,8 +140,13 @@ gc.callbacks.append(_collection)
 def read(owner: object) -> datetime:
     frame = _ACTIVE.get()
     if (getattr(_DISCARD, "active", False) or getattr(_DISCARD, "collecting", False)
-        or frame is None or frame.owner is not owner or frame.time is None
+        or frame is None or frame.owner is not owner
         or frame.thread != threading.get_ident() or frame.task is not _task()):
+        raise ReplayClockUnavailable()
+    if frame.time is None:
+        clock = getattr(owner, "_business_clock", None)
+        if frame.entry and isinstance(clock, BusinessReplayClock):
+            clock.entry_read_unavailable()
         raise ReplayClockUnavailable()
     return frame.time
 
@@ -295,6 +301,11 @@ class BusinessReplayClock:
                 self.initial = (None, entry.started_at)
         self._pending: tuple[int | None, datetime | None] = self.initial
         self._current: tuple[int | None, datetime | None] = self.initial
+        self._at_entry = True
+        # A query or validation rebuild whose task does not attest the entry
+        # carrier cannot know what the workflow task's entry read returned.
+        self.entry_unattested = False
+        self.unattested_entry_read = False
         for index, event in enumerate(events):
             self._index_event(index, event, sequence_claim)
 
@@ -367,8 +378,14 @@ class BusinessReplayClock:
 
     def resume(self, owner: object, function: Callable[..., _T], *args: Any) -> _T:
         self._current, self._pending = self._pending, (None, None)
-        with execution_scope(owner, self._current[1]):
+        entry, self._at_entry = self._at_entry, False
+        with execution_scope(owner, self._current[1], entry=entry):
             return function(*args)
+
+    def entry_read_unavailable(self) -> None:
+        """Record an entry read that only an unattested rebuild found unavailable."""
+        if self.entry_unattested:
+            self.unattested_entry_read = True
 
     def snapshot(self) -> datetime | None:
         # Only this final inspected prefix is proved for a query callback.

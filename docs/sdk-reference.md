@@ -1214,8 +1214,12 @@ unavailable for:
 - an entry read on a task without the carrier: Servers older than 3.6.0, or a
   run whose start Server cannot prove;
 - an entry read while rebuilding the workflow for a query task or a pre-accept
-  update validation, because Server does not yet send the carrier on those
-  tasks. Such queries and validations fail visibly;
+  update validation whose task has no `replay_clock` key, which Servers before
+  durable-workflow/server#1338 never send. The query or validation then fails,
+  even when the workflow catches the error, so it never answers with state the
+  workflow task did not compute. A `replay_clock` of `null` on those tasks
+  means the run has no provable start, so the workflow task had no carrier
+  either and the rebuild proceeds;
 - offline replay (`replay_history`, `Replayer.replay`) unless you pass the
   task's object as `replay_clock_entry`, and the in-memory
   `WorkflowEnvironment`, which supplies no carrier;

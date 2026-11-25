@@ -40,10 +40,12 @@ from tests.business_clock_workflows import (
     ParallelFailureBusinessClockWorkflow,
     PrefixedCoreTimerBusinessClockWorkflow,
     ScalarBusinessClockWorkflow,
+    TolerantEntryWorkflow,
 )
 from tests.condition_fingerprint_workflows import FingerprintApproval, FingerprintGenexpr, FingerprintTerminalDuplicate
 from tests.deregistration_recovery import RecoveredWorkflow as FencedRecoveryWorkflow
 from tests.integration.test_signal_external_workflow import IntegrationSenderWorkflow
+from tests.query_task_helpers import query_task_delivery
 from tests.test_coalescing_signal_timer_replay import CoalescingRefresh
 from tests.test_condition_occurrence_id import OccurrenceApproval, SelectionOccurrences
 from tests.test_condition_replay_drift import ConditionIdentityWorkflow
@@ -462,6 +464,7 @@ WORKFLOWS = [
     NativeRedriveBusinessClockWorkflow,
     PrefixedCoreTimerBusinessClockWorkflow,
     ScalarBusinessClockWorkflow,
+    TolerantEntryWorkflow,
     PendingFinally,
     BlankFailureWorkflow,
     IdentityAcrossReplay,
@@ -926,6 +929,28 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
 
         commands = asyncio.run(run_lease(1))
         assert asyncio.run(run_lease(2)) == commands
+
+        # A query task rebuilds the body. Only an attested carrier, or an
+        # explicit null, may answer; a missing key fails instead (server#1338).
+        async def run_query(variant: dict[str, Any]) -> dict[str, Any]:
+            client = AsyncMock(spec=Client)
+            worker = Worker(client, task_queue="regression-corpus", workflows=[WORKFLOW_TYPES[workflow_type]])
+            task = query_task_delivery({
+                "query_task_id": f"query-{variant['label']}", "workflow_id": workflow["workflow_id"],
+                "run_id": workflow["run_id"], "workflow_type": workflow_type,
+                "query_name": worker_task["query_name"], "history_events": deepcopy(variant["history_events"]),
+                "workflow_arguments": serializer.envelope(start_input, codec=payload_codec),
+                "query_arguments": serializer.envelope([], codec=payload_codec), "payload_codec": payload_codec,
+                **({"replay_clock": deepcopy(variant["replay_clock"])} if "replay_clock" in variant else {}),
+            }, worker_id=worker.worker_id, task_queue=worker.task_queue)
+            outcome = await worker._run_query_task(task)
+            document: dict[str, Any] = {"type": "query_task", "label": variant["label"], "outcome": outcome}
+            if client.complete_query_task.await_args is not None:
+                document["result"] = client.complete_query_task.await_args.kwargs["result"]
+            return document
+
+        for variant in worker_task.get("query_tasks", []):
+            commands.append(asyncio.run(run_query(variant)))
         _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
         return commands
 
