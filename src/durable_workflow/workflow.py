@@ -3239,8 +3239,12 @@ class WorkflowContext:
         children, explicit redrive start, and validated lists of remote
         activities. Group success retains the selected event's full precision;
         matching caught failure uses canonical-v1 integer milliseconds.
-        Ordinary entry, other groups, inline/local operations, unproved times
-        and group-only query time remain unavailable. Reads are stable,
+        Ordinary entry reads the run's canonical start from the workflow
+        task's ``replay_clock`` carrier (``WorkerReplayClock`` v1). Entry is
+        unavailable without that carrier, including query and update-
+        validation rebuilds and offline replay that omit it. Other groups,
+        inline/local operations, unproved times and group-only query time
+        remain unavailable. Reads are stable,
         and proved boundaries may move backwards. Adopt
         business-time decisions through normal workflow versioning. ``now()``
         remains the legacy fixed-start accessor, and timestamps are not order IDs.
@@ -3439,7 +3443,9 @@ class Replayer:
         external_storage_cache: ExternalPayloadCache | None = None,
         cancel_requested: bool = False,
         record_parallel_failure_order: bool = False,
+        replay_clock_entry: Mapping[str, Any] | None = None,
     ) -> ReplayOutcome:
+        """Replay ``history``; pass the task's ``replay_clock`` to reproduce entry reads."""
         events = _history_events_from_export(history)
         selected_workflow_type = workflow_type or _workflow_type_from_history(events)
         workflow_cls = self._workflow_cls(selected_workflow_type)
@@ -3464,6 +3470,7 @@ class Replayer:
             external_storage_cache=external_storage_cache,
             cancel_requested=cancel_requested,
             record_parallel_failure_order=record_parallel_failure_order,
+            replay_clock_entry=replay_clock_entry,
         )
 
     def _workflow_cls(self, workflow_type: str | None) -> type:
@@ -3855,6 +3862,7 @@ def replay(
     allow_ordered_condition_inputs: bool = False,
     author_ordered_condition_inputs: bool = False,
     pending_condition_input: tuple[int | None] | None = None,
+    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> ReplayOutcome:
     """Replay ``history_events`` and return the next commands.
 
@@ -3863,6 +3871,11 @@ def replay(
     recorded member failure (sdk-python#307). Direct calls to this helper
     default to recording off. Workers pass their configured setting. Replay
     always follows a marker already present in history.
+
+    ``replay_clock_entry`` is the workflow task's ``replay_clock`` object
+    (``WorkerReplayClock`` v1, server#1156). When it validates for ``run_id``,
+    ``WorkflowContext.replay_now()`` reads its ``started_at`` at ordinary
+    entry; otherwise entry stays unavailable. Workers pass the task's object.
     """
     return _replay_state(
         workflow_cls,
@@ -3887,6 +3900,7 @@ def replay(
         allow_ordered_condition_inputs=allow_ordered_condition_inputs,
         author_ordered_condition_inputs=author_ordered_condition_inputs,
         pending_condition_input=pending_condition_input,
+        replay_clock_entry=replay_clock_entry,
     ).outcome
 
 
@@ -3905,6 +3919,7 @@ def _prepare_query_state(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
+    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> Callable[[], Any]:
     """Prepare the query so a worker can recheck authority after replay."""
     try:
@@ -3922,6 +3937,7 @@ def _prepare_query_state(
             prepare_local_activities=prepare_local_activities,
             prepare_local_activity_groups=prepare_local_activity_groups,
             local_activity_cancellation_policies=local_activity_cancellation_policies,
+            replay_clock_entry=replay_clock_entry,
         )
     except Exception as exc:
         raise QueryFailed(f"workflow replay failed before query: {exc}") from exc
@@ -4012,6 +4028,7 @@ def apply_update(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
+    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> CompleteUpdate | FailUpdate:
     """Replay current workflow state and run one accepted update handler.
 
@@ -4036,6 +4053,7 @@ def apply_update(
             prepare_local_activities=prepare_local_activities,
             prepare_local_activity_groups=prepare_local_activity_groups,
             local_activity_cancellation_policies=local_activity_cancellation_policies,
+            replay_clock_entry=replay_clock_entry,
         )
     except NonDeterministicReplayError:
         raise
@@ -4122,6 +4140,7 @@ class _UpdateValidationReplayOptions:
     prepare_local_activities: bool = False
     prepare_local_activity_groups: bool = False
     local_activity_cancellation_policies: tuple[str, ...] = ()
+    replay_clock_entry: Mapping[str, Any] | None = None
 
 
 def validate_update(
@@ -4192,6 +4211,7 @@ def _prepare_update_validation(
             prepare_local_activities=replay_options.prepare_local_activities,
             prepare_local_activity_groups=replay_options.prepare_local_activity_groups,
             local_activity_cancellation_policies=replay_options.local_activity_cancellation_policies,
+            replay_clock_entry=replay_options.replay_clock_entry,
         )
     except Exception as exc:
         raise UpdateValidationFailed(
@@ -5431,6 +5451,7 @@ def _replay_state(
     allow_ordered_condition_inputs: bool = False,
     author_ordered_condition_inputs: bool = False,
     pending_condition_input: tuple[int | None] | None = None,
+    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> _ReplayState:
     _validate_workflow_entrypoint(workflow_cls)
     _workflow_handler_registries(workflow_cls)
@@ -5772,6 +5793,7 @@ def _replay_state(
     ctx._schedule_origin = _schedule_origin(events)
     ctx._business_clock = replay_clock.BusinessReplayClock(
         events, workflow_id or "", run_id, sequence_claim=_workflow_sequence,
+        entry=replay_clock.entry_instant(replay_clock_entry, run_id),
     )
     lifetime = _ReplayLifetime(ctx.logger)
 

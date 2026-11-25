@@ -34,6 +34,42 @@ _GROUP_FIELDS = ("parallel_group_id", "parallel_group_kind", "parallel_group_bas
 _SELECTION_FIELDS = ("selection_member_key", "selection_member_index", "selection_member_base_sequence",
                      "selection_member_size", "selection_member_kind")
 _GroupMember = tuple[int | None, int, str, Sequence[Mapping[str, Any]] | None]
+ENTRY_SCHEMA = "durable-workflow.worker-replay-clock/v1"
+_ENTRY_SOURCES = frozenset({"run_started_at", "redrive_replayed_started_at"})
+_ENTRY_INSTANT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", re.ASCII)
+
+
+@dataclass(frozen=True)
+class EntryInstant:
+    """A validated ``WorkerReplayClock`` v1 carrier from a workflow task (server#1156)."""
+
+    started_at: datetime
+    source: str
+
+
+def entry_instant(carrier: Any, run_id: str) -> EntryInstant | None:
+    """Validate a task's ``replay_clock`` object; anything unproved is absent.
+
+    The object is the Server's only availability signal. Its run must be the
+    task's run and its instant is strict UTC with six fractional digits. No
+    other time (lease, dispatch, history insertion or wall time) substitutes.
+    """
+    # The v1 schema forbids additional properties, so the key set is exact.
+    if not isinstance(carrier, Mapping) or set(carrier) != {"schema", "workflow_run_id", "started_at", "source"}:
+        return None
+    source = carrier["source"]
+    if carrier["schema"] != ENTRY_SCHEMA or not isinstance(source, str) or source not in _ENTRY_SOURCES:
+        return None
+    if not _identity(run_id) or carrier["workflow_run_id"] != run_id:
+        return None
+    value = carrier["started_at"]
+    if not isinstance(value, str) or _ENTRY_INSTANT.fullmatch(value) is None:
+        return None
+    try:
+        started_at = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return EntryInstant(started_at, source)
 
 
 def _task() -> object | None:
@@ -232,6 +268,7 @@ class BusinessReplayClock:
     def __init__(
         self, events: Sequence[Mapping[str, Any]], workflow_id: str, run_id: str,
         *, sequence_claim: Callable[[Mapping[str, Any]], int | None],
+        entry: EntryInstant | None = None,
     ) -> None:
         self.events = events
         self._by_sequence: dict[int, list[int]] = {}
@@ -249,10 +286,28 @@ class BusinessReplayClock:
             if (isinstance(payload, Mapping) and self._start_prefix(index, payload)
                 and self._redrive_start(index, payload, workflow_id, run_id)):
                 self.initial = (index, _time(payload.get("replayed_started_at")))
+        if entry is not None and self.initial[1] is None:
+            # The Server's carrier gives ordinary entry its canonical start. Its
+            # source must agree with the history's own start kind, and a
+            # redrive anchor this history already proves is never replaced.
+            expected = "redrive_replayed_started_at" if self._redrive_declared else "run_started_at"
+            if entry.source == expected and self._entry_agrees(starts, entry.started_at):
+                self.initial = (None, entry.started_at)
         self._pending: tuple[int | None, datetime | None] = self.initial
         self._current: tuple[int | None, datetime | None] = self.initial
         for index, event in enumerate(events):
             self._index_event(index, event, sequence_claim)
+
+    def _entry_agrees(self, starts: Sequence[int], started_at: datetime) -> bool:
+        """An anchor the start event records itself must equal the carrier's."""
+        for index in starts:
+            payload = self.events[index].get("payload")
+            if not isinstance(payload, Mapping) or "replayed_started_at" not in payload:
+                continue
+            # A present but unreadable anchor is a conflict, not an absence.
+            if _time(payload["replayed_started_at"]) != started_at:
+                return False
+        return True
 
     def _index_event(
         self, index: int, event: Mapping[str, Any], sequence_claim: Callable[[Mapping[str, Any]], int | None],
