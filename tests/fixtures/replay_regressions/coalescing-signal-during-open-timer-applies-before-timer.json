@@ -1,0 +1,166 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.coalescing-refresh",
+    "input": [
+      "entity-1"
+    ],
+    "payload_codec": "avro"
+  },
+  "id": "coalescing-signal-during-open-timer-applies-before-timer",
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_type": "tests.replay.coalescing-refresh"
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "signal-1",
+        "signal_name": "changed",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCBAIA"
+        },
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "event_type": "SignalApplied",
+      "payload": {
+        "signal_id": "signal-1",
+        "signal_name": "changed"
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "signal-2",
+        "signal_name": "changed",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCBAQA"
+        },
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "event_type": "SignalApplied",
+      "payload": {
+        "signal_id": "signal-2",
+        "signal_name": "changed"
+      }
+    },
+    {
+      "event_type": "TimerScheduled",
+      "payload": {
+        "sequence": 1,
+        "timer_id": "timer-1",
+        "delay_seconds": 1
+      }
+    },
+    {
+      "event_type": "TimerFired",
+      "payload": {
+        "sequence": 1,
+        "timer_id": "timer-1",
+        "delay_seconds": 1
+      }
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "refresh",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwEChBlbnRpdHktMQQEAA=="
+        }
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "signal-3",
+        "signal_name": "changed",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCBAYA"
+        },
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "event_type": "SignalApplied",
+      "payload": {
+        "signal_id": "signal-3",
+        "signal_name": "changed"
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "refresh",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwQE"
+        }
+      }
+    },
+    {
+      "event_type": "TimerScheduled",
+      "payload": {
+        "sequence": 3,
+        "timer_id": "timer-3",
+        "delay_seconds": 1
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "signal-4",
+        "signal_name": "changed",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCBAgA"
+        },
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "event_type": "SignalApplied",
+      "payload": {
+        "signal_id": "signal-4",
+        "signal_name": "changed"
+      }
+    },
+    {
+      "event_type": "TimerFired",
+      "payload": {
+        "sequence": 3,
+        "timer_id": "timer-3",
+        "delay_seconds": 1
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "refresh",
+        "arguments": [
+          "entity-1",
+          4
+        ]
+      }
+    ]
+  }
+}
