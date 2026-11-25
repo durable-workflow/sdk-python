@@ -3215,8 +3215,9 @@ class WorkflowContext:
         activities. Group success retains the selected event's full precision;
         matching caught failure uses canonical-v1 integer milliseconds.
         Ordinary entry reads the run's canonical start from the workflow
-        task's ``replay_clock`` carrier (``WorkerReplayClock`` v1); a task
-        without that carrier leaves entry unavailable. Other groups,
+        task's ``replay_clock`` carrier (``WorkerReplayClock`` v1). Entry is
+        unavailable without that carrier, including query and update-
+        validation rebuilds and offline replay that omit it. Other groups,
         inline/local operations, unproved times and group-only query time
         remain unavailable. Reads are stable,
         and proved boundaries may move backwards. Adopt
@@ -3417,7 +3418,9 @@ class Replayer:
         external_storage_cache: ExternalPayloadCache | None = None,
         cancel_requested: bool = False,
         record_parallel_failure_order: bool = False,
+        replay_clock_entry: Mapping[str, Any] | None = None,
     ) -> ReplayOutcome:
+        """Replay ``history``; pass the task's ``replay_clock`` to reproduce entry reads."""
         events = _history_events_from_export(history)
         selected_workflow_type = workflow_type or _workflow_type_from_history(events)
         workflow_cls = self._workflow_cls(selected_workflow_type)
@@ -3442,6 +3445,7 @@ class Replayer:
             external_storage_cache=external_storage_cache,
             cancel_requested=cancel_requested,
             record_parallel_failure_order=record_parallel_failure_order,
+            replay_clock_entry=replay_clock_entry,
         )
 
     def _workflow_cls(self, workflow_type: str | None) -> type:
@@ -3890,6 +3894,7 @@ def _prepare_query_state(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
+    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> Callable[[], Any]:
     """Prepare the query so a worker can recheck authority after replay."""
     try:
@@ -3907,6 +3912,7 @@ def _prepare_query_state(
             prepare_local_activities=prepare_local_activities,
             prepare_local_activity_groups=prepare_local_activity_groups,
             local_activity_cancellation_policies=local_activity_cancellation_policies,
+            replay_clock_entry=replay_clock_entry,
         )
     except Exception as exc:
         raise QueryFailed(f"workflow replay failed before query: {exc}") from exc
@@ -3961,6 +3967,7 @@ def query_state(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
+    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> Any:
     """Replay workflow state and invoke a query, normalizing handler failures.
 
@@ -3974,6 +3981,7 @@ def query_state(
         prepare_local_activities=prepare_local_activities,
         prepare_local_activity_groups=prepare_local_activity_groups,
         local_activity_cancellation_policies=local_activity_cancellation_policies,
+        replay_clock_entry=replay_clock_entry,
     )()
     try:
         registry: dict[str, str] = getattr(workflow_cls, "__workflow_queries__", {}) or {}
@@ -3997,6 +4005,7 @@ def apply_update(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
+    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> CompleteUpdate | FailUpdate:
     """Replay current workflow state and run one accepted update handler.
 
@@ -4021,6 +4030,7 @@ def apply_update(
             prepare_local_activities=prepare_local_activities,
             prepare_local_activity_groups=prepare_local_activity_groups,
             local_activity_cancellation_policies=local_activity_cancellation_policies,
+            replay_clock_entry=replay_clock_entry,
         )
     except NonDeterministicReplayError:
         raise
@@ -4107,6 +4117,7 @@ class _UpdateValidationReplayOptions:
     prepare_local_activities: bool = False
     prepare_local_activity_groups: bool = False
     local_activity_cancellation_policies: tuple[str, ...] = ()
+    replay_clock_entry: Mapping[str, Any] | None = None
 
 
 def validate_update(
@@ -4124,6 +4135,7 @@ def validate_update(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
+    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> Any:
     """Replay and invoke a validator synchronously, refusing asynchronous results."""
     from .errors import UpdateRejected
@@ -4136,6 +4148,7 @@ def validate_update(
             prepare_local_activities=prepare_local_activities,
             prepare_local_activity_groups=prepare_local_activity_groups,
             local_activity_cancellation_policies=local_activity_cancellation_policies,
+            replay_clock_entry=replay_clock_entry,
         ),
     )()
     try:
@@ -4177,6 +4190,7 @@ def _prepare_update_validation(
             prepare_local_activities=replay_options.prepare_local_activities,
             prepare_local_activity_groups=replay_options.prepare_local_activity_groups,
             local_activity_cancellation_policies=replay_options.local_activity_cancellation_policies,
+            replay_clock_entry=replay_options.replay_clock_entry,
         )
     except Exception as exc:
         raise UpdateValidationFailed(

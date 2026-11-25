@@ -4,16 +4,28 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from durable_workflow import Worker, serializer
+from durable_workflow import Worker, serializer, workflow
 from durable_workflow.client import Client
+from durable_workflow.errors import QueryFailed, UpdateValidationFailed
 from durable_workflow.replay_clock import EntryInstant, entry_instant
-from durable_workflow.workflow import CompleteWorkflow, replay
+from durable_workflow.testing import replay_history
+from durable_workflow.workflow import (
+    CompleteUpdate,
+    CompleteWorkflow,
+    FailUpdate,
+    Replayer,
+    WorkflowContext,
+    apply_update,
+    query_state,
+    replay,
+    validate_update,
+)
 from tests.business_clock_workflows import NativeRedriveBusinessClockWorkflow, ScalarBusinessClockWorkflow
 from tests.test_business_replay_clock import history
 
@@ -77,6 +89,9 @@ def test_microseconds_are_kept_exactly_in_utc() -> None:
     carrier(workflow_run_id=None),
     carrier(source="history_inserted_at"),
     carrier(source=None),
+    carrier(source=["run_started_at"]),
+    carrier(source={"run_started_at": True}),
+    carrier(extra="field"),
     carrier(started_at="2026-11-01T00:00:00Z"),
     carrier(started_at="2026-11-01T00:00:00.000Z"),
     carrier(started_at="2026-11-01T00:00:00.000000+00:00"),
@@ -131,6 +146,10 @@ def test_unproved_redrive_history_accepts_only_a_redrive_anchor_for_entry() -> N
                       NativeRedriveBusinessClockWorkflow, run_id=run)
     # Only entry gains the Server's anchor; the unproved reused boundary stays unavailable.
     assert anchored["clock"] == ["2026-11-03T00:00:00.000000+00:00", None]
+    # The start event's own recorded anchor must agree with the carrier.
+    assert result(events, carrier(workflow_run_id=run, source="redrive_replayed_started_at",
+                                  started_at="2026-11-02T00:00:00.000000Z"),
+                  NativeRedriveBusinessClockWorkflow, run_id=run)["clock"] == [None, None]
 
 
 def test_worker_reads_the_task_carrier_identically_on_every_lease() -> None:
@@ -155,3 +174,106 @@ def test_worker_reads_the_task_carrier_identically_on_every_lease() -> None:
     assert first["clock"][0] == START
     assert asyncio.run(lease(2, carrier())) == first
     assert asyncio.run(lease(3, None))["clock"][0] is None
+
+
+@workflow.defn(name="tests.replay.business-clock-entry-deadline")
+class EntryDeadlineWorkflow:
+    def __init__(self) -> None:
+        self.deadline: datetime | None = None
+        self.extensions = 0
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        self.deadline = ctx.replay_now() + timedelta(hours=1)
+        yield ctx.schedule_activity("clock.first", [])
+        yield ctx.start_timer(2)
+        return self.deadline.isoformat()
+
+    @workflow.query("deadline")
+    def deadline_query(self) -> str:
+        assert self.deadline is not None
+        return self.deadline.isoformat()
+
+    @workflow.update("extend")
+    def extend(self) -> str:
+        assert self.deadline is not None
+        self.extensions += 1
+        return (self.deadline + timedelta(minutes=self.extensions)).isoformat()
+
+    @workflow.update_validator("extend")
+    def validate_extend(self) -> None:
+        assert self.deadline is not None
+
+
+DEADLINE = "2026-11-01T01:00:00+00:00"
+
+
+def test_query_update_and_validation_rebuild_the_body_with_the_task_carrier() -> None:
+    events = history()[:3]
+    options: dict[str, Any] = {"payload_codec": "avro", "run_id": RUN}
+    assert query_state(EntryDeadlineWorkflow, events, [], "deadline", replay_clock_entry=carrier(), **options) == (
+        DEADLINE
+    )
+    assert validate_update(EntryDeadlineWorkflow, events, [], "extend", [], replay_clock_entry=carrier(),
+                           **options) is None
+    accepted = {"event_type": "UpdateAccepted", "payload": {
+        "update_id": "update-1", "update_name": "extend",
+        "arguments": serializer.encode([], codec="avro"), "payload_codec": "avro",
+    }}
+    applied = apply_update(EntryDeadlineWorkflow, [*events, accepted], [], "update-1",
+                           replay_clock_entry=carrier(), **options)
+    assert isinstance(applied, CompleteUpdate), applied
+    assert applied.result == "2026-11-01T01:01:00+00:00"
+
+    # Without a carrier the entry read is unavailable, so the rebuild fails visibly.
+    with pytest.raises(QueryFailed, match="unavailable"):
+        query_state(EntryDeadlineWorkflow, events, [], "deadline", **options)
+    with pytest.raises(UpdateValidationFailed):
+        validate_update(EntryDeadlineWorkflow, events, [], "extend", [], **options)
+    assert isinstance(apply_update(EntryDeadlineWorkflow, [*events, accepted], [], "update-1", **options), FailUpdate)
+
+
+def test_offline_replay_tools_accept_the_task_carrier() -> None:
+    events = history()
+    outcome = replay_history(EntryDeadlineWorkflow, events, [], run_id=RUN, payload_codec="avro",
+                             replay_clock_entry=carrier())
+    try:
+        assert [type(command) for command in outcome.commands] == [CompleteWorkflow]
+        assert outcome.commands[0].result == DEADLINE
+    finally:
+        outcome.close()
+    outcome = Replayer(workflows=[EntryDeadlineWorkflow]).replay(
+        events, [], workflow_type="tests.replay.business-clock-entry-deadline", run_id=RUN,
+        payload_codec="avro", replay_clock_entry=carrier(),
+    )
+    try:
+        assert outcome.commands[0].result == DEADLINE
+    finally:
+        outcome.close()
+
+
+def test_worker_update_task_rebuilds_the_body_with_its_carrier() -> None:
+    accepted = {"event_type": "UpdateAccepted", "payload": {
+        "update_id": "update-1", "update_name": "extend",
+        "arguments": serializer.encode([], codec="avro"), "payload_codec": "avro",
+    }}
+
+    async def lease(entry: Any) -> list[dict[str, Any]]:
+        client = AsyncMock(spec=Client)
+        worker = Worker(client, task_queue="clock", workflows=[EntryDeadlineWorkflow])
+        task = {
+            "task_id": "update-task", "workflow_type": "tests.replay.business-clock-entry-deadline",
+            "workflow_task_attempt": 1, "workflow_id": "business-clock-instance", "run_id": RUN,
+            "workflow_update_id": "update-1", "history_events": [*history()[:3], accepted],
+            "arguments": serializer.envelope([], codec="avro"), "payload_codec": "avro",
+        }
+        if entry is not None:
+            task["replay_clock"] = entry
+        await worker._run_workflow_task(task)
+        client.complete_workflow_task.assert_awaited_once()
+        commands: list[dict[str, Any]] = client.complete_workflow_task.call_args.kwargs["commands"]
+        return commands
+
+    commands = asyncio.run(lease(carrier()))
+    assert [command["type"] for command in commands] == ["complete_update"], commands
+    assert serializer.decode_envelope(commands[0]["result"]) == "2026-11-01T01:01:00+00:00"
+    assert [command["type"] for command in asyncio.run(lease(None))] == ["fail_update"]

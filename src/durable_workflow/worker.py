@@ -3108,6 +3108,7 @@ class Worker:
                     prepare_local_activities=self._prepared_local_activities_supported,
                     prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                     local_activity_cancellation_policies=self._local_activity_cancellation_policies,
+                    replay_clock_entry=task.get("replay_clock"),
                 )
             except NonDeterministicReplayError as exc:
                 log.exception("workflow update task %s replay failed for run %s", task_id, run_id)
@@ -4300,6 +4301,7 @@ class Worker:
                 prepare_local_activities=self._prepared_local_activities_supported,
                 prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                 local_activity_cancellation_policies=self._local_activity_cancellation_policies,
+                replay_clock_entry=task.get("replay_clock"),
             )
             await authority.confirm()
             async def execute() -> Any:
@@ -4846,6 +4848,7 @@ class Worker:
                     prepare_local_activities=self._prepared_local_activities_supported,
                     prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                     local_activity_cancellation_policies=self._local_activity_cancellation_policies,
+                    replay_clock_entry=task.get("replay_clock"),
                 ),
             )
             result = invoke()

@@ -1201,15 +1201,27 @@ run's canonical start from the workflow task's `replay_clock` carrier
 activity, timer or child step it returns that step's recorded time, so a
 deadline loop around a durable timer terminates and the difference between two
 reads after two durable steps measures their recorded elapsed time. Repeated
-reads between durable steps return the same value, and every replay of the
-same history returns the same values.
+reads between durable steps return the same value. Step times come from
+history, so every replay returns them again. The entry value comes from the
+task's carrier, which Server sends unchanged on every workflow task of the run,
+including update tasks.
 
 Where the SDK cannot prove the time, `ctx.replay_now()` raises
-`ReplayClockUnavailable` instead of using any other time: a task without the
-carrier (older Servers), group, inline and local operations it does not yet
-support, query callbacks, and cancellation scopes. Adopt business-time
-decisions through normal workflow versioning. `ctx.now()` keeps its fixed
-start time, so runs that already read it replay unchanged.
+`ReplayClockUnavailable` instead of using any other time, and an unhandled
+`ReplayClockUnavailable` fails the workflow like any other exception. It is
+unavailable for:
+
+- an entry read on a task without the carrier (Servers older than 3.6.0);
+- an entry read while rebuilding the workflow for a query task or a pre-accept
+  update validation, because Server does not yet send the carrier on those
+  tasks. Such queries and validations fail visibly;
+- offline replay (`replay_history`, `Replayer.replay`) unless you pass the
+  task's object as `replay_clock_entry`;
+- group, inline and local operations it does not yet support, query handler
+  reads, and cancellation scopes.
+
+Adopt business-time decisions through normal workflow versioning. `ctx.now()`
+keeps its fixed start time, so runs that already read it replay unchanged.
 
 For event ordering, use Workflow Stream offsets, the relevant message/outbox
 sequence, or a deterministic workflow-local counter paired with `run_id`.

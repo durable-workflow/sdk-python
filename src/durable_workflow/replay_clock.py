@@ -54,9 +54,11 @@ def entry_instant(carrier: Any, run_id: str) -> EntryInstant | None:
     task's run and its instant is strict UTC with six fractional digits. No
     other time (lease, dispatch, history insertion or wall time) substitutes.
     """
-    if not isinstance(carrier, Mapping) or not {"schema", "workflow_run_id", "started_at", "source"} <= set(carrier):
+    # The v1 schema forbids additional properties, so the key set is exact.
+    if not isinstance(carrier, Mapping) or set(carrier) != {"schema", "workflow_run_id", "started_at", "source"}:
         return None
-    if carrier["schema"] != ENTRY_SCHEMA or carrier["source"] not in _ENTRY_SOURCES:
+    source = carrier["source"]
+    if carrier["schema"] != ENTRY_SCHEMA or not isinstance(source, str) or source not in _ENTRY_SOURCES:
         return None
     if not _identity(run_id) or carrier["workflow_run_id"] != run_id:
         return None
@@ -67,7 +69,7 @@ def entry_instant(carrier: Any, run_id: str) -> EntryInstant | None:
         started_at = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
     except ValueError:
         return None
-    return EntryInstant(started_at, carrier["source"])
+    return EntryInstant(started_at, source)
 
 
 def _task() -> object | None:
@@ -289,12 +291,21 @@ class BusinessReplayClock:
             # source must agree with the history's own start kind, and a
             # redrive anchor this history already proves is never replaced.
             expected = "redrive_replayed_started_at" if self._redrive_declared else "run_started_at"
-            if entry.source == expected:
+            if entry.source == expected and self._entry_agrees(starts, entry.started_at):
                 self.initial = (None, entry.started_at)
         self._pending: tuple[int | None, datetime | None] = self.initial
         self._current: tuple[int | None, datetime | None] = self.initial
         for index, event in enumerate(events):
             self._index_event(index, event, sequence_claim)
+
+    def _entry_agrees(self, starts: Sequence[int], started_at: datetime) -> bool:
+        """An anchor the start event records itself must equal the carrier's."""
+        for index in starts:
+            payload = self.events[index].get("payload")
+            recorded = _time(payload.get("replayed_started_at")) if isinstance(payload, Mapping) else None
+            if recorded is not None and recorded != started_at:
+                return False
+        return True
 
     def _index_event(
         self, index: int, event: Mapping[str, Any], sequence_claim: Callable[[Mapping[str, Any]], int | None],

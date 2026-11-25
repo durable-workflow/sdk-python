@@ -670,6 +670,7 @@ def replay_history(
     *,
     run_id: str = "",
     payload_codec: str | None = None,
+    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> ReplayOutcome:
     """Replay a production history against current workflow code.
 
@@ -681,6 +682,10 @@ def replay_history(
     This is the supported way to regression-test a workflow change against
     real production traffic: dump the history from ``Client.get_history``,
     save the JSON, and replay it on every PR.
+
+    A workflow that reads ``ctx.replay_now()`` at entry needs the workflow
+    task's ``replay_clock`` object as ``replay_clock_entry``; history alone
+    does not carry that instant.
     """
     return replay(
         workflow_cls,
@@ -688,6 +693,7 @@ def replay_history(
         list(start_input or []),
         run_id=run_id,
         payload_codec=payload_codec,
+        replay_clock_entry=replay_clock_entry,
     )
 
 
@@ -698,6 +704,7 @@ def replay_history_file(
     *,
     run_id: str = "",
     payload_codec: str | None = None,
+    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> ReplayOutcome:
     """Convenience wrapper: load a JSON history file and replay it.
 
@@ -712,6 +719,7 @@ def replay_history_file(
         start_input,
         run_id=run_id,
         payload_codec=payload_codec,
+        replay_clock_entry=replay_clock_entry,
     )
 
 
