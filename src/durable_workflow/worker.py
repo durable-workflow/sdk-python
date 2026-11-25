@@ -4317,6 +4317,7 @@ class Worker:
                 prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                 local_activity_cancellation_policies=self._local_activity_cancellation_policies,
                 replay_clock_entry=task.get("replay_clock"),
+                replay_clock_attested="replay_clock" in task,
             )
             await authority.confirm()
             async def execute() -> Any:
@@ -4864,6 +4865,7 @@ class Worker:
                     prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                     local_activity_cancellation_policies=self._local_activity_cancellation_policies,
                     replay_clock_entry=task.get("replay_clock"),
+                    replay_clock_attested="replay_clock" in task,
                 ),
             )
             result = invoke()

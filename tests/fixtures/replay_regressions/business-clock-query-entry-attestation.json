@@ -1,0 +1,235 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "business-clock-query-entry-attestation",
+  "protocol_version": "1.20",
+  "bindings": [
+    "python"
+  ],
+  "workflow": {
+    "type": "tests.replay.tolerant-entry-clock",
+    "input": [],
+    "payload_codec": "avro",
+    "workflow_id": "business-clock-instance",
+    "run_id": "business-clock-run"
+  },
+  "worker_task": {
+    "replay_clock": {
+      "schema": "durable-workflow.worker-replay-clock/v1",
+      "workflow_run_id": "business-clock-run",
+      "started_at": "2026-11-01T00:00:00.000000Z",
+      "source": "run_started_at"
+    },
+    "query_name": "entry",
+    "query_tasks": [
+      {
+        "label": "key-absent",
+        "history_events": [
+          {
+            "event_type": "WorkflowStarted",
+            "recorded_at": "2026-11-01T00:00:00.123456Z",
+            "payload": {
+              "workflow_type": "tests.replay.tolerant-entry-clock",
+              "workflow_instance_id": "business-clock-instance",
+              "workflow_run_id": "business-clock-run"
+            },
+            "sequence": 1
+          },
+          {
+            "event_type": "ActivityScheduled",
+            "payload": {
+              "sequence": 1,
+              "activity_execution_id": "clock-activity",
+              "activity_type": "clock.first"
+            },
+            "sequence": 2
+          },
+          {
+            "event_type": "ActivityCompleted",
+            "recorded_at": "2026-11-01T00:00:03.123456Z",
+            "payload": {
+              "sequence": 1,
+              "activity_execution_id": "clock-activity",
+              "activity_type": "clock.first",
+              "result": {
+                "codec": "avro",
+                "blob": "wwHioz3/VYAiNwoKZmlyc3Q="
+              }
+            },
+            "sequence": 3
+          }
+        ]
+      },
+      {
+        "label": "explicit-null",
+        "history_events": [
+          {
+            "event_type": "WorkflowStarted",
+            "recorded_at": "2026-11-01T00:00:00.123456Z",
+            "payload": {
+              "workflow_type": "tests.replay.tolerant-entry-clock",
+              "workflow_instance_id": "business-clock-instance",
+              "workflow_run_id": "business-clock-run"
+            },
+            "sequence": 1
+          },
+          {
+            "event_type": "ActivityScheduled",
+            "payload": {
+              "sequence": 1,
+              "activity_execution_id": "clock-activity",
+              "activity_type": "clock.first"
+            },
+            "sequence": 2
+          },
+          {
+            "event_type": "ActivityCompleted",
+            "recorded_at": "2026-11-01T00:00:03.123456Z",
+            "payload": {
+              "sequence": 1,
+              "activity_execution_id": "clock-activity",
+              "activity_type": "clock.first",
+              "result": {
+                "codec": "avro",
+                "blob": "wwHioz3/VYAiNwoKZmlyc3Q="
+              }
+            },
+            "sequence": 3
+          }
+        ],
+        "replay_clock": null
+      },
+      {
+        "label": "carrier",
+        "history_events": [
+          {
+            "event_type": "WorkflowStarted",
+            "recorded_at": "2026-11-01T00:00:00.123456Z",
+            "payload": {
+              "workflow_type": "tests.replay.tolerant-entry-clock",
+              "workflow_instance_id": "business-clock-instance",
+              "workflow_run_id": "business-clock-run"
+            },
+            "sequence": 1
+          },
+          {
+            "event_type": "ActivityScheduled",
+            "payload": {
+              "sequence": 1,
+              "activity_execution_id": "clock-activity",
+              "activity_type": "clock.first"
+            },
+            "sequence": 2
+          },
+          {
+            "event_type": "ActivityCompleted",
+            "recorded_at": "2026-11-01T00:00:03.123456Z",
+            "payload": {
+              "sequence": 1,
+              "activity_execution_id": "clock-activity",
+              "activity_type": "clock.first",
+              "result": {
+                "codec": "avro",
+                "blob": "wwHioz3/VYAiNwoKZmlyc3Q="
+              }
+            },
+            "sequence": 3
+          }
+        ],
+        "replay_clock": {
+          "schema": "durable-workflow.worker-replay-clock/v1",
+          "workflow_run_id": "business-clock-run",
+          "started_at": "2026-11-01T00:00:00.000000Z",
+          "source": "run_started_at"
+        }
+      }
+    ]
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-01T00:00:00.123456Z",
+      "payload": {
+        "workflow_type": "tests.replay.tolerant-entry-clock",
+        "workflow_instance_id": "business-clock-instance",
+        "workflow_run_id": "business-clock-run"
+      },
+      "sequence": 1
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "clock-activity",
+        "activity_type": "clock.first"
+      },
+      "sequence": 2
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-11-01T00:00:03.123456Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "clock-activity",
+        "activity_type": "clock.first",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoKZmlyc3Q="
+        }
+      },
+      "sequence": 3
+    },
+    {
+      "event_type": "TimerScheduled",
+      "payload": {
+        "sequence": 2,
+        "timer_id": "clock-timer",
+        "timer_kind": "durable_timer",
+        "delay_seconds": 2
+      },
+      "sequence": 4
+    },
+    {
+      "event_type": "TimerFired",
+      "recorded_at": "2026-11-01T00:00:05.654321Z",
+      "payload": {
+        "sequence": 2,
+        "timer_id": "clock-timer",
+        "timer_kind": "durable_timer",
+        "delay_seconds": 2
+      },
+      "sequence": 5
+    },
+    {
+      "event_type": "WorkflowTaskCompleted",
+      "recorded_at": "2026-12-01T00:00:00Z",
+      "payload": {},
+      "sequence": 6
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "complete_workflow",
+        "result": "2026-11-01T00:00:00.000000+00:00"
+      },
+      {
+        "type": "query_task",
+        "label": "key-absent",
+        "outcome": "failed"
+      },
+      {
+        "type": "query_task",
+        "label": "explicit-null",
+        "outcome": "completed",
+        "result": null
+      },
+      {
+        "type": "query_task",
+        "label": "carrier",
+        "outcome": "completed",
+        "result": "2026-11-01T00:00:00.000000+00:00"
+      }
+    ]
+  }
+}
