@@ -1211,12 +1211,14 @@ Where the SDK cannot prove the time, `ctx.replay_now()` raises
 `ReplayClockUnavailable` fails the workflow like any other exception. It is
 unavailable for:
 
-- an entry read on a task without the carrier (Servers older than 3.6.0);
+- an entry read on a task without the carrier: Servers older than 3.6.0, or a
+  run whose start Server cannot prove;
 - an entry read while rebuilding the workflow for a query task or a pre-accept
   update validation, because Server does not yet send the carrier on those
   tasks. Such queries and validations fail visibly;
 - offline replay (`replay_history`, `Replayer.replay`) unless you pass the
-  task's object as `replay_clock_entry`;
+  task's object as `replay_clock_entry`, and the in-memory
+  `WorkflowEnvironment`, which supplies no carrier;
 - group, inline and local operations it does not yet support, query handler
   reads, and cancellation scopes.
 

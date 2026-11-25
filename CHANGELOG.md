@@ -18,8 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebuild the workflow with their own carrier. Query tasks and pre-accept
   update validation don't receive a carrier from Server yet, so rebuilding a
   workflow that reads the clock at entry fails them visibly. `replay()`,
-  `Replayer.replay()`, `replay_history()`, `query_state()`, `apply_update()` and
-  `validate_update()` accept the task's object as `replay_clock_entry`.
+  `Replayer.replay()`, `replay_history()` and `apply_update()` accept the
+  task's object as `replay_clock_entry`.
   `ctx.now()` still returns the fixed start time. (durable-workflow/.github#215)
 
 ## [2.23.1] - 2026-11-24

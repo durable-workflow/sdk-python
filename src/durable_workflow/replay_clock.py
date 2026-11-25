@@ -36,7 +36,7 @@ _SELECTION_FIELDS = ("selection_member_key", "selection_member_index", "selectio
 _GroupMember = tuple[int | None, int, str, Sequence[Mapping[str, Any]] | None]
 ENTRY_SCHEMA = "durable-workflow.worker-replay-clock/v1"
 _ENTRY_SOURCES = frozenset({"run_started_at", "redrive_replayed_started_at"})
-_ENTRY_INSTANT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
+_ENTRY_INSTANT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -302,8 +302,10 @@ class BusinessReplayClock:
         """An anchor the start event records itself must equal the carrier's."""
         for index in starts:
             payload = self.events[index].get("payload")
-            recorded = _time(payload.get("replayed_started_at")) if isinstance(payload, Mapping) else None
-            if recorded is not None and recorded != started_at:
+            if not isinstance(payload, Mapping) or "replayed_started_at" not in payload:
+                continue
+            # A present but unreadable anchor is a conflict, not an absence.
+            if _time(payload["replayed_started_at"]) != started_at:
                 return False
         return True
 

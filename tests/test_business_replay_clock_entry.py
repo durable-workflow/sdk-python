@@ -13,7 +13,7 @@ import pytest
 from durable_workflow import Worker, serializer, workflow
 from durable_workflow.client import Client
 from durable_workflow.errors import QueryFailed, UpdateValidationFailed
-from durable_workflow.replay_clock import EntryInstant, entry_instant
+from durable_workflow.replay_clock import BusinessReplayClock, EntryInstant, entry_instant
 from durable_workflow.testing import replay_history
 from durable_workflow.workflow import (
     CompleteUpdate,
@@ -21,10 +21,12 @@ from durable_workflow.workflow import (
     FailUpdate,
     Replayer,
     WorkflowContext,
+    _prepare_query_state,
+    _prepare_update_validation,
+    _UpdateValidationReplayOptions,
+    _workflow_sequence,
     apply_update,
-    query_state,
     replay,
-    validate_update,
 )
 from tests.business_clock_workflows import NativeRedriveBusinessClockWorkflow, ScalarBusinessClockWorkflow
 from tests.test_business_replay_clock import history
@@ -101,6 +103,7 @@ def test_microseconds_are_kept_exactly_in_utc() -> None:
     carrier(started_at="2026-11-01T24:00:00.000000Z"),
     carrier(started_at=1761955200),
     carrier(started_at=None),
+    carrier(started_at="２０２６-11-01T00:00:00.000000Z"),
 ])
 def test_unproved_carriers_are_absent(entry: Any) -> None:
     assert entry_instant(entry, RUN) is None
@@ -150,6 +153,13 @@ def test_unproved_redrive_history_accepts_only_a_redrive_anchor_for_entry() -> N
     assert result(events, carrier(workflow_run_id=run, source="redrive_replayed_started_at",
                                   started_at="2026-11-02T00:00:00.000000Z"),
                   NativeRedriveBusinessClockWorkflow, run_id=run)["clock"] == [None, None]
+    # A present but unreadable recorded anchor conflicts rather than reading as absent.
+    events[1]["payload"]["replayed_started_at"] = "not a time"
+    entry = entry_instant(carrier(workflow_run_id=run, source="redrive_replayed_started_at",
+                                  started_at="2026-11-03T00:00:00.000000Z"), run)
+    clock = BusinessReplayClock(events, events[1]["payload"]["workflow_instance_id"], run,
+                                sequence_claim=_workflow_sequence, entry=entry)
+    assert clock.initial == (None, None)
 
 
 def test_worker_reads_the_task_carrier_identically_on_every_lease() -> None:
@@ -210,11 +220,18 @@ DEADLINE = "2026-11-01T01:00:00+00:00"
 def test_query_update_and_validation_rebuild_the_body_with_the_task_carrier() -> None:
     events = history()[:3]
     options: dict[str, Any] = {"payload_codec": "avro", "run_id": RUN}
-    assert query_state(EntryDeadlineWorkflow, events, [], "deadline", replay_clock_entry=carrier(), **options) == (
-        DEADLINE
-    )
-    assert validate_update(EntryDeadlineWorkflow, events, [], "extend", [], replay_clock_entry=carrier(),
-                           **options) is None
+    def query(entry: Any) -> Any:
+        return _prepare_query_state(EntryDeadlineWorkflow, events, [], "deadline", replay_clock_entry=entry,
+                                    **options)()
+
+    def validate(entry: Any) -> Any:
+        return _prepare_update_validation(
+            EntryDeadlineWorkflow, events, [], "extend", [],
+            replay_options=_UpdateValidationReplayOptions(run_id=RUN, payload_codec="avro", replay_clock_entry=entry),
+        )()
+
+    assert query(carrier()) == DEADLINE
+    assert validate(carrier()) is None
     accepted = {"event_type": "UpdateAccepted", "payload": {
         "update_id": "update-1", "update_name": "extend",
         "arguments": serializer.encode([], codec="avro"), "payload_codec": "avro",
@@ -226,9 +243,9 @@ def test_query_update_and_validation_rebuild_the_body_with_the_task_carrier() ->
 
     # Without a carrier the entry read is unavailable, so the rebuild fails visibly.
     with pytest.raises(QueryFailed, match="unavailable"):
-        query_state(EntryDeadlineWorkflow, events, [], "deadline", **options)
+        query(None)
     with pytest.raises(UpdateValidationFailed):
-        validate_update(EntryDeadlineWorkflow, events, [], "extend", [], **options)
+        validate(None)
     assert isinstance(apply_update(EntryDeadlineWorkflow, [*events, accepted], [], "update-1", **options), FailUpdate)
 
 

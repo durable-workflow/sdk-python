@@ -3967,7 +3967,6 @@ def query_state(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
-    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> Any:
     """Replay workflow state and invoke a query, normalizing handler failures.
 
@@ -3981,7 +3980,6 @@ def query_state(
         prepare_local_activities=prepare_local_activities,
         prepare_local_activity_groups=prepare_local_activity_groups,
         local_activity_cancellation_policies=local_activity_cancellation_policies,
-        replay_clock_entry=replay_clock_entry,
     )()
     try:
         registry: dict[str, str] = getattr(workflow_cls, "__workflow_queries__", {}) or {}
@@ -4135,7 +4133,6 @@ def validate_update(
     prepare_local_activities: bool = False,
     prepare_local_activity_groups: bool = False,
     local_activity_cancellation_policies: tuple[str, ...] = (),
-    replay_clock_entry: Mapping[str, Any] | None = None,
 ) -> Any:
     """Replay and invoke a validator synchronously, refusing asynchronous results."""
     from .errors import UpdateRejected
@@ -4148,7 +4145,6 @@ def validate_update(
             prepare_local_activities=prepare_local_activities,
             prepare_local_activity_groups=prepare_local_activity_groups,
             local_activity_cancellation_policies=local_activity_cancellation_policies,
-            replay_clock_entry=replay_clock_entry,
         ),
     )()
     try:
