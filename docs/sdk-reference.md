@@ -1192,6 +1192,39 @@ decision. Never compare UTC and monotonic values or subtract monotonic readings
 from different processes or hosts. Subtracting Python `ctx.now()` values does
 not measure elapsed time.
 
+### Advancing replay clock
+
+`ctx.replay_now()` is an additive UTC clock that advances with consumed
+history. At ordinary workflow entry, before any durable step, it returns the
+run's canonical start from the workflow task's `replay_clock` carrier
+(`WorkerReplayClock` v1, sent by Server 3.6.0 and later). After a supported
+activity, timer or child step it returns that step's recorded time, so a
+deadline loop around a durable timer terminates and the difference between two
+reads after two durable steps measures their recorded elapsed time. Repeated
+reads between durable steps return the same value. Step times come from
+history, so every replay returns them again. The entry value comes from the
+task's carrier, which Server sends unchanged on every workflow task of the run,
+including update tasks.
+
+Where the SDK cannot prove the time, `ctx.replay_now()` raises
+`ReplayClockUnavailable` instead of using any other time, and an unhandled
+`ReplayClockUnavailable` fails the workflow like any other exception. It is
+unavailable for:
+
+- an entry read on a task without the carrier: Servers older than 3.6.0, or a
+  run whose start Server cannot prove;
+- an entry read while rebuilding the workflow for a query task or a pre-accept
+  update validation, because Server does not yet send the carrier on those
+  tasks. Such queries and validations fail visibly;
+- offline replay (`replay_history`, `Replayer.replay`) unless you pass the
+  task's object as `replay_clock_entry`, and the in-memory
+  `WorkflowEnvironment`, which supplies no carrier;
+- group, inline and local operations it does not yet support, query handler
+  reads, and cancellation scopes.
+
+Adopt business-time decisions through normal workflow versioning. `ctx.now()`
+keeps its fixed start time, so runs that already read it replay unchanged.
+
 For event ordering, use Workflow Stream offsets, the relevant message/outbox
 sequence, or a deterministic workflow-local counter paired with `run_id`.
 Carry application sequence state explicitly through continue-as-new when

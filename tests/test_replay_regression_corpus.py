@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -886,6 +887,30 @@ def _execute_fixture(fixture: dict[str, Any]) -> list[dict[str, Any]]:
             return client.complete_workflow_task.call_args.kwargs["commands"]
 
         commands = asyncio.run(run_first_task())
+        _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
+        return commands
+
+    worker_task = fixture.get("worker_task")
+    if isinstance(worker_task, dict) and "replay_clock" in worker_task:
+        # The entry carrier exists only on a real workflow task (server#1156).
+        # Two leases of the same run carry the same object and must decide the same.
+        async def run_lease(attempt: int) -> list[dict[str, Any]]:
+            client = AsyncMock(spec=Client)
+            worker = Worker(client, task_queue="regression-corpus", workflows=[WORKFLOW_TYPES[workflow_type]])
+            await worker._run_workflow_task({
+                "task_id": f"workflow-task-{attempt}", "workflow_type": workflow_type,
+                "workflow_task_attempt": attempt, "workflow_id": workflow["workflow_id"],
+                "run_id": workflow["run_id"], "history_events": deepcopy(history),
+                "arguments": serializer.envelope(start_input, codec=payload_codec), "payload_codec": payload_codec,
+                "replay_clock": deepcopy(worker_task["replay_clock"]),
+            })
+            client.complete_workflow_task.assert_awaited_once()
+            commands = _decode_envelopes(client.complete_workflow_task.call_args.kwargs["commands"])
+            assert isinstance(commands, list)
+            return commands
+
+        commands = asyncio.run(run_lease(1))
+        assert asyncio.run(run_lease(2)) == commands
         _assert_matches(fixture["expected"], {"command_sequence": commands}, f"{fixture['id']}.expected")
         return commands
 

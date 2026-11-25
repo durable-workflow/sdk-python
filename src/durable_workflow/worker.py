@@ -2174,6 +2174,7 @@ class Worker:
                     allow_ordered_condition_inputs=self._ordered_condition_inputs_supported,
                     author_ordered_condition_inputs=task.get(_condition_input_order.AUTHORING) is True,
                     pending_condition_input=pending_condition_input,
+                    replay_clock_entry=task.get("replay_clock"),
                 )
                 if outcome.cancellation_scope_delivery is not None:
                     if outcome.commands:
@@ -3107,6 +3108,7 @@ class Worker:
                     prepare_local_activities=self._prepared_local_activities_supported,
                     prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                     local_activity_cancellation_policies=self._local_activity_cancellation_policies,
+                    replay_clock_entry=task.get("replay_clock"),
                 )
             except NonDeterministicReplayError as exc:
                 log.exception("workflow update task %s replay failed for run %s", task_id, run_id)
@@ -4299,6 +4301,7 @@ class Worker:
                 prepare_local_activities=self._prepared_local_activities_supported,
                 prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                 local_activity_cancellation_policies=self._local_activity_cancellation_policies,
+                replay_clock_entry=task.get("replay_clock"),
             )
             await authority.confirm()
             async def execute() -> Any:
@@ -4845,6 +4848,7 @@ class Worker:
                     prepare_local_activities=self._prepared_local_activities_supported,
                     prepare_local_activity_groups=self._prepared_local_activity_groups_supported,
                     local_activity_cancellation_policies=self._local_activity_cancellation_policies,
+                    replay_clock_entry=task.get("replay_clock"),
                 ),
             )
             result = invoke()
