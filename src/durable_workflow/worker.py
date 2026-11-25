@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import dataclasses
 import hashlib
 import inspect
 import json
@@ -41,7 +42,7 @@ from typing import Annotated, Any, Concatenate, Literal, ParamSpec, TypeVar, Uni
 
 import httpx
 
-from . import _condition_input_order, _continue_as_new, serializer
+from . import _condition_input_order, _continue_as_new, _timeout_cleanup, serializer
 from ._activity_lease import (
     ACTIVITY_LEASE_RENEWAL_EXHAUSTED,
     ActivityLeaseAuthority,
@@ -1425,6 +1426,8 @@ class Worker:
         if ("nexus_cooperative_cancellation" in self.capabilities
                 and "cooperative_cancellation" not in self.capabilities):
             raise ValueError("Nexus cooperative cancellation requires cooperative_cancellation capability")
+        if _timeout_cleanup.CAPABILITY in self.capabilities and "cooperative_cancellation" not in self.capabilities:
+            raise ValueError("timeout cleanup requires cooperative_cancellation capability")
         if any(not capability for capability in self.capabilities):
             raise ValueError("worker capabilities must be non-empty strings")
         self.worker_id = worker_id or f"py-worker-{uuid.uuid4().hex[:8]}"
@@ -1747,6 +1750,9 @@ class Worker:
         capabilities.extend(self.capabilities)
         if self._nexus_cooperative_cancellation_supported and "nexus_cooperative_cancellation" not in capabilities:
             capabilities.append("nexus_cooperative_cancellation")
+        # Timeout cleanup is delivered through cooperative cancellation (server#1201).
+        if self._cooperative_cancellation_supported and _timeout_cleanup.CAPABILITY not in capabilities:
+            capabilities.append(_timeout_cleanup.CAPABILITY)
         if (
             self._local_activity_cancellation_policies
             and "prepared_local_activity_cancellation_policies" not in capabilities
@@ -1794,6 +1800,8 @@ class Worker:
                     "implementation": "owned_workflow_run_canonical_delivery",
                     "binding_kinds": ["workflow_run"],
                 }} if self._nexus_cooperative_cancellation_supported else {}),
+                **({_timeout_cleanup.CAPABILITY: _timeout_cleanup.manifest_entry()}
+                   if self._cooperative_cancellation_supported else {}),
                 **({"prepared_local_activities": {
                     "supported": True, "minimum_protocol_version": "1.20",
                     "implementation": "durable_sequential_admission",
@@ -3217,6 +3225,13 @@ class Worker:
             return None
 
         workflow_commands = list(outcome.commands)
+        if not self._cooperative_cancellation_supported:
+            # Only a worker that advertised timeout_cleanup may send its marker (server#1201).
+            workflow_commands = [
+                dataclasses.replace(command, interruption=None)
+                if isinstance(command, FailWorkflow) and command.interruption is not None else command
+                for command in workflow_commands
+            ]
         if not workflow_commands and _condition_input_order.PENDING_INPUT in task:
             await self.client.fail_workflow_task(
                 task_id=task_id,

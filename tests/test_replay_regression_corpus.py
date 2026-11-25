@@ -349,6 +349,20 @@ class CooperativeTimeoutCleanupCauseWorkflow:
         return "not cancelled"
 
 
+@workflow.defn(name="tests.replay.cooperative-timeout-cleanup-interruption")
+class CooperativeTimeoutCleanupInterruptionWorkflow:
+    """Cleanup runs shielded, then the delivered timeout interruption escapes (server#1201)."""
+
+    def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.start_timer(120)
+        except WorkflowCancelled:
+            with ctx.cancellation_shield():
+                yield ctx.start_timer(1)
+            raise
+        return "not cancelled"
+
+
 @workflow.defn(name="tests.replay.child-policy-author")
 class ChildPolicyAuthorWorkflow:
     def run(self, ctx: WorkflowContext):  # type: ignore[no-untyped-def]
@@ -470,6 +484,7 @@ WORKFLOWS = [
     ColdReplacementSatisfiedConditionWorkflow,
     CooperativeReopenedConditionCleanupWorkflow,
     CooperativeTimeoutCleanupCauseWorkflow,
+    CooperativeTimeoutCleanupInterruptionWorkflow,
     GoldenSagaCompensationWorkflow,
     GoldenSignalWaitWorkflow,
     GoldenSingleActivityWorkflow,
