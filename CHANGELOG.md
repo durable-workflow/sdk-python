@@ -43,6 +43,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and never send the marker; listing `timeout_cleanup` without
   `cooperative_cancellation` raises `ValueError`.
   ([Server #1201](https://github.com/durable-workflow/server/issues/1201))
+- `ActivityHeartbeatUnavailable`, exported from `durable_workflow`. An
+  activity's `heartbeat()` or `heartbeat_sync()` raises it when a transient
+  outage, such as a Server failover (durable-workflow/cloud#752), outlasts the
+  client's transport retries. Before, this case raised a plain `ServerError`,
+  or the raw `httpx` connection or timeout error. The heartbeat is still not
+  retried further, because it runs inside activity code and a hidden retry
+  would block the activity. The activity can catch the error, keep working or
+  retry with backoff, and complete. The error subclasses `ServerError`, so
+  existing `except ServerError` handlers still catch it. It carries the
+  Server's `Retry-After` as `retry_after` (or `None`) and the underlying error
+  as `cause`. It is raised only for the failures the worker already treats as
+  transient (#383): connection and timeout errors, a 500, 502, 503 or 504
+  without a reason or with `server_error`, a 503 `storage_unavailable` or
+  `backend_unavailable`, and a 5xx or 429 with `retryable: true`. Code that
+  caught `httpx.TransportError` from a heartbeat must catch
+  `ActivityHeartbeatUnavailable` instead. Cancellation, a lost lease or closed
+  attempt, 4xx refusals and 5xx errors with a typed reason keep their existing
+  errors. See "Activity heartbeats during a failover" in the worker reference.
 
 ## [2.23.1] - 2026-11-24
 

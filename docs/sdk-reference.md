@@ -1611,6 +1611,12 @@ original `.reason`, such as `activity_deadline_elapsed`, `attempt_closed` or
 The worker releases the slot after the callback exits and submits neither a
 result nor a failure for that refused attempt.
 
+A transient outage that outlasts the client's transport retries, such as a
+Server failover, raises `ActivityHeartbeatUnavailable` instead. That is not a
+refusal: the attempt keeps its claim, and the activity can keep working or
+retry the heartbeat after its `retry_after`. See [Activity heartbeats during a
+failover](reference/worker.md#activity-heartbeats-during-a-failover).
+
 Checks happen at the next heartbeat. Code that never heartbeats may continue
 until it returns, subject to separately negotiated lease/cancellation
 supervision. The SDK cannot forcibly stop a running native thread or undo its
