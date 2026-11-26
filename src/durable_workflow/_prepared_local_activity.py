@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from . import serializer
-from ._activity_process import CallbackInvocation, SupervisedCallback
+from ._activity_process import DEFAULT_SPAWN_READINESS_TIMEOUT, CallbackInvocation, SupervisedCallback
 from .cancellation import CancellationContext
 from .client import Client
 from .workflow import LocalActivityExecutionAborted
@@ -243,9 +243,10 @@ class PreparedAttempt:
 class PreparedLocalRunner:
     def __init__(
         self, client: Client, attempt: PreparedAttempt, *, observe: Callable[[Mapping[str, Any]], Any],
-        shutdown: asyncio.Event,
+        shutdown: asyncio.Event, spawn_timeout: float = DEFAULT_SPAWN_READINESS_TIMEOUT,
     ) -> None:
         self.client = client
+        self.spawn_timeout = spawn_timeout
         self.attempt = attempt
         self.observe = observe
         self.shutdown = shutdown
@@ -301,7 +302,7 @@ class PreparedLocalRunner:
             # Admission was fenced before any process existed.
             await self.acknowledge_stop()
             raise
-        callback = SupervisedCallback(invocation)
+        callback = SupervisedCallback(invocation, readiness_timeout=self.spawn_timeout)
         self.callback = callback
         processes.add(callback)
         background: list[asyncio.Task[Any]] = []

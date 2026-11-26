@@ -93,7 +93,7 @@ async def application_failure(kind: str) -> None:
     raise ActivityCancelled()
 
 
-async def make_owner(monkeypatch: pytest.MonkeyPatch) -> tuple[Worker, AsyncMock]:
+async def make_owner(monkeypatch: pytest.MonkeyPatch, **options: Any) -> tuple[Worker, AsyncMock]:
     monkeypatch.delenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", raising=False)
     client = AsyncMock(spec=Client)
     client.get_cluster_info.return_value = compatible_cluster_info(worker_protocol={
@@ -104,7 +104,7 @@ async def make_owner(monkeypatch: pytest.MonkeyPatch) -> tuple[Worker, AsyncMock
     client.heartbeat_activity_task.return_value = status()
     client.acknowledge_activity_cancellation.return_value = stop_receipt()
     worker = Worker(client, task_queue="queue", worker_id="owner", capabilities=["cooperative_cancellation"],
-                    max_concurrent_activity_tasks=1)
+                    max_concurrent_activity_tasks=1, **options)
     await worker._register()
     return worker, client
 
@@ -375,3 +375,43 @@ async def test_client_observation_bounds_the_total_retry_budget(monkeypatch: pyt
                 ), timeout=7)
             assert asyncio.get_running_loop().time() - started < 6
         send.assert_awaited_once()
+
+
+def write_ran_marker(marker: str) -> None:
+    Path(marker).write_text("ran")
+
+
+@pytest.mark.parametrize("value", [0, -5, float("nan"), float("inf")])
+def test_activity_spawn_timeout_must_be_positive_and_finite(value: float) -> None:
+    with pytest.raises(ValueError, match="activity_spawn_timeout must be a positive, finite number of seconds"):
+        Worker(AsyncMock(spec=Client), task_queue="queue", activity_spawn_timeout=value)
+    assert Worker(AsyncMock(spec=Client), task_queue="queue").activity_spawn_timeout == 30.0
+
+
+async def test_missed_spawn_readiness_releases_the_claim_as_retryable_worker_lost(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # sdk-python#388: a busy host that misses the readiness wait has run no
+    # application code. The claim is released for a retry, not failed.
+    worker, client = await make_owner(monkeypatch, activity_spawn_timeout=0.001)
+    marker = tmp_path / "ran"
+    worker.activities["remote"] = write_ran_marker
+    try:
+        assert await worker._run_activity_task(task(str(marker))) == "failed"
+        client.fail_activity_task.assert_awaited_once()
+        report = client.fail_activity_task.await_args.kwargs
+        assert report["task_id"] == "remote-task"
+        assert report["activity_attempt_id"] == "attempt"
+        assert report["lease_owner"] == "owner"
+        assert report["failure_type"] == "worker_lost"
+        assert report["non_retryable"] is False
+        assert report["details"] == {"reason": "worker_lost", "cause": "activity_spawn_readiness_timeout"}
+        assert "spawn readiness within 0.001s" in report["message"]
+        assert "activity_spawn_timeout" in report["message"]
+        client.complete_activity_task.assert_not_awaited()
+        assert not marker.exists()
+        # The stopped callback gives its capacity back.
+        assert not worker._remote_activity_processes
+        assert worker._current_task_slots()["activity_available"] == 1
+    finally:
+        await worker.stop()

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import multiprocessing
 import pickle
 import selectors
@@ -29,9 +30,39 @@ from .activity import ActivityContext, ActivityInfo, _set_context
 from .errors import ActivityCancelled, NonRetryableError
 from .interceptors import ActivityInterceptorContext, WorkerInterceptor
 
+# A cooperative callback is two spawn-context interpreters (supervisor, then
+# callback) that import the SDK and the handler before reporting readiness. On
+# a busy host that takes far longer than an idle start, so the default wait is
+# generous; Worker(activity_spawn_timeout=...) changes it.
+DEFAULT_SPAWN_READINESS_TIMEOUT = 30.0
+# worker_lost release cause when a callback misses spawn readiness.
+ACTIVITY_SPAWN_READINESS_TIMEOUT = "activity_spawn_readiness_timeout"
+_CLOSE_JOIN_TIMEOUT = 5.0
+
+
+def validate_spawn_readiness_timeout(value: float, name: str = "activity_spawn_timeout") -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive, finite number of seconds")
+    return float(value)
+
 
 class CallbackProcessLost(RuntimeError):
     """The owner could not prove the callback outcome or physical stop."""
+
+
+class CallbackSpawnTimeout(CallbackProcessLost):
+    """The callback did not report spawn readiness in time and was confirmed stopped.
+
+    No application code ran. Raised only after the supervisor (and so the
+    callback) is joined, so the claim can be released for a retry.
+    """
+
+    def __init__(self, timeout: float) -> None:
+        self.timeout = timeout
+        super().__init__(
+            f"cooperative activity callback did not report spawn readiness within {timeout:g}s; the host may "
+            "be overloaded. Raise Worker(activity_spawn_timeout=...) or lower max_concurrent_activity_tasks"
+        )
 
 
 @dataclass(frozen=True)
@@ -214,7 +245,10 @@ class SupervisedCallback:
     never supplies stop evidence. The worker integration remains a separate gate.
     """
 
-    def __init__(self, invocation: CallbackInvocation) -> None:
+    def __init__(
+        self, invocation: CallbackInvocation, *, readiness_timeout: float = DEFAULT_SPAWN_READINESS_TIMEOUT,
+    ) -> None:
+        self._readiness_timeout = validate_spawn_readiness_timeout(readiness_timeout, "readiness_timeout")
         serialized = invocation.serialize()
         self.directory = tempfile.mkdtemp(prefix="dw-activity-")
         try:
@@ -241,12 +275,26 @@ class SupervisedCallback:
             self._supervisor.start()
             self._started = True
             self._supervisor_channel.close()
-            message = await asyncio.wait_for(self._receive(), timeout=5.0)
+            try:
+                message = await asyncio.wait_for(self._receive(), timeout=self._readiness_timeout)
+            except asyncio.TimeoutError:
+                await self._close_unready()
+                raise CallbackSpawnTimeout(self._readiness_timeout) from None
             if message != b"B":
                 raise CallbackProcessLost("callback did not prove spawn readiness")
         except BaseException:
             await self.close()
             raise
+
+    async def _close_unready(self) -> None:
+        # The supervisor may still be starting on a busy host. Closing the
+        # owner channel makes it reap its callback and exit; allow it as long
+        # as readiness was allowed. Only a clean supervisor exit proves the
+        # callback joined, so anything else stays CallbackProcessLost.
+        await self.close(join_timeout=max(_CLOSE_JOIN_TIMEOUT, self._readiness_timeout))
+        if self._exitcode != 0:
+            raise CallbackProcessLost("callback supervisor did not confirm a clean join after spawn timeout")
+        self.stopped = True
 
     async def _receive(self) -> bytes:
         try:
@@ -311,7 +359,7 @@ class SupervisedCallback:
             raise CallbackProcessLost("callback supervisor did not confirm a clean join")
         self.stopped = True
 
-    async def close(self) -> None:
+    async def close(self, *, join_timeout: float = _CLOSE_JOIN_TIMEOUT) -> None:
         if self._joined:
             return
         if not self._closed:
@@ -319,7 +367,7 @@ class SupervisedCallback:
             self._owner.close()
             self._supervisor_channel.close()
         if self._started:
-            await asyncio.to_thread(self._supervisor.join, 5.0)
+            await asyncio.to_thread(self._supervisor.join, join_timeout)
             if self._supervisor.is_alive():
                 raise CallbackProcessLost("callback supervisor has not confirmed shutdown")
             self._exitcode = self._supervisor.exitcode

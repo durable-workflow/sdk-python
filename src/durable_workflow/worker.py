@@ -50,7 +50,16 @@ from ._activity_lease import (
     current_activity_authority,
     release_worker_lost,
 )
-from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProcessLost, SupervisedCallback
+from ._activity_process import (
+    ACTIVITY_SPAWN_READINESS_TIMEOUT,
+    DEFAULT_SPAWN_READINESS_TIMEOUT,
+    CallbackFailure,
+    CallbackInvocation,
+    CallbackProcessLost,
+    CallbackSpawnTimeout,
+    SupervisedCallback,
+    validate_spawn_readiness_timeout,
+)
 from ._cancellation_scope_history import CancellationScopeBudget, CancellationScopeDeliveryReceipt
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
 from ._failure_reporting import REQUEST_BYTES, exception_message, normalize_local_failure
@@ -1401,8 +1410,15 @@ class Worker:
         external_storage_cache: ExternalPayloadCache | None = None,
         require_query_task_authority: bool = False,
         record_parallel_failure_order: bool | None = None,
+        activity_spawn_timeout: float = DEFAULT_SPAWN_READINESS_TIMEOUT,
     ) -> None:
         """Create a worker.
+
+        ``activity_spawn_timeout`` bounds, in seconds, how long a cooperative
+        worker waits for a supervised activity callback process to start and
+        report readiness (default 30). A start that misses it ran no
+        application code; the worker stops the process and releases the claim
+        as a retryable ``worker_lost`` failure.
 
         ``record_parallel_failure_order`` lets new runs record the parallel
         failure-order marker before their first all-group, so their groups
@@ -1486,6 +1502,7 @@ class Worker:
             raise ValueError("max_concurrent_worker_sessions must be at least 1")
         if heartbeat_interval <= 0:
             raise ValueError("heartbeat_interval must be positive")
+        self.activity_spawn_timeout = validate_spawn_readiness_timeout(activity_spawn_timeout)
 
         # Client supplies HTTP grace separately from this requested poll window.
         self._poll_timeout = poll_timeout
@@ -2525,7 +2542,8 @@ class Worker:
                 raise LocalActivityExecutionAborted("prepared group members observed different cancellation authority")
             task["_prepared_cancellation_context"] = dict(value)
 
-        runner = PreparedLocalRunner(self.client, attempt, shutdown=self._local_activity_shutdown, observe=observe)
+        runner = PreparedLocalRunner(self.client, attempt, shutdown=self._local_activity_shutdown, observe=observe,
+                                     spawn_timeout=self.activity_spawn_timeout)
         telemetry = current_execution_telemetry()
         invocation = CallbackInvocation(
             handler, tuple(call.command.arguments), ActivityInfo(
@@ -3751,7 +3769,7 @@ class Worker:
         callback = SupervisedCallback(CallbackInvocation(
             handler, args, info, task, self.interceptors, namespace=getattr(self.client, "namespace", None),
             observability_supported=self._observability_claim(task, "activity"), remote=True,
-        ))
+        ), readiness_timeout=self.activity_spawn_timeout)
         self._remote_activity_processes.add(callback)
         claim = current_activity_authority.get()
         if claim is not None:
@@ -3850,6 +3868,19 @@ class Worker:
         log.warning("activity claim %s released as worker_lost: %s", task_id, error.reason)
         return "failed"
 
+    async def _release_unready_remote_activity(self, task_id: str, attempt_id: str,
+                                               error: CallbackSpawnTimeout) -> str:
+        # The callback never reported readiness, so no application code ran,
+        # and its supervisor was joined before this error was raised. Release
+        # the claim as a retryable worker condition, not an activity failure.
+        log.warning("remote activity %s did not start: %s", task_id, error)
+        released = await release_worker_lost(
+            self.client, task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id,
+            cause=ACTIVITY_SPAWN_READINESS_TIMEOUT, timeout=5.0,
+            message=f"activity worker released the claim: {error}",
+        )
+        return "failed" if released else "claim_aborted"
+
     async def _run_activity_task_body(self, task: dict[str, Any]) -> str:
         self._track_worker_session_from_task(task)
         task_id: str = task["task_id"]
@@ -3895,6 +3926,8 @@ class Worker:
         except _RemoteActivityExecutionAborted as error:
             log.warning("remote activity %s claim abandoned: %s", task_id, error)
             return "claim_aborted"
+        except CallbackSpawnTimeout as error:
+            return await self._release_unready_remote_activity(task_id, attempt_id, error)
         except CallbackProcessLost as error:
             log.warning("remote activity %s supervision failed: %s", task_id, error)
             return "claim_aborted"

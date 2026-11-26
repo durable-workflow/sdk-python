@@ -29,6 +29,22 @@ isolated worker processes and their resource limits. The separately
 negotiated cooperative-cancellation capability retains its supervised process
 execution; selecting a default thread does not enable that protocol.
 
+### Cooperative callback start timeout
+
+With cooperative cancellation, each activity runs in a supervised
+spawn-context process. The worker waits up to `activity_spawn_timeout` seconds
+(default 30) for that process to start, import the handler and report
+readiness. A busy host can need much longer than an idle one, for example
+when several activities start at once in a small container. Raise the timeout
+with `Worker(..., activity_spawn_timeout=60.0)`, or lower
+`max_concurrent_activity_tasks`.
+
+A start that misses the timeout ran no application code. The worker stops
+the process and releases the claim as a retryable `worker_lost` failure with
+cause `activity_spawn_readiness_timeout`, so the Server can retry the attempt.
+The message names the timeout and the setting. It is not reported as an
+activity failure.
+
 ## Bounded failure reports
 
 This behavior is available in Python SDK 2.11.0 and later.
