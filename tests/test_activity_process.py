@@ -14,8 +14,10 @@ import pytest
 
 from durable_workflow import activity
 from durable_workflow._activity_process import (
+    DEFAULT_SPAWN_READINESS_TIMEOUT,
     CallbackInvocation,
     CallbackProcessLost,
+    CallbackSpawnTimeout,
     SupervisedCallback,
 )
 from durable_workflow.activity import ActivityInfo
@@ -268,3 +270,56 @@ async def test_cancellation_during_confirmed_result_join_still_reaps_and_proves_
             await asyncio.gather(result, return_exceptions=True)
         if not callback.stopped:
             await callback.stop()
+
+
+def write_marker(marker: str) -> str:
+    Path(marker).write_text("ran")
+    return marker
+
+
+@pytest.mark.parametrize("value", [0, -1.0, float("nan"), float("inf"), True, "30"])
+def test_readiness_timeout_must_be_a_positive_finite_number(value: Any) -> None:
+    with pytest.raises(ValueError, match="readiness_timeout must be a positive, finite number of seconds"):
+        SupervisedCallback(invocation(typed_result, b""), readiness_timeout=value)
+
+
+def test_default_readiness_timeout_allows_a_busy_host() -> None:
+    assert DEFAULT_SPAWN_READINESS_TIMEOUT == 30.0
+
+
+async def test_missed_spawn_readiness_stops_the_callback_and_names_the_setting(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    callback = SupervisedCallback(invocation(write_marker, str(marker)), readiness_timeout=0.001)
+    with pytest.raises(CallbackSpawnTimeout, match=r"spawn readiness within 0\.001s.*activity_spawn_timeout") as raised:
+        await callback.start()
+    assert isinstance(raised.value, CallbackProcessLost)
+    assert raised.value.timeout == 0.001
+    # The supervisor joined cleanly, so its callback is proved stopped.
+    assert callback.stopped is True
+    assert not Path(callback.directory).exists()
+    assert not marker.exists()
+    await callback.close()
+
+
+@pytest.mark.skipif(not hasattr(os, "sched_setaffinity"), reason="needs CPU affinity")
+async def test_concurrent_cooperative_spawns_on_one_cpu_all_report_ready() -> None:
+    # sdk-python#388: about eight spawn-context callbacks starting at once on a
+    # constrained worker missed a fixed 5 s readiness wait. Spawned children
+    # inherit this process's affinity, so all of them share one CPU here.
+    original = os.sched_getaffinity(0)
+    os.sched_setaffinity(0, {min(original)})
+    callbacks = [SupervisedCallback(invocation(typed_result, bytes([index]))) for index in range(8)]
+    try:
+        started = time.monotonic()
+        await asyncio.gather(*(callback.start() for callback in callbacks))
+        elapsed = time.monotonic() - started
+        outcomes = await asyncio.gather(*(callback.result(no_heartbeat) for callback in callbacks))
+    finally:
+        os.sched_setaffinity(0, original)
+        for callback in callbacks:
+            if not callback.stopped:
+                await callback.stop()
+            await callback.close()
+    assert [outcome.value["bytes"] for outcome in outcomes] == [bytes([index]) for index in range(8)]
+    assert all(callback.stopped for callback in callbacks)
+    assert elapsed < DEFAULT_SPAWN_READINESS_TIMEOUT

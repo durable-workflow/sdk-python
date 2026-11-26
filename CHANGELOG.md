@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Cooperative activity callbacks now wait up to 30 seconds, instead of a
+  fixed 5, for their spawned process to report readiness. Set the wait with
+  `DURABLE_WORKFLOW_ACTIVITY_SPAWN_TIMEOUT` or `worker.activity_spawn_timeout`.
+  A callback that misses it is stopped and joined, frees its activity slot, and
+  its claim is released as a retryable `worker_lost` failure (cause
+  `activity_spawn_readiness_timeout`) whose message names the setting, instead
+  of being reported as an activity failure. Claim loss or shutdown during a
+  slow start no longer waits for readiness (sdk-python#388).
+
 ## [2.24.0] - 2026-11-26
 
 ### Added

@@ -50,7 +50,17 @@ from ._activity_lease import (
     current_activity_authority,
     release_worker_lost,
 )
-from ._activity_process import CallbackFailure, CallbackInvocation, CallbackProcessLost, SupervisedCallback
+from ._activity_process import (
+    ACTIVITY_SPAWN_READINESS_TIMEOUT,
+    ACTIVITY_SPAWN_TIMEOUT_ENV,
+    DEFAULT_SPAWN_READINESS_TIMEOUT,
+    CallbackFailure,
+    CallbackInvocation,
+    CallbackProcessLost,
+    CallbackSpawnTimeout,
+    SupervisedCallback,
+    validate_spawn_readiness_timeout,
+)
 from ._cancellation_scope_history import CancellationScopeBudget, CancellationScopeDeliveryReceipt
 from ._cooperative_cancellation import CancellationRequest, read_cancellation_history
 from ._failure_reporting import REQUEST_BYTES, exception_message, normalize_local_failure
@@ -1352,6 +1362,18 @@ def _contract_version_matches(value: Any, expected: int) -> bool:
 RECORD_PARALLEL_FAILURE_ORDER_ENV = "DURABLE_WORKFLOW_RECORD_PARALLEL_FAILURE_ORDER"
 
 
+def _activity_spawn_timeout_from_environment() -> float:
+    """The cooperative callback readiness wait from the environment, refused when malformed."""
+    raw = os.environ.get(ACTIVITY_SPAWN_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_SPAWN_READINESS_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{ACTIVITY_SPAWN_TIMEOUT_ENV} must be a positive, finite number of seconds") from None
+    return validate_spawn_readiness_timeout(value, ACTIVITY_SPAWN_TIMEOUT_ENV)
+
+
 def _record_parallel_failure_order(value: bool | None) -> bool:
     """The worker's failure-order recording setting, refused when malformed."""
     if value is None:
@@ -2525,7 +2547,8 @@ class Worker:
                 raise LocalActivityExecutionAborted("prepared group members observed different cancellation authority")
             task["_prepared_cancellation_context"] = dict(value)
 
-        runner = PreparedLocalRunner(self.client, attempt, shutdown=self._local_activity_shutdown, observe=observe)
+        runner = PreparedLocalRunner(self.client, attempt, shutdown=self._local_activity_shutdown, observe=observe,
+                                     spawn_timeout=self.activity_spawn_timeout)
         telemetry = current_execution_telemetry()
         invocation = CallbackInvocation(
             handler, tuple(call.command.arguments), ActivityInfo(
@@ -3751,17 +3774,28 @@ class Worker:
         callback = SupervisedCallback(CallbackInvocation(
             handler, args, info, task, self.interceptors, namespace=getattr(self.client, "namespace", None),
             observability_supported=self._observability_claim(task, "activity"), remote=True,
-        ))
+        ), readiness_timeout=self.activity_spawn_timeout)
         self._remote_activity_processes.add(callback)
         claim = current_activity_authority.get()
         if claim is not None:
             claim.track(callback)
         invocation: asyncio.Task[Any] | None = None
+        starting: asyncio.Task[None] | None = None
         abandoned = False
         observation = asyncio.create_task(observe_ownership())
         shutdown = asyncio.create_task(self._local_activity_shutdown.wait())
         try:
-            await callback.start()
+            # A slow start on a busy host still yields to claim loss and shutdown.
+            starting = asyncio.create_task(callback.start())
+            done, _ = await asyncio.wait([starting, observation, shutdown], return_when=asyncio.FIRST_COMPLETED)
+            if starting not in done:
+                starting.cancel()
+                await asyncio.gather(starting, return_exceptions=True)
+                if shutdown in done:
+                    raise _RemoteActivityExecutionAborted("worker shutdown abandoned its remote activity claim")
+                await observation
+                raise _RemoteActivityExecutionAborted("remote ownership observer stopped without a response")
+            await starting
             invocation = asyncio.create_task(callback.result(send_heartbeat))
             done, _ = await asyncio.wait([invocation, observation, shutdown], return_when=asyncio.FIRST_COMPLETED)
             if shutdown in done:
@@ -3781,7 +3815,8 @@ class Worker:
             abandoned = True
             raise
         finally:
-            backgrounds = [background for background in (invocation, observation, shutdown) if background is not None]
+            backgrounds = [background for background in (starting, invocation, observation, shutdown)
+                           if background is not None]
             for background in backgrounds:
                 if not background.done():
                     background.cancel()
@@ -3850,6 +3885,20 @@ class Worker:
         log.warning("activity claim %s released as worker_lost: %s", task_id, error.reason)
         return "failed"
 
+    async def _release_unready_remote_activity(self, task_id: str, attempt_id: str,
+                                               error: CallbackSpawnTimeout) -> str:
+        # The callback never reported readiness, and its supervisor (which
+        # reaps the callback) was joined before this error was raised, so
+        # nothing of this attempt still runs. Release the claim as a
+        # retryable worker condition, not an activity failure.
+        log.warning("remote activity %s did not start: %s", task_id, error)
+        released = await release_worker_lost(
+            self.client, task_id=task_id, activity_attempt_id=attempt_id, lease_owner=self.worker_id,
+            cause=ACTIVITY_SPAWN_READINESS_TIMEOUT, timeout=5.0,
+            message=f"activity worker released the claim: {error}",
+        )
+        return "failed" if released else "claim_aborted"
+
     async def _run_activity_task_body(self, task: dict[str, Any]) -> str:
         self._track_worker_session_from_task(task)
         task_id: str = task["task_id"]
@@ -3895,6 +3944,8 @@ class Worker:
         except _RemoteActivityExecutionAborted as error:
             log.warning("remote activity %s claim abandoned: %s", task_id, error)
             return "claim_aborted"
+        except CallbackSpawnTimeout as error:
+            return await self._release_unready_remote_activity(task_id, attempt_id, error)
         except CallbackProcessLost as error:
             log.warning("remote activity %s supervision failed: %s", task_id, error)
             return "claim_aborted"
@@ -5623,11 +5674,35 @@ class Worker:
             self._activity_inflight = max(0, self._activity_inflight - 1)
             self._record_task_metrics("activity", outcome, time.perf_counter() - task_start)
 
+    @property
+    def activity_spawn_timeout(self) -> float:
+        """Seconds a cooperative activity callback process may take to report readiness.
+
+        A cooperative worker runs each activity in a supervised spawn-context
+        process. The default is 30 seconds, or
+        ``DURABLE_WORKFLOW_ACTIVITY_SPAWN_TIMEOUT`` when set. Assign a
+        positive number before running the worker to change it. A start that
+        misses the wait had not reported its handler started: the worker stops
+        and joins the process, then releases the claim as a retryable
+        ``worker_lost`` failure.
+        """
+        configured: float | None = getattr(self, "_activity_spawn_timeout", None)
+        if configured is None:
+            configured = _activity_spawn_timeout_from_environment()
+            self._activity_spawn_timeout = configured
+        return configured
+
+    @activity_spawn_timeout.setter
+    def activity_spawn_timeout(self, value: float) -> None:
+        self._activity_spawn_timeout = validate_spawn_readiness_timeout(value)
+
     def _begin_run(self) -> None:
         if self._run_started:
             raise RuntimeError("worker is already running or has already run")
         if self._stop.is_set():
             raise RuntimeError("worker cannot run after stop() has been called")
+        # Refuse a malformed environment setting before claiming any work.
+        _ = self.activity_spawn_timeout
         self._run_started = True
         self._status.run_started()
         self._status_tick_task = asyncio.get_running_loop().create_task(self._status_tick_loop())

@@ -51,7 +51,7 @@ def renewal_retry_delay(failures: int) -> float:
 
 
 async def release_worker_lost(client: Any, *, task_id: str, activity_attempt_id: str, lease_owner: str,
-                              cause: str, timeout: float) -> bool:
+                              cause: str, timeout: float, message: str | None = None) -> bool:
     """Release a claim the worker cannot maintain, by the cross-SDK contract.
 
     Call only after the execution is confirmed stopped (or never started):
@@ -61,7 +61,7 @@ async def release_worker_lost(client: Any, *, task_id: str, activity_attempt_id:
     try:
         await asyncio.wait_for(client.fail_activity_task(
             task_id=task_id, activity_attempt_id=activity_attempt_id, lease_owner=lease_owner,
-            message=f"activity worker released the claim: lease could not be renewed ({cause})",
+            message=message or f"activity worker released the claim: lease could not be renewed ({cause})",
             failure_type=WORKER_LOST_FAILURE_TYPE, failure_class=ActivityWorkerLost.__name__,
             non_retryable=False, details={"reason": WORKER_LOST_FAILURE_TYPE, "cause": cause},
         ), timeout=timeout)
