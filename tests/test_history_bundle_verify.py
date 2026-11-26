@@ -291,6 +291,48 @@ def test_external_storage_reference_entries_need_no_avro_framing() -> None:
     assert "payload_manifest.avro_framing_missing" not in _rule_names(report)
 
 
+def test_external_encoding_without_matching_diagnostic_still_warns() -> None:
+    # PHP and native skip on the diagnostic alone, so an entry that only
+    # claims the external encoding is still checked.
+    signing_key = "secret"
+    bundle = _base_bundle()
+    bundle["payload_manifest"]["entries"].append(
+        {
+            "path": "payloads.arguments.data",
+            "codec": "avro",
+            "available": True,
+            "redacted": False,
+            "encoding": "external-storage-reference",
+            "diagnostic": None,
+        }
+    )
+    bundle = _sign(bundle, signing_key, "key-1")
+
+    report = verify_bundle(bundle, signing_key=signing_key)
+
+    assert "payload_manifest.avro_framing_missing" in _rule_names(report)
+
+
+def test_redacted_avro_entry_needs_no_framing() -> None:
+    signing_key = "secret"
+    bundle = _base_bundle()
+    bundle["payload_manifest"]["entries"].append(
+        {
+            "path": "payloads.output.data",
+            "codec": "avro",
+            "available": True,
+            "redacted": True,
+            "encoding": "base64-avro-single-object",
+            "diagnostic": None,
+        }
+    )
+    bundle = _sign(bundle, signing_key, "key-1")
+
+    report = verify_bundle(bundle, signing_key=signing_key)
+
+    assert "payload_manifest.avro_framing_missing" not in _rule_names(report)
+
+
 def test_inline_avro_entry_without_framing_still_warns() -> None:
     signing_key = "secret"
     bundle = _base_bundle()

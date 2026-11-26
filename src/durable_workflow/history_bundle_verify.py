@@ -545,14 +545,16 @@ def _check_payload_manifest(bundle: Mapping[str, Any], findings: list[dict[str, 
                 )
             )
 
-        # An external storage reference names an object outside the bundle,
-        # so it carries no inline Avro framing. The PHP and native verifiers
-        # skip these entries; so does this one.
-        external_reference = (
-            entry.get("encoding") == "external-storage-reference"
-            or diagnostic == "external_storage_reference"
-        )
-        if entry.get("codec") == "avro" and available and not external_reference:
+        # The same condition as the PHP and native verifiers: an available,
+        # unredacted Avro entry needs inline framing unless its diagnostic
+        # marks it as an external storage reference, which names an object
+        # outside the bundle.
+        if (
+            entry.get("codec") == "avro"
+            and available
+            and not redacted
+            and diagnostic != "external_storage_reference"
+        ):
             if not _string_or_none(entry.get("avro_framing")):
                 findings.append(
                     _finding(
