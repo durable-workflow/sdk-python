@@ -5682,8 +5682,9 @@ class Worker:
         process. The default is 30 seconds, or
         ``DURABLE_WORKFLOW_ACTIVITY_SPAWN_TIMEOUT`` when set. Assign a
         positive number before running the worker to change it. A start that
-        misses the wait ran no application code: the worker stops the process
-        and releases the claim as a retryable ``worker_lost`` failure.
+        misses the wait had not reported its handler started: the worker stops
+        and joins the process, then releases the claim as a retryable
+        ``worker_lost`` failure.
         """
         configured: float | None = getattr(self, "_activity_spawn_timeout", None)
         if configured is None:

@@ -414,8 +414,8 @@ async def test_malformed_activity_spawn_timeout_environment_refuses_to_run(
 async def test_missed_spawn_readiness_releases_the_claim_as_retryable_worker_lost(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    # sdk-python#388: a busy host that misses the readiness wait has run no
-    # application code. The claim is released for a retry, not failed.
+    # sdk-python#388: a callback that misses the readiness wait on a busy host
+    # is stopped and joined. The claim is released for a retry, not failed.
     worker, client = await make_owner(monkeypatch)
     worker.activity_spawn_timeout = 0.001
     marker = tmp_path / "ran"
