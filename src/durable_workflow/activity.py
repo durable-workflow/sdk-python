@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._activity_checkpoint import ActivityHeartbeatCheckpoint, _HeartbeatResume, claim_resume
 from ._activity_lease import current_activity_authority
-from .errors import ActivityCancelled, ActivityWorkerLost
+from .errors import ActivityCancelled, ActivityHeartbeatUnavailable, ActivityWorkerLost
 
 if TYPE_CHECKING:
     from .client import Client
@@ -160,6 +160,8 @@ class ActivityContext:
 
         The request runs on the worker's event loop using the original attempt
         and client. Async handlers must use ``await heartbeat()`` instead.
+        It raises the same errors as :meth:`heartbeat`, including
+        :class:`~durable_workflow.errors.ActivityHeartbeatUnavailable`.
         """
         loop = self._event_loop
         if loop is None or not loop.is_running():
@@ -193,6 +195,12 @@ class ActivityContext:
         Raises :class:`~durable_workflow.errors.ActivityWorkerLost`
         with the original Server reason when the attempt cannot continue,
         including an elapsed deadline, closed attempt or closed run.
+
+        Raises :class:`~durable_workflow.errors.ActivityHeartbeatUnavailable`
+        when a transient outage, such as a Server failover, outlasts the
+        client's transport retries. The heartbeat is not retried further, so
+        the activity can choose to keep working and heartbeat again later,
+        waiting at least its ``retry_after`` when set.
         """
         self._raise_if_cannot_continue()
         if self._heartbeat_callback is not None:
@@ -202,12 +210,22 @@ class ActivityContext:
                 self._cancel_requested = True
                 raise
             return
-        resp = await self._client.heartbeat_activity_task(
-            task_id=self._info.task_id,
-            activity_attempt_id=self._info.activity_attempt_id,
-            lease_owner=self._info.worker_id,
-            details=details,
-        )
+        try:
+            resp = await self._client.heartbeat_activity_task(
+                task_id=self._info.task_id,
+                activity_attempt_id=self._info.activity_attempt_id,
+                lease_owner=self._info.worker_id,
+                details=details,
+            )
+        except Exception as error:
+            # The worker's classification; imported here because worker imports this module.
+            from .worker import _transient_runtime_error
+
+            # Not retried here: the activity decides whether to keep working
+            # through an outage. Definitive refusals keep their own errors.
+            if _transient_runtime_error(error):
+                raise ActivityHeartbeatUnavailable(self._info.task_id, error) from error
+            raise
         if isinstance(resp, dict) and resp.get("cancel_requested"):
             self._cancel_requested = True
             raise ActivityCancelled()

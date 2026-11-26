@@ -364,6 +364,47 @@ class ServerError(DurableWorkflowError):
         )
 
 
+class ActivityHeartbeatUnavailable(ServerError):
+    """An activity heartbeat could not reach the Server because of a transient outage.
+
+    :meth:`~durable_workflow.ActivityContext.heartbeat` and
+    :meth:`~durable_workflow.ActivityContext.heartbeat_sync` raise this after
+    the client's own transport retries are used up, for example during a
+    Server or database failover. It is raised only for failures that may
+    succeed unchanged once the Server recovers: a refused, reset or timed-out
+    connection; a 500, 502, 503 or 504 without a protocol ``reason`` or with
+    the generic ``server_error`` reason; a 503 ``storage_unavailable`` or
+    ``backend_unavailable``; and a 5xx or 429 that says ``retryable: true``.
+
+    The heartbeat was not confirmed, but the attempt has not lost its
+    authority. Activity code may keep working and heartbeat again later,
+    waiting at least ``retry_after`` when it is set. A cancellation or lost
+    attempt still raises :class:`~durable_workflow.errors.ActivityCancelled`
+    or :class:`~durable_workflow.errors.ActivityWorkerLost`, and other
+    refusals keep their own errors.
+
+    It subclasses :class:`~durable_workflow.errors.ServerError`, so existing
+    ``except ServerError`` handlers still catch it. ``status`` and ``body``
+    are those of the HTTP response, or ``0`` and ``None`` when no response
+    arrived. ``cause`` (also ``__cause__``) is the underlying error, and
+    ``retry_after`` is the Server's ``Retry-After`` in seconds, or ``None``
+    when it sent none.
+    """
+
+    def __init__(self, task_id: str, cause: BaseException) -> None:
+        if isinstance(cause, ServerError):
+            status, body = cause.status, cause.body
+        else:
+            status, body = 0, None
+        super().__init__(status, body)
+        detail = f"server returned {status}: {body!r}" if status else f"{type(cause).__name__}: {cause}"
+        self.args = (f"activity task {task_id!r} heartbeat not delivered; the Server is unavailable ({detail})",)
+        self.task_id = task_id
+        self.cause = cause
+        retry_after = getattr(cause, "retry_after", None)
+        self.retry_after = float(retry_after) if isinstance(retry_after, (int, float)) else None
+
+
 WORKFLOW_TASK_COMPLETION_BYTES = "workflow_task_completion_bytes"
 
 

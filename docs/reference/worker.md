@@ -230,6 +230,62 @@ exposes the parsed value as `retry_after` on the raised error. The client's
 own `TransportRetryPolicy` also honours the header between its quick
 attempts, capped at its `max_backoff_seconds`.
 
+### Activity heartbeats during a failover
+
+`await activity.context().heartbeat(details)` and `heartbeat_sync(details)`
+are not retried beyond the client's quick transport attempts. They run inside
+your activity code, so a long hidden retry would block the activity. When a
+transient failure from the list above outlasts those attempts, the call raises
+`ActivityHeartbeatUnavailable`. Its `retry_after` is the Server's
+`Retry-After` in seconds, or `None`, and its `cause` is the underlying error.
+It subclasses `ServerError`, so existing `except ServerError` handlers still
+catch it.
+
+The heartbeat was not confirmed, but the attempt still holds its claim. The
+activity can keep working, or wait and heartbeat again:
+
+```python
+import asyncio
+import random
+
+from durable_workflow import ActivityHeartbeatUnavailable, activity
+
+
+async def heartbeat_through_outage(details: dict, *, attempts: int = 6) -> None:
+    ctx = activity.context()
+    delay = 0.5
+    for attempt in range(1, attempts + 1):
+        try:
+            await ctx.heartbeat(details)
+            return
+        except ActivityHeartbeatUnavailable as outage:
+            if attempt == attempts:
+                raise
+            wait = random.uniform(0, delay)
+            await asyncio.sleep(max(wait, outage.retry_after or 0.0))
+            delay = min(delay * 2, 8.0)
+
+
+@activity.defn(name="export_rows")
+async def export_rows(batch: list[str]) -> int:
+    for index, row in enumerate(batch):
+        await write_row(row)  # your application's work
+        await heartbeat_through_outage({"row": index})
+    return len(batch)
+```
+
+Keep the total wait well inside the activity's heartbeat timeout. After that
+the Server times out the attempt, and the activity's retry policy applies. The
+example re-raises on its last attempt, which fails this attempt. Only
+transient failures raise `ActivityHeartbeatUnavailable`. Cancellation still
+raises `ActivityCancelled`, a lost lease or closed attempt still raises
+`ActivityWorkerLost`, and other refusals, such as a 4xx or a 5xx with a typed
+reason, raise their usual errors. Don't retry those.
+
+With cooperative cancellation enabled, a remote activity runs in a supervised
+callback process. There a failed heartbeat abandons the claim instead, and the
+error does not reach activity code.
+
 ## Lifecycle and shutdown
 
 `Worker.run()` and `Worker.run_until()` register through the worker protocol
