@@ -18,6 +18,7 @@ from durable_workflow.client import Client
 from durable_workflow.errors import ActivityCancelled, NonRetryableError, ServerError
 from durable_workflow.retry_policy import TransportRetryPolicy
 from durable_workflow.worker import Worker
+from tests import slow_import_activity
 from tests.test_activity_process import wait_for_exit, wait_for_file
 from tests.test_activity_retry_info import inspect_activity_context
 from tests.test_worker import compatible_cluster_info
@@ -93,7 +94,7 @@ async def application_failure(kind: str) -> None:
     raise ActivityCancelled()
 
 
-async def make_owner(monkeypatch: pytest.MonkeyPatch, **options: Any) -> tuple[Worker, AsyncMock]:
+async def make_owner(monkeypatch: pytest.MonkeyPatch) -> tuple[Worker, AsyncMock]:
     monkeypatch.delenv("DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION", raising=False)
     client = AsyncMock(spec=Client)
     client.get_cluster_info.return_value = compatible_cluster_info(worker_protocol={
@@ -104,7 +105,7 @@ async def make_owner(monkeypatch: pytest.MonkeyPatch, **options: Any) -> tuple[W
     client.heartbeat_activity_task.return_value = status()
     client.acknowledge_activity_cancellation.return_value = stop_receipt()
     worker = Worker(client, task_queue="queue", worker_id="owner", capabilities=["cooperative_cancellation"],
-                    max_concurrent_activity_tasks=1, **options)
+                    max_concurrent_activity_tasks=1)
     await worker._register()
     return worker, client
 
@@ -381,11 +382,33 @@ def write_ran_marker(marker: str) -> None:
     Path(marker).write_text("ran")
 
 
-@pytest.mark.parametrize("value", [0, -5, float("nan"), float("inf")])
-def test_activity_spawn_timeout_must_be_positive_and_finite(value: float) -> None:
+@pytest.mark.parametrize("value", [0, -5, float("nan"), float("inf"), True])
+def test_activity_spawn_timeout_must_be_positive_and_finite(monkeypatch: pytest.MonkeyPatch, value: float) -> None:
+    monkeypatch.delenv("DURABLE_WORKFLOW_ACTIVITY_SPAWN_TIMEOUT", raising=False)
+    worker = Worker(AsyncMock(spec=Client), task_queue="queue")
+    assert worker.activity_spawn_timeout == 30.0
     with pytest.raises(ValueError, match="activity_spawn_timeout must be a positive, finite number of seconds"):
-        Worker(AsyncMock(spec=Client), task_queue="queue", activity_spawn_timeout=value)
-    assert Worker(AsyncMock(spec=Client), task_queue="queue").activity_spawn_timeout == 30.0
+        worker.activity_spawn_timeout = value
+    worker.activity_spawn_timeout = 60
+    assert worker.activity_spawn_timeout == 60.0
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("45", 45.0), (" 2.5 ", 2.5), ("", 30.0)])
+def test_activity_spawn_timeout_reads_the_environment(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: float,
+) -> None:
+    monkeypatch.setenv("DURABLE_WORKFLOW_ACTIVITY_SPAWN_TIMEOUT", raw)
+    assert Worker(AsyncMock(spec=Client), task_queue="queue").activity_spawn_timeout == expected
+
+
+@pytest.mark.parametrize("raw", ["soon", "0", "-1", "nan", "inf"])
+async def test_malformed_activity_spawn_timeout_environment_refuses_to_run(
+    monkeypatch: pytest.MonkeyPatch, raw: str,
+) -> None:
+    monkeypatch.setenv("DURABLE_WORKFLOW_ACTIVITY_SPAWN_TIMEOUT", raw)
+    worker = Worker(AsyncMock(spec=Client), task_queue="queue")
+    with pytest.raises(ValueError, match="DURABLE_WORKFLOW_ACTIVITY_SPAWN_TIMEOUT must be a positive, finite"):
+        worker._begin_run()
 
 
 async def test_missed_spawn_readiness_releases_the_claim_as_retryable_worker_lost(
@@ -393,7 +416,8 @@ async def test_missed_spawn_readiness_releases_the_claim_as_retryable_worker_los
 ) -> None:
     # sdk-python#388: a busy host that misses the readiness wait has run no
     # application code. The claim is released for a retry, not failed.
-    worker, client = await make_owner(monkeypatch, activity_spawn_timeout=0.001)
+    worker, client = await make_owner(monkeypatch)
+    worker.activity_spawn_timeout = 0.001
     marker = tmp_path / "ran"
     worker.activities["remote"] = write_ran_marker
     try:
@@ -413,5 +437,31 @@ async def test_missed_spawn_readiness_releases_the_claim_as_retryable_worker_los
         # The stopped callback gives its capacity back.
         assert not worker._remote_activity_processes
         assert worker._current_task_slots()["activity_available"] == 1
+    finally:
+        await worker.stop()
+
+
+async def test_shutdown_during_a_slow_start_aborts_without_waiting_for_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, client = await make_owner(monkeypatch)
+    worker.activity_spawn_timeout = 120
+    worker.activities["remote"] = slow_import_activity.stalled_import_activity
+    # Only spawned children import the handler module after this, and stall.
+    monkeypatch.setenv(slow_import_activity.STALL_ENV, "60")
+    try:
+        execution = asyncio.create_task(worker._run_activity_task(task()))
+        while not worker._remote_activity_processes:
+            await asyncio.sleep(0.001)
+        callback = next(iter(worker._remote_activity_processes))
+        await asyncio.sleep(0.5)
+        assert not execution.done()
+        worker._local_activity_shutdown.set()
+        assert await asyncio.wait_for(execution, timeout=15.0) == "claim_aborted"
+        # The cancelled start joined its supervisor cleanly, so the slot returns.
+        assert callback.stopped is True
+        assert not worker._remote_activity_processes
+        client.fail_activity_task.assert_not_awaited()
+        client.complete_activity_task.assert_not_awaited()
     finally:
         await worker.stop()

@@ -33,8 +33,9 @@ from .interceptors import ActivityInterceptorContext, WorkerInterceptor
 # A cooperative callback is two spawn-context interpreters (supervisor, then
 # callback) that import the SDK and the handler before reporting readiness. On
 # a busy host that takes far longer than an idle start, so the default wait is
-# generous; Worker(activity_spawn_timeout=...) changes it.
+# generous; Worker.activity_spawn_timeout or ACTIVITY_SPAWN_TIMEOUT_ENV changes it.
 DEFAULT_SPAWN_READINESS_TIMEOUT = 30.0
+ACTIVITY_SPAWN_TIMEOUT_ENV = "DURABLE_WORKFLOW_ACTIVITY_SPAWN_TIMEOUT"
 # worker_lost release cause when a callback misses spawn readiness.
 ACTIVITY_SPAWN_READINESS_TIMEOUT = "activity_spawn_readiness_timeout"
 _CLOSE_JOIN_TIMEOUT = 5.0
@@ -53,15 +54,17 @@ class CallbackProcessLost(RuntimeError):
 class CallbackSpawnTimeout(CallbackProcessLost):
     """The callback did not report spawn readiness in time and was confirmed stopped.
 
-    No application code ran. Raised only after the supervisor (and so the
-    callback) is joined, so the claim can be released for a retry.
+    The handler had not been reported started. Raised only after the
+    supervisor (and so the callback) is joined, so the claim can be released
+    for a retry without two executions overlapping.
     """
 
     def __init__(self, timeout: float) -> None:
         self.timeout = timeout
         super().__init__(
             f"cooperative activity callback did not report spawn readiness within {timeout:g}s; the host may "
-            "be overloaded. Raise Worker(activity_spawn_timeout=...) or lower max_concurrent_activity_tasks"
+            "be overloaded. Raise Worker.activity_spawn_timeout (DURABLE_WORKFLOW_ACTIVITY_SPAWN_TIMEOUT) or lower "
+            "max_concurrent_activity_tasks"
         )
 
 
@@ -284,6 +287,10 @@ class SupervisedCallback:
                 raise CallbackProcessLost("callback did not prove spawn readiness")
         except BaseException:
             await self.close()
+            # A clean supervisor exit, including after the owner cancelled
+            # this start, proves its callback was reaped.
+            if self._exitcode == 0:
+                self.stopped = True
             raise
 
     async def _close_unready(self) -> None:
@@ -291,7 +298,7 @@ class SupervisedCallback:
         # owner channel makes it reap its callback and exit; allow it as long
         # as readiness was allowed. Only a clean supervisor exit proves the
         # callback joined, so anything else stays CallbackProcessLost.
-        await self.close(join_timeout=max(_CLOSE_JOIN_TIMEOUT, self._readiness_timeout))
+        await self.close(join_timeout=max(2 * _CLOSE_JOIN_TIMEOUT, self._readiness_timeout))
         if self._exitcode != 0:
             raise CallbackProcessLost("callback supervisor did not confirm a clean join after spawn timeout")
         self.stopped = True
