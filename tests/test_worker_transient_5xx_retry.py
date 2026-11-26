@@ -27,7 +27,12 @@ from durable_workflow.workflow import WorkflowContext
 
 from .test_worker import compatible_cluster_info
 
-SERVER_ERROR = (500, {"message": "Server Error"}, {})
+# The body the Server returns while its database is failing over (durable-workflow/cloud#752).
+SERVER_ERROR = (
+    500,
+    {"reason": "server_error", "message": "Database runtime credential authentication is enabled but unavailable."},
+    {},
+)
 COMMANDS = [{"type": "complete_workflow", "result": serializer.envelope("done", codec="avro")}]
 
 
@@ -323,6 +328,7 @@ async def test_client_errors_carry_the_parsed_retry_after() -> None:
 
 
 @pytest.mark.parametrize(("value", "expected"), [
+    ("9" * 400, 10.0**10),
     ("0", 0.0),
     ("7", 7.0),
     (" 120 ", 120.0),

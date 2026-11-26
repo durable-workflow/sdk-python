@@ -61,7 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the PHP SDK worker exited there. Python's pollers and heartbeats already kept
   running, but three gaps remained:
   - **Plain HTTP 500:** a 500 without a protocol `reason` (for example
-    `{"message": "Server Error"}`) now counts as transient, like an upstream
+    `{"message": "Server Error"}`), or with the Server's generic
+    `server_error` reason that a database failover returns, now counts as
+    transient, like an upstream
     502, 503 or 504. Before, an activity completion or failure report hit by
     one was dropped after the client's three quick attempts, and registration
     hit by one stopped `Worker.run()`. A 5xx with a typed `reason`, a

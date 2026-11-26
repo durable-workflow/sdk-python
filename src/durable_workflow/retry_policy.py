@@ -50,6 +50,9 @@ def parse_retry_after(value: str | None, *, now: datetime | None = None) -> floa
         return None
     value = value.strip()
     if value.isascii() and value.isdigit():
+        # Callers cap the wait; an absurdly long value must not raise.
+        if len(value) > 10:
+            return float(10**10)
         return float(int(value))
     try:
         when = parsedate_to_datetime(value)

@@ -137,8 +137,9 @@ up or briefly unavailable while they register. Cluster discovery and
 registration are repeated whole after a transient failure:
 
 - a refused, reset or timed-out connection
-- an HTTP 500, 502, 503 or 504 without a protocol `reason`, from an upstream
-  proxy or an unclassified Server error such as a database failover
+- an HTTP 500, 502, 503 or 504 without a protocol `reason`, or with the
+  Server's generic reason `server_error`, from an upstream proxy or a Server
+  error such as a database failover
 - a 503 whose reason is `storage_unavailable` or `backend_unavailable`
   (native Server answers every storage failure with this body)
 - any 5xx or 429 that says `retryable: true`
@@ -217,8 +218,8 @@ are never resent.
 
 ### Server failover and `Retry-After`
 
-During a database failover a Server can answer HTTP 500 without a protocol
-reason, then HTTP 503, before it recovers. `Worker.run()` keeps running
+During a database failover a Server can answer HTTP 500 with reason
+`server_error` (or without a reason), then HTTP 503, before it recovers. `Worker.run()` keeps running
 through that sequence. Polls, registration, activity outcomes and
 workflow-task completions all retry it as described above.
 

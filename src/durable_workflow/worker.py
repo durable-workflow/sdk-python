@@ -329,7 +329,11 @@ def _transient_runtime_error(error: BaseException) -> bool:
         return True
     if error.status == 503 and error.reason() in _TRANSIENT_UNAVAILABLE_REASONS:
         return True
-    return error.status in _UPSTREAM_UNAVAILABLE_STATUSES and (body is None or "reason" not in body)
+    # An untyped 5xx, or the Server's generic `server_error` (what a database
+    # failover returns, durable-workflow/cloud#752), is an outage; a typed reason is not.
+    return error.status in _UPSTREAM_UNAVAILABLE_STATUSES and (
+        body is None or body.get("reason") in (None, "server_error")
+    )
 
 
 def _transient_discovery_error(error: BaseException) -> bool:
