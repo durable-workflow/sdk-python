@@ -1224,8 +1224,22 @@ unavailable for:
 - offline replay (`replay_history`, `Replayer.replay`) unless you pass the
   task's object as `replay_clock_entry`, and the in-memory
   `WorkflowEnvironment`, which supplies no carrier;
-- group, inline and local operations it does not yet support, query handler
-  reads, and cancellation scopes.
+- group operations it does not yet support, and cancellation scopes;
+- inline and local operations (side effects, version markers, local
+  activities, memos): the first run produces their value before history
+  records a time, so they stay unavailable until Core defines a business time
+  for them;
+- signal and update handler deliveries, condition waits, search-attribute
+  upserts, and any other step that is not a supported activity, timer or child
+  step;
+- a query handler read when the queried history does not end at a supported
+  scalar boundary or, on a redrive, at its start event (which reads the
+  redrive start time). When it does, the handler reads that time; grouped
+  boundaries give query handlers no time.
+
+The clock is not guaranteed to be monotonic: each value comes from the entry
+carrier or the boundary just consumed, not a running maximum, so a later value
+can be earlier.
 
 Adopt business-time decisions through normal workflow versioning. `ctx.now()`
 keeps its fixed start time, so runs that already read it replay unchanged.
