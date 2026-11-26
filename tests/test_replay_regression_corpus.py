@@ -103,6 +103,7 @@ from tests.test_wait_condition import (
 )
 from tests.test_worker import compatible_cluster_info
 from tests.test_worker_status import RecoveryWorkflow as StatusRecoveryWorkflow
+from tests.test_worker_transient_5xx_retry import FailoverCompletionWorkflow
 from tests.test_workflow_identity import IdentityAcrossReplay, IdentityContinueAsNew
 
 FIXTURE_SCHEMA = "durable-workflow.replay-regression/v1"
@@ -508,6 +509,7 @@ WORKFLOWS = [
     RepeatedPatchWorkflow,
     PendingOperation,
     RecoveredWorkflow,
+    FailoverCompletionWorkflow,
     FencedRecoveryWorkflow,
     PagedRecordedSideEffectsWorkflow,
     PostConditionReceiversWorkflow,

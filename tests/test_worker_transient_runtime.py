@@ -30,8 +30,16 @@ STORAGE_UNAVAILABLE = {"reason": "storage_unavailable", "message": "storage_unav
     (ServerError(429, {"reason": "rate_limited", "retryable": True}), True),
     (ServerError(503, {"reason": "storage_unavailable", "retryable": False}), False),
     (ServerError(503, {"reason": "storage_pressure"}), False),
+    # An unclassified 500 (no protocol reason), as during a database failover (cloud#752).
+    (ServerError(500, "boom"), True),
+    (ServerError(500, None), True),
+    (ServerError(500, {"message": "Server Error"}), True),
     (ServerError(500, {"reason": "internal"}), False),
-    (ServerError(500, "boom"), False),
+    (ServerError(500, {"reason": "server_error",
+                       "message": "Database runtime credential authentication is enabled but unavailable."}), True),
+    (ServerError(503, {"reason": "server_error"}), True),
+    (ServerError(500, {"reason": "server_error", "retryable": False}), False),
+    (ServerError(501, None), False),
     (ServerError(429, {"reason": "rate_limited"}), False),
     (ServerError(401, {"reason": "unauthorized", "retryable": True}), False),
     (ServerError(403, {}), False),
@@ -112,6 +120,7 @@ def fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     ("/register", "refused", 8),
     ("/register", (502, None), 8),
     ("/register", (503, {"reason": "backend_unavailable"}), 8),
+    ("/register", (500, {"message": "Server Error"}), 8),
     # Pollers already ride out failures with their own backoff (1 s, doubling).
     ("/activity-tasks/poll", None, 2),
 ])

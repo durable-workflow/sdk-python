@@ -94,7 +94,9 @@ including HTTP errors, rejected credentials and unreachable runtimes. The wait
 before the *n*-th consecutive retry is `uniform(0, min(10, 0.25 * 2**(n - 1)))`
 seconds. That is the shared full-jitter schedule with a 10-second cap, so a
 poller recovers quickly once the runtime is back, and workers do not retry in
-lockstep. A bounded retry delay advertised by the Server is still honoured. Any
+lockstep. A bounded retry delay advertised by the Server is still honoured,
+including an HTTP `Retry-After` header (see
+[Server failover and `Retry-After`](#server-failover-and-retry-after)). Any
 successful poll, including an empty response, resets the schedule. Shutdown
 interrupts the wait.
 
@@ -135,7 +137,9 @@ up or briefly unavailable while they register. Cluster discovery and
 registration are repeated whole after a transient failure:
 
 - a refused, reset or timed-out connection
-- an upstream 502, 503 or 504 without a protocol body
+- an HTTP 500, 502, 503 or 504 without a protocol `reason`, or with the
+  Server's generic reason `server_error`, from an upstream proxy or a Server
+  error such as a database failover
 - a 503 whose reason is `storage_unavailable` or `backend_unavailable`
   (native Server answers every storage failure with this body)
 - any 5xx or 429 that says `retryable: true`
@@ -156,6 +160,7 @@ not read cluster info again, so a later cluster-info outage cannot stop it.
 Some failures are never retried:
 
 - `retryable: false`
+- a 5xx with any other typed `reason`
 - HTTP 401 or 403
 - any other 4xx protocol refusal
 - an incompatible Server
@@ -191,6 +196,39 @@ no second outcome is recorded. Any other `stale_attempt` means the attempt is
 closed. It is reported as such and never treated as success. After
 registration, pollers keep the poll-failure backoff described above. Worker
 heartbeats log a failure and try again at the next interval.
+
+### Workflow-task completions through transient failures
+
+A workflow-task completion that hits one of the transient failures listed
+above is sent again with the same backoff while the task's `lease_expires_at`
+still covers the next wait, or for up to 60 seconds when the task carries no
+lease. Every resend is the same request: the same task ID, lease owner,
+`workflow_task_attempt` and commands, so the Server fences it exactly like the
+first send. A lease or attempt refusal of a resend (`task_not_leased`,
+`lease_expired`, `workflow_task_attempt_mismatch` and the like) is never
+reported as a workflow-task failure, so resending a completion that a
+transient hid cannot turn it into a failure.
+
+When the lease cannot cover another wait, the worker logs `workflow task <id>
+completion not delivered after N transient failures ...: its lease ran out`
+at error level and stops resending. The Server delivers the task again when
+the lease expires. Other retryable completion failures, such as a 5xx with a
+typed reason, keep the short budget of three attempts. Definitive 4xx refusals
+are never resent.
+
+### Server failover and `Retry-After`
+
+During a database failover a Server can answer HTTP 500 with reason
+`server_error` (or without a reason), then HTTP 503, before it recovers. `Worker.run()` keeps running
+through that sequence. Polls, registration, activity outcomes and
+workflow-task completions all retry it as described above.
+
+When a failed response carries a `Retry-After` header, in either the
+delta-seconds form (`Retry-After: 5`) or the HTTP-date form, the worker waits
+at least that long before the next attempt, capped at 60 seconds. The client
+exposes the parsed value as `retry_after` on the raised error. The client's
+own `TransportRetryPolicy` also honours the header between its quick
+attempts, capped at its `max_backoff_seconds`.
 
 ## Lifecycle and shutdown
 

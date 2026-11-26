@@ -56,6 +56,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compares it with the original timer or the competing child terminal. Ordered
   authoring stays disabled until every Server process sharing the database
   supports marked waits. (durable-workflow/.github#230)
+- The worker now rides out a Server or database failover that answers HTTP 500
+  and then 503 (found in a Cloud HA run, durable-workflow/cloud#752). Before,
+  the PHP SDK worker exited there. Python's pollers and heartbeats already kept
+  running, but three gaps remained:
+  - **Plain HTTP 500:** a 500 without a protocol `reason` (for example
+    `{"message": "Server Error"}`), or with the Server's generic
+    `server_error` reason that a database failover returns, now counts as
+    transient, like an upstream
+    502, 503 or 504. Before, an activity completion or failure report hit by
+    one was dropped after the client's three quick attempts, and registration
+    hit by one stopped `Worker.run()`. A 5xx with a typed `reason`, a
+    `retryable: false` answer and every 4xx refusal keep their handling.
+  - **Workflow-task completions:** a completion that fails transiently is now
+    resent with the shared backoff while the task's `lease_expires_at` covers
+    the next wait (60 seconds when the lease is unknown). Before, it was given
+    up after about a second and the task waited for its lease to expire. Each
+    resend has the same task ID, lease owner, attempt and commands, so lease
+    fencing is unchanged. When the lease runs out the worker logs an error and
+    the Server delivers the task again.
+  - **`Retry-After`:** the worker now honours a `Retry-After` header, both the
+    delta-seconds and the HTTP-date form, capped at 60 seconds. It applies to
+    polls, registration, activity outcomes and workflow-task completions.
+    Errors raised for HTTP responses expose the parsed value as `retry_after`.
+    `TransportRetryPolicy` honours the header between its own attempts, capped
+    at `max_backoff_seconds`.
 
 ## [2.23.0] - 2026-11-23
 
