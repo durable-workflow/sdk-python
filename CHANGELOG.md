@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.24.0] - 2026-11-26
+
 ### Added
 
 - `ctx.replay_now()` is available at ordinary workflow entry, before any
@@ -17,17 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a redrive anchor that history already proves is never replaced. Update tasks
   rebuild the workflow with their own carrier. A query task or pre-accept
   update validation rebuilds with its own task's `replay_clock`. When that
-  task has no `replay_clock` key (Servers without durable-workflow/server#1338),
-  a rebuild in which the workflow reads the clock at entry
-  fails the query or validation, even if the workflow catches
+  task has no `replay_clock` key (Servers before 3.30.0, which lack
+  durable-workflow/server#1338), a rebuild in which the workflow reads the
+  clock at entry fails the query or validation, even if the workflow catches
   `ReplayClockUnavailable`, rather than answering with state the workflow task
-  never computed. An explicit `null`, or an object this SDK rejects, means
-  the workflow task had no carrier either, so the rebuild proceeds. Upgrade note: an in-flight run whose code
-  branches on entry unavailability takes the other branch after this upgrade,
-  so version such code or drain those runs first. `replay()`,
+  never computed. An explicit `null`, or an object this SDK rejects, means the
+  workflow task had no carrier either, so the rebuild proceeds. `replay()`,
   `Replayer.replay()`, `replay_history()` and `apply_update()` accept the
-  task's object as `replay_clock_entry`.
-  `ctx.now()` still returns the fixed start time. (durable-workflow/.github#215)
+  task's object as `replay_clock_entry`. `ctx.now()` still returns the fixed
+  start time. Read the replay clock note under Changed before upgrading
+  workers. (durable-workflow/.github#215)
 - Workers with cooperative cancellation enabled advertise the `timeout_cleanup`
   capability, version 1: `capabilities` lists it and `capability_manifest`
   carries `{supported: true, minimum_protocol_version: "1.20", version: 1}`. A
@@ -41,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Server records as failed cleanup. `FailWorkflow` gains an optional
   `interruption` field. Workers without cooperative cancellation are unchanged
   and never send the marker; listing `timeout_cleanup` without
-  `cooperative_cancellation` raises `ValueError`.
+  `cooperative_cancellation` raises `ValueError`. Read the mixed-queue note
+  under Changed before starting opted-in runs.
   ([Server #1201](https://github.com/durable-workflow/server/issues/1201))
 - `ActivityHeartbeatUnavailable`, exported from `durable_workflow`. An
   activity's `heartbeat()` or `heartbeat_sync()` raises it when a transient
@@ -56,24 +58,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as `cause`. It is raised only for the failures the worker already treats as
   transient (#383): connection and timeout errors, a 500, 502, 503 or 504
   without a reason or with `server_error`, a 503 `storage_unavailable` or
-  `backend_unavailable`, and a 5xx or 429 with `retryable: true`. Code that
-  caught `httpx.TransportError` from a heartbeat must catch
-  `ActivityHeartbeatUnavailable` instead. Cancellation, a lost lease or closed
-  attempt, 4xx refusals and 5xx errors with a typed reason keep their existing
-  errors. See "Activity heartbeats during a failover" in the worker reference.
+  `backend_unavailable`, and a 5xx or 429 with `retryable: true`.
+  Cancellation, a lost lease or closed attempt, 4xx refusals and 5xx errors
+  with a typed reason keep their existing errors. See "Activity heartbeats
+  during a failover" in the worker reference, and the heartbeat note under
+  Changed. (#385)
 
-## [2.23.1] - 2026-11-24
+### Changed
 
-2.23.1 is the first published release containing the 2.23.0 changes. The
-`2.23.0` tag exists but was never published to PyPI or GitHub Releases.
+These notes need action before upgrading workers or starting new kinds of
+runs. Native Server 3.30.0 is the matching Server release.
+
+- **Compatibility: heartbeat outage errors.** `ActivityContext.heartbeat()`
+  and `heartbeat_sync()` now raise `ActivityHeartbeatUnavailable` (a
+  `ServerError`) during a transient Server failure. Code that caught
+  `httpx.TransportError` or `httpx.HTTPError` around a heartbeat must catch
+  the new type. An outage that escapes the activity is now recorded with
+  failure type `ActivityHeartbeatUnavailable` instead of `ServerError` or the
+  `httpx` error's name, such as `ReadTimeout` or `ConnectError`. This matters
+  for retry policies that list those names in `non_retryable_error_types`, and
+  for workflow code that inspects `ActivityFailed.exception_type` or
+  `exception_class`. Activities run in a cooperative-cancellation callback
+  process are unchanged: a failed heartbeat there abandons the claim, and the
+  error never reaches activity code. (#385)
+- **Compatibility: replay clock at workflow entry.** `ctx.replay_now()` now
+  returns the run's start time when it is read at workflow entry, before any
+  durable step, whenever the Server sends the task's `replay_clock` entry
+  instant (Server 3.6.0 and later). Earlier SDK releases reported the clock as
+  unavailable there. A running workflow whose code catches that unavailable
+  error at entry and branches on it will take the other branch when it
+  replays on the new SDK, which can change its next commands. Before upgrading
+  workers, put such code behind workflow versioning (a version marker or a new
+  workflow type) or let those runs finish. Code that reads the clock only
+  after a durable step, or never catches the error, is unaffected. On Servers
+  before 3.30.0 (without durable-workflow/server#1338), queries and update
+  validations of workflows that read the clock at entry fail instead of
+  answering, so upgrade the Server to 3.30.0 alongside the SDK. `ctx.now()`
+  is unchanged. (durable-workflow/.github#215)
+- **Compatibility: timeout cleanup on mixed queues.** Server admits a start
+  with `timeout_cleanup_seconds` when at least one live worker on its task
+  queue advertises `timeout_cleanup`. It doesn't check the other workers, and
+  any of them can claim the cleanup turn. Server refuses the cleanup marker
+  from a worker that didn't advertise the capability, so an escaped
+  interruption there is recorded as `failed` or `expired`. But a worker
+  without timeout-cleanup support may never see the interruption: if its
+  workflow code returns, the run is recorded as cleanup `completed` although
+  no cleanup ran. Before starting opted-in runs on a queue, upgrade every
+  worker on it to a supporting SDK with cooperative cancellation enabled: PHP
+  SDK 3.31.0 or later (3.32.0 or later for the stricter marker rule), Rust SDK
+  4.25.0 or later, Python SDK 2.24.0 or later.
+  ([Server #1201](https://github.com/durable-workflow/server/issues/1201))
+- **Compatibility: Server 500 answers.** A plain HTTP 500, or one with the
+  Server's generic `server_error` reason, is now retried as transient instead
+  of stopping the worker: registration retries instead of ending
+  `Worker.run()`, and activity outcomes and workflow-task completions are
+  resent while the lease lasts. A 5xx with a typed `reason`, a
+  `retryable: false` answer and every 4xx keep their handling. See Fixed.
+  (#383)
 
 ### Fixed
 
-- Replay applies signal and update effects in durable receipt order when
-  evaluating a condition wait with a timeout. It keeps the first true prefix and
-  compares it with the original timer or the competing child terminal. Ordered
-  authoring stays disabled until every Server process sharing the database
-  supports marked waits. (durable-workflow/.github#230)
 - The worker now rides out a Server or database failover that answers HTTP 500
   and then 503 (found in a Cloud HA run, durable-workflow/cloud#752). Before,
   the PHP SDK worker exited there. Python's pollers and heartbeats already kept
@@ -81,8 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Plain HTTP 500:** a 500 without a protocol `reason` (for example
     `{"message": "Server Error"}`), or with the Server's generic
     `server_error` reason that a database failover returns, now counts as
-    transient, like an upstream
-    502, 503 or 504. Before, an activity completion or failure report hit by
+    transient, like an upstream 502, 503 or 504. Before, an activity completion or failure report hit by
     one was dropped after the client's three quick attempts, and registration
     hit by one stopped `Worker.run()`. A 5xx with a typed `reason`, a
     `retryable: false` answer and every 4xx refusal keep their handling.
@@ -99,6 +142,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Errors raised for HTTP responses expose the parsed value as `retry_after`.
     `TransportRetryPolicy` honours the header between its own attempts, capped
     at `max_backoff_seconds`.
+
+## [2.23.1] - 2026-11-24
+
+2.23.1 is the first published release containing the 2.23.0 changes. The
+`2.23.0` tag exists but was never published to PyPI or GitHub Releases.
+
+### Fixed
+
+- Replay applies signal and update effects in durable receipt order when
+  evaluating a condition wait with a timeout. It keeps the first true prefix and
+  compares it with the original timer or the competing child terminal. Ordered
+  authoring stays disabled until every Server process sharing the database
+  supports marked waits. (durable-workflow/.github#230)
 
 ## [2.23.0] - 2026-11-23
 
