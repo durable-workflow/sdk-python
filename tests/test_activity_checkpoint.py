@@ -161,8 +161,10 @@ async def test_heartbeat_outcomes_never_advance_the_received_checkpoint(outcome:
     ctx = context(poll(details={"cursor": 1}, at=AT))
     if outcome == "uncertain":
         ctx._client.heartbeat_activity_task.side_effect = httpx.ReadTimeout("response lost")  # type: ignore[attr-defined]
-        with pytest.raises(httpx.ReadTimeout):
+        from durable_workflow.errors import ActivityHeartbeatUnavailable
+        with pytest.raises(ActivityHeartbeatUnavailable) as raised:
             await ctx.heartbeat({"cursor": 2})
+        assert isinstance(raised.value.cause, httpx.ReadTimeout)
     else:
         ctx._client.heartbeat_activity_task.return_value = {  # type: ignore[attr-defined]
             "can_continue": outcome == "success", "last_heartbeat_details": {"cursor": 2},
