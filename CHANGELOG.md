@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.25.0] - 2026-11-28
+
 ### Changed
 
 - Cooperative activity callbacks now wait up to 30 seconds, instead of a
@@ -16,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `activity_spawn_readiness_timeout`) whose message names the setting, instead
   of being reported as an activity failure. Claim loss or shutdown during a
   slow start no longer waits for readiness (sdk-python#388).
+
+### Fixed
+
+- History bundle verification accepts available external storage references
+  without inline Avro framing. Inline Avro payloads still require the framing
+  and fingerprint checks. ([#389](https://github.com/durable-workflow/sdk-python/pull/389))
 
 ## [2.24.0] - 2026-11-26
 
